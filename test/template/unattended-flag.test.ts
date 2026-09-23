@@ -367,6 +367,194 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
   });
 
   /**
+   * RP-243 — `canonicalRulebookPath`/`isRulebookPath` compare the literal
+   * spelling of a path component. Win32 strips a TRAILING dot or space from
+   * each path component when it actually creates the file — `cmd /c "echo x
+   * > .codex.\config.toml"` lands as `.codex\config.toml` on disk — so a
+   * payload spelled `.codex./config.toml` is, on Windows, the exact same file
+   * as the guarded `.codex/config.toml`, while this comparison sees two
+   * different strings and lets the rulebook edit through.
+   *
+   * Independent oracle: every spelling below is written out literally in this
+   * test, not derived by appending a dot/space to `RULEBOOK_PREFIXES` through
+   * a helper the fix would also supply (`invariants.md`, "the independent-oracle
+   * invariant").
+   */
+  describe('isRulebookPath: a trailing dot or space on a path component is judged the same as the component with it stripped (RP-243)', () => {
+    it.each([
+      // trailing dot/space on the segment that names the guarded directory itself
+      ['.codex./config.toml', '.codex/'],
+      ['.codex /config.toml', '.codex/'],
+      ['.claude./hooks/x.mjs', '.claude/hooks/'],
+      // trailing dot/space on a segment INSIDE the guarded directory
+      ['.claude/hooks./x.mjs', '.claude/hooks/'],
+      ['.claude/hooks /x.mjs', '.claude/hooks/'],
+      // trailing dot/space on a single-segment file entry
+      ['CLAUDE.md.', 'CLAUDE.md'],
+      ['AGENTS.md ', 'AGENTS.md'],
+      // combining case-folding (RP-215) with a trailing dot AND a trailing
+      // space on two different components of the same path (RP-243)
+      ['.Codex. /config.toml', '.codex/'],
+    ])('is true for %s — a trailing-dot/space variant of the %s entry', async (rel) => {
+      const { isRulebookPath } = (await load()) as unknown as {
+        isRulebookPath: (rel: string) => boolean;
+      };
+      expect(isRulebookPath(rel)).toBe(true);
+    });
+
+    it.each([
+      // ordinary paths outside the rulebook stay outside it, trailing
+      // dot/space and all — this fix narrows nothing it must not narrow.
+      'src/a.txt.',
+      'src /a.txt',
+      'docs/notes. /x.md',
+    ])(
+      'is false for the ordinary path %s, unaffected by the trailing-dot/space fix',
+      async (rel) => {
+        const { isRulebookPath } = (await load()) as unknown as {
+          isRulebookPath: (rel: string) => boolean;
+        };
+        expect(isRulebookPath(rel)).toBe(false);
+      },
+    );
+  });
+
+  /**
+   * code-reviewer round 2 (8c27054), BLOCKER — `stripTrailingDotsAndSpaces`
+   * strips a trailing run of `.`/` ` with `/[. ]+$/`, anchored at the end
+   * but not at the start. Without a start anchor the engine retries the
+   * match at every offset inside a long run of matching characters before
+   * backtracking off it one character at a time, which is quadratic in the
+   * length of that run — independent of whether the component sits anywhere
+   * near a matched rulebook prefix. `invariants.md`, "a fail-open guard must
+   * do provably bounded work": this is ordinary `PreToolUse` traffic, not an
+   * adversary, and normal traffic must never make the guard block for
+   * minutes.
+   *
+   * Independent oracle: the expected answer — `false`, no segment of this
+   * path names a `RULEBOOK_PREFIXES` entry — is asserted directly, not
+   * derived from the function's own normalisation.
+   */
+  describe('isRulebookPath: bounded work on a component with a huge run of dots/spaces (RP-243 round 2)', () => {
+    it('returns promptly and gives the correct answer for a ~1MB pathological component', async () => {
+      // ~1MB, fed over stdin rather than embedded in the child's argv: a
+      // command-line argument this size overflows the OS argument-list limit
+      // (`spawn E2BIG`) well before Node even starts, which is a harness
+      // limit unrelated to the guard under test.
+      const pathological = `.claude/${'.'.repeat(500_000)}a${' .'.repeat(250_000)}/x.mjs`;
+      const bound = 3000;
+      const program = [
+        `const { isRulebookPath } = await import(${JSON.stringify(pathToFileURL(scriptPath).href)});`,
+        "let data = '';",
+        "process.stdin.setEncoding('utf8');",
+        'for await (const chunk of process.stdin) data += chunk;',
+        'process.stdout.write(String(isRulebookPath(data)));',
+      ].join('\n');
+      const start = Date.now();
+      const result: BoundedResult = await new Promise((resolve, reject) => {
+        const child = execFile(
+          process.execPath,
+          ['--input-type=module', '--eval', program],
+          { timeout: bound },
+          (error, stdout, stderr) => {
+            resolve({
+              code: error ? ((error as { code?: number }).code ?? 1) : 0,
+              stdout,
+              stderr,
+              timedOut: Boolean((error as { killed?: boolean } | null)?.killed),
+            });
+          },
+        );
+        if (!child.stdin) return reject(new Error('no stdin'));
+        child.stdin.write(pathological);
+        child.stdin.end();
+      });
+      expect(
+        result.timedOut,
+        'isRulebookPath blocked for the full timeout on a component with a long dot/space run',
+      ).toBe(false);
+      expect(
+        Date.now() - start,
+        'isRulebookPath took too long on a pathological component',
+      ).toBeLessThan(bound);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toBe('false');
+    });
+  });
+
+  /**
+   * code-reviewer round 2 (8c27054), advisory B — normalisation must apply
+   * only to the components the matched rulebook prefix itself spans; a
+   * component beyond the matched prefix keeps its literal spelling, because
+   * on POSIX (where no filesystem strips a trailing dot at create time) it
+   * names a genuinely different directory. `.claude/hooks./a./b.mjs` has two
+   * trailing-dotted components: `hooks.`, which IS the prefix-naming
+   * segment and folds to the canonical `hooks`, and `a.`, which sits inside
+   * the already-matched prefix and must be left exactly as spelled.
+   */
+  it('canonicalRulebookPath folds only the matched-prefix component and keeps a literal trailing dot beyond it', async () => {
+    const { canonicalRulebookPath } = (await load()) as unknown as {
+      canonicalRulebookPath: (rel: string) => string | undefined;
+    };
+    expect(canonicalRulebookPath('.claude/hooks./a./b.mjs')).toBe('.claude/hooks/a./b.mjs');
+  });
+
+  /**
+   * code-reviewer round 3 (9435b93), BLOCKER — `canonicalRulebookPath` now
+   * requires `components.length === segmentCount` for a FILE-type entry
+   * (`CLAUDE.md`, `AGENTS.md`, `.claude/settings.json`, `.claude/queue.json`,
+   * `.claude/queue.board`, `.claude/.rig-manifest.json`,
+   * `.claude/doctor-exemptions.json`, `.rig/revalidation.json`), so a path
+   * that CONTINUES past such an entry with a `/` and more components no
+   * longer matches at all — `.claude/queue.board/x` reads as an ordinary,
+   * unguarded path. Master (0d5be9c) matched a file entry with a
+   * whole-string, case-insensitive `startsWith`, so any path beginning with
+   * the guarded file's name — trailing separator or not — was, and must
+   * stay, a rulebook path; RP-215 folding and RP-243 trailing-dot/space
+   * stripping on the spanned components are additions on top of that
+   * behaviour, never a narrowing of it.
+   *
+   * Independent oracle: every literal below is typed by hand, not derived
+   * from `RULEBOOK_PREFIXES` or from re-running this module's own
+   * `canonicalRulebookPath`/`isRulebookPath` — checked instead against
+   * master's one-line `folded.startsWith(foldedPrefix)`, read directly from
+   * `git show 0d5be9c:templates/agent-os/universal/.claude/scripts/unattended-flag.mjs`,
+   * on each of these same inputs (`invariants.md`, "the independent-oracle
+   * invariant").
+   */
+  describe('isRulebookPath: a path continuing past a matched FILE entry is still a rulebook path (round 3 regression)', () => {
+    it.each([
+      '.claude/queue.board/x',
+      '.rig/revalidation.json/x',
+      '.claude/settings.json/x',
+      'CLAUDE.md/x',
+      'AGENTS.md/sub/y.md',
+      '.claude/.rig-manifest.json/z',
+      '.claude/doctor-exemptions.json/z',
+      '.claude/queue.json/z',
+      // folded (RP-215) + trailing-dot/space (RP-243) twins on the same
+      // ground — master matches these too, because its whole-string
+      // startsWith never inspected the boundary at all.
+      '.Rig/Revalidation.json./x',
+      'CLAUDE.md /x',
+    ])('is true for %s — continuing past a file entry does not leave the rulebook', async (rel) => {
+      const { isRulebookPath } = (await load()) as unknown as {
+        isRulebookPath: (rel: string) => boolean;
+      };
+      expect(isRulebookPath(rel)).toBe(true);
+    });
+
+    it('canonicalRulebookPath of .claude/queue.board/x starts with the canonical .claude/queue.board', async () => {
+      const { canonicalRulebookPath } = (await load()) as unknown as {
+        canonicalRulebookPath: (rel: string) => string | undefined;
+      };
+      const canonical = canonicalRulebookPath('.claude/queue.board/x');
+      expect(canonical).toBeDefined();
+      expect(canonical!.startsWith('.claude/queue.board')).toBe(true);
+    });
+  });
+
+  /**
    * RP-215 — the fix has to land at the single shared comparison point
    * without changing `isWidening`'s answers. Pinned literally, entry by
    * entry, as measured on master (8876147) before this fix — not derived by

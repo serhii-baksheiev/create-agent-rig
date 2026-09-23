@@ -106,7 +106,8 @@ export const RULEBOOK_PREFIXES = Object.freeze([
 
 // Case-folded once at module load, for the same comparison every caller shares
 // — never re-derived per call, and never used anywhere but inside
-// `canonicalRulebookPath` below.
+// `isWidening` below (`canonicalRulebookPath` folds its own comparison from
+// `RULEBOOK_PREFIX_SEGMENTS` instead).
 const FOLDED_RULEBOOK_PREFIXES = RULEBOOK_PREFIXES.map((prefix) => prefix.toLowerCase());
 
 /**
@@ -132,14 +133,102 @@ const FOLDED_RULEBOOK_PREFIXES = RULEBOOK_PREFIXES.map((prefix) => prefix.toLowe
  * miscased allow entry (`.Claude/`, `.claude/Scripts/`) from ever matching
  * anything, including the one prefix deliberately withheld as an allow root
  * (`.claude/scripts/`, `isWidening`).
+ *
+ * RP-243: before the fold above, a trailing run of `.`/` ` is stripped from
+ * a path component — `.codex./config.toml` folds the same as
+ * `.codex/config.toml` — except a component made entirely of dots (`.`,
+ * `..`), left untouched so a traversal segment is never collapsed into an
+ * empty name. Only the PATH is normalised this way, never an allow-list
+ * entry — the same asymmetry as the case fold above.
+ *
+ * RP-243 round 2: only the components the matched prefix itself spans are
+ * normalised — bounded by the longest `RULEBOOK_PREFIXES` entry's own
+ * segment count, computed once below — so a component beyond that span
+ * keeps its literal spelling and the canonical path returns it raw. See the
+ * generator's `test/template/unattended-flag.test.ts` (absent in a
+ * generated rig) › "isRulebookPath: a trailing dot or space on a path
+ * component is judged the same as the component with it stripped (RP-243)".
  */
+const stripTrailingDotsAndSpaces = (component) => {
+  if (/^\.+$/.test(component)) return component;
+  let end = component.length;
+  while (end > 0) {
+    const code = component.charCodeAt(end - 1);
+    if (code !== 46 /* '.' */ && code !== 32 /* ' ' */) break;
+    end -= 1;
+  }
+  return end === component.length ? component : component.slice(0, end);
+};
+
+/**
+ * `RULEBOOK_PREFIXES` split into segments once, at module load — a directory
+ * entry (`.claude/hooks/`) drops its trailing slash first, so both forms
+ * yield the segment names a path's own `/`-split components are compared
+ * against. `directory` records whether the entry itself ended in `/`: a
+ * directory entry needs an exact fold-match on every one of its segments
+ * plus something after them; a file entry (`CLAUDE.md`, `.rig/revalidation.json`)
+ * is matched with a `startsWith` on its last segment — see the generator's
+ * `test/template/unattended-flag.test.ts` (absent in a generated rig) ›
+ * "isRulebookPath: a path continuing past a matched FILE entry is still a rulebook path (round 3 regression)".
+ */
+const RULEBOOK_PREFIX_SEGMENTS = RULEBOOK_PREFIXES.map((prefix) => {
+  const directory = prefix.endsWith('/');
+  const segments = (directory ? prefix.slice(0, -1) : prefix).split('/');
+  const foldedSegments = segments.map((segment) => segment.toLowerCase());
+  return { prefix, directory, foldedSegments, length: segments.length };
+});
+
+// The most components any single entry's match can ever need to inspect —
+// never re-derived per call, and the only thing that bounds how many of a
+// path's own components `canonicalRulebookPath` normalises.
+const MAX_PREFIX_SEGMENTS = RULEBOOK_PREFIX_SEGMENTS.reduce(
+  (max, entry) => Math.max(max, entry.length),
+  0,
+);
+
 export const canonicalRulebookPath = (rel) => {
-  const folded = rel.toLowerCase();
-  for (let index = 0; index < RULEBOOK_PREFIXES.length; index += 1) {
-    const prefix = RULEBOOK_PREFIXES[index];
-    const foldedPrefix = FOLDED_RULEBOOK_PREFIXES[index];
-    if (folded === foldedPrefix) return prefix;
-    if (folded.startsWith(foldedPrefix)) return prefix + rel.slice(prefix.length);
+  const components = rel.split('/');
+  const headCount = Math.min(components.length, MAX_PREFIX_SEGMENTS);
+  const normalisedHead = new Array(headCount);
+  const foldedHead = new Array(headCount);
+  for (let i = 0; i < headCount; i += 1) {
+    normalisedHead[i] = stripTrailingDotsAndSpaces(components[i]);
+    foldedHead[i] = normalisedHead[i].toLowerCase();
+  }
+  for (const entry of RULEBOOK_PREFIX_SEGMENTS) {
+    const { directory, foldedSegments, length: segmentCount, prefix } = entry;
+    if (components.length < segmentCount) continue;
+    let leadingMatches = true;
+    for (let i = 0; i < segmentCount - 1; i += 1) {
+      if (foldedHead[i] !== foldedSegments[i]) {
+        leadingMatches = false;
+        break;
+      }
+    }
+    if (!leadingMatches) continue;
+    const lastFolded = foldedHead[segmentCount - 1];
+    const lastSegment = foldedSegments[segmentCount - 1];
+    if (directory) {
+      if (lastFolded !== lastSegment) continue;
+      if (components.length === segmentCount) continue; // no trailing slash, nothing after
+      if (components.length === segmentCount + 1 && components[segmentCount] === '') {
+        return prefix; // the path itself ends with the literal trailing slash
+      }
+      return prefix + components.slice(segmentCount).join('/');
+    }
+    // File entry: the last spanned component is compared folded+normalised,
+    // same as every other component this function inspects; anything past
+    // it — the rest of that component, and every component after it — is
+    // returned exactly as written.
+    if (lastFolded === lastSegment) {
+      if (components.length === segmentCount) return prefix;
+      return `${prefix}/${components.slice(segmentCount).join('/')}`;
+    }
+    if (lastFolded.startsWith(lastSegment)) {
+      const extra = normalisedHead[segmentCount - 1].slice(lastSegment.length);
+      if (components.length === segmentCount) return prefix + extra;
+      return `${prefix}${extra}/${components.slice(segmentCount).join('/')}`;
+    }
   }
   return undefined;
 };
