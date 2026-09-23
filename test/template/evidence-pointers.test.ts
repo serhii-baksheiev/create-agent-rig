@@ -104,15 +104,12 @@ const shippedBasenames = (): Set<string> => new Set(surfaceFiles().map((p) => p.
 const TEST_NAME = /([A-Za-z0-9._/-]+\.test\.(?:ts|mjs))/g;
 
 /**
- * A citation's target, resolved the way `declares()` and `generatorTests()`
- * should read it. A bare file name resolves by basename, as it always has.
- * A directory-qualified name is kept whole, always (RP-216): it resolves
- * against its own exact tracked path and nothing else, so a same-named file
- * elsewhere in the tree can never stand in for it — a qualified path that
- * names no real file is reported dead under its own qualified spelling,
- * never collapsed to the basename a same-named file elsewhere could satisfy.
+ * A citation's target is its spelling as written (RP-216): a bare file name is
+ * looked up by basename in `generatorTests()`, a directory-qualified name only
+ * under its own exact tracked path — dead if absent, never collapsed to a
+ * basename a same-named file elsewhere could satisfy.
  */
-const resolveTarget = (raw: string): string => (raw.includes('/') ? raw : raw.split('/').pop()!);
+const resolveTarget = (raw: string): string => raw;
 
 /**
  * The disclosure vocabulary, and it is deliberately narrow. `in the generator`
@@ -314,10 +311,9 @@ describe('evidence pointers in the generated surface', () => {
     );
   });
 
-  // RP-216: the resolver reads a citation's target by BASENAME, and the
-  // basename is all `target` ever carries — a directory prefix is dropped
-  // before resolution even runs. Two tracked files sharing one basename in
-  // different directories are the exact shape of the false green:
+  // RP-216: before the fix the resolver read a citation's target by BASENAME
+  // and dropped any directory prefix. Two tracked files sharing one basename
+  // in different directories are the exact shape of that false green:
   // `test/e2e/uninstall.test.ts` and `packages/cli/test/uninstall.test.ts`.
   describe('a citation naming a directory-qualified path (RP-216)', () => {
     const collisionName = 'reports nothing to do when there is no rig here';
@@ -408,12 +404,8 @@ describe('evidence pointers in the generated surface', () => {
     });
   });
 
-  // RP-216: the false green that survived the first qualified-path fix.
-  // `resolveTarget` keeps a directory-qualified target whole only when that
-  // EXACT path is tracked; a qualified path that names no real file still
-  // falls back to the bare basename, which then resolves through the
-  // basename map to a same-named file elsewhere — exactly the collapse this
-  // whole feature exists to stop. A citation naming
+  // RP-216: a qualified path that names no real file must not fall back to
+  // its basename and resolve through a same-named file elsewhere. A citation naming
   // `packages/cli/test/dogfood.test.ts` (no such file in this tree) must be
   // reported dead, never read live via `test/template/dogfood.test.ts`
   // because the two happen to share a basename.
