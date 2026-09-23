@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { inspect } from 'node:util';
@@ -9,6 +9,7 @@ import {
   OUTPUT_TAIL,
   commandFailureReport,
   npmDebugLogs,
+  packageManagerInvocation,
   redactUrlCredentials,
   run,
 } from '../e2e/run.js';
@@ -457,4 +458,91 @@ describe('run', () => {
     const keys = typeof cause === 'object' && cause !== null ? Object.keys(cause) : [];
     expect(keys.filter((key) => key !== 'code' && key !== 'signal')).toEqual([]);
   });
+});
+
+/**
+ * RP-212 (review round 3): moved here, unchanged, from
+ * test/template/package-manager-transport.test.ts. This case exercises
+ * `run`'s own timeout reporting, not package-manager transport — but that
+ * file's invariant (pinned in vitest-timeouts.test.ts) allows exactly one
+ * vitest budget of its own, the CLI-start case, so a case this slow to start
+ * had nowhere to carry a budget that actually covered it.
+ *
+ * A child given a `timeout` it overruns must be (a) actually killed — proven
+ * by pid, not by inference — (b) rejected with an error that says it timed
+ * out, and (c) rejected with that error carrying the output the child
+ * produced before it stalled. Node's own `execFile` timeout already kills the
+ * child and attaches its buffered output to the rejection; what it does not
+ * do is say "timed out" anywhere in the message `run` builds — today's
+ * wording only distinguishes "killed by signal" from "exit code", never a
+ * deadline.
+ */
+describe('run timeout handling', () => {
+  let work: string;
+
+  beforeEach(async () => {
+    work = await mkdtemp(path.join(tmpdir(), 'caf-run-timeout-'));
+  });
+
+  afterEach(async () => {
+    await removeFixture(work);
+  });
+
+  // Bounds the fake stalled child below so this case ends deterministically
+  // instead of riding vitest's file-wide testTimeout. Must clear the child's
+  // own spawn-to-write latency, not just the stall itself: measured across 35
+  // runs on a loaded Windows host, spawn→write (the FAKE_PNPM_STARTED line,
+  // then the pid file) took a median of 285 ms and a worst case of 5 314 ms,
+  // with zero losses even at 3 000 ms. 8 000 ms sits comfortably above that
+  // worst case.
+  const STALLED_CHILD_BOUND_MS = 8_000;
+
+  // The vitest case budget itself: spawn latency adds to the child bound
+  // above rather than replacing it, so the case must clear both.
+  const STALLED_CHILD_CASE_TIMEOUT_MS = 40_000;
+
+  it(
+    'kills a stalled child on timeout and reports that it timed out, with its output so far',
+    { timeout: STALLED_CHILD_CASE_TIMEOUT_MS },
+    async () => {
+      const cliDir = path.join(work, 'stalled pnpm');
+      await mkdir(cliDir);
+      const cli = path.join(cliDir, 'pnpm.cjs');
+      const pidFile = path.join(work, 'stalled-pnpm.pid');
+      await writeFile(
+        cli,
+        [
+          "process.stdout.write('FAKE_PNPM_STARTED\\n');",
+          "require('node:fs').writeFileSync(process.argv[2], String(process.pid));",
+          // The stall: far longer than any timeout this test passes, and far
+          // longer than the test's own budget, so a missing kill hangs the test
+          // rather than passing it by accident.
+          'setTimeout(() => {}, 10 * 60 * 1000);',
+        ].join('\n'),
+      );
+
+      const invocation = packageManagerInvocation(
+        'pnpm',
+        { ...process.env, npm_execpath: cli },
+        'win32',
+      );
+      expect(invocation).toEqual({ file: process.execPath, prefix: [cli] });
+
+      const failure = await run(invocation.file, [...invocation.prefix, pidFile], {
+        cwd: work,
+        timeout: STALLED_CHILD_BOUND_MS,
+      }).catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(Error);
+      const message = (failure as Error).message;
+      expect(message).toMatch(/timed out/i);
+      expect(message).toContain('FAKE_PNPM_STARTED');
+
+      const pid = Number((await readFile(pidFile, 'utf8')).trim());
+      expect(Number.isInteger(pid)).toBe(true);
+      // The child is actually gone, not merely reported as killed: signalling
+      // pid 0 throws ESRCH once nothing holds that pid any more.
+      expect(() => process.kill(pid, 0)).toThrow();
+    },
+  );
 });
