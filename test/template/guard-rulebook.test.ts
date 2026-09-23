@@ -570,6 +570,115 @@ describe('guard-rulebook: apply_patch does not lose the lexical path when a guar
   });
 });
 
+// RP-214. `edit-input.mjs`'s `patchFragments` only ever `flush()`es the
+// SECTION BEFORE a `*** Delete File:` or `*** Move to:` line — the removed
+// path itself never becomes a fragment, so guard-rulebook's fragment loop
+// never sees it and the rulebook path being removed is never judged. Two
+// shapes hide it: a standalone Delete File section (no fragment at all), and
+// an Update section carrying `*** Move to:` (a fragment naming only the
+// destination — `current.moveTo ?? current.sourcePath` at `edit-input.mjs`
+// discards the source once a destination exists).
+describe('guard-rulebook: apply_patch never hides a rulebook removal (RP-214)', () => {
+  beforeEach(() => {
+    execFileSync('git', ['init', '-q', root], { env: withoutGitLocation() });
+  });
+
+  const deletePatch = (rel: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    cwd: root,
+    tool_input: {
+      command: `*** Begin Patch\n*** Delete File: ${rel}\n*** End Patch\n`,
+    },
+  });
+
+  const updateMovePatch = (fromRel: string, toRel: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    cwd: root,
+    tool_input: {
+      command: `*** Begin Patch\n*** Update File: ${fromRel}\n*** Move to: ${toRel}\n@@\n+// moved\n*** End Patch\n`,
+    },
+  });
+
+  it.each(['.claude/hooks/guard-bash.mjs', '.claude/hooks/guard-rulebook.mjs', 'CLAUDE.md'])(
+    'a standalone Delete File of a rulebook path (%s) is refused while unattended, not hidden',
+    async (rel) => {
+      const target = path.join(root, ...rel.split('/'));
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, '// real file, deleted by the patch under test\n');
+      await armed(['src/']);
+      const result = await run(deletePatch(rel));
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain(rel);
+      expect(result.stderr).toContain('AR-51');
+    },
+  );
+
+  it('a Delete File of a rulebook path is not hidden by a later allowed Add File in the same patch', async () => {
+    const settingsPath = path.join(root, '.claude', 'settings.json');
+    await mkdir(path.dirname(settingsPath), { recursive: true });
+    await writeFile(settingsPath, '{}\n');
+    await armed(['src/']);
+    const result = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      cwd: root,
+      tool_input: {
+        command:
+          '*** Begin Patch\n*** Delete File: .claude/settings.json\n*** Add File: src/b.txt\n+hello\n*** End Patch\n',
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/settings.json');
+  });
+
+  it('an Update+Move of a rulebook path is refused by its SOURCE path, not only its destination', async () => {
+    const sourcePath = path.join(root, '.claude', 'hooks', 'guard-bash.mjs');
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    await writeFile(sourcePath, '// real hook file, moved out of the rulebook by the patch\n');
+    await armed(['src/']);
+    const result = await run(updateMovePatch('.claude/hooks/guard-bash.mjs', 'src/moved.mjs'));
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks/guard-bash.mjs');
+  });
+
+  it('control: a Delete File outside the rulebook stays allowed', async () => {
+    const target = path.join(root, 'src', 'a.txt');
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, 'ordinary file\n');
+    await armed(['src/']);
+    const result = await run(deletePatch('src/a.txt'));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('control: an Update+Move between two non-rulebook paths stays allowed', async () => {
+    const sourcePath = path.join(root, 'src', 'a.txt');
+    await mkdir(path.dirname(sourcePath), { recursive: true });
+    await writeFile(sourcePath, 'ordinary file\n');
+    await armed(['src/']);
+    const result = await run(updateMovePatch('src/a.txt', 'src/c.txt'));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('a Delete File of a rulebook path is allowed when the allow-list names that exact prefix', async () => {
+    const target = path.join(root, '.claude', 'hooks', 'guard-bash.mjs');
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, '// real hook file\n');
+    await armed(['.claude/hooks/']);
+    const result = await run(deletePatch('.claude/hooks/guard-bash.mjs'));
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('an attended session (no unattended flag) still allows a Delete File of a rulebook path', async () => {
+    const target = path.join(root, '.claude', 'hooks', 'guard-bash.mjs');
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, '// real hook file\n');
+    const result = await run(deletePatch('.claude/hooks/guard-bash.mjs'));
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
 describe('guard-rulebook: refusing to inspect is not allowing', () => {
   it('blocks a rulebook edit when the flag exists but cannot be read, and names the file', async () => {
     await armed([], '{ not json');
