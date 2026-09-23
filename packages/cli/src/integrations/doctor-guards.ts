@@ -63,12 +63,13 @@ const root=fs.mkdtempSync(path.join(os.tmpdir(),'rig-guard-fixtures-'));
 const parent=path.resolve(os.tmpdir()),resolved=path.resolve(root);
 if(!resolved.startsWith(parent+path.sep)||!path.basename(resolved).startsWith('rig-guard-fixtures-'))throw new Error('unsafe fixture root');
 let code=1;
+let flag,env;
 try {
  const home=path.join(root,'home'); fs.mkdirSync(path.join(root,'.claude','agents'),{recursive:true});
  fs.writeFileSync(path.join(root,'.claude','agents','code-reviewer.md'),'---\nmodel: gpt-5.6-sol\n---\n');
- const env={...process.env,HOME:home,APPDATA:home,CLAUDE_PROJECT_DIR:root};
+ env={...process.env,HOME:home,APPDATA:home,CLAUDE_PROJECT_DIR:root};
  const unattended=path.join(source,'.claude','scripts','unattended-flag.mjs');
- const flag=await import(url.pathToFileURL(unattended).href); flag.writeUnattended({item:'fixture',runDir:root,allow:[]},env);
+ flag=await import(url.pathToFileURL(unattended).href); flag.writeUnattended({item:'fixture',runDir:root,allow:[]},env);
  const run=(rel,input)=>cp.spawnSync(process.execPath,[path.join(source,...rel.split('/'))],{cwd:root,env,input:JSON.stringify(input),encoding:'utf8',timeout:5000,maxBuffer:8192}).status;
  const pre=(tool_input)=>({hook_event_name:'PreToolUse',tool_name:tool_input.command?'Bash':'Write',tool_input});
  const cases=[
@@ -84,7 +85,10 @@ try {
   ['.claude/hooks/guard-subagent-model.mjs',{hook_event_name:'PreToolUse',tool_name:'Agent',tool_input:{subagent_type:'code-reviewer'}},true]
  ];
  for(const [rel,input,allowed] of cases){const status=run(rel,input);if(allowed ? status!==0 : status!==2){code=1;break;} code=0;}
-} finally { fs.rmSync(resolved,{recursive:true,force:true}); }
+} finally {
+ try { if(flag&&typeof flag.clearUnattended==='function') flag.clearUnattended(env); } catch {}
+ fs.rmSync(resolved,{recursive:true,force:true});
+}
 process.exitCode=code;
 })().catch(()=>{process.exitCode=1;});
 `;
