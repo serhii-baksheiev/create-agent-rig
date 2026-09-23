@@ -339,3 +339,356 @@ describe('the guards block on a tool_input they cannot read', () => {
     expect(result.stderr).not.toMatch(/split/i);
   });
 });
+
+/**
+ * RP-244 — failure-diagnostician, measured on NTFS at 1221613.
+ *
+ * `normalisePath` converts every backslash to a forward slash and then runs
+ * `path.posix.normalize`, which collapses the leading `//` a Win32 verbatim
+ * (`\\?\`) or device-namespace (`\\.\`) prefix depends on: `\\?\C:\…`
+ * reaches every consuming guard as `/?/C:/…`, and `\\.\C:\…` as `/C:/…` —
+ * neither of which any rulebook prefix ever matches — while Node's own `fs`
+ * writes through every one of these spellings to the real file underneath.
+ * `guard-rulebook.test.ts` › "guard-rulebook: a Win32 verbatim path does not
+ * bypass the guard (RP-244)" is the consequence through the guard's own
+ * entry point, gated to the windows-e2e lane because the
+ * spelling only resolves to a real file on a Windows filesystem; this block
+ * is the platform-independent pin, because `normalisePath` is plain string
+ * manipulation with no filesystem dependency.
+ *
+ * Expected values are hand-written from the Win32 rule the fix applies —
+ * strip a verbatim/device prefix when it is followed by a drive letter, and
+ * map `\\?\UNC\server\share\…` to `//server/share/…` — never derived by
+ * calling `editFragments` a second time on the plain spelling and comparing
+ * the two outputs (`.claude/rules/invariants.md`, the independent-oracle
+ * invariant: a test must not derive its expected result from the same
+ * production mechanism it checks).
+ *
+ * RP-244 round 2 — security-scanner HOLD on PR #302, measured on NTFS at
+ * 1221613's round-1 fix. Four more blockers, all still inside `normalisePath`
+ * except blocker 1 (`guard-rulebook`'s own inability to judge a `//`-prefixed
+ * path, pinned in `guard-rulebook.test.ts` instead): a plain (non-verbatim)
+ * UNC path had the identical bypass "pre-existing on master" (blocker 1); a
+ * doubled separator after the `?`/`.` was not stripped because the regex
+ * required exactly one (blocker 2); a verbatim/device path with no drive
+ * letter and no `UNC` token — `\\?\Volume{GUID}\…` — fell through to plain
+ * `path.posix.normalize` and lost its leading `//` the same way the round-1
+ * bug did (blocker 3); and the UNC branch normalised its remainder as
+ * RELATIVE rather than ABSOLUTE, so a crafted run of `../` segments was not
+ * clamped at the root and instead did unbounded work, and a killed hook is
+ * an ALLOW (blocker 4). The fix: any
+ * input beginning with two separators that is not a recognised
+ * verbatim/device DRIVE form keeps a leading `//` and has its remainder
+ * normalised as ABSOLUTE (`'/' + path.posix.normalize('/' + rest)`) rather
+ * than relative, which is what clamps a leading `..` run at the root instead
+ * of carrying it through.
+ */
+describe('editFragments: normalisePath resolves a Win32 verbatim/device path the way the OS does (RP-244)', () => {
+  const writePayload = (filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Write',
+    tool_input: { file_path: filePath, content: 'x' },
+  });
+
+  const filePathOf = async (filePath: string) => {
+    const { editFragments } = await load();
+    const [fragment] = editFragments(writePayload(filePath));
+    return fragment?.filePath;
+  };
+
+  it.each([
+    [
+      'verbatim, uppercase drive, backslash form',
+      String.raw`\\?\C:\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'verbatim, forward-slash form',
+      '//?/C:/Users/x/rig/.claude/settings.json',
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'verbatim, lowercase drive letter — the drive letter case is preserved',
+      String.raw`\\?\c:\Users\x\rig\.claude\settings.json`,
+      'c:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'device namespace, backslash form',
+      String.raw`\\.\C:\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'device namespace, forward-slash form',
+      '//./C:/Users/x/rig/.claude/settings.json',
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'verbatim, an NTFS ::$INDEX_ALLOCATION stream named on the directory component',
+      String.raw`\\?\C:\Users\x\rig\.claude::$INDEX_ALLOCATION\settings.json`,
+      'C:/Users/x/rig/.claude::$INDEX_ALLOCATION/settings.json',
+    ],
+    [
+      // RP-244 round 2, blocker 2: the strip regex required EXACTLY one
+      // separator after the `?`/`.`, so a doubled separator (two backslashes
+      // here, where the ordinary form has one) left the whole `\\?\\C:` prefix
+      // unstripped — `/?/C:/…`, matching no rulebook prefix. The fix accepts
+      // one-or-more separators, so this collapses to the same plain spelling
+      // as the singly-separated form above.
+      'verbatim, doubled separator after the `?` (not exactly one)',
+      String.raw`\\?\\C:\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+  ])('%s resolves to the plain C:/… spelling', async (_label, input, expected) => {
+    expect(await filePathOf(input)).toBe(expected);
+  });
+
+  it.each([
+    ['backslash form', String.raw`\\?\UNC\localhost\c$\Users\x\rig\.claude\settings.json`],
+    ['forward-slash form', '//?/UNC/localhost/c$/Users/x/rig/.claude/settings.json'],
+    [
+      'device-namespace form (\\\\.\\UNC\\…, not \\\\?\\UNC\\…)',
+      String.raw`\\.\UNC\localhost\c$\Users\x\rig\.claude\settings.json`,
+    ],
+    ['lowercase "unc"', String.raw`\\?\unc\localhost\c$\Users\x\rig\.claude\settings.json`],
+  ])(
+    'a verbatim UNC path, %s, resolves to //localhost/c$/Users/x/rig/.claude/settings.json',
+    async (_label, input) => {
+      expect(await filePathOf(input)).toBe('//localhost/c$/Users/x/rig/.claude/settings.json');
+    },
+  );
+
+  it(// RP-244 round 2, blocker 3: a verbatim/device path with no drive letter
+  // and no `UNC` token (an NTFS volume GUID path, `\\?\Volume{…}\…`, or a
+  // `\\?\GLOBALROOT\…`-style device path) matched neither the UNC regex nor
+  // the drive regex, so it fell all the way through to
+  // `path.posix.normalize`, which swallowed the leading `//` as it does for
+  // any other doubled slash — `/?/Volume{…}/…`. The fix keeps a leading `//`
+  // for anything that starts with two separators and is not a recognised
+  // verbatim/device DRIVE form, so this stays `//`-prefixed instead.
+  'a verbatim device path with no drive letter (\\\\?\\Volume{GUID}\\…) keeps a leading // rather than losing it to POSIX normalisation', async () => {
+    expect(
+      await filePathOf(
+        String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\a\.claude\settings.json`,
+      ),
+    ).toBe('//?/Volume{12345678-1234-1234-1234-123456789abc}/a/.claude/settings.json');
+  });
+
+  it(// RP-244 round 2, blocker 4: the UNC branch normalised its remainder as
+  // RELATIVE, so a run of leading `../` segments was carried through
+  // in full instead of clamping at the root the way an ABSOLUTE
+  // normalisation does — unbounded work on the unfixed implementation for
+  // 200,000 segments; the fixed, absolute form returns quickly. A killed
+  // hook is an ALLOW (`.claude/rules/invariants.md`, "fail-open guards"), so
+  // this is itself the vulnerability, not just a performance concern. No
+  // wall-clock assertion here — RP-218 already showed those are
+  // load-sensitive, and measuring this one directly showed a second reason:
+  // `normalisePath` runs synchronously with no `await` inside it, so it
+  // blocks the event loop for the whole unfixed call, and vitest's
+  // `testTimeout` timer — itself just a `setTimeout` racing the test — never
+  // gets a turn to fire before the call returns. The unfixed implementation
+  // is red on the equality assertion below instead, only after that full
+  // unbounded pass; the fixed one returns quickly and is red on nothing.
+  // `testTimeout` (15s here, `vitest.config.ts`) still matters as the
+  // ceiling on the file staying runnable at all — a still-unbounded rewrite
+  // that grows past it hangs the suite rather than reporting a clean
+  // failure — it is just not what turns this particular case red today.
+  'a crafted UNC path with 200,000 ../ segments clamps at the root instead of growing without bound', async () => {
+    // Not String.raw: a raw template literal cannot end in a single
+    // backslash immediately before the closing backtick (it would escape
+    // the backtick itself), so the verbatim UNC prefix `\\?\UNC\` is built
+    // with ordinary escapes instead.
+    const filePath = '\\\\?\\UNC\\' + '../'.repeat(200_000) + 'x';
+    expect(await filePathOf(filePath)).toBe('//x');
+  });
+
+  describe('ordinary spellings are unchanged from today — pinned as hand-written literals', () => {
+    it.each([
+      ['a POSIX absolute path', '/usr/local/bin/foo', '/usr/local/bin/foo'],
+      ['an ordinary relative path', 'packages/core/src/x.ts', 'packages/core/src/x.ts'],
+      [
+        'an ordinary C:\\… path',
+        String.raw`C:\Users\x\rig\.claude\settings.json`,
+        'C:/Users/x/rig/.claude/settings.json',
+      ],
+    ])('%s: %s stays %s', async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    });
+  });
+
+  it(// RP-244 round 2, blocker 1: a genuine (non-verbatim) UNC path used to
+  // normalise to a single-slash `/server/share/…` — a spelling
+  // `guard-rulebook`'s `relativeTo` can no more judge against a `C:/…`
+  // repository root than the `//`-prefixed verbatim forms can, so it carried
+  // the exact same bypass "pre-existing on master" per the diagnosis. It is
+  // deliberately moved out of "unchanged from today" above and changed here
+  // to the same `//`-prefixed, undecidable-by-root spelling every other
+  // device/UNC form gets, so `guard-rulebook`'s new refusal (RP-244 round 2)
+  // covers it identically.
+  'a genuine (non-verbatim) UNC path keeps a // prefix instead of losing it to POSIX normalisation', async () => {
+    expect(await filePathOf(String.raw`\\server\share\rig\.claude\settings.json`)).toBe(
+      '//server/share/rig/.claude/settings.json',
+    );
+  });
+
+  /**
+   * RP-244 round 3 — security-scanner findings on PR #302, measured on NTFS
+   * at this branch's head `b0114ac`. Both live in the DRIVE branch (once a
+   * `\\?\`/`\\.\` marker is stripped) and in the plain fallback at the
+   * bottom of `normalisePath`: neither clamps `C:` and its remainder at the
+   * drive root the way the UNC/device branch above does (round 2, blocker
+   * 4) — each runs `path.posix.normalize` on the drive letter and the
+   * remainder TOGETHER, relatively, so a `..` run walks straight past the
+   * drive letter instead of stopping there.
+   *
+   * Finding A — a wrong answer, not only an unbounded one: Win32 clamps
+   * `C:\..\Users\x\.claude\rules\autonomy.md` at the drive root and writes
+   * the real file there; `normalisePath` today returns the relative
+   * `Users/x/.claude/rules/autonomy.md`, which `guard-rulebook`'s
+   * `relativeTo` can no more strip a repository root from than the
+   * `//`-prefixed bypasses above, so the armed guard exits 0 on a live
+   * rulebook edit.
+   *
+   * Finding B — the same shape is also quadratic: `\\?\C:\` or `C:\`
+   * followed by `'../'.repeat(200_000)` does unbounded relative work here,
+   * where the UNC branch a few tests above (fixed in round 2) is linear
+   * because it normalises absolutely. A killed hook is an ALLOW
+   * (`.claude/rules/invariants.md`, "fail-open guards"), so this is the
+   * vulnerability, not a performance footnote — same reasoning as blocker 4
+   * above, and the same reason there is no wall-clock assertion here: the
+   * call is synchronous, so an unfixed run is red on the equality assertion
+   * below rather than on a timeout.
+   *
+   * Planned fix: clamp at the drive root the way the UNC branch already
+   * does — `drive + path.posix.normalize('/' + rest)`.
+   */
+  it.each([
+    [
+      'a `..` immediately after the drive root, backslash form',
+      String.raw`C:\..\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'a `..` run immediately after the drive root, forward-slash form',
+      'C:/../../../Users/x/rig/.claude/settings.json',
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'a `..` immediately after the drive root, verbatim-prefixed',
+      String.raw`\\?\C:\..\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
+    [
+      'a `..` immediately after the drive root, lowercase drive letter — the drive letter case is preserved',
+      String.raw`c:\..\a`,
+      'c:/a',
+    ],
+  ])(
+    '%s clamps at the drive root instead of escaping it (RP-244 round 3)',
+    async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    },
+  );
+
+  describe('ordinary spellings under a drive letter are unchanged from today — pinned as hand-written literals (RP-244 round 3)', () => {
+    it.each([
+      [
+        'a `..` that cancels an intermediate segment, not the drive root',
+        String.raw`C:\a\.\b\..\c`,
+        'C:/a/c',
+      ],
+      [
+        // Pinned exactly as `normalisePath` yields it today — not a claim
+        // that the shape is meaningful, only that the fix for findings A/B
+        // above must not change it.
+        'a drive-relative spelling with no separator after the colon',
+        String.raw`C:foo\bar`,
+        'C:foo/bar',
+      ],
+    ])('%s: %s stays %s', async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    });
+  });
+
+  it(// RP-244 round 3, finding B: the verbatim-prefixed DRIVE branch
+  // normalises its remainder RELATIVE to the drive letter instead of
+  // clamping at it, so a run of leading `../` segments is carried through
+  // in full instead of stopping at the root — unbounded relative work on
+  // the unfixed implementation for 200,000 segments; the fixed, clamped
+  // form returns quickly. No wall-clock assertion here, for the same reason
+  // as the UNC case above: `normalisePath` is synchronous, so an unfixed
+  // run is red on the equality assertion below, only after the full
+  // unbounded pass, rather than on a timeout.
+  'a crafted verbatim-prefixed drive path with 200,000 ../ segments clamps at the drive root instead of growing without bound (RP-244 round 3)', async () => {
+    // Not String.raw: a raw template literal cannot end in a single
+    // backslash immediately before the closing backtick, so the verbatim
+    // drive prefix `\\?\C:\` is built with ordinary escapes instead.
+    const filePath = '\\\\?\\C:\\' + '../'.repeat(200_000) + 'x';
+    expect(await filePathOf(filePath)).toBe('C:/x');
+  });
+
+  it(// RP-244 round 3, finding B: the same unclamped-relative defect, on the
+  // plain (non-verbatim) fallback branch rather than the verbatim DRIVE
+  // branch — the two are separate code paths in `normalisePath` and both
+  // need their own pin.
+  'a crafted plain drive path with 200,000 ../ segments clamps at the drive root instead of growing without bound (RP-244 round 3)', async () => {
+    const filePath = 'C:\\' + '../'.repeat(200_000) + 'x';
+    expect(await filePathOf(filePath)).toBe('C:/x');
+  });
+
+  /**
+   * RP-244 round 4 — security-scanner finding on PR #302, measured against
+   * round 3's fix at this branch's head `9bcb362`. Round 3's `clampAtDriveRoot`
+   * only recognises the DRIVE-ROOT spelling — a separator immediately after
+   * the colon (`DRIVE_ROOT_PREFIX`, `/^[A-Za-z]:\//`) — and leaves every
+   * DRIVE-RELATIVE spelling (no separator right after the colon, e.g.
+   * `C:foo\bar` or `C:..\..\a`) to plain `path.posix.normalize` run over the
+   * drive marker and the remainder TOGETHER. `path.posix.normalize` treats
+   * the segment `C:..` as an ordinary filename — it is not the literal
+   * string `..` — so a SECOND `..` segment cancels it exactly as it would
+   * cancel any other segment, and the drive marker disappears from the
+   * result entirely: `C:../../a/b` normalises to the bare, driveless `a/b`.
+   * That is a worse bypass than round 3's finding A, not merely an
+   * unclamped one: a driveless relative path carries no signal downstream
+   * that it ever named a drive-relative spelling at all, so
+   * `guard-rulebook`'s root comparison has nothing left to refuse as
+   * unjudgeable — it just judges the wrong (bare) path and exits 0.
+   * `guard-rulebook.test.ts` (absent in a generated rig) › "blocks a Write
+   * to a drive-relative `..\..` escape of .claude/settings.json, run with
+   * the checkout root as cwd (RP-244 round 4)" is the consequence through
+   * the guard's own entry point, gated to windows-e2e because it depends on
+   * a real Win32 drive-relative resolution; this block is the
+   * platform-independent pin on `normalisePath` itself.
+   *
+   * Expected values are hand-written from the planned fix, not derived by
+   * calling `editFragments` a second time and comparing (the independent-
+   * oracle invariant, `.claude/rules/invariants.md`): split a
+   * drive-RELATIVE prefix (`/^[A-Za-z]:(?![\\/])/`) off before normalising,
+   * normalise the REMAINDER alone, RELATIVELY — never absolutely, because a
+   * drive-relative spelling has no root of its own to clamp at — and
+   * re-attach the drive marker afterward, so no `..` in the remainder can
+   * ever reach back far enough to cancel the marker itself.
+   */
+  describe('a drive-relative spelling never lets a `..` cancel the drive marker itself (RP-244 round 4)', () => {
+    it.each([
+      [
+        'a `..` that cancels the whole remainder, leaving nothing after the drive marker',
+        'C:foo/..',
+        // `'C:' + path.posix.normalize('foo/..')` — the remainder alone
+        // normalises to `.`, so the drive marker is followed by a bare `.`
+        // rather than nothing.
+        'C:.',
+      ],
+      [
+        "two leading `..` segments — today's bug: the second `..` cancels the " +
+          '`C:..` segment itself instead of walking past it, dropping the drive ' +
+          'marker from the result entirely',
+        String.raw`C:..\..\a\b`,
+        'C:../../a/b',
+      ],
+      ['the same escape, verbatim-prefixed', String.raw`\\?\C:..\..\a`, 'C:../../a'],
+      ['lowercase drive letter — the drive letter case is preserved', String.raw`c:..\x`, 'c:../x'],
+    ])('%s: %s resolves to %s', async (_label, input, expected) => {
+      expect(await filePathOf(input)).toBe(expected);
+    });
+  });
+});
