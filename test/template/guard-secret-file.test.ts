@@ -730,6 +730,34 @@ describe('guard-secret-file: apply_patch removal shapes stay unchanged (RP-214 r
   });
 });
 
+// RP-244 regression pin. `isCredentialPath` (`.claude/scripts/lib/secrets.mjs`)
+// judges the BASENAME of the path `editFragments` reports, split on `/`
+// after folding backslashes to slashes — whatever prefix precedes that
+// basename. A Win32 verbatim (`\\?\C:\…`) or device-namespace (`\\.\C:\…`)
+// spelling still carries the real basename intact even though
+// `normalisePath` (`edit-input.mjs`) mangles the prefix ahead of it
+// (`/?/C:/…`, `/C:/…`) — unlike `guard-rulebook`, which judges the whole
+// path against a rulebook PREFIX and is fooled by exactly that mangling.
+// This guard must stay unaffected once `edit-input.mjs` is fixed, and this
+// pin runs on every platform because it is a string match against a literal
+// payload, not a filesystem resolution.
+describe('guard-secret-file: a Win32 verbatim spelling of a credential file is still blocked (RP-244 regression pin)', () => {
+  it.each([
+    [String.raw`\\?\C:\Users\x\rig\jira.env`, 'verbatim, backslash form'],
+    ['//?/C:/Users/x/rig/jira.env', 'verbatim, forward-slash form'],
+    [String.raw`\\.\C:\Users\x\rig\jira.env`, 'device namespace, backslash form'],
+    // RP-244 round 2: the basename this guard judges survives the round-2
+    // bugs too — a doubled separator after the `?`, and any UNC spelling —
+    // for the same reason it survived round 1's: `isCredentialPath` only
+    // ever looks at the last path segment.
+    [String.raw`\\?\\C:\Users\x\rig\jira.env`, 'verbatim, doubled separator after the ?'],
+    [String.raw`\\?\UNC\localhost\c$\Users\x\rig\jira.env`, 'verbatim UNC admin share'],
+    [String.raw`\\server\share\rig\jira.env`, 'a genuine (non-verbatim) UNC path'],
+  ])('blocks a Write to %s (%s)', async (filePath) => {
+    await deny(write(filePath, 'anything at all\n'), filePath);
+  });
+});
+
 describe('guard-secret-file: a checkout is judged by its repo-relative path', () => {
   // A project living under a directory called `secrets` is an ordinary thing —
   // `~/secrets/work/app`. If the guard judged the ABSOLUTE path it would refuse

@@ -548,9 +548,88 @@ function inspectionRefusal(current, reason) {
   return { fragment: current.additions.join('\n'), inspectionRefusal: reason };
 }
 
+// RP-244: a Win32 verbatim (`\\?\`) or device-namespace (`\\.\`) prefix, in
+// any slash mix, names the plain drive (or UNC) path underneath it. The
+// backslash-to-slash conversion below would collapse the leading `//` these
+// prefixes depend on, so they are stripped first. Anchored at the very start:
+// a prefix check, not a scan, which keeps this inside the fail-open
+// bounded-work rule.
+//
+// RP-244 round 2: `[\\/]+` (not `[\\/]`) after the `?`/`.` marker, so a
+// doubled separator still strips. A DRIVE match (`\\?\C:\…`) is the only case
+// that yields a plain, prefix-free spelling — every other two-separator input
+// (verbatim UNC, plain UNC, a device path with no drive letter such as
+// `\\?\Volume{GUID}\…`) is judged as UNDECIDABLE by a repository root spelled
+// as a plain path, so it keeps a leading `//` instead, with its remainder
+// normalised as ABSOLUTE (clamped at root) rather than relative — a relative
+// normalisation let a crafted run of `../` segments do unbounded work instead
+// of collapsing at the root.
+const WIN32_VERBATIM_UNC_PREFIX = /^[\\/]{2}[?.][\\/]+UNC(?:[\\/]+|$)/i;
+const WIN32_VERBATIM_DRIVE_PREFIX = /^[\\/]{2}[?.][\\/]+([A-Za-z]:)/;
+// RP-244 round 3: a drive letter followed immediately by a separator — the
+// drive ROOT, as opposed to the drive-RELATIVE `C:foo\bar` spelling below,
+// which carries no separator there. `slashed` has already had every
+// backslash converted to `/` by the time this is applied, so only the
+// forward-slash form is checked.
+const DRIVE_ROOT_PREFIX = /^[A-Za-z]:\//;
+// RP-244 round 4: a drive letter with NO separator immediately following —
+// the DRIVE-RELATIVE spelling, which Win32 resolves against the current
+// directory of that drive rather than the drive root, so (unlike
+// DRIVE_ROOT_PREFIX above) it has no root of its own to clamp at. Mutually
+// exclusive with DRIVE_ROOT_PREFIX by construction: one requires a `/`
+// immediately after the colon, this one requires there is none (including
+// end of string, for a bare `C:`).
+const DRIVE_RELATIVE_PREFIX = /^[A-Za-z]:(?!\/)/;
+
+// RP-244 round 3: the DRIVE branch below and the plain fallback both used to
+// run `path.posix.normalize` over the drive letter and its remainder
+// TOGETHER, relatively — so a leading `..` walked straight past the drive
+// letter (`C:/../Users/…` normalised to the relative `Users/…`, not clamped
+// at `C:/`) instead of stopping at the root the way Win32 does, and a long
+// run of `../` segments did unbounded relative work instead of the linear
+// work an absolute normalisation does. Splitting the drive off first and
+// normalising only the remainder, ABSOLUTE, fixes both: `path.posix.normalize`
+// clamps an absolute `..` run at `/` instead of carrying it past the drive.
+//
+// RP-244 round 4: the drive-RELATIVE case (no separator after the colon) got
+// the same together-normalisation treatment via the plain `else` branch below
+// — `path.posix.normalize` reads a leading `C:..` segment as an ordinary
+// filename, not the literal `..`, so a second `..` cancelled it and the
+// drive marker vanished from the result (`C:../../a/b` → `a/b`). Splitting
+// the drive off here too and normalising the remainder alone — RELATIVELY,
+// never absolutely, since a drive-relative spelling has no root to clamp
+// at — keeps a `..` in the remainder from ever reaching back far enough to
+// cancel the marker itself; an empty remainder (a bare `C:`) is left as-is
+// rather than turned into `C:.`, unchanged from before this round.
+function clampAtDriveRoot(slashed) {
+  if (DRIVE_ROOT_PREFIX.test(slashed)) {
+    return slashed.slice(0, 2) + path.posix.normalize(slashed.slice(2));
+  }
+  if (DRIVE_RELATIVE_PREFIX.test(slashed)) {
+    const remainder = slashed.slice(2);
+    return remainder === '' ? slashed : slashed.slice(0, 2) + path.posix.normalize(remainder);
+  }
+  return path.posix.normalize(slashed);
+}
+
 function normalisePath(value) {
-  const slashed = String(value ?? '').trim().replaceAll('\\', '/');
-  return slashed === '' ? '' : path.posix.normalize(slashed);
+  const raw = String(value ?? '').trim();
+  if (raw === '') return '';
+  const driveMatch = WIN32_VERBATIM_DRIVE_PREFIX.exec(raw);
+  if (driveMatch) {
+    const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
+    return slashed === '' ? '' : clampAtDriveRoot(slashed);
+  }
+  const uncMatch = WIN32_VERBATIM_UNC_PREFIX.exec(raw);
+  if (uncMatch || /^[\\/]{2}/.test(raw)) {
+    const rest = (uncMatch ? raw.slice(uncMatch[0].length) : raw.slice(2)).replaceAll('\\', '/');
+    // Absolute normalisation, not relative: clamps a leading `../` run at the
+    // root instead of carrying it through — the outer `'/' +` restores the
+    // `//` marker that `path.posix.normalize` collapses to one.
+    return '/' + path.posix.normalize('/' + rest);
+  }
+  const slashed = raw.replaceAll('\\', '/');
+  return slashed === '' ? '' : clampAtDriveRoot(slashed);
 }
 
 function canonicalPatchPath(value) {
