@@ -570,6 +570,39 @@ describe('guard-rulebook: apply_patch does not lose the lexical path when a guar
   });
 });
 
+/**
+ * RP-215 — the realpath rescue in `canonicalPath` only re-cases a spelling
+ * through the nearest EXISTING ancestor. Below the guard entirely, if
+ * `.codex/` or `.agents/` have never been created in this checkout, a
+ * miscased Write (`.Codex/config.toml`, `.AGENTS/x.md`) is judged purely by
+ * `isRulebookPath`, with no on-disk rescue to fall back on — reproducible on
+ * every platform, not just a case-insensitive one. `root` is a fresh
+ * `mkdtemp()` for every case in this file, so `.codex/` and `.agents/` are
+ * absent from it by construction; the explicit checks below only make that
+ * precondition visible rather than assumed.
+ */
+describe('guard-rulebook: blocks a miscased rulebook path even when the guarded directory does not exist on disk yet (RP-215)', () => {
+  it('blocks a Write to .Codex/config.toml when .codex/ is absent from the checkout', async () => {
+    expect(existsSync(path.join(root, '.codex'))).toBe(false);
+    await armed(['src/']);
+    const result = await run(write(`${root}/.Codex/config.toml`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Write to .AGENTS/x.md when .agents/ is absent from the checkout', async () => {
+    expect(existsSync(path.join(root, '.agents'))).toBe(false);
+    await armed(['src/']);
+    const result = await run(write(`${root}/.AGENTS/x.md`));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('still allows an ordinary path under the armed allow-list', async () => {
+    await armed(['src/']);
+    const result = await run(write(`${root}/src/a.txt`));
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
 describe('guard-rulebook: refusing to inspect is not allowing', () => {
   it('blocks a rulebook edit when the flag exists but cannot be read, and names the file', async () => {
     await armed([], '{ not json');

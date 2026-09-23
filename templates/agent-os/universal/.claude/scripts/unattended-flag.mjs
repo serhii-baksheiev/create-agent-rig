@@ -104,9 +104,23 @@ export const RULEBOOK_PREFIXES = Object.freeze([
   '.rig/revalidation.json',
 ]);
 
-/** Is this repo-relative path part of the rulebook? */
-export const isRulebookPath = (rel) =>
-  RULEBOOK_PREFIXES.some((prefix) => rel === prefix || rel.startsWith(prefix));
+// Case-folded once at module load, for the same comparison every caller shares
+// — never re-derived per call, and never used anywhere but inside
+// `isRulebookPath` below.
+const FOLDED_RULEBOOK_PREFIXES = RULEBOOK_PREFIXES.map((prefix) => prefix.toLowerCase());
+
+/**
+ * Is this repo-relative path part of the rulebook? Case-insensitive: NTFS and
+ * default APFS resolve a miscased spelling (`.Codex/config.toml`) to the same
+ * file as the canonical one, and `guard-rulebook`'s realpath rescue only
+ * re-cases a spelling through the nearest EXISTING ancestor — so a directory
+ * this checkout has never created yet (or any path on a case-sensitive
+ * filesystem) reaches this comparison exactly as spelled by the caller.
+ */
+export const isRulebookPath = (rel) => {
+  const folded = rel.toLowerCase();
+  return FOLDED_RULEBOOK_PREFIXES.some((prefix) => folded === prefix || folded.startsWith(prefix));
+};
 
 /**
  * Does this allow entry widen the rulebook? It is unsafe when it is an

@@ -311,6 +311,103 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     expect(isWidening('.rig/claims/')).toBe(false);
   });
 
+  /**
+   * RP-215 — `isRulebookPath` compared with a case-sensitive `startsWith`.
+   * `guard-rulebook`'s realpath rescue only re-cases a spelling through the
+   * nearest EXISTING ancestor, so a checkout where `.codex/` or `.agents/`
+   * has never been created yet — or any checkout on a case-sensitive
+   * filesystem — hands a miscased spelling straight to this comparison. On a
+   * case-insensitive filesystem (NTFS, default APFS) `.Codex/config.toml` and
+   * `.codex/config.toml` are the SAME file on disk, so a guard that judges
+   * the two spellings differently is judging nothing at all.
+   *
+   * Independent oracle: every case-variant spelling below is a literal
+   * string written in this test, not RULEBOOK_PREFIXES mapped through
+   * `toUpperCase`/`toLowerCase` — a test that derived its expectation from
+   * the same case-folding the fix would add could not detect an
+   * under-folding in that fix (`invariants.md`, "the independent-oracle
+   * invariant").
+   */
+  describe('isRulebookPath: case-insensitive, so a miscased spelling is judged the same as the canonical one (RP-215)', () => {
+    it.each([
+      ['.Codex/config.toml', '.codex/'],
+      ['.AGENTS/x.md', '.agents/'],
+      ['Claude.md', 'CLAUDE.md'],
+      ['agents.MD', 'AGENTS.md'],
+      ['.CLAUDE/rules/x.md', '.claude/rules/'],
+      ['.claude/HOOKS/x.mjs', '.claude/hooks/'],
+      ['.Rig/Revalidation.json', '.rig/revalidation.json'],
+      ['.claude/Queue.board', '.claude/queue.board'],
+    ])('is true for %s — a case variant of the %s entry', async (rel) => {
+      const { isRulebookPath } = (await load()) as unknown as {
+        isRulebookPath: (rel: string) => boolean;
+      };
+      expect(isRulebookPath(rel)).toBe(true);
+    });
+
+    it.each([
+      'src/a.txt',
+      // NOT `CLAUDE.md.bak` on its own: `CLAUDE.md` is an exact entry compared
+      // with `startsWith`, so `'CLAUDE.md.bak'.startsWith('CLAUDE.md')` is
+      // already `true` on master today — asserting `false` there would fight
+      // current, unrelated semantics rather than this fix. This path stays
+      // false for a different reason: the leading `docs/` segment means the
+      // WHOLE relative path never starts with the prefix, case-folded or not.
+      'docs/claude.md.bak',
+      // Guards against a looser fix that treats the prefix as a substring
+      // anywhere in the path rather than a true prefix of the whole string.
+      'srcx/.codex',
+      'x/.codex/config.toml',
+    ])('is false for the ordinary path %s', async (rel) => {
+      const { isRulebookPath } = (await load()) as unknown as {
+        isRulebookPath: (rel: string) => boolean;
+      };
+      expect(isRulebookPath(rel)).toBe(false);
+    });
+  });
+
+  /**
+   * RP-215 — the fix has to land at the single shared comparison point
+   * without changing `isWidening`'s answers. Pinned literally, entry by
+   * entry, as measured on master (8876147) before this fix — not derived by
+   * mapping RULEBOOK_PREFIXES through a predicate, which would just be this
+   * fix's own logic checking itself.
+   */
+  it("isWidening's answers are unchanged for every current RULEBOOK_PREFIXES entry, and for src/ (RP-215 must not touch this)", async () => {
+    const { RULEBOOK_PREFIXES, isWidening } = (await load()) as unknown as {
+      RULEBOOK_PREFIXES: readonly string[];
+      isWidening: (entry: unknown) => boolean;
+    };
+    const pinnedTodayOnMaster: ReadonlyArray<[string, boolean]> = [
+      ['.agents/', true],
+      ['.claude/.rig-manifest.json', false],
+      ['.claude/doctor-exemptions.json', false],
+      ['.claude/agents/', false],
+      ['.claude/hooks/', false],
+      ['.claude/settings.json', false],
+      ['.claude/queue.json', false],
+      ['.claude/queue.board', false],
+      ['.claude/scripts/', true],
+      ['.claude/rules/', false],
+      ['.claude/skills/', false],
+      ['.codex/', true],
+      ['AGENTS.md', false],
+      ['CLAUDE.md', false],
+      ['.rig/revalidation.json', false],
+    ];
+    // Exhaustiveness: this pin is only meaningful while it still covers every
+    // entry the module declares today — a future entry added here with no
+    // matching row below must fail loudly rather than pass unchecked.
+    expect(
+      [...RULEBOOK_PREFIXES].sort(),
+      'RULEBOOK_PREFIXES has an entry this pin does not cover',
+    ).toEqual(pinnedTodayOnMaster.map(([prefix]) => prefix).sort());
+    for (const [prefix, expected] of pinnedTodayOnMaster) {
+      expect(isWidening(prefix), prefix).toBe(expected);
+    }
+    expect(isWidening('src/')).toBe(false);
+  });
+
   it('writeUnattended refuses .rig/ as a widening allow entry but accepts .rig/claims/, which a SELECT must keep writable', async () => {
     const { writeUnattended, readUnattended, clearUnattended } = await load();
     expect(() =>
