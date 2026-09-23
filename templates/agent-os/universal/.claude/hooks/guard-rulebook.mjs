@@ -73,7 +73,12 @@
 //     an empty payload object" and › "allows non-JSON stdin" — and fail-closed
 //     on a flag it cannot read — › "blocks a rulebook edit when the flag exists
 //     but cannot be read, and names the file": the guard targets drift, not an
-//     adversary.
+//     adversary;
+//   - a `//`-prefixed normalised path (a UNC admin share or a device path
+//     with no drive letter, `\\?\Volume{GUID}\…`) cannot be matched against a
+//     repository root spelled as a plain path, so it is refused rather than
+//     resolved while armed — › "guard-rulebook: an unjudgeable UNC/device-
+//     namespace path is refused, not silently allowed (RP-244 round 2)".
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
@@ -186,21 +191,41 @@ function main() {
     );
     return 2;
   }
+  // RP-244 round 2: `normalisePath` (`edit-input.mjs`) maps a UNC or other
+  // device-namespace spelling to a `//`-prefixed result — `relativeTo` can
+  // only strip a path that starts with the literal repository root, and a
+  // `//`-prefixed path never does, on any platform or root. That is not
+  // "outside the rulebook": it is undecidable, and undecidable is refused,
+  // not allowed, while armed (`.claude/rules/invariants.md`, "The remedy
+  // belongs to the refusal").
+  const unjudgeable = fragments.find(
+    ({ filePath }) => typeof filePath === 'string' && filePath.startsWith('//'),
+  );
+
   const paths = [];
   for (const { filePath, rawFilePath } of fragments) {
     if (typeof filePath !== 'string' || filePath === '') continue;
     const rel = protectedRelative(comparisonRoots, filePath, rawFilePath);
     if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
   }
-  if (paths.length === 0) return 0; // nothing under the rulebook: never judged
+  if (paths.length === 0 && !unjudgeable) return 0; // nothing under the rulebook: never judged
 
   const mode = readUnattended(unattendedEnv);
   if (!mode.on) return 0; // attended session
 
   if (mode.unreadable) {
     process.stderr.write(
-      `BLOCKED — "${paths[0]}" is part of the rulebook and the unattended flag at ${mode.path} is unreadable (${mode.why}). ` +
+      `BLOCKED — "${paths[0] ?? unjudgeable.filePath}" is part of the rulebook and the unattended flag at ${mode.path} is unreadable (${mode.why}). ` +
         'Refusing to inspect is not allowing: fix it, or clear this checkout with `node .claude/scripts/unattended-flag.mjs off --root "$PWD"`, then retry.\n',
+    );
+    return 2;
+  }
+
+  if (unjudgeable) {
+    process.stderr.write(
+      `BLOCKED — "${unjudgeable.filePath}" could not be resolved against the repository root: ` +
+        'a UNC or device-namespace path is refused rather than judged while unattended. ' +
+        'Write through the repository path instead.\n',
     );
     return 2;
   }

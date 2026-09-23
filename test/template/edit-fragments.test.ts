@@ -351,7 +351,7 @@ describe('the guards block on a tool_input they cannot read', () => {
  * writes through every one of these spellings to the real file underneath.
  * `guard-rulebook.test.ts` › "guard-rulebook: a Win32 verbatim path does not
  * bypass the guard (RP-244)" is the consequence through the guard's own
- * entry point, gated to the windows-e2e/windows-smoke lanes because the
+ * entry point, gated to the windows-e2e lane because the
  * spelling only resolves to a real file on a Windows filesystem; this block
  * is the platform-independent pin, because `normalisePath` is plain string
  * manipulation with no filesystem dependency.
@@ -363,6 +363,25 @@ describe('the guards block on a tool_input they cannot read', () => {
  * the two outputs (`.claude/rules/invariants.md`, the independent-oracle
  * invariant: a test must not derive its expected result from the same
  * production mechanism it checks).
+ *
+ * RP-244 round 2 — security-scanner HOLD on PR #302, measured on NTFS at
+ * 1221613's round-1 fix. Four more blockers, all still inside `normalisePath`
+ * except blocker 1 (`guard-rulebook`'s own inability to judge a `//`-prefixed
+ * path, pinned in `guard-rulebook.test.ts` instead): a plain (non-verbatim)
+ * UNC path had the identical bypass "pre-existing on master" (blocker 1); a
+ * doubled separator after the `?`/`.` was not stripped because the regex
+ * required exactly one (blocker 2); a verbatim/device path with no drive
+ * letter and no `UNC` token — `\\?\Volume{GUID}\…` — fell through to plain
+ * `path.posix.normalize` and lost its leading `//` the same way the round-1
+ * bug did (blocker 3); and the UNC branch normalised its remainder as
+ * RELATIVE rather than ABSOLUTE, so a crafted run of `../` segments was not
+ * clamped at the root and instead did unbounded work — ~65s measured for
+ * 200,000 segments, and a killed hook is an ALLOW (blocker 4). The fix: any
+ * input beginning with two separators that is not a recognised
+ * verbatim/device DRIVE form keeps a leading `//` and has its remainder
+ * normalised as ABSOLUTE (`'/' + path.posix.normalize('/' + rest)`) rather
+ * than relative, which is what clamps a leading `..` run at the root instead
+ * of carrying it through.
  */
 describe('editFragments: normalisePath resolves a Win32 verbatim/device path the way the OS does (RP-244)', () => {
   const writePayload = (filePath: string) => ({
@@ -408,14 +427,79 @@ describe('editFragments: normalisePath resolves a Win32 verbatim/device path the
       String.raw`\\?\C:\Users\x\rig\.claude::$INDEX_ALLOCATION\settings.json`,
       'C:/Users/x/rig/.claude::$INDEX_ALLOCATION/settings.json',
     ],
+    [
+      // RP-244 round 2, blocker 2: the strip regex required EXACTLY one
+      // separator after the `?`/`.`, so a doubled separator (two backslashes
+      // here, where the ordinary form has one) left the whole `\\?\\C:` prefix
+      // unstripped — `/?/C:/…`, matching no rulebook prefix. The fix accepts
+      // one-or-more separators, so this collapses to the same plain spelling
+      // as the singly-separated form above.
+      'verbatim, doubled separator after the `?` (not exactly one)',
+      String.raw`\\?\\C:\Users\x\rig\.claude\settings.json`,
+      'C:/Users/x/rig/.claude/settings.json',
+    ],
   ])('%s resolves to the plain C:/… spelling', async (_label, input, expected) => {
     expect(await filePathOf(input)).toBe(expected);
   });
 
-  it('a verbatim UNC path (\\\\?\\UNC\\server\\share\\…) resolves to //server/share/…', async () => {
+  it.each([
+    ['backslash form', String.raw`\\?\UNC\localhost\c$\Users\x\rig\.claude\settings.json`],
+    ['forward-slash form', '//?/UNC/localhost/c$/Users/x/rig/.claude/settings.json'],
+    [
+      'device-namespace form (\\\\.\\UNC\\…, not \\\\?\\UNC\\…)',
+      String.raw`\\.\UNC\localhost\c$\Users\x\rig\.claude\settings.json`,
+    ],
+    ['lowercase "unc"', String.raw`\\?\unc\localhost\c$\Users\x\rig\.claude\settings.json`],
+  ])(
+    'a verbatim UNC path, %s, resolves to //localhost/c$/Users/x/rig/.claude/settings.json',
+    async (_label, input) => {
+      expect(await filePathOf(input)).toBe('//localhost/c$/Users/x/rig/.claude/settings.json');
+    },
+  );
+
+  it(// RP-244 round 2, blocker 3: a verbatim/device path with no drive letter
+  // and no `UNC` token (an NTFS volume GUID path, `\\?\Volume{…}\…`, or a
+  // `\\?\GLOBALROOT\…`-style device path) matched neither the UNC regex nor
+  // the drive regex, so it fell all the way through to
+  // `path.posix.normalize`, which swallowed the leading `//` as it does for
+  // any other doubled slash — `/?/Volume{…}/…`. The fix keeps a leading `//`
+  // for anything that starts with two separators and is not a recognised
+  // verbatim/device DRIVE form, so this stays `//`-prefixed instead.
+  'a verbatim device path with no drive letter (\\\\?\\Volume{GUID}\\…) keeps a leading // rather than losing it to POSIX normalisation', async () => {
     expect(
-      await filePathOf(String.raw`\\?\UNC\localhost\c$\Users\x\rig\.claude\settings.json`),
-    ).toBe('//localhost/c$/Users/x/rig/.claude/settings.json');
+      await filePathOf(
+        String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\a\.claude\settings.json`,
+      ),
+    ).toBe('//?/Volume{12345678-1234-1234-1234-123456789abc}/a/.claude/settings.json');
+  });
+
+  it(// RP-244 round 2, blocker 4: the UNC branch normalised its remainder as
+  // RELATIVE, so a run of leading `../` segments was carried through
+  // in full instead of clamping at the root the way an ABSOLUTE
+  // normalisation does — measured here on this Linux checkout at ~57.5s for
+  // 200,000 segments (the diagnosis measured ~65s on NTFS; ~8ms at the same
+  // size for the fixed, absolute form). A killed hook is an ALLOW
+  // (`.claude/rules/invariants.md`, "fail-open guards"), so this is itself
+  // the vulnerability, not just a performance concern. No wall-clock
+  // assertion here — RP-218 already showed those are load-sensitive, and
+  // measuring this one directly showed a second reason: `normalisePath` runs
+  // synchronously with no `await` inside it, so it blocks the event loop for
+  // its whole ~57.5s and vitest's `testTimeout` timer — itself just a
+  // `setTimeout` racing the test — never gets a turn to fire before the call
+  // returns. The unfixed implementation is red on the equality assertion
+  // below instead, only after that full unbounded pass; the fixed one
+  // returns in milliseconds and is red on nothing. `testTimeout` (15s here,
+  // `vitest.config.ts`) still matters as the ceiling on the file staying
+  // runnable at all — a still-unbounded rewrite that grows past it hangs the
+  // suite rather than reporting a clean failure — it is just not what turns
+  // this particular case red today.
+  'a crafted UNC path with 200,000 ../ segments clamps at the root instead of growing without bound', async () => {
+    // Not String.raw: a raw template literal cannot end in a single
+    // backslash immediately before the closing backtick (it would escape
+    // the backtick itself), so the verbatim UNC prefix `\\?\UNC\` is built
+    // with ordinary escapes instead.
+    const filePath = '\\\\?\\UNC\\' + '../'.repeat(200_000) + 'x';
+    expect(await filePathOf(filePath)).toBe('//x');
   });
 
   describe('ordinary spellings are unchanged from today — pinned as hand-written literals', () => {
@@ -427,13 +511,23 @@ describe('editFragments: normalisePath resolves a Win32 verbatim/device path the
         String.raw`C:\Users\x\rig\.claude\settings.json`,
         'C:/Users/x/rig/.claude/settings.json',
       ],
-      [
-        'a genuine UNC path (not verbatim)',
-        String.raw`\\server\share\rig\.claude\settings.json`,
-        '/server/share/rig/.claude/settings.json',
-      ],
     ])('%s: %s stays %s', async (_label, input, expected) => {
       expect(await filePathOf(input)).toBe(expected);
     });
+  });
+
+  it(// RP-244 round 2, blocker 1: a genuine (non-verbatim) UNC path used to
+  // normalise to a single-slash `/server/share/…` — a spelling
+  // `guard-rulebook`'s `relativeTo` can no more judge against a `C:/…`
+  // repository root than the `//`-prefixed verbatim forms can, so it carried
+  // the exact same bypass "pre-existing on master" per the diagnosis. It is
+  // deliberately moved out of "unchanged from today" above and changed here
+  // to the same `//`-prefixed, undecidable-by-root spelling every other
+  // device/UNC form gets, so `guard-rulebook`'s new refusal (RP-244 round 2)
+  // covers it identically.
+  'a genuine (non-verbatim) UNC path keeps a // prefix instead of losing it to POSIX normalisation', async () => {
+    expect(await filePathOf(String.raw`\\server\share\rig\.claude\settings.json`)).toBe(
+      '//server/share/rig/.claude/settings.json',
+    );
   });
 });

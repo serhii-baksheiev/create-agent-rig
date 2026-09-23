@@ -554,19 +554,36 @@ function inspectionRefusal(current, reason) {
 // prefixes depend on, so they are stripped first. Anchored at the very start:
 // a prefix check, not a scan, which keeps this inside the fail-open
 // bounded-work rule.
-const WIN32_VERBATIM_UNC_PREFIX = /^[\\/]{2}[?.][\\/]UNC[\\/]/i;
-const WIN32_VERBATIM_DRIVE_PREFIX = /^[\\/]{2}[?.][\\/]([A-Za-z]:)/;
+//
+// RP-244 round 2: `[\\/]+` (not `[\\/]`) after the `?`/`.` marker, so a
+// doubled separator still strips. A DRIVE match (`\\?\C:\…`) is the only case
+// that yields a plain, prefix-free spelling — every other two-separator input
+// (verbatim UNC, plain UNC, a device path with no drive letter such as
+// `\\?\Volume{GUID}\…`) is judged as UNDECIDABLE by a repository root spelled
+// as a plain path, so it keeps a leading `//` instead, with its remainder
+// normalised as ABSOLUTE (clamped at root) rather than relative — a relative
+// normalisation let a crafted run of `../` segments do unbounded work instead
+// of collapsing at the root.
+const WIN32_VERBATIM_UNC_PREFIX = /^[\\/]{2}[?.][\\/]+UNC(?:[\\/]+|$)/i;
+const WIN32_VERBATIM_DRIVE_PREFIX = /^[\\/]{2}[?.][\\/]+([A-Za-z]:)/;
 
 function normalisePath(value) {
   const raw = String(value ?? '').trim();
   if (raw === '') return '';
-  const uncMatch = WIN32_VERBATIM_UNC_PREFIX.exec(raw);
-  if (uncMatch) {
-    // path.posix.normalize collapses a double leading slash to one, so the
-    // `//` this maps to is applied AFTER normalising the rest, not before.
-    return '//' + path.posix.normalize(raw.slice(uncMatch[0].length).replaceAll('\\', '/'));
+  const driveMatch = WIN32_VERBATIM_DRIVE_PREFIX.exec(raw);
+  if (driveMatch) {
+    const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
+    return slashed === '' ? '' : path.posix.normalize(slashed);
   }
-  const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
+  const uncMatch = WIN32_VERBATIM_UNC_PREFIX.exec(raw);
+  if (uncMatch || /^[\\/]{2}/.test(raw)) {
+    const rest = (uncMatch ? raw.slice(uncMatch[0].length) : raw.slice(2)).replaceAll('\\', '/');
+    // Absolute normalisation, not relative: clamps a leading `../` run at the
+    // root instead of carrying it through — the outer `'/' +` restores the
+    // `//` marker that `path.posix.normalize` collapses to one.
+    return '/' + path.posix.normalize('/' + rest);
+  }
+  const slashed = raw.replaceAll('\\', '/');
   return slashed === '' ? '' : path.posix.normalize(slashed);
 }
 

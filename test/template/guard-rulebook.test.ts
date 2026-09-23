@@ -868,19 +868,68 @@ describe('guard-rulebook: apply_patch never hides a rulebook removal (RP-214)', 
  * of this file.
  *
  * Win32-only: a verbatim spelling only resolves to a real file on a Windows
- * filesystem, so these run in the windows-e2e/windows-smoke lanes. The
+ * filesystem, so these run in the windows-e2e lane. The
  * platform-independent pin on the normaliser itself is
  * `edit-fragments.test.ts` (absent in a generated rig) › "editFragments:
  * normalisePath resolves a Win32 verbatim/device path the way the OS does
  * (RP-244)".
+ *
+ * RP-244 round 2 — security-scanner HOLD on PR #302, measured on NTFS at
+ * this branch's base 1221613. Three more spellings measured directly against
+ * the real, armed `root` fixture: a doubled separator after the `?` (blocker
+ * 2), a verbatim UNC admin-share form (`\\?\UNC\localhost\<drive>$\…`, the
+ * verbatim spelling of blocker 1's plain-UNC bypass), and an NTFS ADS on the
+ * `.claude` directory component reached through the verbatim prefix. The
+ * platform-independent pin for blockers 1–4 as a class — that a `//`-prefixed
+ * normalised path is refused rather than silently allowed while armed,
+ * because `guard-rulebook` cannot judge it against the repository root — is
+ * `guard-rulebook: an unjudgeable UNC/device-namespace path is refused, not
+ * silently allowed (RP-244 round 2)` further down this file; it needs no real
+ * filesystem, so it runs on every platform.
  */
 describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-244)', () => {
   const verbatimOf = (rel: string) => `\\\\?\\${root}\\${rel.replaceAll('/', '\\')}`;
+
+  // RP-244 round 2, blocker 2: two separators after the `?` instead of one.
+  const doubledSeparatorOf = (rel: string) => `\\\\?\\\\${root}\\${rel.replaceAll('/', '\\')}`;
+
+  // RP-244 round 2, blocker 1 (verbatim spelling): the admin-share UNC form
+  // of the real root, e.g. `\\?\UNC\localhost\C$\Users\…\<root>\…`.
+  const uncAdminShareOf = (rel: string) => {
+    const match = /^([A-Za-z]):(.*)$/.exec(root);
+    if (!match)
+      throw new Error(
+        `root is not a drive-letter path, cannot build a UNC admin share from it: ${root}`,
+      );
+    const [, drive, rest] = match;
+    return `\\\\?\\UNC\\localhost\\${drive}$${rest}\\${rel.replaceAll('/', '\\')}`;
+  };
 
   it('blocks a Write to the verbatim spelling of .claude/settings.json', async (ctx) => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
     await armed(['src/']);
     const result = await run(write(verbatimOf('.claude/settings.json')));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Write to the doubled-separator verbatim spelling of .claude/settings.json (RP-244 round 2)', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(doubledSeparatorOf('.claude/settings.json')));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Write to the verbatim UNC admin-share spelling of .claude/settings.json (RP-244 round 2)', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(uncAdminShareOf('.claude/settings.json')));
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks a Write to the verbatim spelling of an NTFS ADS on the .claude directory component (RP-244 round 2)', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed(['src/']);
+    const result = await run(write(verbatimOf('.claude::$INDEX_ALLOCATION/settings.json')));
     expect(result.code, result.stderr).toBe(2);
   });
 
@@ -910,6 +959,59 @@ describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-24
     const result = await run(write(verbatimOf('.claude/settings.json')));
     expect(result.code, result.stderr).toBe(0);
   });
+});
+
+/**
+ * RP-244 round 2 — security-scanner HOLD on PR #302, measured on NTFS at
+ * this branch's base 1221613, generalised: `normalisePath` (`edit-input.mjs`)
+ * maps every UNC and other device-namespace spelling to a `//`-prefixed
+ * result (`//server/share/…`, `//?/Volume{…}/…`) — round 1 fixed
+ * `\\?\C:\…`/`\\.\C:\…` but left this whole family alone. `relativeTo`
+ * (above, in this file) can only strip a path that starts with the literal
+ * repository root; a `//`-prefixed path never does, on any platform and
+ * against any root, so `protectedRelative` finds nothing and this hook exits
+ * 0 — while a UNC or device-namespace spelling reaches a REAL file on a
+ * Windows filesystem underneath. This is a pure string-comparison defect in
+ * the guard itself, not a filesystem one, so — unlike the Win32-only block
+ * above it, which has to reach a real file to prove the bypass — every input
+ * here is a plain string with no filesystem dependency and this block runs on
+ * every platform, including Linux.
+ *
+ * The fix: while armed, a fragment whose normalised path begins with `//`
+ * cannot be resolved against the repository root at all, so it is refused
+ * (exit 2) rather than silently falling through "nothing under the
+ * rulebook: never judged" — the same "refusing to inspect is not allowing"
+ * shape this file already uses for an unreadable flag and for a pathless
+ * global refusal. Attended sessions are untouched, exactly as for every
+ * other rulebook path.
+ */
+describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, not silently allowed (RP-244 round 2)', () => {
+  const unjudgeablePaths: Array<[string, string]> = [
+    ['a plain (non-verbatim) UNC admin share', String.raw`\\srv\share\x\.claude\settings.json`],
+    ['a verbatim UNC admin share', String.raw`\\?\UNC\srv\share\x\.claude\settings.json`],
+    [
+      'a verbatim device path with no drive letter (a volume GUID path)',
+      String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\x\.claude\settings.json`,
+    ],
+  ];
+
+  it.each(unjudgeablePaths)(
+    'blocks a Write to %s while armed, because it cannot be resolved against the repository root',
+    async (_label, filePath) => {
+      await armed(['src/']);
+      const result = await run(write(filePath));
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/resolved against the repository root/i);
+    },
+  );
+
+  it.each(unjudgeablePaths)(
+    'an attended session (no unattended flag) still allows a Write to %s',
+    async (_label, filePath) => {
+      const result = await run(write(filePath));
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
 });
 
 describe('guard-rulebook: refusing to inspect is not allowing', () => {

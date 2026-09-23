@@ -746,6 +746,13 @@ describe('guard-secret-file: a Win32 verbatim spelling of a credential file is s
     [String.raw`\\?\C:\Users\x\rig\jira.env`, 'verbatim, backslash form'],
     ['//?/C:/Users/x/rig/jira.env', 'verbatim, forward-slash form'],
     [String.raw`\\.\C:\Users\x\rig\jira.env`, 'device namespace, backslash form'],
+    // RP-244 round 2: the basename this guard judges survives the round-2
+    // bugs too — a doubled separator after the `?`, and any UNC spelling —
+    // for the same reason it survived round 1's: `isCredentialPath` only
+    // ever looks at the last path segment.
+    [String.raw`\\?\\C:\Users\x\rig\jira.env`, 'verbatim, doubled separator after the ?'],
+    [String.raw`\\?\UNC\localhost\c$\Users\x\rig\jira.env`, 'verbatim UNC admin share'],
+    [String.raw`\\server\share\rig\jira.env`, 'a genuine (non-verbatim) UNC path'],
   ])('blocks a Write to %s (%s)', async (filePath) => {
     await deny(write(filePath, 'anything at all\n'), filePath);
   });
