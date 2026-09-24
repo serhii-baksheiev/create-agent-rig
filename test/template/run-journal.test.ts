@@ -392,10 +392,19 @@ describe('the clock is injected, never read', () => {
 
   it('names no clock of its own anywhere in the module', async () => {
     const source = await readFile(modulePath, 'utf8');
-    // One forward pass, both shapes at once. The literal call counts even inside a
-    // comment: "the clock is injected" is the sentence to write, and a guard that
-    // allowed the call in prose would have to parse the file to know the difference.
-    const clock = /\bDate\.now\s*\(|\bnew\s+Date\s*\(\s*\)/g;
+    // One forward pass, every spelling of "read a clock" at once. The literal
+    // call counts even inside a comment: "the clock is injected" is the
+    // sentence to write, and a guard that allowed the call in prose would have
+    // to parse the file to know the difference.
+    //
+    // RP-225 round 2: the lock's own bounded wait routed around the original
+    // two-shape version of this guard by reading `performance.timeOrigin +
+    // performance.now()` instead of `Date.now()` — same defect (a clock this
+    // module reads for itself), different spelling. `process.hrtime` and a
+    // bare `Date(` call are the two remaining spellings Node offers for "read
+    // the current time" that the original pattern also missed.
+    const clock =
+      /\bDate\.now\s*\(|\bnew\s+Date\s*\(|\bDate\s*\(|\bperformance\.now\s*\(|\bperformance\.timeOrigin\b|\bprocess\.hrtime\b/g;
     expect([...source.matchAll(clock)].map((match) => match[0])).toEqual([]);
   });
 });
