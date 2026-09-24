@@ -440,7 +440,10 @@ async function rigOwnedPaths(): Promise<Set<string>> {
  * cannot make it silently report `noManifest` for a repository that actually
  * has one behind the link either. Refuses rather than guesses either way.
  */
-async function readManifestBytes(repoDir: string): Promise<Buffer | null> {
+async function readManifestBytes(
+  repoDir: string,
+  readFileFn: (absolutePath: string) => Promise<Buffer>,
+): Promise<Buffer | null> {
   const status = await regularFileStatus(repoDir, MANIFEST_REL);
   if (status === 'absent') return null;
   if (status === 'unsafe') {
@@ -449,7 +452,7 @@ async function readManifestBytes(repoDir: string): Promise<Buffer | null> {
         'non-regular entry), so it cannot be trusted.',
     );
   }
-  return readFile(onDisk(repoDir, MANIFEST_REL));
+  return readFileFn(onDisk(repoDir, MANIFEST_REL));
 }
 
 /**
@@ -726,8 +729,8 @@ export function protectedFileReason(
  * either is processed, queuing it more than once. Each duplicate costs one
  * cheap pop-and-skip, never a second read — pinned, not merely asserted (see
  * `.claude/rules/invariants.md`, "State the limits — and test them"), by
- * `packages/cli/test/uninstall.test.ts` › "processes 400,000 duplicate
- * import matches to the same owned dependency in bounded time".
+ * `packages/cli/test/uninstall.test.ts` › "reads each file once however
+ * many duplicate imports name the same owned dependency".
  */
 async function protectHookAndDeps(
   repoDir: string,
@@ -738,6 +741,7 @@ async function protectHookAndDeps(
   visited: Set<string>,
   importedBy: Map<string, string>,
   unverified: Map<string, string>,
+  readFileFn: (absolutePath: string) => Promise<Buffer>,
 ): Promise<void> {
   // `[rel, parent]` — `parent` is the file whose import target resolved to
   // `rel`, or `undefined` for `seedRel` itself (a wiring file names it
@@ -785,7 +789,7 @@ async function protectHookAndDeps(
     }
     let text: string;
     try {
-      text = await readFile(onDisk(repoDir, rel), 'utf8');
+      text = (await readFileFn(onDisk(repoDir, rel))).toString('utf8');
     } catch {
       continue; // gone, or unreadable — nothing further to walk from here
     }
@@ -862,6 +866,7 @@ async function protectedHooksFor(
   repoDir: string,
   ownedPaths: ReadonlySet<string>,
   trackingFor: (wiringRel: string) => WiringTracking,
+  readFileFn: (absolutePath: string) => Promise<Buffer>,
 ): Promise<{
   protectedHooks: Map<string, string>;
   /** The immediate importer of a transitively-protected path — absent for a path a wiring file names directly. See {@link hookImportedByReason}. */
@@ -896,12 +901,13 @@ async function protectedHooksFor(
             visited,
             importedBy,
             unverified,
+            readFileFn,
           );
         }
       }
       continue;
     }
-    const current = await readFile(onDisk(repoDir, wiringRel));
+    const current = await readFileFn(onDisk(repoDir, wiringRel));
     wiringBytes.set(wiringRel, current);
     // pristine and NOT always-preserved — it is about to be removed, so
     // nothing downstream needs protecting on its account. A `kept` wiring
@@ -919,10 +925,22 @@ async function protectedHooksFor(
         visited,
         importedBy,
         unverified,
+        readFileFn,
       );
     }
   }
   return { protectedHooks, importedBy, unverified, wiringKind, wiringBytes };
+}
+
+export interface PlanUninstallOptions {
+  /**
+   * Test seam: replaces the function that reads one file's content. Real
+   * runs never pass this — it exists so a test can count reads (never a
+   * mocking framework, no patching of module internals) without changing
+   * `planUninstall`'s own behaviour, since the default still delegates to
+   * `node:fs/promises`' `readFile`.
+   */
+  readFile?: (absolutePath: string) => Promise<Buffer>;
 }
 
 /**
@@ -936,8 +954,12 @@ async function protectedHooksFor(
  * path outside the current install set, or the CRLF/LF twin of what it wrote
  * — is reported and left alone.
  */
-export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
-  const raw = await readManifestBytes(repoDir);
+export async function planUninstall(
+  repoDir: string,
+  options: PlanUninstallOptions = {},
+): Promise<UninstallPlan> {
+  const readFileFn = options.readFile ?? readFile;
+  const raw = await readManifestBytes(repoDir, readFileFn);
   if (raw === null) return { noManifest: true, actions: [], manifestHash: null };
   const manifestHash = sha256(raw);
 
@@ -963,7 +985,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       : { tracked: true, alwaysPreserved: false, recordedHash };
   };
   const { protectedHooks, importedBy, unverified, wiringKind, wiringBytes } =
-    await protectedHooksFor(repoDir, ownedPaths, trackingFor);
+    await protectedHooksFor(repoDir, ownedPaths, trackingFor, readFileFn);
 
   const actions: UninstallAction[] = [];
   for (const rel of Object.keys(manifest.files).sort()) {
@@ -1016,10 +1038,13 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
     // status === 'ok': every ancestor is a real directory and the path itself
     // is a regular file — safe to read and to hash. A wiring file's bytes may
     // already have been read by `protectedHooksFor` above; reuse them rather
-    // than reading the same file twice.
-    const current = wiringBytes.get(rel) ?? (await readFile(onDisk(repoDir, rel)));
-
+    // than reading the same file twice. Read only where the bytes are
+    // actually needed below — a `protectingWiring` verdict (just past this
+    // branch) never looks at `current` at all, and reading it anyway would
+    // be a second, wasted read of a file `protectHookAndDeps` already read
+    // once to walk its own imports.
     if (WIRING_PATHS.has(rel)) {
+      const current = wiringBytes.get(rel) ?? (await readFileFn(onDisk(repoDir, rel)));
       if (sha256(current) === recorded) {
         actions.push({ rel, verdict: 'remove', recordedHash: recorded });
       } else {
@@ -1055,6 +1080,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       continue;
     }
 
+    const current = wiringBytes.get(rel) ?? (await readFileFn(onDisk(repoDir, rel)));
     const currentHash = sha256(current);
     if (currentHash === recorded) {
       actions.push({ rel, verdict: 'remove', recordedHash: recorded });
@@ -1126,7 +1152,7 @@ export async function planUninstall(repoDir: string): Promise<UninstallPlan> {
       reason: NOT_A_REGULAR_FILE_REASON,
     });
   } else if (rescueStatus === 'ok') {
-    const rescueBytes = await readFile(onDisk(repoDir, AGENTS_MD_RESCUE));
+    const rescueBytes = await readFileFn(onDisk(repoDir, AGENTS_MD_RESCUE));
     const rendered = await renderedAgentsMd(manifest.project, manifest.layers ?? ALL_LAYERS);
     if (rendered !== null && sha256(rescueBytes) === sha256(Buffer.from(rendered, 'utf8'))) {
       actions.push({
@@ -1240,7 +1266,7 @@ async function manifestMismatchReason(
 ): Promise<string | null> {
   let raw: Buffer | null;
   try {
-    raw = await readManifestBytes(repoDir);
+    raw = await readManifestBytes(repoDir, readFile);
   } catch (error) {
     return (error as Error).message;
   }
@@ -1346,7 +1372,7 @@ export async function applyUninstall(
     importedBy: applyTimeImportedBy,
     unverified: applyTimeUnverified,
     wiringKind: applyTimeWiringKind,
-  } = await protectedHooksFor(repoDir, ownedPaths, applyTimeTrackingFor);
+  } = await protectedHooksFor(repoDir, ownedPaths, applyTimeTrackingFor, readFile);
 
   // ⚠ Boundary that `index.ts`'s own outer try/catch around this whole
   // function relies on: nothing above this line has removed anything, and

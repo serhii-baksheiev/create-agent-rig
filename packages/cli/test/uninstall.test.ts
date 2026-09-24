@@ -691,27 +691,109 @@ describe('planUninstall — wiring files', () => {
   // `protectHookAndDeps`'s own doc comment (and `docs/command-contract.md`)
   // measure the walk's queue-duplication cost — many files each re-naming an
   // already-owned, already-visited dependency is cheap (one pop-and-skip per
-  // duplicate, never a second read) — but neither copy was backed by a test,
-  // which `.claude/rules/invariants.md` makes a blocker by rule: a
-  // "Measured:" sentence nothing re-measures is indistinguishable from a
-  // guess a month later. This measures it directly: one owned hook file
-  // overwritten with 400,000 duplicate imports of the SAME already-owned
-  // dependency, all queued before the first one is ever popped.
-  it('processes 400,000 duplicate import matches to the same owned dependency in bounded time', async () => {
+  // duplicate, never a second read). RP-245: a wall-clock oracle for that
+  // claim measures the HOST, not the property — it passed at 1.7 s idle (a 3x
+  // margin against the 5 s budget it used to assert) and still failed at
+  // 5.7 s in a pre-commit run under deliberate load, on the same code. The
+  // property this test actually owes evidence for is "one pop-and-skip per
+  // duplicate, never a second read" — which is a READ COUNT, not a duration,
+  // and a read count is exactly what a deterministic oracle can pin without
+  // ever asking what the CPU happened to be doing. Two independent
+  // assertions stand in for the two ways an extra read per duplicate would
+  // otherwise show up: (1) no owned path is ever read more than once during
+  // a single `planUninstall`, and (2) the TOTAL number of reads a run with
+  // 400,000 duplicate matches performs is exactly the same as a run whose
+  // hook names the same dependency only once — so a per-duplicate read that
+  // happened to land on a brand-new path each time (rather than re-reading
+  // one it had already read) is still caught, by the second assertion, even
+  // though the first would not see it.
+  it('reads each file once however many duplicate imports name the same owned dependency', async () => {
+    const guardBash = '.claude/hooks/guard-bash.mjs';
+    const hookInput = '.claude/hooks/lib/hook-input.mjs';
+
+    // A counting `readFile` stub — a hand-written structural stub against
+    // the seam's own consumer-facing shape (`.claude/rules/node-ts.md`: no
+    // mocking framework, no patching of module internals), never derived
+    // from `planUninstall`'s own logic (`.claude/rules/invariants.md`, "the
+    // independent-oracle invariant") — records the absolute path of every
+    // read in the order it happened, and delegates to the real
+    // `node:fs/promises` `readFile` so `planUninstall`'s actual behaviour
+    // (verdicts, errors) is completely unaffected by observing it.
+    const countingReadFile = (reads: string[]): ((absolutePath: string) => Promise<Buffer>) => {
+      return async (absolutePath: string): Promise<Buffer> => {
+        reads.push(absolutePath);
+        return readFile(absolutePath);
+      };
+    };
+
+    // The baseline: a fresh, separate rig whose hook names the same
+    // dependency exactly once — never the SAME directory as the
+    // 400,000-duplicate case, and built first, so neither run's file-system
+    // state (cache warmth, directory size) can be blamed for a difference
+    // the other run's fixture caused.
+    const baselineRepo = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-baseline-'));
+    let baselineReads: string[];
+    try {
+      await initProject(baselineRepo, {});
+      const baselineSettings = await readFile(
+        path.join(baselineRepo, ...SETTINGS.split('/')),
+        'utf8',
+      );
+      await writeFile(
+        path.join(baselineRepo, ...SETTINGS.split('/')),
+        baselineSettings.replace('"hooks"', '"myOwnKey": true, "hooks"'),
+      );
+      await writeFile(
+        path.join(baselineRepo, ...guardBash.split('/')),
+        "import { x } from './lib/hook-input.mjs';\n",
+      );
+      baselineReads = [];
+      await planUninstall(baselineRepo, { readFile: countingReadFile(baselineReads) });
+      // Sanity: proves the stub was actually wired into `planUninstall`,
+      // rather than silently ignored (a `readFile` option `planUninstall`
+      // does not yet accept is simply extra, unused data on a plain JS call
+      // — nothing about invoking it that way fails on its own, so a stub
+      // that is never called would otherwise let every assertion below pass
+      // vacuously on 0 reads compared with 0 reads).
+      expect(
+        baselineReads.length,
+        'the readFile stub recorded no reads at all — is `options.readFile` ' +
+          'actually threaded through planUninstall?',
+      ).toBeGreaterThan(0);
+    } finally {
+      await removeFixture(baselineRepo);
+    }
+
     await installRig();
     const original = await read(SETTINGS);
     const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
     await write(SETTINGS, edited);
-
-    const guardBash = '.claude/hooks/guard-bash.mjs';
-    const hookInput = '.claude/hooks/lib/hook-input.mjs';
     await write(guardBash, "import { x } from './lib/hook-input.mjs';\n".repeat(400_000));
 
-    const start = Date.now();
-    const plan = await planUninstall(repo);
-    expect(Date.now() - start).toBeLessThan(5000);
+    const reads: string[] = [];
+    const plan = await planUninstall(repo, { readFile: countingReadFile(reads) });
+    // Same sanity as the baseline above, against the same silent-ignore trap.
+    expect(
+      reads.length,
+      'the readFile stub recorded no reads at all — is `options.readFile` ' +
+        'actually threaded through planUninstall?',
+    ).toBeGreaterThan(0);
     expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
     expect(actionFor(plan, hookInput)?.verdict).toBe('preserved');
+
+    const countsByPath = new Map<string, number>();
+    for (const p of reads) countsByPath.set(p, (countsByPath.get(p) ?? 0) + 1);
+    for (const [p, count] of countsByPath) {
+      expect(count, `${p} read more than once`).toBe(1);
+    }
+    // The independent oracle: not "did every per-path count stay at 1" (the
+    // loop above already answers that) but "is the TOTAL read count for
+    // 400,000 duplicate matches identical to one match" — a mutation that
+    // added a read per duplicate on a never-before-seen path each time would
+    // pass the per-path check above and still be caught here.
+    expect(reads.length, 'total reads for 400,000 duplicates vs. a single match').toBe(
+      baselineReads.length,
+    );
   });
 });
 
