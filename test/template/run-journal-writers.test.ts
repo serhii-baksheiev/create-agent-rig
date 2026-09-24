@@ -1,9 +1,10 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
+import { modeBitsDeny, skipUnless } from '../helpers/env.js';
 
 // RP-225 slice 1 — the run journal currently assumes one writer (its own header,
 // `run-journal.mjs`: "⚠ It assumes one writer"). The upcoming observe-only
@@ -25,10 +26,6 @@ import { describe, expect, it } from 'vitest';
 // writer has not finished flushing, and is skipped rather than refused.
 // `append()` keeps the strict, existing behaviour on that same case — a writer
 // must never build the next `seq` on top of a line it cannot fully trust.
-//
-// None of this exists yet. Every test below is written against the module's
-// CURRENT export list and CURRENT `JOURNAL_FAILURES`, so each one is expected
-// to fail — and the failure each one reports is noted beside it.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -220,11 +217,89 @@ describe('a stale lock is reclaimed rather than honoured forever', () => {
 
     expect(record).toMatchObject({ seq: 1, at: T0, kind: 'after-stale-lock' });
     expect(await linesIn(runDir, 'events.jsonl')).toEqual([record]);
-    // Today nothing in `append()` looks at `.journal.lock` at all, so the file
-    // this test planted is never touched — it survives the call, and this is
-    // where the test is expected to fail until reclaim exists.
     const after = await readdir(runDir);
     expect(after).not.toContain('.journal.lock');
+  });
+});
+
+// code-reviewer r1 (fa745a0): "stat-then-rm reclaim and path-only release: two
+// writers seeing a stale lock both hold it; 19 of 30 stress runs broke
+// readRun." `acquireLock`'s reclaim is stat-the-path, then (after a gap where
+// another process runs the same steps) rm-the-path and retry — nothing ties
+// the stat, the rm, or the eventual open to one process's OWN attempt. Two
+// writers that both see the same stale lock can interleave as: A removes the
+// original stale file and opens a fresh one of its own; B, already committed
+// to reclaiming, then removes THAT fresh file (by path, not by any check that
+// it is the one B saw) and opens its own — both now believe they hold the one
+// lock `append()` was supposed to make exclusive, and the same path-only
+// unlink in `releaseLock` repeats the mistake on the way out. This is also
+// checklist item 6's ownership defect, not a second one next to it: a release
+// or a reclaim that never checks whose lock is on disk is exactly "a writer
+// whose lock was taken over removes another writer's lock" — the two
+// blockers describe one gap in the same two functions. There is no seam in
+// today's module to plant a foreign owner's token directly (the lock file
+// carries no content to distinguish writers), so this stress is the only
+// test in this file for that gap; it is written to make the interleaving
+// likely rather than merely possible.
+describe('a stale lock reclaimed by two writers at once must not double-admit', () => {
+  it('runs the eight-writer race against a pre-planted stale lock repeatedly, and readRun never breaks', async () => {
+    // Kept well under this project's testTimeout: 15_000 — measured at
+    // 5.0-6.6s total for all 20 iterations on this host (5 runs), leaving
+    // comfortable headroom. The race itself is probabilistic, not guaranteed
+    // per iteration — measured at 1 of 20, 2 of 20 across 5 runs on this host,
+    // one run clean — so the count below is chosen to make a genuine
+    // interleaving LIKELY across the run, not to guarantee one every time; a
+    // single clean run is a property of the race, not a sign the fixture is
+    // wrong. If a slower host needs more headroom, the number to lower is this
+    // one, not the budget.
+    const iterations = 20;
+    const failures: string[] = [];
+
+    for (let iteration = 0; iteration < iterations; iteration += 1) {
+      const runDir = await newRunDir();
+      const lockPath = lockPathFor(runDir);
+      await writeFile(lockPath, '');
+      const staleMtime = new Date(Date.now() - 60_000);
+      await utimes(lockPath, staleMtime, staleMtime);
+
+      const gatePath = path.join(runDir, '.start-gate');
+      const readyPaths = Array.from({ length: 8 }, (_unused, index) =>
+        path.join(runDir, `.ready-${index}`),
+      );
+      const spawned = Promise.all(
+        Array.from({ length: 8 }, (_unused, index) =>
+          spawnWriter(runDir, `writer-${index}`, T0, gatePath, readyPaths[index]!),
+        ),
+      );
+      await waitForAll(readyPaths, 10_000);
+      await writeFile(gatePath, '');
+      const results = await spawned;
+
+      if (results.some((result) => result.code !== 0)) {
+        failures.push(
+          `iteration ${iteration}: a writer process exited nonzero\n` +
+            results.map((result) => result.out).join('\n---\n'),
+        );
+        continue;
+      }
+
+      const wanted = Array.from({ length: 8 }, (_unused, index) => index + 1);
+      try {
+        const { readRun } = await load();
+        const run = await readRun({ runDir });
+        const seqs = run.events.map((record) => record.seq).sort((a, b) => a - b);
+        if (JSON.stringify(seqs) !== JSON.stringify(wanted)) {
+          failures.push(`iteration ${iteration}: seq ${JSON.stringify(seqs)}, wanted 1..8`);
+        }
+      } catch (error) {
+        failures.push(`iteration ${iteration}: readRun refused — ${(error as Error).message}`);
+      }
+    }
+
+    // Every iteration runs to completion rather than stopping at the first
+    // collision, so the failure COUNT is itself evidence — the same shape the
+    // reviewer measured against this exact fixture (19 of 30 runs unusable).
+    expect(failures, `${failures.length} of ${iterations} iterations broke readRun`).toEqual([]);
   });
 });
 
@@ -310,4 +385,43 @@ describe('readRun tolerates a record another writer has not finished flushing', 
     const error = await refusalFrom(() => recordEvent({ runDir, kind: 'second', now: T2 }));
     expect((error as Error & { failure?: unknown }).failure).toBe('unusable');
   });
+});
+
+// code-reviewer's advisory list, promoted: "EACCES/EPERM on a non-writable dir
+// read as contention". `acquireLock`'s `openSync(lockPath, 'wx')` fails with
+// EACCES when the DIRECTORY cannot be written to, not only when a lock file is
+// genuinely held — and today's `contended` check treats EACCES exactly like
+// EEXIST. With no lock file ever planted here, `statSync(lockPath)` then finds
+// nothing to reclaim, so the loop just keeps retrying the doomed open until
+// `LOCK_WAIT_MS` elapses and reports `'busy'` — "another writer is holding it",
+// about a directory that never had one. `'busy'` also tells a caller the record
+// is merely lost and a later retry might land; an unwritable directory does not
+// become writable by waiting, so that is the wrong instruction as well as the
+// wrong word.
+describe('a run directory with no write permission is not "busy"', () => {
+  beforeEach((ctx) => skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason));
+
+  const rootless = process.getuid === undefined || process.getuid() !== 0;
+
+  it.runIf(rootless)(
+    'fails fast as a non-busy refusal when the directory cannot even hold a lock file',
+    async () => {
+      const runDir = await newRunDir();
+      await chmod(runDir, 0o555);
+
+      const startedAt = Date.now();
+      const error = await refusalFrom(() => recordEventOrThrowIfNoLock(runDir, T0));
+      const elapsedMs = Date.now() - startedAt;
+
+      await chmod(runDir, 0o755);
+
+      // Not `'busy'`: no lock file was ever planted, so there is no other
+      // writer to report as holding one.
+      expect((error as Error & { failure?: unknown }).failure).not.toBe('busy');
+      // And fast — today's misclassification spins out the whole LOCK_WAIT_MS
+      // (~2s) bound before giving up; a correct refusal has no wait to do at
+      // all, since the directory was never going to become writable.
+      expect(elapsedMs).toBeLessThan(500);
+    },
+  );
 });
