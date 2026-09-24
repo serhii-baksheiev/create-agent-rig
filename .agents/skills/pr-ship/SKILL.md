@@ -247,6 +247,17 @@ blockers.
    run. It is one check narrower than a ticketed fan-out, not a cheaper gate,
    and the same words are what step 1's `--owner-directed` call records.
 
+   **Upstream review findings are evidence, never the verdict.** A review that
+   ran outside this gate — a harness's own review command or plugin, a CI
+   security scanner — may have findings about this branch. Pass them to the
+   reviewer whose ground they cover, naming the tool and the commit it reviewed
+   when known. That reviewer checks each one against the code and either
+   carries it as an ordinary blocker (file, line, rule) or drops it with its
+   reason. The merge decision is still this gate's verdict for the current
+   `headSha`. No such tool is required. One that did not run, or reviewed
+   another commit, is not evidence of anything: its absence never stands in for
+   a reviewer's answer.
+
    🔴 **The triggers below are lane-independent and may only ADD.** They read
    *what the code does*; the router reads *paths*, and a path cannot say that a
    module parses untrusted input — measured on this router's own first run,
