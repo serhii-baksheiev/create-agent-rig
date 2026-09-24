@@ -86,6 +86,19 @@ const sum = (numbers: number[]): number => numbers.reduce((total, n) => total + 
 
 const abs = (rel: string): string => path.join(repo, ...rel.split('/'));
 
+/**
+ * A stable, sorted, DEEP listing of every file and directory under `dir` —
+ * the ground truth for "did this run touch the filesystem at all" (RP-239
+ * A1, round 3). Used in place of a second run of the same command in the
+ * same directory: the round-2 oracles ran the same argv with `--help`
+ * dropped, in the SAME repo, as their "what would this have done" check —
+ * exactly the shape the code-reviewer HOLD on PR #317 (r2) showed can itself
+ * mutate state (`uninstall --json --yes --help` removed all 63 installed
+ * files). A filesystem snapshot never runs the command under test twice.
+ */
+const snapshot = async (dir: string): Promise<string[]> =>
+  (await readdir(dir, { recursive: true })).sort();
+
 /** The rig as `init` leaves it: files installed, manifest written. */
 const installRig = (): Promise<unknown> => initProject(repo, {});
 
@@ -945,98 +958,156 @@ describe('a no-op upgrade still reports the manifest write (RP-239 A6)', () => {
   });
 });
 
-// RP-239 A1, round 2 (code-reviewer HOLD on PR #317, r1): `wantsHelp` ran
-// before `--json` handling, so `setup`/`doctor`/`uninstall --json --help`
-// printed the subcommand's usage PROSE instead of the JSON object the
-// contract promises under `--json` (docs/command-contract.md's Output rule,
-// "Under --json, stdout carries exactly one JSON object and nothing else").
-// Loop decision: when `--json` is among a subcommand's arguments, the help
-// short-circuit does not apply at all — the command answers exactly as it
-// would without `--help`/`-h` present (its own JSON refusal or JSON answer).
-// Each test below computes that expectation from an INDEPENDENT invocation —
-// the same command with the help flag dropped — rather than a hard-coded
-// exit code, so the pin cannot silently drift from what the command actually
-// does today.
-describe('`--json` beats `--help` on a subcommand (RP-239 A1, round 2)', () => {
+// RP-239 A1, round 3 (code-reviewer HOLD on PR #317, r2): round 2's
+// `stripHelpIfJson` dropped `--help`/`-h` from the args a subcommand's own
+// parsing ever saw whenever `--json` was present, so the command ran exactly
+// as if `--help` had never been typed — on `uninstall --json --yes --help`,
+// against an INSTALLED rig, that meant a real, consented removal: every one
+// of the 63 installed files gone (base 1.0.1, with no help-awareness at all,
+// refused the same argv outright; round 1's own stripping-free build removed
+// nothing either — round 2 is the one build in this sequence that deletes).
+// `setup add <id> --json --yes --help` reaches the identical shape: stripped
+// down to `setup add <id> --json --yes`, it is a fully consented apply.
+//
+// Loop decision: `--help`/`-h` never causes a command to execute. Once
+// `--json` is among a subcommand's arguments, the help flag is answered
+// differently — it is NEITHER stripped NOR short-circuited. The command
+// parses its ENTIRE, unmodified argument list exactly as it would with no
+// help-awareness in the picture at all — i.e. exactly as released 1.0.1
+// parsed that same argv, before this PR existed. For `init`/`upgrade`, which
+// never declared a `--json` option, that argv fails `parseArgs` outright
+// (an unrecognised option) precisely because `--json` itself is unrecognised
+// there — `--help` never gets a chance to be the thing that fails.
+// `uninstall` does declare `--json`, so there `--help` alone is the
+// unrecognised option, same refusal shape. `setup`'s dispatch reaches its own
+// per-verb `--json`-aware refusal (the wizard's non-interactive refusal for
+// the bare form, `runIntegrationsCommand`'s own parse-refusal for `add`).
+// `doctor` already refuses any option it does not know, which `-h` is.
+// Without `--json` present at all, round 1's short-circuit is unaffected:
+// usage prose, exit 0, nothing touched — pinned above, in "`--help` on a
+// subcommand (RP-239 A1)".
+//
+// Each test below never re-runs the command under test in the SAME
+// directory to build its expectation — that is exactly the shape that hid
+// round 2's bug (an independent "with --help dropped" run in the same repo
+// silently performed the destructive act the assertions then measured as
+// "answered with JSON"). The oracle here is filesystem state captured
+// BEFORE the run under test, plus the shape of `stdout` alone.
+describe('`--json` present: `--help`/`-h` is inert — never stripped, never short-circuited (RP-239 A1, round 3)', () => {
   /**
-   * `docs/command-contract.md`'s Output rule, checked directly: `stdout`,
-   * trimmed, must parse as JSON and nothing else — any leading or trailing
-   * prose (such as the subcommand usage text) breaks `JSON.parse` on the
-   * whole trimmed string, which is exactly the failure mode this pins.
+   * `docs/command-contract.md`'s Output rule ("Under --json, stdout carries
+   * exactly one JSON object and nothing else") allows for a refusal that
+   * never reaches JSON-payload construction at all (a raw `parseArgs`
+   * throw, handled before the command's own `json` flag is even read) to
+   * print nothing on stdout instead — the usage/error prose for such a
+   * refusal goes to stderr in every command below. Either shape is
+   * acceptable here; usage PROSE on stdout is not.
    */
-  const parsesAsSingleJsonObject = (stdout: string): boolean => {
+  const stdoutIsEmptyOrOneJsonObject = (stdout: string): boolean => {
+    if (stdout.trim() === '') return true;
     try {
-      JSON.parse(stdout.trim());
-      return true;
+      return JSON.stringify(JSON.parse(stdout.trim())) === stdout.trim();
     } catch {
       return false;
     }
   };
 
-  it('setup --json --help answers with JSON, never the usage text', async () => {
-    // Independent oracle: the same invocation with --help dropped.
-    const oracle = await runCli(repo, ['setup', '--json']);
-    expect(
-      parsesAsSingleJsonObject(oracle.stdout),
-      `fixture: "setup --json" itself did not answer with JSON: ${oracle.stdout}`,
-    ).toBe(true);
+  it('uninstall --json --yes --help leaves every installed file in place, never removes anything, and prints no usage prose to stdout', async () => {
+    const configHome = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-uninstall-help-'));
+    try {
+      await installRig();
+      const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+      const before = await snapshot(repo);
 
-    const run = await runCli(repo, ['setup', '--json', '--help']);
+      const run = await runCli(repo, ['uninstall', '--json', '--yes', '--help'], {
+        ...process.env,
+        HOME: configHome,
+        APPDATA: configHome,
+      });
 
-    expect(
-      parsesAsSingleJsonObject(run.stdout),
-      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
-    ).toBe(true);
-    expect(run.code, run.stderr).toBe(oracle.code);
+      expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+      expect(
+        stdoutIsEmptyOrOneJsonObject(run.stdout),
+        `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
+      ).toBe(true);
+      expect(run.stdout).not.toContain('Usage: create-agent-rig');
+      expect(run.stdout).not.toContain('agent-rig uninstall');
+      // The load-bearing assertion: nothing on disk moved at all.
+      expect(await snapshot(repo)).toEqual(before);
+      expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+    } finally {
+      await removeFixture(configHome);
+    }
   });
 
-  it('setup add <id> --json --help answers with JSON, never the usage text', async () => {
+  it('setup add <id> --json --yes --help writes no wiring at all, and never answers as a completed apply', async () => {
     // figma-mcp: the id integrations-cli.test.ts already exercises for `setup add`.
-    const oracle = await runCli(repo, ['setup', 'add', 'figma-mcp', '--json']);
-    expect(
-      parsesAsSingleJsonObject(oracle.stdout),
-      `fixture: "setup add figma-mcp --json" itself did not answer with JSON: ${oracle.stdout}`,
-    ).toBe(true);
+    const before = await snapshot(repo);
 
-    const run = await runCli(repo, ['setup', 'add', 'figma-mcp', '--json', '--help']);
+    const run = await runCli(repo, ['setup', 'add', 'figma-mcp', '--json', '--yes', '--help']);
 
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
     expect(
-      parsesAsSingleJsonObject(run.stdout),
-      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
+      stdoutIsEmptyOrOneJsonObject(run.stdout),
+      `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
     ).toBe(true);
-    expect(run.code, run.stderr).toBe(oracle.code);
+    // Never the shape a completed, applied `add` answers with.
+    if (run.stdout.trim() !== '') {
+      expect(JSON.parse(run.stdout)).not.toMatchObject({ outcome: 'written' });
+    }
+    // Neither file `setup add figma-mcp --yes --json` (no --help) writes —
+    // see integrations-cli.test.ts's "applies then removes an owned
+    // integration through the built CLI" — exists here at all.
+    await expect(readFile(abs('.rig/integrations.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(abs('.mcp.json'), 'utf8')).rejects.toThrow();
+    expect(await snapshot(repo)).toEqual(before);
   });
 
-  it('doctor --json -h answers with JSON, never the usage text', async () => {
-    const oracle = await runCli(repo, ['doctor', '--json']);
-    expect(
-      parsesAsSingleJsonObject(oracle.stdout),
-      `fixture: "doctor --json" itself did not answer with JSON: ${oracle.stdout}`,
-    ).toBe(true);
+  it('init --json --help writes nothing into an empty directory', async () => {
+    const before = await snapshot(repo);
 
+    const run = await runCli(repo, ['init', '--json', '--help']);
+
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+    // Never round 1's usage text (pinned above, in "init --help prints usage
+    // to stdout" — that pin is for `--help` WITHOUT `--json`).
+    expect(run.stdout).not.toContain('create-agent-rig init [--dry-run] [--layer workflow]');
+    expect(await snapshot(repo)).toEqual(before);
+  });
+
+  it('upgrade --json --help on an installed rig touches nothing — the manifest is byte-identical afterward', async () => {
+    await installRig();
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+    const before = await snapshot(repo);
+
+    const run = await runCli(repo, ['upgrade', '--json', '--help']);
+
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+    expect(run.stdout).not.toContain('create-agent-rig upgrade [--dry-run] [--yes]');
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+    expect(await snapshot(repo)).toEqual(before);
+  });
+
+  it('doctor --json -h answers with JSON or nothing, never the usage text', async () => {
     const run = await runCli(repo, ['doctor', '--json', '-h']);
 
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
     expect(
-      parsesAsSingleJsonObject(run.stdout),
-      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
+      stdoutIsEmptyOrOneJsonObject(run.stdout),
+      `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
     ).toBe(true);
-    expect(run.code, run.stderr).toBe(oracle.code);
+    expect(run.stdout).not.toContain('create-agent-rig doctor [--json]');
   });
 
-  it('uninstall --json --yes --help answers with JSON, never the usage text', async () => {
-    const oracle = await runCli(repo, ['uninstall', '--json', '--yes']);
-    expect(
-      parsesAsSingleJsonObject(oracle.stdout),
-      `fixture: "uninstall --json --yes" itself did not answer with JSON: ${oracle.stdout}`,
-    ).toBe(true);
+  it('setup --json --help answers with JSON or nothing, never the interactive-wizard usage text', async () => {
+    const run = await runCli(repo, ['setup', '--json', '--help']);
 
-    const run = await runCli(repo, ['uninstall', '--json', '--yes', '--help']);
-
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
     expect(
-      parsesAsSingleJsonObject(run.stdout),
-      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
+      stdoutIsEmptyOrOneJsonObject(run.stdout),
+      `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
     ).toBe(true);
-    expect(run.code, run.stderr).toBe(oracle.code);
+    expect(run.stdout).not.toContain('Choose a provider and harness interactively');
   });
 });
 
