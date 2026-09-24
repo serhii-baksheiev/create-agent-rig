@@ -235,7 +235,8 @@ const rebaseline = (ticket) => {
  * or when the write itself fails outright, never merely because verification
  * could not confirm the outcome, because a thrown write is retried by the
  * caller and lands twice. `reason` is `claim-stale` (refused before
- * mutating — the issue is closed or already labelled in progress),
+ * mutating — the issue is closed, already labelled in progress, or moved
+ * since selection),
  * `claim-contended` (mutated, but the read-back could not attribute the label
  * to this call) or `claim-unverifiable` (no selection snapshot, refused with
  * no request; a request failed; or the events page came back full enough that
