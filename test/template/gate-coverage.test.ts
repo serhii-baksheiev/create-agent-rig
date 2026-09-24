@@ -68,10 +68,16 @@ interface Coverage {
   stale: string[];
   /** Present only when the run cannot be judged at all — see the rule-7 block. */
   reason?: string;
+  /**
+   * RP-225 slice 2, advisory only: one of `'witnessed'` / `'unwitnessed'` /
+   * `'unavailable'` for every name in `launched` — never a member of `ok`,
+   * which this file's own "ok unchanged by witness" tests hold to.
+   */
+  witness?: Record<string, 'witnessed' | 'unwitnessed' | 'unavailable'>;
 }
 
 interface GateCoverageModule {
-  coverageOf(input: { records: unknown; headSha: unknown }): Coverage;
+  coverageOf(input: { records: unknown; headSha: unknown; events?: unknown }): Coverage;
 }
 
 const load = async (): Promise<GateCoverageModule> =>
@@ -80,8 +86,16 @@ const load = async (): Promise<GateCoverageModule> =>
 /**
  * The function under test, or a refusal that names what is missing — a bare
  * `undefined is not a function` says nothing about the contract being pinned.
+ *
+ * `events` defaults to `[]` — every call site written before RP-225 slice 2
+ * omits it, which is indistinguishable from "this run recorded no dispatch
+ * events at all" and must read as `witness: 'unavailable'`, never as a crash.
  */
-const coverageOf = async (records: JournalRecord[], headSha: string = HEAD): Promise<Coverage> => {
+const coverageOf = async (
+  records: JournalRecord[],
+  headSha: string = HEAD,
+  events: JournalRecord[] = [],
+): Promise<Coverage> => {
   const module = await load();
   if (typeof module.coverageOf !== 'function') {
     throw new Error(
@@ -90,7 +104,7 @@ const coverageOf = async (records: JournalRecord[], headSha: string = HEAD): Pro
         'came back.',
     );
   }
-  return module.coverageOf({ records, headSha });
+  return module.coverageOf({ records, headSha, events });
 };
 
 /** The commit the round is about, and the one it is not. */
@@ -1391,5 +1405,125 @@ describe('a reviewer name in a coverage refusal cannot repaint the operator’s 
     // and the reviewer stays identifiable, or the fix trades one unreadable
     // diagnosis for another: the payload arrives as its own visible words.
     expect(result.stderr).toContain('code-reviewer');
+  });
+});
+
+// RP-225 slice 2: `record-dispatch.mjs` journals a `dispatch-start` EVENT
+// (`.claude/scripts/run-journal.mjs`'s `events.jsonl`, not `decisions.jsonl`)
+// for every subagent Claude or Codex actually started. `coverageOf` gains one
+// ADVISORY answer from it — `witness` — never a member of `ok`: a reviewer a
+// gate never saw dispatched, yet whose verdict parsed and named the right
+// commit, still passes coverage exactly as it did before this slice: the run
+// journal is not itself proof a reviewer read the diff, only proof a
+// launcher tried to start it. `witness` says whether the mechanical half of
+// that trust — "did this process even start" — has evidence either way.
+describe('coverageOf — witness, an advisory cross-check against dispatch-start events', () => {
+  /** One event record, shaped exactly as `readRun(...).events` returns it. */
+  const dispatchStart = (seq: number, agentType: string): JournalRecord => ({
+    seq,
+    at: `2026-09-24T09:${String(seq).padStart(2, '0')}:00.000Z`,
+    kind: 'dispatch-start',
+    data: { schema: 1, agentType },
+  });
+
+  it('reports "unavailable" for every launched reviewer when the run recorded no dispatch events at all', async () => {
+    const coverage = await coverageOf(
+      journal(routed(['code-reviewer']), fanOut(['code-reviewer']), answered('code-reviewer')),
+      HEAD,
+      [],
+    );
+    expect(coverage.ok).toBe(true);
+    expect(coverage.witness).toEqual({ 'code-reviewer': 'unavailable' });
+  });
+
+  it('reports "witnessed" for a launched reviewer whose dispatch-start event lands before this round’s own fan-out record, with no earlier fan-out to bound it out', async () => {
+    // The dispatch-start's own seq (1) sits BEFORE this round's fan-out record
+    // (seq 2) — the case the design note calls out explicitly: the SubagentStart
+    // hook can fire, and its journal write can land, before `pr-ship` finishes
+    // recording its own `reviewer-fan-out` decision. The window is bounded by
+    // the fan-out BEFORE this round and the fan-out AFTER it, not by this
+    // round's own fan-out record, precisely so this ordering still counts.
+    const coverage = await coverageOf(
+      journal(routed(['code-reviewer']), fanOut(['code-reviewer']), answered('code-reviewer')),
+      HEAD,
+      [dispatchStart(1, 'code-reviewer')],
+    );
+    expect(coverage.ok).toBe(true);
+    expect(coverage.witness).toEqual({ 'code-reviewer': 'witnessed' });
+  });
+
+  it('reports "unwitnessed" when the only dispatch-start for that agentType belongs to the round before this one', async () => {
+    const coverage = await coverageOf(
+      journal(
+        fanOut(['code-reviewer'], OLDER), // seq 1 — the previous round's own fan-out
+        answered('code-reviewer', { headSha: OLDER }), // seq 2
+        routed(['code-reviewer']), // seq 3
+        fanOut(['code-reviewer'], HEAD), // seq 4 — this round's fan-out
+        answered('code-reviewer'), // seq 5 — answered for HEAD
+      ),
+      HEAD,
+      // seq 1 is NOT strictly greater than the previous fan-out's own seq (1),
+      // so it is excluded from this round's window even though its agentType
+      // matches — it belongs to round 1, which had its own fan-out at seq 1.
+      [dispatchStart(1, 'code-reviewer')],
+    );
+    expect(coverage.ok).toBe(true);
+    expect(coverage.witness).toEqual({ 'code-reviewer': 'unwitnessed' });
+  });
+
+  it('ok is unaffected by witness in either direction', async () => {
+    // witnessed, but NOT ok: the reviewer started and never answered.
+    const unansweredButWitnessed = await coverageOf(
+      journal(routed(['code-reviewer']), fanOut(['code-reviewer'])),
+      HEAD,
+      [dispatchStart(1, 'code-reviewer')],
+    );
+    expect(unansweredButWitnessed.witness).toEqual({ 'code-reviewer': 'witnessed' });
+    expect(unansweredButWitnessed.ok).toBe(false);
+
+    // ok, but NOT witnessed: the reviewer answered cleanly and no dispatch
+    // event was ever recorded for it.
+    const okButUnwitnessed = await coverageOf(
+      journal(routed(['code-reviewer']), fanOut(['code-reviewer']), answered('code-reviewer')),
+      HEAD,
+      [],
+    );
+    expect(okButUnwitnessed.witness).toEqual({ 'code-reviewer': 'unavailable' });
+    expect(okButUnwitnessed.ok).toBe(true);
+  });
+});
+
+// The CLI is the one place an operator actually reads a coverage answer —
+// `witness` has to reach that text, or the advisory the module computes is
+// invisible outside a unit test.
+describe('`verdict.mjs coverage` prints the witness answer', () => {
+  const runDirWithEvents = async (
+    decisions: JournalRecord[],
+    events: Array<{ kind: string; data: Record<string, unknown> }>,
+  ): Promise<string> => {
+    const dir = await runDirWith(decisions);
+    const { recordEvent } = (await import(pathToFileURL(runJournalPath).href)) as {
+      recordEvent(input: Record<string, unknown>): unknown;
+    };
+    events.forEach((event, index) => {
+      recordEvent({
+        runDir: dir,
+        kind: event.kind,
+        data: event.data,
+        now: `2026-08-18T10:${String(index).padStart(2, '0')}:00.000Z`,
+      });
+    });
+    return dir;
+  };
+
+  it('names an unwitnessed reviewer even when coverage is otherwise complete', async () => {
+    const runDir = await runDirWithEvents(
+      journal(routed(['code-reviewer']), fanOut(['code-reviewer']), answered('code-reviewer')),
+      [],
+    );
+    const result = await runCli(['coverage', HEAD], runDir);
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout.toLowerCase()).toMatch(/witness/);
+    expect(result.stdout).toContain('code-reviewer');
   });
 });

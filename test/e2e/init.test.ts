@@ -196,6 +196,54 @@ describe('create-agent-rig init --layer (RP-180)', () => {
     const result = await runInit(['--help']);
     expect(`${result.stdout}${result.stderr}`).not.toContain('--with-workflow');
   });
+
+  // RP-225 slice 2: `record-dispatch.mjs` sits under `.claude/hooks/` like the
+  // process-layer guards, but `layers.json` places it in the WORKFLOW set —
+  // its one reader is `lib/gate-coverage.mjs`'s `witness` answer, which only
+  // means anything once `pr-ship`/`loop` (and a run directory) exist. A
+  // Core-only install must not wire a `SubagentStart`/`SubagentStop` hook it
+  // never installed.
+  it('a Core-only init installs neither record-dispatch.mjs nor its SubagentStart/SubagentStop wiring', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runInit([])).code).toBe(0);
+
+    await expect(
+      readFile(path.join(repo, '.claude', 'hooks', 'record-dispatch.mjs')),
+    ).rejects.toThrow();
+
+    const settings = JSON.parse(
+      await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8'),
+    ) as { hooks: Record<string, unknown> };
+    expect(settings.hooks['SubagentStart']).toBeUndefined();
+    expect(settings.hooks['SubagentStop']).toBeUndefined();
+  });
+
+  it('--layer workflow installs record-dispatch.mjs and wires it on SubagentStart/SubagentStop', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const result = await runInit(['--layer', 'workflow']);
+    expect(result.code, result.stderr).toBe(0);
+
+    await expect(
+      readFile(path.join(repo, '.claude', 'hooks', 'record-dispatch.mjs'), 'utf8'),
+    ).resolves.toContain('record-dispatch');
+
+    const settings = JSON.parse(
+      await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8'),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number }> }>>;
+    };
+    for (const event of ['SubagentStart', 'SubagentStop']) {
+      const hooks = (settings.hooks[event] ?? []).flatMap((group) => group.hooks);
+      const dispatch = hooks.find((hook) => hook.command.includes('record-dispatch.mjs'));
+      expect(dispatch, `${event} has no record-dispatch.mjs entry`).toBeDefined();
+      expect(dispatch?.command).toContain('--harness=claude');
+      // Claude Code's own `timeout` field is seconds (`gate-stop-dod`'s own
+      // entry in this same file is `900`, i.e. 15 minutes) — the design caps
+      // this hook at 10s so an observe-only write never stalls a dispatch.
+      expect(dispatch?.timeout).toBeDefined();
+      expect(dispatch?.timeout).toBeLessThanOrEqual(10);
+    }
+  });
 });
 
 // RP-185: the wired `.codex/hooks.json` SessionStart command is the thing a

@@ -84,6 +84,12 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/queue/state.mjs',
   '.claude/scripts/queue/gate-rounds.mjs',
   '.claude/queue.json',
+  // RP-225 slice 2: the observe-only dispatch lifecycle hook. It lives under
+  // `.claude/hooks/` like the process-layer guards, but it is workflow-layer
+  // content — its one reader (`lib/gate-coverage.mjs`'s `witness` answer) is
+  // itself only meaningful once `pr-ship`/`loop` are installed, and a
+  // Core-only install has no run directory for it to write into at all.
+  '.claude/hooks/record-dispatch.mjs',
   // journal and the decision records that document workflow-only mechanisms
   'journal/README.md',
   'docs/decisions/gate-coverage.md',

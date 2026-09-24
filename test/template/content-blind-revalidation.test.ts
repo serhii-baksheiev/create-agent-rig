@@ -48,6 +48,11 @@ interface CommandResult {
   out: string;
 }
 
+// RP-255: every child this file spawns is bounded below the template project's
+// 15 s case budget and above the scripts' own 10 s gh bound, so a stalled child
+// fails the case naming itself instead of a bare case timeout.
+const RUN_CHILD_TIMEOUT_MS = 12_000;
+
 const run = (
   file: string,
   args: string[],
@@ -55,11 +60,25 @@ const run = (
   env: NodeJS.ProcessEnv,
 ): Promise<CommandResult> =>
   new Promise((resolve) => {
-    execFile(file, args, { cwd, env }, (error, stdout, stderr) => {
+    execFile(file, args, { cwd, env, timeout: RUN_CHILD_TIMEOUT_MS }, (error, stdout, stderr) => {
+      // `killed === true` alone also fires when stdout/stderr crossed the
+      // default `maxBuffer` — Node's async `execFile` kills the child on that
+      // overflow too, with `error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'`,
+      // not a genuine timeout (RP-255 code-reviewer B1, PR #321, advisory A3).
+      // Excluding that code keeps this annotation from mislabeling a maxBuffer
+      // kill as "timed out".
+      const timedOut =
+        (error as { killed?: boolean; code?: string } | null)?.killed === true &&
+        (error as { code?: string } | null)?.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
       resolve({
         code: error ? ((error as { code?: number }).code ?? 1) : 0,
         stdout,
-        out: stdout + stderr,
+        out:
+          stdout +
+          stderr +
+          (timedOut
+            ? `\n[run(): ${file} ${args.join(' ')} timed out after ${RUN_CHILD_TIMEOUT_MS} ms]`
+            : ''),
       });
     });
   });
@@ -367,14 +386,39 @@ const runPreflight = async (contract: unknown | null): Promise<Record<string, an
     await mkdir(path.join(root, '.rig'), { recursive: true });
     await writeFile(path.join(root, '.rig', 'revalidation.json'), JSON.stringify(contract));
   }
-  const result = await run(
-    process.execPath,
-    [path.join(root, '.claude', 'scripts', 'preflight.mjs'), '--json'],
-    root,
-    { ...process.env, RIG_RUN_DIR: undefined, GIT_DIR: undefined, GIT_WORK_TREE: undefined },
+  // RP-255: preflight.mjs always runs checkLastDeploy(), which shells out to
+  // the real, unauthenticated `gh run list` unstubbed — slow, and occasionally
+  // a one-time stall on a loaded runner (measured past a bare 30 s here before
+  // RP-221 gave `queue/index.mjs next` its own, more frequent call into `gh`).
+  // An empty run list is a legitimate answer ("no deploy run found yet") and
+  // does not change any assertion made against this helper's callers.
+  const stub = await stubCommand(
+    'gh',
+    `
+    if (args[0] === 'run' && args[1] === 'list') {
+      return { stdout: '[]\\n' };
+    }
+    return { stdout: '{}' };
+  `,
   );
-  expect(result.code, result.out).toBe(0);
-  return jsonOf(result);
+  try {
+    const result = await run(
+      process.execPath,
+      [path.join(root, '.claude', 'scripts', 'preflight.mjs'), '--json'],
+      root,
+      {
+        ...process.env,
+        ...stub.env,
+        RIG_RUN_DIR: undefined,
+        GIT_DIR: undefined,
+        GIT_WORK_TREE: undefined,
+      },
+    );
+    expect(result.code, result.out).toBe(0);
+    return jsonOf(result);
+  } finally {
+    stub.restore();
+  }
 };
 
 describe('the durable claim baseline at SELECT', () => {
@@ -857,6 +901,19 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
     ...over,
   });
 
+  // RP-255: `queue/index.mjs next` calls `adapter.currentActor()` (RP-221)
+  // regardless of the offline `options.issues` fixture used throughout this
+  // describe block — unstubbed, that reaches the real, unauthenticated `gh`
+  // binary on the runner's PATH (`gh api user`), which is slow and occasionally
+  // stalls the whole child on a loaded host. A fake login is all `currentActor`
+  // needs to resolve.
+  const GH_STUB_HANDLER = `
+    if (args[0] === 'api' && args[1] === 'user') {
+      return { stdout: 'gh-fake-login\\n' };
+    }
+    return { stdout: '{}' };
+  `;
+
   it('refuses SELECT when the transport returns exactly its 100-comment window without a total', async () => {
     const p = await project();
     const claimPath = path.join(p.root, '.rig', 'claims', '50.json');
@@ -865,18 +922,24 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
       JSON.stringify({ adapter: 'github-issues', options: { issues: [issue()] } }),
     );
 
-    const selection = await next(p);
+    const stub = await stubCommand('gh', GH_STUB_HANDLER);
+    p.env = { ...p.env, ...stub.env };
+    try {
+      const selection = await next(p);
 
-    expect(selection.code).toBe(2);
-    expect(jsonOf(selection).revalidation).toMatchObject({
-      ticket: '50',
-      result: 'UNVERIFIABLE',
-      action: 'unverifiable',
-    });
-    expect(JSON.stringify(jsonOf(selection).revalidation)).toMatch(
-      /comment.*(complete|cap|limit|window|total)/i,
-    );
-    expect(existsSync(claimPath)).toBe(false);
+      expect(selection.code).toBe(2);
+      expect(jsonOf(selection).revalidation).toMatchObject({
+        ticket: '50',
+        result: 'UNVERIFIABLE',
+        action: 'unverifiable',
+      });
+      expect(JSON.stringify(jsonOf(selection).revalidation)).toMatch(
+        /comment.*(complete|cap|limit|window|total)/i,
+      );
+      expect(existsSync(claimPath)).toBe(false);
+    } finally {
+      stub.restore();
+    }
   });
 
   it('never returns CURRENT for a tracked legacy baseline at the 100-comment cap', async () => {
@@ -889,7 +952,13 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
         options: { issues: [issue({ comments: comments(99) })] },
       }),
     );
-    expect((await next(p)).code).toBe(0);
+    const stub = await stubCommand('gh', GH_STUB_HANDLER);
+    p.env = { ...p.env, ...stub.env };
+    try {
+      expect((await next(p)).code).toBe(0);
+    } finally {
+      stub.restore();
+    }
     const legacyClaim = JSON.parse(await readFile(claimPath, 'utf8'));
     const cappedIds = comments(100)
       .map((comment) => comment.id)
