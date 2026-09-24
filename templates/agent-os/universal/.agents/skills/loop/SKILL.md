@@ -1012,7 +1012,30 @@ three poisons the only channel by which this project learns.
 - **Opening:** claim the item **before the first file is edited** — the same turn
   that creates the branch or worktree. Not when the PR opens. An item being worked
   while it still reads as available is invisible to the human and re-selectable by
-  the very next query. A claim answering `claimed: false` did NOT take the item:
+  the very next query. Before that claim, run
+  `node .claude/scripts/duplicate-work.mjs --ticket <item-id>` — but only when the
+  queue's item ids are stable tracker keys (`jira`, `github-issues`). Under
+  `plan-md` an item's id is a list position, not a key another controller could
+  cite back, so the check is not run there — say so rather than running it
+  against a position number.
+
+  **Any exit other than 0 is not clean.** Only exit 0 clears the claim:
+  - exit 2 (another branch or open PR already carries this id) — do not claim;
+    re-read the item and the other branch/PR, then either take the item over
+    through the tracker, or escalate it through the adapter so selection stops
+    offering it. On the escalate path only, also delete the uncommitted SELECT
+    baseline `next` wrote for this turn — it named an item you are not
+    claiming there; on the take-over path the baseline still names the item
+    you are about to claim, so it stays;
+  - exit 1 or 3 (usage refusal, or a source could not be checked) — fix the
+    cause first; do not claim on an exit the check itself calls not-clean.
+
+  Journal whichever branch fired. Pinned in the generator's
+  `test/template/duplicate-work.test.ts` (absent in a generated rig)
+  › "exit 2, verdict duplicate-work — another branch on origin carries the id"
+  and › "exit 3, verdict unverifiable — gh is missing/failing on a GitHub origin, never reported as clean".
+
+  A claim answering `claimed: false` did NOT take the item:
   the guarantee is per adapter, not one sentence for all three. The Jira adapter
   re-reads the item before its write and verifies the write after it, so no two
   controllers are ever both verified from one snapshot. The GitHub adapter does
