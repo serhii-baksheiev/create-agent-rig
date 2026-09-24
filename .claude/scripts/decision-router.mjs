@@ -1130,6 +1130,34 @@ const gitFiles = (base, head) => {
 };
 
 /**
+ * Does `ref` resolve to a commit in this repository? A fresh `init`/`create`
+ * checkout (`git init`, never `git clone`) never sets `origin/HEAD`, and
+ * handing that straight to `gitFiles`' `${base}...${head}` diff makes git
+ * print its own multi-line `fatal: ambiguous argument …` — useless to an
+ * operator outside this repository (RP-239 A3). This asks git directly with
+ * `rev-parse --verify --quiet` rather than matching that text, so a future
+ * change to git's own wording cannot silently break the diagnosis below.
+ *
+ * `true` when git itself could not even be asked (no `git` on PATH, a
+ * signal) — that is a spawn failure, not a "the ref does not exist" answer,
+ * so it is reported as "resolves" and left for `gitFiles`'s own catch to
+ * surface as the ordinary unreadable-diff message instead of being
+ * misreported as a missing ref.
+ */
+const refResolves = (ref) => {
+  try {
+    execFileSync('git', ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`], {
+      encoding: 'utf8',
+      env: withoutGitLocation(),
+      stdio: ['ignore', 'ignore', 'ignore'],
+    });
+    return true;
+  } catch (error) {
+    return typeof error?.status !== 'number';
+  }
+};
+
+/**
  * Was this file invoked directly?
  *
  * Compared by REALPATH on both sides, the same way every sibling CLI in this
@@ -1164,6 +1192,17 @@ if (invokedDirectly()) {
     process.exit(1);
   }
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+  if (args.files === null && !refResolves(args.base)) {
+    process.stderr.write(
+      `decision-router: the base revision "${args.base}" does not resolve to a commit in ` +
+        'this repository, so the changed-file diff cannot run. A fresh checkout (`git ' +
+        'init`, never `git clone`) never sets `origin/HEAD` — point it at a branch with ' +
+        '`git remote set-head origin --auto`, or pass an explicit `--base <ref>`. Nothing ' +
+        'was routed — treat this as the expensive lane.\n',
+    );
+    process.exit(1);
+  }
 
   let files;
   try {
