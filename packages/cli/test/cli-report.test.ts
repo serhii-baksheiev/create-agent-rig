@@ -62,9 +62,12 @@ interface CliRun {
   stderr: string;
 }
 
-const runCli = async (cwd: string, args: string[]): Promise<CliRun> => {
+const runCli = async (cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<CliRun> => {
   try {
-    const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], { cwd });
+    const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], {
+      cwd,
+      ...(env ? { env } : {}),
+    });
     return { code: 0, stdout, stderr };
   } catch (error) {
     const e = error as { code?: number; stdout?: string; stderr?: string };
@@ -939,5 +942,138 @@ describe('a no-op upgrade still reports the manifest write (RP-239 A6)', () => {
     // But the same line must say the manifest was rewritten, not leave a
     // reader thinking this run did nothing at all.
     expect(run.stdout).toMatch(/Wrote 0 files\.[^\n]*manifest/i);
+  });
+});
+
+// RP-239 A1, round 2 (code-reviewer HOLD on PR #317, r1): `wantsHelp` ran
+// before `--json` handling, so `setup`/`doctor`/`uninstall --json --help`
+// printed the subcommand's usage PROSE instead of the JSON object the
+// contract promises under `--json` (docs/command-contract.md's Output rule,
+// "Under --json, stdout carries exactly one JSON object and nothing else").
+// Loop decision: when `--json` is among a subcommand's arguments, the help
+// short-circuit does not apply at all — the command answers exactly as it
+// would without `--help`/`-h` present (its own JSON refusal or JSON answer).
+// Each test below computes that expectation from an INDEPENDENT invocation —
+// the same command with the help flag dropped — rather than a hard-coded
+// exit code, so the pin cannot silently drift from what the command actually
+// does today.
+describe('`--json` beats `--help` on a subcommand (RP-239 A1, round 2)', () => {
+  /**
+   * `docs/command-contract.md`'s Output rule, checked directly: `stdout`,
+   * trimmed, must parse as JSON and nothing else — any leading or trailing
+   * prose (such as the subcommand usage text) breaks `JSON.parse` on the
+   * whole trimmed string, which is exactly the failure mode this pins.
+   */
+  const parsesAsSingleJsonObject = (stdout: string): boolean => {
+    try {
+      JSON.parse(stdout.trim());
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  it('setup --json --help answers with JSON, never the usage text', async () => {
+    // Independent oracle: the same invocation with --help dropped.
+    const oracle = await runCli(repo, ['setup', '--json']);
+    expect(
+      parsesAsSingleJsonObject(oracle.stdout),
+      `fixture: "setup --json" itself did not answer with JSON: ${oracle.stdout}`,
+    ).toBe(true);
+
+    const run = await runCli(repo, ['setup', '--json', '--help']);
+
+    expect(
+      parsesAsSingleJsonObject(run.stdout),
+      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
+    ).toBe(true);
+    expect(run.code, run.stderr).toBe(oracle.code);
+  });
+
+  it('setup add <id> --json --help answers with JSON, never the usage text', async () => {
+    // figma-mcp: the id integrations-cli.test.ts already exercises for `setup add`.
+    const oracle = await runCli(repo, ['setup', 'add', 'figma-mcp', '--json']);
+    expect(
+      parsesAsSingleJsonObject(oracle.stdout),
+      `fixture: "setup add figma-mcp --json" itself did not answer with JSON: ${oracle.stdout}`,
+    ).toBe(true);
+
+    const run = await runCli(repo, ['setup', 'add', 'figma-mcp', '--json', '--help']);
+
+    expect(
+      parsesAsSingleJsonObject(run.stdout),
+      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
+    ).toBe(true);
+    expect(run.code, run.stderr).toBe(oracle.code);
+  });
+
+  it('doctor --json -h answers with JSON, never the usage text', async () => {
+    const oracle = await runCli(repo, ['doctor', '--json']);
+    expect(
+      parsesAsSingleJsonObject(oracle.stdout),
+      `fixture: "doctor --json" itself did not answer with JSON: ${oracle.stdout}`,
+    ).toBe(true);
+
+    const run = await runCli(repo, ['doctor', '--json', '-h']);
+
+    expect(
+      parsesAsSingleJsonObject(run.stdout),
+      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
+    ).toBe(true);
+    expect(run.code, run.stderr).toBe(oracle.code);
+  });
+
+  it('uninstall --json --yes --help answers with JSON, never the usage text', async () => {
+    const oracle = await runCli(repo, ['uninstall', '--json', '--yes']);
+    expect(
+      parsesAsSingleJsonObject(oracle.stdout),
+      `fixture: "uninstall --json --yes" itself did not answer with JSON: ${oracle.stdout}`,
+    ).toBe(true);
+
+    const run = await runCli(repo, ['uninstall', '--json', '--yes', '--help']);
+
+    expect(
+      parsesAsSingleJsonObject(run.stdout),
+      `stdout was not exactly one JSON object: ${JSON.stringify(run.stdout)}`,
+    ).toBe(true);
+    expect(run.code, run.stderr).toBe(oracle.code);
+  });
+});
+
+// RP-239 A1, round 2 — the second HOLD blocker: `memory` checked the WHOLE
+// argv for `--help`/`-h`, so it intercepted `memory load --help` too, never
+// letting it reach Memory. Loop decision: only a bare `memory --help`/`-h`
+// with NO verb (the help flag is the first argument after `memory`) prints
+// the rig's own usage; a help flag anywhere after a verb passes through to
+// Memory verbatim, exactly as it did before this PR.
+describe('`memory <verb> --help` passes through to Memory, not the rig usage (RP-239 A1, round 2)', () => {
+  it('memory load --help does not print the rig usage, and reaches the Memory passthrough path', async () => {
+    // Isolated from whatever subsystems manifest this host actually has — the
+    // same envFor(tmp) idiom memory.test.ts uses, so "no manifest installed"
+    // is guaranteed by the fixture rather than incidental to this machine.
+    const configHome = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-memory-'));
+    try {
+      const run = await runCli(repo, ['memory', 'load', '--help'], {
+        ...process.env,
+        HOME: configHome,
+        APPDATA: configHome,
+      });
+
+      // Never the rig's own subcommand usage line (pinned above, in
+      // "`--help` on a subcommand (RP-239 A1)" › "memory --help …").
+      expect(run.stdout).not.toContain('create-agent-rig memory <doctor|load> [args…]');
+      // The exact, hermetic "no manifest on this machine" answer `runMemory`
+      // gives — the same payload memory.test.ts's own "reports
+      // unsupported/absent and never spawns Memory when this machine has no
+      // manifest" fixture pins — reachable only if `--help` passed through
+      // to Memory's own dispatch (the manifest gate, which runs before any
+      // verb-specific handling) instead of being intercepted by the rig.
+      expect(run.code, run.stderr).toBe(0);
+      expect(run.stdout).toBe(
+        `${JSON.stringify({ schemaVersion: 1, result: 'unsupported', reason: 'absent' })}\n`,
+      );
+    } finally {
+      await removeFixture(configHome);
+    }
   });
 });

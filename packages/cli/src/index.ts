@@ -155,6 +155,22 @@ function wantsHelp(rawArgs: readonly string[]): boolean {
 }
 
 /**
+ * RP-239 finding A1, round 2 (code-reviewer HOLD on PR #317, r1): the help
+ * short-circuit above must never beat `--json` — `doctor --json --help`,
+ * for instance, is `docs/command-contract.md`'s Output rule ("Under --json,
+ * stdout carries exactly one JSON object and nothing else"), and printing
+ * the subcommand's usage prose there breaks it. So `--help`/`-h` is dropped
+ * from the args a subcommand's own parsing ever sees whenever `--json` is
+ * also present, rather than merely skipping the short-circuit — the command
+ * then answers exactly as it would with the help flag absent (its own JSON
+ * refusal or JSON answer), never an "Unknown option" failure either.
+ */
+function stripHelpIfJson(rawArgs: readonly string[]): string[] {
+  if (!rawArgs.includes('--json')) return [...rawArgs];
+  return rawArgs.filter((arg) => arg !== '--help' && arg !== '-h');
+}
+
+/**
  * The `Also: create-agent-rig <command> …` block(s) already in {@link USAGE}
  * for one subcommand, reused rather than duplicated — `setup` has several
  * (the legacy `--memory-root` path, `list`, the bare wizard, `add`, `apply`,
@@ -174,6 +190,7 @@ function subcommandUsage(command: string): string {
 }
 
 async function runSetup(rawArgs: string[]): Promise<number> {
+  rawArgs = stripHelpIfJson(rawArgs);
   if (wantsHelp(rawArgs)) {
     process.stdout.write(subcommandUsage('setup'));
     return 0;
@@ -307,6 +324,7 @@ function resolveLayerFlag(
 }
 
 async function runInit(rawArgs: string[]): Promise<number> {
+  rawArgs = stripHelpIfJson(rawArgs);
   if (wantsHelp(rawArgs)) {
     process.stdout.write(subcommandUsage('init'));
     return 0;
@@ -609,6 +627,7 @@ function renderAgentsRescueNotice(status: AgentsRescueStatus, isDryRun: boolean)
 }
 
 async function runUpgrade(rawArgs: string[]): Promise<number> {
+  rawArgs = stripHelpIfJson(rawArgs);
   if (wantsHelp(rawArgs)) {
     process.stdout.write(subcommandUsage('upgrade'));
     return 0;
@@ -902,6 +921,7 @@ function renderUninstallPlan(repoDir: string, plan: UninstallPlan): string {
 }
 
 async function runUninstall(rawArgs: string[]): Promise<number> {
+  rawArgs = stripHelpIfJson(rawArgs);
   if (wantsHelp(rawArgs)) {
     process.stdout.write(subcommandUsage('uninstall'));
     return 0;
@@ -1191,7 +1211,7 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 
 async function main(): Promise<number> {
   if (process.argv[2] === 'doctor') {
-    const args = process.argv.slice(3);
+    const args = stripHelpIfJson(process.argv.slice(3));
     if (wantsHelp(args)) {
       process.stdout.write(subcommandUsage('doctor'));
       return 0;
@@ -1218,7 +1238,14 @@ async function main(): Promise<number> {
     // → exit 4 on a foreign major → doctor/load passed through (`load` gains a
     // default `--timeout-ms` when the caller names none — commands/memory.ts).
     const memoryArgs = process.argv.slice(3);
-    if (wantsHelp(memoryArgs)) {
+    // RP-239 finding A1, round 2 (code-reviewer HOLD on PR #317, r1): checking
+    // the WHOLE argv (as `wantsHelp` does everywhere else) intercepted
+    // `memory load --help` too, never letting it reach Memory's own dispatch.
+    // The rig's usage is printed only for a BARE `memory --help`/`-h` — the
+    // help flag is the first argument after `memory`, i.e. no verb was
+    // given at all; a help flag anywhere after a verb passes through to
+    // Memory verbatim, exactly as every other argument does.
+    if (memoryArgs[0] === '--help' || memoryArgs[0] === '-h') {
       process.stdout.write(subcommandUsage('memory'));
       return 0;
     }
