@@ -61,7 +61,15 @@ const run = (
 ): Promise<CommandResult> =>
   new Promise((resolve) => {
     execFile(file, args, { cwd, env, timeout: RUN_CHILD_TIMEOUT_MS }, (error, stdout, stderr) => {
-      const timedOut = (error as { killed?: boolean } | null)?.killed === true;
+      // `killed === true` alone also fires when stdout/stderr crossed the
+      // default `maxBuffer` — Node's async `execFile` kills the child on that
+      // overflow too, with `error.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER'`,
+      // not a genuine timeout (RP-255 code-reviewer B1, PR #321, advisory A3).
+      // Excluding that code keeps this annotation from mislabeling a maxBuffer
+      // kill as "timed out".
+      const timedOut =
+        (error as { killed?: boolean; code?: string } | null)?.killed === true &&
+        (error as { code?: string } | null)?.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
       resolve({
         code: error ? ((error as { code?: number }).code ?? 1) : 0,
         stdout,

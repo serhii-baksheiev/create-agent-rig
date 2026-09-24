@@ -152,12 +152,12 @@ export const blocksIndex = (issues) => {
 
 /**
  * RP-255: every `gh` child this adapter spawns is bounded below this project's
- * own 15 s vitest testTimeout. Measured on hosted windows-e2e, a healthy cold
- * `gh` start runs ~5-7 s steady; the same runner stalled past 15 s in 4 of 11
- * `currentActor` runs. 10 s sits comfortably above a healthy start and
- * strictly below the case budget, so a hung `gh` fails the child closed
- * instead of taking the whole vitest case (and, unattended, the whole
- * selection) down with it.
+ * own 15 s vitest testTimeout. Measured on hosted windows-e2e (2026-09-24,
+ * master run 36007012256), a healthy cold `gh` start runs ~5-7 s steady; the
+ * same runner stalled past 15 s in 4 of 11 `currentActor` runs. 10 s sits
+ * comfortably above a healthy start and strictly below the case budget, so a
+ * hung `gh` fails the child closed instead of taking the whole vitest case
+ * (and, unattended, the whole selection) down with it.
  */
 export const GH_CHILD_TIMEOUT_MS = 10_000;
 
@@ -177,7 +177,19 @@ export const GH_CHILD_TIMEOUT_MS = 10_000;
  * node's bare "Command failed" — every caller that already turns a thrown
  * error into a fail-closed result (`currentActor`) keeps doing so; every
  * other caller still throws, exactly as it did before this child could time
- * out at all.
+ * out at all. Only `error.code === 'ETIMEDOUT'` is a genuine timeout — an
+ * oversized response (`ENOBUFS`, over `execFileSync`'s default 1 MiB
+ * `maxBuffer`) or the child dying on its own external signal also sets
+ * `error.signal`, and both are rethrown unchanged rather than reported as a
+ * timeout (code-reviewer B1, PR #321).
+ *
+ * This bound also covers the mutating calls — `issue edit --add-label`,
+ * `issue close`, `issue comment`, `issue create` — not only the reads. A
+ * mutating call killed at the bound may already have applied its write
+ * before the child died, so a thrown timeout from one of those call sites is
+ * an ambiguous outcome for the caller: it cannot tell "nothing happened" from
+ * "the write landed and the confirmation was lost" (see `claim()`'s and
+ * `close()`'s own docs for how each caller currently handles that).
  */
 const ghText = (args) => {
   try {
@@ -187,7 +199,7 @@ const ghText = (args) => {
       timeout: GH_CHILD_TIMEOUT_MS,
     });
   } catch (error) {
-    if (error?.signal || error?.killed) {
+    if (error?.code === 'ETIMEDOUT') {
       throw new Error(
         `gh ${args.join(' ')} did not complete within ${GH_CHILD_TIMEOUT_MS}ms and was killed`,
         { cause: error },

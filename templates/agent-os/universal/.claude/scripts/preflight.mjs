@@ -60,7 +60,12 @@ import { withoutGitLocation } from './git-env.mjs';
  * 10 s sits comfortably above a healthy start and strictly below this
  * project's 15 s vitest testTimeout, so a hung child fails closed instead of
  * taking the whole preflight run down with it. `run()` is shared with the
- * `git` probes above it; bounding the one helper bounds both.
+ * `git` probes BELOW it (`checkDefaultBranchFresh`'s `fetch`/`rev-parse`
+ * calls); bounding the one helper bounds both. That means a `git fetch` slow
+ * enough to cross this same 10 s bound is caught the same way a stalled `gh`
+ * is: `checkDefaultBranchFresh` reports `unknown` (CAUTION), never GO — a
+ * fetch that merely ran long is indistinguishable here from one that could
+ * not run at all, and both must read as "could not confirm", not as a pass.
  */
 export const GH_CHILD_TIMEOUT_MS = 10_000;
 
@@ -73,7 +78,7 @@ const run = (command, args) => {
       timeout: GH_CHILD_TIMEOUT_MS,
     }).trim();
   } catch (error) {
-    if (error?.signal || error?.killed) {
+    if (error?.code === 'ETIMEDOUT') {
       throw new Error(
         `${command} ${args.join(' ')} did not complete within ${GH_CHILD_TIMEOUT_MS}ms and was killed`,
         { cause: error },

@@ -546,12 +546,12 @@ describe("the createProject test's own git children (RP-248)", () => {
 // bare literal — strictly below this project's testTimeout, so a hung `gh`
 // fails the child closed instead of taking the whole vitest case down with it.
 //
-// Deliberately structural, not a stub-`gh`-and-wait behavioural test: the
-// bound's own value is not yet chosen (that is the implementer's call), so a
-// behavioural case would have to either guess a wait comfortably below it —
-// unsound before the constant exists — or sit close to the file's own 15 s
-// case budget, which is exactly the load-sensitive shape this whole file
-// exists to avoid reintroducing on a 7 GB, already-contended runner.
+// Deliberately structural, not a stub-`gh`-and-wait behavioural test: a
+// behavioural case would have to either guess a wait comfortably below the
+// bound — unsound, since the bound is only checked structurally here, not
+// re-derived — or sit close to the file's own 15 s case budget, which is
+// exactly the load-sensitive shape this whole file exists to avoid
+// reintroducing on a 7 GB, already-contended runner.
 const PRODUCTION_GH_CHILD_BOUND_DECLARATION =
   /^export const ([A-Z][A-Z0-9_]*(?:_BOUND_MS|_CHILD_TIMEOUT_MS)) = (\d[\d_]*);$/m;
 
@@ -638,7 +638,7 @@ describe('the gh child processes in github-issues.mjs and preflight.mjs carry a 
   });
 });
 
-// RP-255 (advisory extension of RP-212/RP-248): content-blind-revalidation.test.ts
+// RP-255 (required, in the same shape as RP-212/RP-248): content-blind-revalidation.test.ts
 // spawns every fixture selection and revalidation through its own shared
 // `run()` helper (`execFile`, no `timeout` option today), which is exactly the
 // child that reached the real, unstubbed `gh` before the `stubCommand('gh', …)`
