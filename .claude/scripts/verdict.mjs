@@ -121,8 +121,9 @@ if (subcommand === 'coverage') {
   }
 
   let decisions;
+  let events;
   try {
-    ({ decisions } = readRun({ runDir }));
+    ({ decisions, events } = readRun({ runDir }));
   } catch (error) {
     refuse(
       `verdict: the run journal in ${runDir} could not be read, so coverage was not ` +
@@ -130,12 +131,24 @@ if (subcommand === 'coverage') {
     );
   }
 
-  const coverage = coverageOf({ records: decisions, headSha: commit });
+  const coverage = coverageOf({ records: decisions, headSha: commit, events });
+
+  // RP-225 slice 2, advisory only — never affects the exit code or `coverage.ok`.
+  // Named per reviewer so an operator sees exactly which launched name has no
+  // corresponding `dispatch-start` in the run journal, not just a count.
+  const witnessLine =
+    coverage.witness && Object.keys(coverage.witness).length > 0
+      ? `  witness: ${Object.entries(coverage.witness)
+          .map(([name, status]) => `${safeForDiagnosis(name)}=${status}`)
+          .join(', ')}\n`
+      : '';
+
   if (coverage.ok) {
     process.stdout.write(
       `verdict: coverage complete for ${safeForDiagnosis(commit)} — ` +
         `${coverage.launched.length} reviewer(s) launched, every one of them answered for ` +
-        'that commit.\n',
+        'that commit.\n' +
+        witnessLine,
     );
     process.exit(0);
   }
@@ -151,7 +164,8 @@ if (subcommand === 'coverage') {
   }
   refuse(
     `verdict: the fan-out for ${safeForDiagnosis(commit)} is not covered.\n` +
-      `${lines.join('\n')}\n`,
+      `${lines.join('\n')}\n` +
+      witnessLine,
   );
 }
 

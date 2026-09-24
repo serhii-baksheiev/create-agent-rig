@@ -90,6 +90,7 @@
     ".claude/scripts/queue/state.mjs",
     ".claude/scripts/queue/gate-rounds.mjs",
     ".claude/queue.json",
+    ".claude/hooks/record-dispatch.mjs",
     ".rig/revalidation.json",
     "journal/README.md",
     "docs/decisions/gate-coverage.md",

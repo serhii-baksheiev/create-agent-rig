@@ -43,6 +43,19 @@
  * The journal cannot say whether this round's fan-out record is missing or the
  * router was re-run after a completed fan-out. Both readings refuse coverage;
  * re-running the fan-out for this head records the boundary either one needs.
+ *
+ * RP-225 slice 2 adds one ADVISORY answer, `witness`: for every name in
+ * `launched`, whether the run journal's `events.jsonl` (never `decisions.jsonl`)
+ * carries a `dispatch-start` record — written by `record-dispatch.mjs`, the
+ * workflow-layer `SubagentStart`/`SubagentStop` hook — naming that reviewer's
+ * `agentType`, in the window after the fan-out BEFORE
+ * this round and no earlier. It never affects `ok`: a verdict that parsed and
+ * named the right commit is coverage exactly as it was before this slice,
+ * whether or not a launcher's own hook happened to fire. `witness` says whether
+ * the mechanical half of that trust — "did this process even start" — has
+ * evidence either way: `'unavailable'` when the run recorded no dispatch-start
+ * events at all (not the same as zero witnesses — that would read as "checked
+ * and found none"), else `'witnessed'` or `'unwitnessed'` per reviewer.
  */
 
 /** The gate name `pr-ship` writes its fan-out under. */
@@ -122,19 +135,63 @@ const sameCommit = (one, other) => {
   return longer.startsWith(shorter);
 };
 
+/** The `kind` `record-dispatch.mjs` writes on `SubagentStart`. */
+const DISPATCH_START = 'dispatch-start';
+
+/**
+ * The advisory `witness` answer for every name in `launched` (see the module
+ * header). `decisions` is the run's decision journal, in journal order —
+ * needed only to find the fan-out BEFORE this round, which bounds the window
+ * a dispatch-start event has to fall in to count as evidence for THIS round
+ * rather than the one before it. `events` is `readRun(...).events`.
+ */
+const witnessOf = (decisions, events, launched) => {
+  if (launched.length === 0) return {};
+
+  const evts = Array.isArray(events) ? events : [];
+  const anyDispatch = evts.some((event) => event?.kind === DISPATCH_START);
+  if (!anyDispatch) {
+    return Object.fromEntries(launched.map((name) => [name, 'unavailable']));
+  }
+
+  // The fan-out seqs, in journal order (ascending, since `decisions` is). The
+  // second-to-last is the fan-out BEFORE this round; a run with only one
+  // fan-out has no earlier boundary, so the window starts at the beginning.
+  const fanOutSeqs = decisions
+    .filter((record) => gateOf(record) === FAN_OUT && Number.isInteger(record?.seq))
+    .map((record) => record.seq);
+  const previousFanOutSeq = fanOutSeqs.length >= 2 ? fanOutSeqs[fanOutSeqs.length - 2] : 0;
+
+  const witness = {};
+  for (const name of launched) {
+    const seen = evts.some(
+      (event) =>
+        event?.kind === DISPATCH_START &&
+        Number.isInteger(event?.seq) &&
+        event.seq > previousFanOutSeq &&
+        event?.data?.agentType === name,
+    );
+    witness[name] = seen ? 'witnessed' : 'unwitnessed';
+  }
+  return witness;
+};
+
 /**
  * Which reviewers are outstanding for `headSha`, and in which of the four ways.
  *
- * @param {{ records?: unknown, headSha?: unknown }} input
+ * @param {{ records?: unknown, headSha?: unknown, events?: unknown }} input
  *   `records` is `readRun(...).decisions` — the run's decision journal, in
- *   journal order. `headSha` is the commit the round is about.
+ *   journal order. `headSha` is the commit the round is about. `events` is
+ *   `readRun(...).events` — omitted by every call site written before RP-225
+ *   slice 2, which reads as `witness: 'unavailable'` for every launched name.
  * @returns {{
  *   ok: boolean, routed: string[], launched: string[],
  *   neverLaunched: string[], unanswered: string[],
  *   unattributed: string[], stale: string[], reason?: string,
+ *   witness?: Record<string, 'witnessed'|'unwitnessed'|'unavailable'>,
  * }}
  */
-export const coverageOf = ({ records, headSha } = {}) => {
+export const coverageOf = ({ records, headSha, events } = {}) => {
   const journal = Array.isArray(records) ? records : [];
   const target = typeof headSha === 'string' ? headSha : '';
 
@@ -289,6 +346,7 @@ export const coverageOf = ({ records, headSha } = {}) => {
     unanswered,
     unattributed,
     stale,
+    witness: witnessOf(journal, events, launched),
     // Unlike the missing fan-out, this one still has a launched set and answers
     // to compare, so the four lists are computed and returned — the reason says
     // which half of the check could not run, rather than replacing the half that

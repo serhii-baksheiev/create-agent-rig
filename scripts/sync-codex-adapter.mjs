@@ -155,15 +155,28 @@ function codexAgent(markdown, source, profile) {
 
 const hookFileOf = (command) => command.match(/\.claude\/hooks\/([A-Za-z0-9._-]+\.mjs)/)?.[1];
 
+/**
+ * `record-dispatch.mjs` is the one hook whose Claude command carries an
+ * argv flag (`--harness=claude`) the projection has to keep — every other
+ * hook here takes no argument, so `portableHookCommand`/`windowsHookCommand`
+ * have never needed to preserve one. Codex is a different harness, so the
+ * flag is rewritten rather than carried over verbatim: RP-225 slice 2.
+ */
+const isRecordDispatch = (hook) => hookFileOf(hook) === 'record-dispatch.mjs';
+
 function portableHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a portable Codex hook command from: ${command}`);
-  return `repoRoot="$(git rev-parse --show-toplevel)" && CLAUDE_PROJECT_DIR="$repoRoot" node "$repoRoot/${hook}"`;
+  const base = `repoRoot="$(git rev-parse --show-toplevel)" && CLAUDE_PROJECT_DIR="$repoRoot" node "$repoRoot/${hook}"`;
+  return isRecordDispatch(command) ? `${base} --harness=codex` : base;
 }
 
 function windowsHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a Windows Codex hook command from: ${command}`);
+  const argumentsLine = isRecordDispatch(command)
+    ? "$startInfo.Arguments = '\"' + $hookPath + '\" --harness=codex'"
+    : "$startInfo.Arguments = '\"' + $hookPath + '\"'";
   // PowerShell owns its stdin, so `& node` receives an empty stream. Copy the
   // original bytes into a child process explicitly; parsing and re-encoding the
   // JSON here would make the wrapper a second implementation of the hook input.
@@ -175,7 +188,7 @@ function windowsHookCommand(command) {
     `$hookPath = Join-Path $repoRoot '${hook}'`,
     '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
     "$startInfo.FileName = 'node'",
-    "$startInfo.Arguments = '\"' + $hookPath + '\"'",
+    argumentsLine,
     '$startInfo.UseShellExecute = $false',
     '$startInfo.RedirectStandardInput = $true',
     '$child = [System.Diagnostics.Process]::Start($startInfo)',
