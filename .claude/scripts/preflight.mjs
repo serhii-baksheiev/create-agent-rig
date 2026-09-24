@@ -53,12 +53,40 @@ export const UNCHECKED = [
 export { withoutGitLocation } from './git-env.mjs';
 import { withoutGitLocation } from './git-env.mjs';
 
-const run = (command, args) =>
-  execFileSync(command, args, {
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: withoutGitLocation(),
-  }).trim();
+/**
+ * RP-255: `checkLastDeploy` shells out to `gh run list` through this same
+ * helper, with no bound of its own — measured on hosted windows-e2e, a
+ * healthy cold `gh` start runs ~5-7 s steady, stalling past 15 s under load.
+ * 10 s sits comfortably above a healthy start and strictly below this
+ * project's 15 s vitest testTimeout, so a hung child fails closed instead of
+ * taking the whole preflight run down with it. `run()` is shared with the
+ * `git` probes BELOW it (`checkDefaultBranchFresh`'s `fetch`/`rev-parse`
+ * calls); bounding the one helper bounds both. That means a `git fetch` slow
+ * enough to cross this same 10 s bound is caught the same way a stalled `gh`
+ * is: `checkDefaultBranchFresh` reports `unknown` (CAUTION), never GO — a
+ * fetch that merely ran long is indistinguishable here from one that could
+ * not run at all, and both must read as "could not confirm", not as a pass.
+ */
+export const GH_CHILD_TIMEOUT_MS = 10_000;
+
+const run = (command, args) => {
+  try {
+    return execFileSync(command, args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: withoutGitLocation(),
+      timeout: GH_CHILD_TIMEOUT_MS,
+    }).trim();
+  } catch (error) {
+    if (error?.code === 'ETIMEDOUT') {
+      throw new Error(
+        `${command} ${args.join(' ')} did not complete within ${GH_CHILD_TIMEOUT_MS}ms and was killed`,
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+};
 
 /** The kill switch must be absent before a run starts. */
 export const checkKillSwitch = () => {

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -51,6 +51,10 @@ type Check = {
   reason?: string;
   detail?: string;
   fix?: string;
+  // RP-239 A2: `rig-owned-files` alone carries this — a per-reason count that
+  // lets a caller see absence and content drift at once instead of one
+  // masking the other by precedence. No paths in it: that is `fix`'s job.
+  counts?: { absent: number; contentDrift: number; lineDrift: number; unreadable: number };
 };
 
 type Report = {
@@ -340,6 +344,114 @@ describe('aggregated doctor (RP-21)', () => {
     expect(body.checks).not.toContainEqual(
       expect.objectContaining({ id: 'rig-owned-files', status: 'ok', reason: 'pristine' }),
     );
+  });
+
+  // RP-239 A2 (onboarding-friction triage, comment 20140): a real pilot's
+  // `rig-owned-files` had one file missing and a different file
+  // content-drifted at the same time, and the report said only
+  // `absent-owned-file` — the precedence order in `rigChecks` silently threw
+  // the content-drift information away, and neither reason named which paths
+  // were affected. `docs/command-contract.md`'s payload rule ("no file paths
+  // appear in any JSON this contract defines, except in a `fix` field")
+  // settles where a path may legally go once the check does name one.
+  describe('rig-owned-files distinguishes every drift reason present, and names paths only in fix (RP-239 A2)', () => {
+    it('counts an absent file and a content-drifted file separately instead of one masking the other', async () => {
+      await initProject(repo, {});
+      const drifted = path.join(repo, 'AGENTS.md');
+      await writeFile(drifted, `${await readFile(drifted, 'utf8')}\nmanual change\n`);
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      // Truthful and unchanged: a run with drift is still a warning, never a
+      // failure, and never changes the exit code.
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.status).toBe('warn');
+
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+      expect(check, 'fixture: no rig-owned-files check in this report').toBeTruthy();
+      expect(check?.status).toBe('warn');
+      // 🔴 Before this fix, `reason` alone could report only ONE of the two —
+      // `absent-owned-file`, by precedence — leaving the content-drifted file
+      // invisible to anything reading the payload. Both are counted now.
+      expect(check?.counts).toEqual({ absent: 1, contentDrift: 1, lineDrift: 0, unreadable: 0 });
+    });
+
+    it('names the specific absent and drifted paths only in the fix text, never in detail or reason', async () => {
+      await initProject(repo, {});
+      const drifted = path.join(repo, 'AGENTS.md');
+      await writeFile(drifted, `${await readFile(drifted, 'utf8')}\nmanual change\n`);
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      // Rule (h): a file path appears in NO field of a doctor record but `fix`.
+      expect(check?.reason ?? '').not.toContain('AGENTS.md');
+      expect(check?.reason ?? '').not.toContain('CLAUDE.md');
+      expect(check?.detail ?? '').not.toContain('AGENTS.md');
+      expect(check?.detail ?? '').not.toContain('CLAUDE.md');
+      expect(check?.fix ?? '').toContain('AGENTS.md');
+      expect(check?.fix ?? '').toContain('CLAUDE.md');
+    });
+
+    // Advisory A1, PR #322 round-1 code-review report: the strip that removes
+    // `ownedFilePaths` from the emitted record (`doctor.ts`'s
+    // `checks.map(({ rigVersion, ownedFilePaths, ...check }) => ...)`) had no
+    // test of its own. Every one of the tests above still passes if that
+    // destructure is deleted and `ownedFilePaths` rides along under its own
+    // key, because none of them assert the record's key SET — only that a
+    // path is absent from `reason`/`detail` and present in `fix`. This is a
+    // regression pin, not new behaviour: the strip already exists, so this is
+    // expected to pass today and to start failing the moment it regresses.
+    it('carries exactly the documented record keys plus counts — no ownedFilePaths key, and no key but fix names a path', async () => {
+      await initProject(repo, {});
+      const drifted = path.join(repo, 'AGENTS.md');
+      await writeFile(drifted, `${await readFile(drifted, 'utf8')}\nmanual change\n`);
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+      expect(check, 'fixture: no rig-owned-files check in this report').toBeTruthy();
+
+      expect(Object.keys(check!).sort()).toEqual(
+        ['counts', 'detail', 'fix', 'id', 'reason', 'status'].sort(),
+      );
+    });
+
+    it('counts a single absent owned file with the existing absent-owned-file reason, naming only that path in fix', async () => {
+      await initProject(repo, {});
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(check).toMatchObject({ status: 'warn', reason: 'absent-owned-file' });
+      expect(check?.counts).toEqual({ absent: 1, contentDrift: 0, lineDrift: 0, unreadable: 0 });
+      expect(check?.detail ?? '').not.toContain('CLAUDE.md');
+      expect(check?.fix ?? '').toContain('CLAUDE.md');
+    });
+
+    it("keeps a pristine install's counts all zero", async () => {
+      await initProject(repo, {});
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(check).toMatchObject({ status: 'ok', reason: 'pristine' });
+      expect(check?.counts).toEqual({ absent: 0, contentDrift: 0, lineDrift: 0, unreadable: 0 });
+    });
   });
 
   // RP-256 slice 1: a nested rig (installed beside a pre-existing root
