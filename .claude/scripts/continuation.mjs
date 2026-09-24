@@ -25,27 +25,44 @@
 // It NEVER records: a transcript, a prompt, source code, or a credential.
 // EVERY string field this composes — `ticket`, `branch`, `pr`, `headSha`,
 // `gateRounds`, the verdict's gate names, blocker rule names and verdict
-// words, `diagnosis`, `remaining` — goes through the same four steps, in
-// this order, before anything is printed or posted:
+// words, `diagnosis`, `remaining` — goes through the same steps, in this
+// order, before anything is printed or posted:
 //
+//   - the RAW value (up to `RAW_FIELD_CAP + 128` = 2128 characters — wider
+//     than the cap below, on purpose: see the straddle case a few lines down)
+//     is scanned for a credential shape by `findSecretValues`
+//     (`lib/secrets.mjs`, imported and reused verbatim, never a second copy of
+//     the vocabulary — `invariants.md`: "one mechanism, one implementation").
+//     Anything found withholds the WHOLE FIELD — `[redacted]` — and nothing
+//     below runs. Never a partial redaction: a per-pattern `replace()` that
+//     substitutes only the matched span is exactly the leak two round-3
+//     reviewers found (a PEM key's BEGIN header replaced while its base64
+//     body posted in full; a native-regex "resume past the WHOLE rejected
+//     match" that skipped a keyword-bearing value entirely) — see "Limits"
+//     below for both;
 //   - the raw value is cut to 2000 characters (`RAW_FIELD_CAP`), with an
-//     explicit `[truncated]` marker rather than a silent cut — BEFORE any of
-//     the three passes below ever see it, so none of them is ever handed
-//     more than 2000 characters of untrusted input, however large the field
-//     the caller supplied actually is;
-//   - an embedded newline is collapsed to `⏎`, so a forged `\nhead: …` line
-//     inside free text cannot be read as a second field by a reader who only
-//     greps for `^head: `;
-//   - an absolute-path SHAPE (see "Limits" below) becomes `[path]`;
-//   - a credential-shaped value, judged by the one vocabulary this project
-//     already refuses commits over (`lib/secrets.mjs`), becomes `[redacted]`.
+//     explicit `[truncated]` marker rather than a silent cut — BEFORE the
+//     passes below ever see it, so none of them is ever handed more than
+//     2000 characters of untrusted input, however large the field the caller
+//     actually supplied;
+//   - every line terminator this runtime can produce — `\r\n`, `\r`, `\n`,
+//     U+2028 (LINE SEPARATOR), U+2029 (PARAGRAPH SEPARATOR), U+0085 (NEL) —
+//     is collapsed to `⏎`, so a forged `…head: …` line inside free text
+//     cannot be read as a second field by a reader who only greps for
+//     `^head: `, INCLUDING a reader whose regex uses JavaScript's `m` flag,
+//     which treats U+2028/U+2029 as line terminators the same way `\n` is;
+//   - an absolute-path SHAPE (see "Limits" below) becomes `[path]`, over five
+//     structured patterns every field goes through; `diagnosis` and
+//     `remaining` additionally go through one more, COARSER pass afterward,
+//     because those two are free text a person typed under pressure, not a
+//     value this module or its caller constructed.
 //
 // `diagnosis` and `remaining` additionally each get their own 500-character
-// cap after all four steps above (the same explicit `[truncated]` marker,
-// never a silent cut); no other field is capped a second time on its own —
-// the whole note's 2000-character cap (below) is the backstop for a field
-// (`branch`, for instance) whose 2000-character raw cap alone can still leave
-// the note over budget once every field is joined into one string — see
+// cap after all of the above (the same explicit `[truncated]` marker, never a
+// silent cut); no other field is capped a second time on its own — the whole
+// note's 2000-character cap (below) is the backstop for a field (`branch`,
+// for instance) whose 2000-character raw cap alone can still leave the note
+// over budget once every field is joined into one string — see
 // `test/template/continuation.test.ts` (absent in a generated rig) ›
 // "caps diagnosis and remaining at 500 characters, with an explicit
 // [truncated] marker" and › "caps the whole note, even when no single field
@@ -81,7 +98,13 @@
 //     older round once a newer fan-out has run". An undeclared, missing, or
 //     unusable run directory, or one that never recorded a fan-out, reports
 //     `{ headSha: null, reviewers: [] }` — silently, like every other
-//     optional trace in this rig, never a throw.
+//     optional trace in this rig, never a throw. `verdict.headSha` — the
+//     head this round's fan-out ran against — goes through the exact same
+//     field pipeline as every other value above BEFORE `shortShaOf` ever
+//     slices it to 7 characters, so an embedded line terminator inside it
+//     cannot forge a second `head: ` line either — see › "collapses an
+//     embedded newline in verdict.headSha before slicing it, so it cannot
+//     forge a second head: line".
 //
 // `--post` resolves the configured queue adapter exactly the way
 // `queue/index.mjs` and `preflight.mjs` already do (`loadConfig` +
@@ -98,36 +121,83 @@
 //
 // --- Limits -----------------------------------------------------------
 //
-// - Every field is cut to 2000 raw characters (`RAW_FIELD_CAP`) before any
-//   scrub or redaction pass below ever runs — see the paragraph above. This
-//   is what makes every pass provably bounded on its own: none of them is
-//   ever handed more than 2000 characters, whatever the field's real length.
+// - Credential redaction is WHOLE-FIELD, checked first, on the raw value —
+//   see the top of this header. `findSecretValues` inherits `lib/secrets.mjs`'s
+//   own stated limits (a text scan, not an entropy analyser; an all-letters
+//   secret is invisible to its `assigned-secret` arm; a shape that vocabulary
+//   does not name — a connection-string password
+//   (`postgres://user:hunter2@host/db`), for one — is not redacted here
+//   either; it would need a pattern added to `lib/secrets.mjs` itself, not a
+//   second copy here) rather than restating them. Two round-3 findings are
+//   why this is whole-field rather than per-pattern now:
+//     - a PEM/OpenSSH private-key block: the old per-pattern `redactSecrets`
+//       replaced only the matched `-----BEGIN … PRIVATE KEY-----` header,
+//       leaving the base64 body — the actual key material — to be printed in
+//       full alongside it;
+//     - a value sitting behind a REJECTED keyword match on the same line: a
+//       native `String.replace` with a global pattern resumes scanning after
+//       the WHOLE rejected match, so a keyword landing inside an all-letters
+//       value that is itself rejected (`AtlassianApiToken`, which ends in the
+//       credential word `Token`) consumed the real assignment that followed
+//       it on the same walk. `findSecretValues`'s own walk does not have this
+//       defect — it resumes one character past the start of a rejected match,
+//       not past its end — which is the whole reason to call it directly
+//       rather than re-implement the walk here.
+//   See `test/template/continuation.test.ts` (absent in a generated rig) ›
+//   "redacts a PEM private key block as a whole field, never leaking the key
+//   body — security-scanner r3 BLOCKER 1" and › "redacts the whole field when
+//   a real credential value sits behind a rejected all-letters keyword match
+//   — security-scanner r3 BLOCKER 2".
+// - The redaction SCAN WINDOW (`RAW_FIELD_CAP + 128` = 2128 characters) is
+//   deliberately wider than `RAW_FIELD_CAP` (2000, the cut every OTHER pass
+//   below is bounded by): a credential can straddle the 2000-character cut,
+//   and the old cut-then-redact order left only the token's first few
+//   characters inside the field `redactSecrets` ever saw — too short to
+//   match. Scanning the wider, still-bounded window before any cut runs
+//   closes that gap. See › "does not leave a GitHub token prefix behind when
+//   the token straddles the raw field cap — security-scanner r3 advisory 1".
+//   A credential starting past character 2128 of the raw field is not found
+//   by this scan — but `capRawField` below cuts the field to 2000 characters
+//   before printing regardless, so such a credential never reaches the note
+//   either way; see › "never lets a secret buried past the first few
+//   thousand characters of an oversized field reach the note".
+// - Every field is then cut to 2000 raw characters (`RAW_FIELD_CAP`) before
+//   any scrub pass runs — this is what makes every pass below provably
+//   bounded on its own: none of them is ever handed more than 2000
+//   characters, whatever the field's real length, and the redaction scan
+//   above is bounded independently (2128 characters, delegated to
+//   `lib/secrets.mjs`'s own documented bound — capped input, no nested
+//   quantifier, a judged-value walk capped at 32 candidates per line).
 // - The path scrub recognises an absolute path by SHAPE, not by a fixed
-//   prefix list, over six patterns, tried in this order, each one replacing
-//   its match with `[path]` before the next pattern runs:
+//   prefix list, over FIVE patterns every field goes through, tried in this
+//   order, each one replacing its match with `[path]` before the next
+//   pattern runs:
 //     - a `file:` URI (`file:///…`, one or more slashes) — the shape a Node
 //       ESM stack frame carries, POSIX or Windows-drive form alike —
 //       consumed to the next hard delimiter or the end of the field;
 //     - a `\\host\share\…` UNC path (any host, `\\wsl$\…` and
-//       `\\wsl.localhost\…` included), consumed to the next hard delimiter or
-//       the end of the field, together with one immediately preceding
-//       `label:` token when the text reads `label: \\host\share\…` —
-//       otherwise a line that names the host twice (once as a plain word,
+//       `\\wsl.localhost\…` included, and now `\\host/share/…` — either
+//       slash direction after the host, so a mixed-slash UNC path scrubs
+//       too, not only the pure-backslash form), consumed to the next hard
+//       delimiter or the end of the field, together with one immediately
+//       preceding `label:` token when the text reads `label: \\host\share\…`
+//       — otherwise a line that names the host twice (once as a plain word,
 //       once inside the path) leaves the first copy behind. That label token
-//       is bounded explicitly — `[^\s:]{1,64}:[ \t]{1,8}`, at most 72
-//       characters tried per starting position — so a long colon-less run
-//       cannot turn this optional group into a re-scan of the rest of the
-//       field;
+//       is bounded explicitly — `[^\s:]{1,64}:[ \t]{1,8}`, at most
+//       64 + 1 (the literal colon) + 8 = 73 characters tried per starting
+//       position — so a long colon-less run cannot turn this optional group
+//       into a re-scan of the rest of the field;
 //     - a drive-letter path (`C:\…` or `C:/…`), consumed to the next hard
 //       delimiter or the end of the field — so an embedded space
 //       (`C:\Users\Some Name\…`) stays part of the match, and a drive letter
 //       is only recognised when it is not itself preceded by a letter or
-//       digit (so the `s:` inside `https://…` is never mistaken for one);
-//     - a tilde-prefixed home path (`~/…`), consumed to the next whitespace
-//       — the one shape here that still stops at whitespace, because nothing
-//       about it has ever needed the wider match the other five carry;
+//       digit (so the `s:` inside `https://…` is never mistaken for one, and
+//       a digit-prefixed run like `9C:\Users\alice` is left to the coarser
+//       free-text pass below rather than this pattern — see the
+//       "9C:\Users\alice" case a few lines down);
 //     - a forward-slash UNC path (`//host/…`, no backslash at all — the
-//       shape a quoted or URL-typed string forces), consumed to the next hard
+//       shape a quoted or URL-typed string forces, and now also `//host\…` —
+//       either slash direction after the host), consumed to the next hard
 //       delimiter or the end of the field, and only when it is not itself
 //       preceded by `:` or a word character — which is what keeps
 //       `https://host/a/b`'s own `://` intact;
@@ -141,43 +211,87 @@
 //       first `/` has nothing but a second `/` after it, never the
 //       non-slash character the pattern requires.
 //   A "hard delimiter" is one of `"`, `'`, `` ` ``, `|`, `<`, `>`, or `⏎` (the
-//   marker `collapseNewlines` already produced by the time this runs, since
-//   that pass always runs first). Consuming through everything else —
-//   INCLUDING whitespace — is deliberate: a real path may legitimately
-//   contain a space, and leaving trailing prose unscrubbed cost this module
-//   two rounds of leaks; over-scrubbing a little trailing text is the safe
-//   direction, never the other one. A RELATIVE path (`src/file.ts`,
-//   `../sibling/x.ts`), a single-segment absolute POSIX path (`/etc` alone,
-//   with nothing after it), and any shape this list does not name pass
-//   through unscrubbed. See `test/template/continuation.test.ts` (absent in a
-//   generated rig), the
+//   marker the line-terminator collapse above already produced by the time
+//   this runs, since that pass always runs first). Consuming through
+//   everything else — INCLUDING whitespace — is deliberate: a real path may
+//   legitimately contain a space, and leaving trailing prose unscrubbed cost
+//   this module two rounds of leaks; over-scrubbing a little trailing text is
+//   the safe direction, never the other one.
+// - A tilde-prefixed path (`~/…`, `~alice/…`, a bare `~\…`) is NOT one of the
+//   five structured patterns above — no test in this suite needs a structured
+//   field (`branch`, `ticket`, a gate name) to scrub one, and the coarser rule
+//   below already covers it for `diagnosis`/`remaining`, which is the only
+//   place a person types a home-directory path by hand.
+// - `diagnosis` and `remaining` go through ONE MORE pass after the five
+//   structured patterns above: any WHITESPACE-DELIMITED token that contains
+//   `/` or `\`, or starts with `~`, and is not an `http://`/`https://` URL,
+//   starts a scrubbed span. The span begins at the token's own first
+//   character (so a leading hard delimiter — an opening `"`, for
+//   instance — stays outside it, because the text is first split on hard
+//   delimiters and each delimiter-free segment is scrubbed on its own) and
+//   runs to the next hard delimiter or the end of the field — the same
+//   "consume through whitespace" rule the five structured patterns already
+//   use, and for the same reason: this is the coarse, safe-direction
+//   backstop for every shape the five named patterns do not recognise —
+//   `smb://…`, `vscode-remote://…`, a drive-less rooted Windows path
+//   (`\Users\alice\x`), a tilde path naming a user directly (`~alice/x`), a
+//   bare `~\x`, and the digit-prefixed drive path above (`9C:\Users\alice`,
+//   which the structured `DRIVE_PATH` pattern deliberately excludes). It is
+//   coarser on purpose: it does not distinguish a relative path from an
+//   absolute one, and it can swallow trailing prose the five structured
+//   patterns would have left alone (a plain word after a scrubbed tilde path,
+//   for instance) — over-scrubbing diagnosis/remaining text is the accepted
+//   trade for never under-scrubbing it. It runs ONLY on these two fields,
+//   never on a structured one, because a structured field's caller
+//   constructs the value rather than typing it under pressure. Linear: the
+//   field is split once on hard delimiters (a native `String.split`, not a
+//   nested quantifier), and each resulting segment is walked once, token by
+//   token, by a two-group match (`\s*` then `\S+` — two disjoint character
+//   classes, so no ambiguity for the engine to backtrack over) that always
+//   advances by at least one character. See
+//   `test/template/continuation.test.ts` (absent in a generated rig), the
+//   `describe('RP-224 round 4 — …')` block, for every shape above by name
+//   next to the assertion that proves it — including › "scrubs a mixed-slash
+//   UNC path in diagnosis (backslash host, forward-slash tail) while leaving
+//   adjacent URLs intact — code-reviewer r3 B1", › "scrubs a drive-less
+//   rooted Windows path in diagnosis (\Users\alice\x — advisory A3)", ›
+//   "scrubs a tilde-prefixed path that names a user directly, not only ~/
+//   (~alice/x — advisory A3)", › "scrubs a tilde-prefixed path using a
+//   backslash separator (~\x — advisory A3)", › "scrubs an smb:// path,
+//   which is not an http(s) URL (advisory A3)", › "scrubs a vscode-remote://
+//   URI, which is not an http(s) URL (advisory A3)", › "scrubs a
+//   tilde-prefixed path with an embedded space, consuming both words of a
+//   two-word name (advisory A2: neither First nor Last survives)", ›
+//   "scrubs a drive-letter path in diagnosis even when a digit sits directly
+//   before the drive letter (9C:\Users\alice — advisory A3)", and — for the
+//   structured mixed-slash UNC extension — › "scrubs a mixed-slash UNC path
+//   in the branch field (forward-slash host, backslash tail) — code-reviewer
+//   r3 B1".
+//   A RELATIVE path in a STRUCTURED field (`src/file.ts`, `../sibling/x.ts`),
+//   a single-segment absolute POSIX path in a structured field (`/etc`
+//   alone, with nothing after it), and any shape none of the above names
+//   pass through a structured field unscrubbed; see `test/template/
+//   continuation.test.ts` (absent in a generated rig), the
 //   `describe('path scrubbing by SHAPE, not a fixed prefix list')` block, for
-//   every case above by name next to the assertion that proves it — including
-//   › "leaves a URL with a port number untouched, so localhost:3000 is never
-//   mistaken for a drive letter", › "scrubs a Node ESM stack-frame file://
-//   URI (POSIX form)", › "scrubs a Node ESM stack-frame file:// URI (Windows
-//   drive-letter form)", › "scrubs a forward-slash UNC path
-//   (//wsl.localhost/...), not only the backslash form", › "scrubs a
-//   forward-slash UNC path to a generic server share", › "scrubs a POSIX
-//   path that sits directly after a colon with no separating space", › "does
-//   not leave the tail of a space-containing POSIX path behind after the
-//   scrubbed prefix", and › "does not leave the tail of a space-containing
-//   UNC path behind after the scrubbed prefix".
-// - None of the six patterns nests one unbounded quantifier inside another,
-//   so none of them can backtrack catastrophically on adversarial input, and
-//   the 2000-character raw cap above means none of them is ever asked to try
-//   — see `test/template/continuation.test.ts` (absent in a generated rig) ›
-//   "completes well under a generous bound even on the exact shape that
-//   backtracks quadratically today" and › "never lets a secret buried past
-//   the first few thousand characters of an oversized field reach the note".
-// - Credential redaction reuses `SECRET_VALUE_PATTERNS` from
-//   `lib/secrets.mjs` verbatim, so it inherits that module's own stated
-//   limits (a text scan, not an entropy analyser; an all-letters secret is
-//   invisible to the `assigned-secret` arm) rather than restating them here.
-//   A shape that vocabulary does not name — a connection-string password
-//   (`postgres://user:hunter2@host/db`), for one — is not redacted here
-//   either; it would need a pattern added to `lib/secrets.mjs` itself (one
-//   mechanism, one implementation — `invariants.md`), not a second copy here.
+//   the structured-field cases by name next to the assertion that proves
+//   them — including › "leaves a URL with a port number untouched, so
+//   localhost:3000 is never mistaken for a drive letter", › "scrubs a Node
+//   ESM stack-frame file:// URI (POSIX form)", › "scrubs a Node ESM
+//   stack-frame file:// URI (Windows drive-letter form)", › "scrubs a
+//   forward-slash UNC path (//wsl.localhost/...), not only the backslash
+//   form", › "scrubs a forward-slash UNC path to a generic server share", ›
+//   "scrubs a POSIX path that sits directly after a colon with no separating
+//   space", › "does not leave the tail of a space-containing POSIX path
+//   behind after the scrubbed prefix", and › "does not leave the tail of a
+//   space-containing UNC path behind after the scrubbed prefix".
+// - None of the five structured patterns nests one unbounded quantifier
+//   inside another, so none of them can backtrack catastrophically on
+//   adversarial input, and the 2000-character raw cap above means none of
+//   them is ever asked to try — see `test/template/continuation.test.ts`
+//   (absent in a generated rig) › "completes well under a generous bound on a
+//   220,000-character field, the shape that once risked catastrophic
+//   backtracking" and › "never lets a secret buried past the first few
+//   thousand characters of an oversized field reach the note".
 // - `readRunEvidence` reads only the latest REVIEW ROUND — every reviewer
 //   verdict journalled after the LAST `reviewer-fan-out` decision, and only
 //   for the reviewer names that fan-out actually launched. An
@@ -199,7 +313,7 @@ import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from './git-env.mjs';
 import { readRun } from './run-journal.mjs';
-import { SECRET_VALUE_PATTERNS } from './lib/secrets.mjs';
+import { findSecretValues } from './lib/secrets.mjs';
 
 /** The only four workflow-level stops this note exists for. */
 export const STOP_KINDS = Object.freeze(['escalation', 'blocker', 'pause', 'terminated']);
@@ -215,47 +329,53 @@ const FIELD_TRUNCATION_MARKER = '[truncated]';
 const NOTE_CAP = 2000;
 const NOTE_TRUNCATION_SUFFIX = '\n[truncated]';
 // Every string field is cut to this many raw characters BEFORE
-// collapseNewlines/scrubPaths/redactSecrets ever see it (`composeTextField`
-// below) — the same marker as the 500-character diagnosis/remaining cap,
-// because both do the same thing: mark the cut, never drop it silently.
+// collapseNewlines/scrubPaths ever see it (`composeTextField`/
+// `composeFreeTextField` below) — the same marker as the 500-character
+// diagnosis/remaining cap, because both do the same thing: mark the cut,
+// never drop it silently.
 const RAW_FIELD_CAP = 2000;
+// The whole-field credential scan reads this many raw characters — wider
+// than RAW_FIELD_CAP, so a credential straddling the 2000-character cut is
+// still seen whole. See the module header's "Limits" section.
+const SECRET_SCAN_WINDOW = RAW_FIELD_CAP + 128;
 
 const FAN_OUT_GATE = 'reviewer-fan-out';
 
-// Six SHAPE-based path patterns, applied in this order (see the module
-// header's "Limits" section for what each one recognises and where it stops).
-// Every pattern below is a single bounded forward scan of the field it is
-// given: one fixed character class repeated once (`[^delimiters]*` or
-// `[^\s]+`), never a quantifier nested inside another. The one exception —
-// UNC_PATH's optional `label:` prefix — is bounded explicitly instead
-// (`{1,64}` and `{1,8}`), so it can try and fail at most 72 characters per
-// starting position rather than re-scanning an unbounded run looking for a
-// colon that never comes. Combined with the RAW_FIELD_CAP cut above, no
-// pattern here is ever asked to scan more than 2000 characters, and none of
-// them is quadratic even without that cap.
+// Five SHAPE-based path patterns, applied in this order, to EVERY field (see
+// the module header's "Limits" section for what each one recognises and
+// where it stops). Every pattern below is a single bounded forward scan of
+// the field it is given: one fixed character class repeated once
+// (`[^delimiters]*` or `[^\s]+`), never a quantifier nested inside another.
+// The one exception — UNC_PATH's optional `label:` prefix — is bounded
+// explicitly instead (`{1,64}` and `{1,8}`), so it can try and fail at most
+// 73 characters per starting position rather than re-scanning an unbounded
+// run looking for a colon that never comes. Combined with the RAW_FIELD_CAP
+// cut above, no pattern here is ever asked to scan more than 2000
+// characters, and none of them is quadratic even without that cap.
 //
 // A "hard delimiter" — `"`, `'`, `` ` ``, `|`, `<`, `>`, `⏎` — is what ends a
 // match mid-field; everything else, including a literal space, is consumed
-// as part of the path. `⏎` is safe to use as a delimiter because
-// `collapseNewlines` always runs before `scrubPaths` (see `composeTextField`
-// below), so an actual newline can never reach these patterns as `\n`.
+// as part of the path. `⏎` is safe to use as a delimiter because the
+// line-terminator collapse always runs before these patterns (see
+// `composeTextField`/`composeFreeTextField` below), so an actual line
+// terminator can never reach them as `\n`/`\u2028`/etc.
 
 // `file:` URI — a Node ESM stack-frame shape (`file:///home/x`,
 // `file:///C:/Users/x`), not preceded by a word character (so a word ending
 // in "…file:" is not mistaken for the scheme).
 const FILE_URI = /(?<!\w)file:\/+[^"'`|<>⏎]*/g;
-// `\\host\share\…`, with the bounded optional `label:` prefix described
-// above, to the next hard delimiter or the end of the field.
-const UNC_PATH = /(?:[^\s:]{1,64}:[ \t]{1,8})?\\\\[^\s\\]+\\[^"'`|<>⏎]*/g;
+// `\\host\share\…` or `\\host/share/…` (either slash after the host), with
+// the bounded optional `label:` prefix described above, to the next hard
+// delimiter or the end of the field.
+const UNC_PATH = /(?:[^\s:]{1,64}:[ \t]{1,8})?\\\\[^\s\\/]+[\\/][^"'`|<>⏎]*/g;
 // A drive letter not itself preceded by a letter/digit (so `http`**s**`:` is
 // never read as one), to the next hard delimiter or the end of the field.
 const DRIVE_PATH = /(?<![A-Za-z0-9])[A-Za-z]:[\\/][^"'`|<>⏎]*/g;
-// `~/…`, to the next whitespace — the one pattern that still stops there.
-const TILDE_HOME = /~\/[^\s]+/g;
-// `//host/…` with no backslash at all, not itself preceded by `:` or a word
-// character (so `https://host/…` is left alone), to the next hard delimiter
-// or the end of the field.
-const FORWARD_SLASH_UNC = /(?<![:\w])\/\/[^\s/]+\/[^"'`|<>⏎]*/g;
+// `//host/…` or `//host\…` (either slash after the host) with no leading
+// backslash at all, not itself preceded by `:` or a word character (so
+// `https://host/…` is left alone), to the next hard delimiter or the end of
+// the field.
+const FORWARD_SLASH_UNC = /(?<![:\w])\/\/[^\s/\\]+[\\/][^"'`|<>⏎]*/g;
 // A slash-rooted POSIX path of >= 2 segments, not preceded by a word
 // character or another `/` (colon IS allowed, so `label:/home/x` scrubs);
 // consumed, from the second segment on, to the next hard delimiter or the
@@ -267,16 +387,60 @@ const scrubPaths = (text) =>
     .replace(FILE_URI, PATH_MARKER)
     .replace(UNC_PATH, PATH_MARKER)
     .replace(DRIVE_PATH, PATH_MARKER)
-    .replace(TILDE_HOME, PATH_MARKER)
     .replace(FORWARD_SLASH_UNC, PATH_MARKER)
     .replace(POSIX_PATH, PATH_MARKER);
 
-/** Collapse an embedded newline so free text cannot forge a second `key: value` line. */
-const collapseNewlines = (text) => text.replace(/\r\n|\r|\n/g, NEWLINE_MARKER);
+// Splits free text on the hard delimiters, keeping the delimiters as their
+// own array entries so `scrubFreeText` can leave a leading quote (or other
+// delimiter) outside the span it scrubs.
+const HARD_DELIMITER_SPLIT = /(["'`|<>⏎])/g;
+const HTTP_URL_PREFIX = /^https?:\/\//i;
+
+/** Does this whitespace-delimited token start a coarse free-text path span? */
+const isFreeTextPathToken = (token) => {
+  if (HTTP_URL_PREFIX.test(token)) return false;
+  return token.startsWith('~') || token.includes('/') || token.includes('\\');
+};
+
+/**
+ * One hard-delimiter-free segment of a free-text field: find the FIRST
+ * whitespace-delimited token that triggers `isFreeTextPathToken`, and if one
+ * exists, replace everything from that token's own start to the end of the
+ * segment with `[path]`. Linear: one forward token scan (`\s*` then `\S+` —
+ * two disjoint classes, so the engine never backtracks between them), always
+ * advancing by at least one character per match.
+ */
+const scrubFreeTextSegment = (segment) => {
+  const tokenPattern = /(\s*)(\S+)/g;
+  let match;
+  while ((match = tokenPattern.exec(segment)) !== null) {
+    if (isFreeTextPathToken(match[2])) {
+      const start = match.index + match[1].length;
+      return `${segment.slice(0, start)}${PATH_MARKER}`;
+    }
+  }
+  return segment;
+};
+
+/**
+ * The coarse free-text path scrub — `diagnosis`/`remaining` only, applied
+ * AFTER `scrubPaths` above. See the module header's "Limits" section for the
+ * rule in full.
+ */
+const scrubFreeText = (text) => {
+  const parts = text.split(HARD_DELIMITER_SPLIT);
+  for (let index = 0; index < parts.length; index += 2) {
+    parts[index] = scrubFreeTextSegment(parts[index]);
+  }
+  return parts.join('');
+};
+
+/** Collapse every line terminator this runtime can produce, so free text cannot forge a second `key: value` line. */
+const collapseNewlines = (text) => text.replace(/\r\n|\r|\n|\u2028|\u2029|\u0085/g, NEWLINE_MARKER);
 
 /**
  * Cut a field to `RAW_FIELD_CAP` characters BEFORE `collapseNewlines` /
- * `scrubPaths` / `redactSecrets` ever see it. This is what keeps every regex
+ * `scrubPaths` / `scrubFreeText` ever see it. This is what keeps every regex
  * pass above provably bounded regardless of how large the caller's own field
  * is — see the module header's "Limits" section.
  */
@@ -287,33 +451,14 @@ const capRawField = (value) => {
 };
 
 /**
- * Redact every credential shape `lib/secrets.mjs` names, reusing its own
- * patterns rather than a second copy of the vocabulary (`invariants.md`:
- * "one mechanism, one implementation").
- *
- * The `assigned-secret` pattern judges its captured value (`reject`) —
- * exactly as `findSecretValues` does — so an all-letters value (an
- * identifier, not a credential) is left alone; every other pattern answers
- * with one substring test, same as there.
+ * Whether the RAW value (up to `SECRET_SCAN_WINDOW` characters) carries any
+ * credential shape `lib/secrets.mjs` names — reusing `findSecretValues`
+ * verbatim rather than a second copy of the vocabulary (`invariants.md`:
+ * "one mechanism, one implementation"). A hit means the WHOLE field is
+ * withheld; see the module header's "Limits" section for why whole-field,
+ * never partial.
  */
-const redactSecrets = (text) => {
-  let result = text;
-  for (const entry of SECRET_VALUE_PATTERNS) {
-    const flags = entry.pattern.flags.includes('g') ? entry.pattern.flags : `${entry.pattern.flags}g`;
-    const global = new RegExp(entry.pattern.source, flags);
-    if (!entry.reject) {
-      result = result.replace(global, REDACTED_MARKER);
-      continue;
-    }
-    const groupIndex = entry.valueGroup ?? 1;
-    result = result.replace(global, (...args) => {
-      const groups = args.slice(1, -2);
-      const value = groups[groupIndex - 1];
-      return entry.reject.test(value ?? '') ? args[0] : REDACTED_MARKER;
-    });
-  }
-  return result;
-};
+const hasSecret = (raw) => findSecretValues(raw.slice(0, SECRET_SCAN_WINDOW)).length > 0;
 
 /** Cap one free-text field, with an explicit marker rather than a silent cut. */
 const truncateField = (value) => {
@@ -323,19 +468,35 @@ const truncateField = (value) => {
 };
 
 /**
- * Cap the raw value, collapse newlines, scrub paths, then redact secrets —
- * every string field this note composes goes through this, not only
- * `diagnosis`/`remaining`. `undefined`/`null` render `unknown` rather than
- * being guessed or omitted.
+ * A STRUCTURED field: `ticket`, `branch`, `pr`, `headSha`, `gateRounds`, a
+ * gate name, a blocker rule name, a verdict word. Whole-field secret check on
+ * the raw value, then cap, collapse line terminators, and scrub the five
+ * structured path shapes — never the coarser free-text pass below, which is
+ * for typed prose, not a value this module or its caller constructs.
+ * `undefined`/`null` render `unknown` rather than being guessed or omitted.
  */
 const composeTextField = (value) => {
   if (value === undefined || value === null) return 'unknown';
-  return redactSecrets(scrubPaths(collapseNewlines(capRawField(String(value)))));
+  const raw = String(value);
+  if (hasSecret(raw)) return REDACTED_MARKER;
+  return scrubPaths(collapseNewlines(capRawField(raw)));
 };
 
-/** `composeTextField`, plus the per-field 500-character cap `diagnosis`/`remaining` carry. */
-const composeCappedTextField = (value) =>
-  value === undefined || value === null ? 'unknown' : truncateField(composeTextField(value));
+/**
+ * A FREE-TEXT field: `diagnosis` or `remaining`. Same whole-field secret
+ * check and the same structured scrub as `composeTextField`, plus the
+ * coarser free-text path scrub afterward (see the module header's "Limits"
+ * section). `undefined`/`null` render `unknown`.
+ */
+const composeFreeTextField = (value) => {
+  if (value === undefined || value === null) return 'unknown';
+  const raw = String(value);
+  if (hasSecret(raw)) return REDACTED_MARKER;
+  return scrubFreeText(scrubPaths(collapseNewlines(capRawField(raw))));
+};
+
+/** `composeFreeTextField`, plus the per-field 500-character cap `diagnosis`/`remaining` carry. */
+const composeCappedTextField = (value) => truncateField(composeFreeTextField(value));
 
 /** Cap the WHOLE note — a backstop for a field this module does not cap on its own. */
 const capNote = (note) => {
@@ -343,7 +504,20 @@ const capNote = (note) => {
   return `${note.slice(0, NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length)}${NOTE_TRUNCATION_SUFFIX}`;
 };
 
-const shortShaOf = (headSha) => (headSha ? String(headSha).slice(0, 7) : 'unknown');
+/**
+ * The short (7-character) form of a head SHA, for the `latest-verdict` line.
+ * The value goes through `composeTextField` FIRST — the same whole-field
+ * secret check, cap, line-terminator collapse and path scrub every other
+ * field gets — before it is ever sliced, so an embedded line terminator (or
+ * a credential, however unlikely in a SHA) cannot survive into the sliced
+ * result. A falsy `headSha` (absent, `null`, `''`) renders `unknown` without
+ * running the pipeline at all — there is nothing to compose.
+ */
+const shortShaOf = (headSha) => {
+  if (!headSha) return 'unknown';
+  const composed = composeTextField(headSha);
+  return composed === 'unknown' ? 'unknown' : composed.slice(0, 7);
+};
 
 /** Blocker rule names, scrubbed/redacted like every other string field, blanks dropped. */
 const renderBlockerRules = (blockers) =>

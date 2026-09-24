@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { GITHUB_PAT } from './secrets-fixtures.js';
+import { GITHUB_PAT, pemHeader } from './secrets-fixtures.js';
 
 // RP-224 — "[RIG 1.1][CONTINUITY] Publish bounded continuation notes for
 // unfinished workflow stops".
@@ -557,7 +557,8 @@ describe('composeNote — the shared shape', () => {
         diagnosis: 'checkout at ~/rig-224/output.log done',
       });
       const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
-      expect(line).toBe('diagnosis: checkout at [path] done');
+      // RP-224 post-cap: free-text spans run to the next hard delimiter
+      expect(line).toBe('diagnosis: checkout at [path]');
     });
 
     it('scrubs a Windows drive-letter path with spaces, consuming to end of line rather than the first space', async () => {
@@ -798,15 +799,19 @@ describe('composeNote — the shared shape', () => {
 
     // The one wall-clock assertion in this file (see the module header's own
     // "Prefer a deterministic oracle" note in the task this suite pins):
-    // composeNote on the exact shape that backtracks quadratically today
-    // must complete in well under a generous 2000ms bound. Measured directly
-    // on this host, today's implementation instead took: UNC_PATH alone on
+    // composeNote on this shape must complete in well under a generous
+    // 2000ms bound. RP-224 round 3 — code-reviewer r3 advisory A7: this
+    // test's name used to say "backtracks quadratically today", which went
+    // stale the round the bounded-work fix landed (round-3 code-reviewer:
+    // "Bounded work: FIXED") — the shape no longer backtracks, so the name is
+    // now stated as a bound, not a claim about current behaviour. Measured
+    // historically (pre-fix) on this host: UNC_PATH alone on
     // 'x'.repeat(40_000) ~1.9s, 'x'.repeat(150_000) ~21.1s, 'x'.repeat(220_000)
     // ~38.4-44.2s; through the FULL composeNote (diagnosis: 'x'.repeat(220_000))
     // ~50.7s — over 25x the 2000ms bound asserted below, clearing the "at
     // least 20x" mark this suite was asked to hit with room to spare.
     it(
-      'completes well under a generous bound even on the exact shape that backtracks quadratically today',
+      'completes well under a generous bound on a 220,000-character field, the shape that once risked catastrophic backtracking',
       { timeout: 90_000 },
       async () => {
         const { composeNote } = (await load('continuation.mjs')) as {
@@ -820,6 +825,291 @@ describe('composeNote — the shared shape', () => {
         expect(elapsedMs).toBeLessThan(2000);
       },
     );
+  });
+});
+
+// RP-224 round 4 — owner-delegated continuation of the round-3 HOLDs
+// (code-reviewer r3 B1/B2, security-scanner r3 BLOCKER 1/BLOCKER 2). The
+// per-shape allow-list approach is retired in favour of five coarser rules,
+// stated in full where they are implemented (module header, not restated
+// here):
+//
+//   (a) FREE-TEXT fields (diagnosis, remaining): any whitespace-delimited
+//       token containing `/` or `\`, or starting with `~`, that is not an
+//       http(s) URL, starts a scrubbed span running to the next hard
+//       delimiter or end of field.
+//   (b) STRUCTURED fields (branch, pr, gate names, blocker rule names,
+//       ticket): the existing six-shape scrub, extended so mixed-slash UNC
+//       (`\\host/share/...`, `//host\share\...`) scrubs too.
+//   (c) A field in which `lib/secrets.mjs`'s `findSecretValues` finds ANY
+//       credential (checked on the raw value up to RAW_FIELD_CAP + 128
+//       characters) is replaced AS A WHOLE by `[redacted]` — never a partial
+//       redaction.
+//   (d) `verdict.headSha` goes through the same four-step pipeline as every
+//       other field before `shortShaOf` slices it.
+//   (e) U+2028, U+2029 and U+0085 collapse like `\r`/`\n`.
+//
+// None of rules (a)-(e) are implemented yet — every test below is expected
+// to fail against the current `continuation.mjs`, for the leak/contract-drift
+// reason named in its own comment, not for an unrelated one.
+describe('RP-224 round 4 — coarse free-text path scrub, whole-field secret redaction, verdict.headSha pipeline, and extended line-terminator collapse', () => {
+  // --- rule (a): free-text fields scrub any / or \ or ~ token, coarsely ---
+
+  it('scrubs a mixed-slash UNC path in diagnosis (backslash host, forward-slash tail) while leaving adjacent URLs intact — code-reviewer r3 B1', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis = [
+      'checkout at \\\\wsl.localhost/Ubuntu/home/alice/x',
+      'see https://example.invalid/a/b',
+      'and https://github.com/o/r/pull/319',
+    ].join(' | ');
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+    expect(line).toContain('https://example.invalid/a/b');
+    expect(line).toContain('https://github.com/o/r/pull/319');
+  });
+
+  it('scrubs a drive-less rooted Windows path in diagnosis (\\Users\\alice\\x — advisory A3)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'log at \\Users\\alice\\x saved',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('scrubs a tilde-prefixed path that names a user directly, not only ~/ (~alice/x — advisory A3)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'seen at ~alice/x recently',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('scrubs a tilde-prefixed path using a backslash separator (~\\x — advisory A3)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'output at ~\\x done',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('~\\x');
+    expect(line).toContain('[path]');
+  });
+
+  it('scrubs an smb:// path, which is not an http(s) URL (advisory A3)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'mounted at smb://host/alice/x now',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('scrubs a vscode-remote:// URI, which is not an http(s) URL (advisory A3)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'open in vscode-remote://ssh-remote+h/home/alice/x please',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('scrubs a tilde-prefixed path with an embedded space, consuming both words of a two-word name (advisory A2: neither First nor Last survives)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'working in ~/proj/First Last/x now',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/First/);
+    expect(line).not.toMatch(/Last/);
+    expect(line).toContain('[path]');
+  });
+
+  it('scrubs a drive-letter path in diagnosis even when a digit sits directly before the drive letter (9C:\\Users\\alice — advisory A3)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'crashed near 9C:\\Users\\alice today',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).not.toContain('9C:\\Users');
+    expect(line).toContain('[path]');
+  });
+
+  // --- rule (b): structured fields, extended for mixed-slash UNC ---
+
+  it('scrubs a mixed-slash UNC path in the branch field (forward-slash host, backslash tail) — code-reviewer r3 B1', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'pause',
+      branch: '//server\\share\\alice\\weird-branch',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('branch: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toBe('branch: [path]');
+  });
+
+  // --- rule (c): whole-field redaction, no partial leak of a credential ---
+
+  it('redacts a PEM private key block as a whole field, never leaking the key body — security-scanner r3 BLOCKER 1', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // Assembled at runtime, mirroring secrets-fixtures.ts's own technique, so
+    // no committable key-shaped literal sits in this file: the header comes
+    // from the shared fixture helper, and the body/footer are ordinary
+    // placeholder text with no credential shape of their own — only the
+    // BEGIN header the private-key-block pattern actually matches.
+    const pemBody = [
+      'AAAAB3NzaC1yc2EAAAADAQABAAAB',
+      'gQDeadbeefFAKEBASE64000111222',
+      'ZZZ999xyzFAKEDATA==',
+    ].join('\n');
+    const diagnosis = [pemHeader(), pemBody, '-----END RSA PRIVATE KEY-----'].join('\n');
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    expect(note).not.toMatch(/AAAAB3NzaC1yc2E/);
+    expect(note).not.toMatch(/FAKEBASE64/);
+    expect(note).not.toMatch(/BEGIN RSA PRIVATE KEY/);
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe('diagnosis: [redacted]');
+  });
+
+  it('redacts the whole field when a real credential value sits behind a rejected all-letters keyword match — security-scanner r3 BLOCKER 2', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // A generic 16+ character alphanumeric value, assembled from short
+    // pieces at runtime so no contiguous matchable run sits in source (the
+    // same technique secrets-fixtures.ts uses) — chosen so it does NOT match
+    // any of the other, prefix-specific SECRET_VALUE_PATTERNS, and is
+    // detected ONLY via the `assigned-secret` pattern keying off "secret:"
+    // — reproducing the exact shape the report names: `AtlassianApiToken`
+    // ends in the credential word "Token", so a native-regex `replace` that
+    // resumes past the WHOLE rejected match (rather than one character past
+    // its start, the way `lib/secrets.mjs`'s own walk does) skips over that
+    // embedded keyword and never finds the real assignment that follows it.
+    const secretValue = ['Zq9Wx7L', 'v2Kd4Nb8', 'Mc1Pf6Rt3Hy5Ug0Jn2Bs4Dt'].join('');
+    const diagnosis = `secret: AtlassianApiToken = "${secretValue}"`;
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    expect(note).not.toContain(secretValue);
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe('diagnosis: [redacted]');
+  });
+
+  it('does not leave a GitHub token prefix behind when the token straddles the raw field cap — security-scanner r3 advisory 1', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // GITHUB_PAT (40 chars) starts at offset 1970, so it spans indices
+    // 1970-2009 — straddling RAW_FIELD_CAP (2000) by 10 characters. The OLD
+    // capRawField cut (keep = 2000 - '[truncated]'.length = 1989) leaves only
+    // the first 19 characters of the token ("ghp_a1B2c3D4e5F6g7H") in the
+    // field redactSecrets ever sees — fewer than the 20 body characters
+    // `github-pat` requires, so today's redactSecrets never recognises it and
+    // the partial token is published. The new rule scans the raw value up to
+    // RAW_FIELD_CAP + 128 = 2128 characters — comfortably past index 2009 —
+    // so the FULL token is seen, detected, and the whole field withheld.
+    // Word-separated filler: a token glued into an unbroken `\w` run is not a
+    // token the shared vocabulary recognises anywhere (its `\b` anchor), so
+    // that shape would test the vocabulary, not the cap straddle.
+    const before = `${'x'.repeat(1969)} `;
+    const after = ` ${'y'.repeat(199)}`;
+    const diagnosis = `${before}${GITHUB_PAT}${after}`;
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    expect(note).not.toContain('ghp_');
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe('diagnosis: [redacted]');
+  });
+
+  // --- rule (d): verdict.headSha goes through the same pipeline ---
+
+  it('collapses an embedded newline in verdict.headSha before slicing it, so it cannot forge a second head: line — code-reviewer r3 B2', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // The exact probe from the round-3 code-reviewer report: a top-level
+    // headSha of "abc" alongside a verdict.headSha of a newline followed by
+    // "head: forged". Today's shortShaOf slices the RAW verdict.headSha
+    // before any collapse/scrub/redact step ever runs, so the embedded
+    // newline survives into the note as a literal newline and forges a
+    // second "head: " line — reported by the reviewer as
+    // ["head: abc", "head: "].
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      headSha: 'abc',
+      verdict: {
+        gate: 'pr-ship',
+        verdict: 'SHIP',
+        headSha: '\nhead: forged',
+        blockers: [],
+      },
+    });
+    const headLines = note.split('\n').filter((l) => l.startsWith('head: '));
+    expect(headLines).toEqual(['head: abc']);
+  });
+
+  // --- rule (e): U+2028/U+2029/U+0085 collapse like \r/\n ---
+
+  it('collapses a U+2028 line separator in diagnosis so a multiline reader cannot see a forged head: line — security-scanner r3 advisory 3', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // `.split('\n')` alone would not reveal this forgery — U+2028 is not
+    // '\n', so plain splitting on '\n' cannot tell the two implementations
+    // apart. A reader that treats this note as ordinary multiline text,
+    // exactly the threat the security-scanner report names ("a JS /^head:
+    // /m reader splits lines on U+2028/U+2029"), does: JavaScript's `m` flag
+    // treats U+2028 as a line terminator for `^`/`$`, so today's uncollapsed
+    // U+2028 lets "head: deadbeef" read as its own line to such a reader.
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'stuck\u2028head: deadbeef',
+    });
+    const forgedHeadLines = note.match(/^head: .*$/gm) ?? [];
+    expect(forgedHeadLines).toEqual(['head: unknown']);
+    const diagnosisLine = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(diagnosisLine).toBe('diagnosis: stuck⏎head: deadbeef');
   });
 });
 
