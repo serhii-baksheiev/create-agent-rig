@@ -146,17 +146,21 @@ class FakeJira {
     statusCategory = 'new',
     statusName = 'To Do',
     updated,
+    priorHistories = [],
   }: {
     id: string;
     statusCategory?: string;
     statusName?: string;
     updated: string;
+    // Seeds history entries that predate the selection snapshot — the fixture
+    // shape B2's "created > snapshot" pin needs (round2.md item 1).
+    priorHistories?: Array<{ created: string; items: Array<{ field: string }> }>;
   }) {
     this.id = id;
     this.statusCategory = statusCategory;
     this.statusName = statusName;
     this.updated = updated;
-    this.histories = [];
+    this.histories = [...priorHistories];
     this.calls = [];
   }
 
@@ -504,7 +508,7 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
         await flush();
       };
 
-      return { fetchImpl, releaseWhere, flush };
+      return { fetchImpl, releaseWhere, flush, queue };
     };
 
     const isPreOrReadBack = (c: { url: string; method: string }) =>
@@ -579,7 +583,7 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
         statusName: 'To Do',
         updated: T0,
       });
-      const { fetchImpl, releaseWhere } = gatedFetch(fake);
+      const { fetchImpl, releaseWhere, flush, queue } = gatedFetch(fake);
       globalThis.fetch = fetchImpl;
       const { claim } = await load('jira.mjs');
 
@@ -602,7 +606,22 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       await releaseWhere(isPreOrReadBack); // A's read-back
       await releaseWhere(isChangelogHead); // A's changelog head
       await releaseWhere(isChangelogTail); // A's changelog tail (sees exactly 1)
-      await releaseWhere(isRebaseline); // A's post-verify rebaseline
+
+      // RP-220 round 2 (B3): `claim` calls `rebaseline` exactly as every other
+      // write in this adapter — only under RIG_RUN_DIR (`env` here, CREDENTIALS,
+      // carries none) — so A's own claim() must resolve the moment the
+      // changelog tail read-back lands, with NO further request queued at all.
+      // A forced rebaseline GET used to sit here; asserting its absence is
+      // this file's own report that the mutation to `force` is gone. Red until
+      // the implementer removes `{ force: true }` from `claim`'s call to
+      // `rebaseline`.
+      await flush();
+      expect(
+        queue.some(isRebaseline),
+        `a rebaseline GET fired with no RIG_RUN_DIR configured: ${queue
+          .map((c) => `${c.method} ${c.url}`)
+          .join(' | ')}`,
+      ).toBe(false);
 
       // Only now does B's POST land.
       await releaseWhere(isTransitionPost); // B's POST
@@ -625,6 +644,218 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       expect(resultA).toMatchObject({ claimed: true });
       expect(resultB).toMatchObject({ claimed: false, reason: 'claim-contended' });
     });
+  });
+
+  // round2.md item 1 (B2): every mutation the reviewer named survived the
+  // round-1 suite. Each case below fixtures the shape that specific mutation
+  // needs to be caught by, independent of the production line it targets —
+  // verified by applying the mutation to jira.mjs by hand, watching this file
+  // go red, and reverting (never left in the tree).
+  describe('B2 — pinning the verification rule against the reviewer-flagged mutations', () => {
+    it('does not count a status-change history that predates the selection snapshot (pins the created>snapshot filter, jira.mjs ~639)', async () => {
+      const ticket = neutralTicket({ id: 'RP-11', updatedAt: T0 });
+      const root = await bootstrapProject(ticket, 'in-progress');
+      const fake = new FakeJira({
+        id: 'RP-11',
+        statusCategory: 'new',
+        statusName: 'To Do',
+        updated: T0,
+        priorHistories: [{ created: bump(T0, -3_600_000), items: [{ field: 'status' }] }],
+      });
+      installFetch(fake);
+
+      const { claim } = await load('jira.mjs');
+      const result = await claim(ticket, {
+        transitionId: '21',
+        env: CREDENTIALS,
+        projectRoot: root,
+      });
+
+      expect(
+        result,
+        `a pre-snapshot status history must never count toward contention — ${JSON.stringify(result)}`,
+      ).toMatchObject({ ok: true, claimed: true });
+    });
+
+    it('refuses even with exactly one post-snapshot status history when the read-back category is not in-progress (pins the category check, jira.mjs ~644)', async () => {
+      const ticket = neutralTicket({ id: 'RP-12', updatedAt: T0 });
+      const root = await bootstrapProject(ticket, 'in-progress');
+      const afterHistoryCreated = bump(T0, 1000);
+      let transitioned = false;
+      globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+        const url = String(input);
+        const method = String(init.method ?? 'GET');
+        const u = new URL(url);
+        if (method === 'POST' && /\/transitions$/.test(u.pathname)) {
+          transitioned = true;
+          return Promise.resolve(reply({ status: 204 }));
+        }
+        if (method === 'GET' && /\/changelog$/.test(u.pathname)) {
+          const maxResults = Number(u.searchParams.get('maxResults') ?? '0');
+          // A workflow automation carried the issue straight through
+          // "In Progress" to "Done": exactly ONE status history entry landed
+          // after the snapshot, but the category the read-back sees is not
+          // "indeterminate" any more.
+          const values = transitioned
+            ? [{ created: afterHistoryCreated, items: [{ field: 'status' }] }]
+            : [];
+          return Promise.resolve(
+            reply({ status: 200, json: { total: values.length, startAt: 0, maxResults, values } }),
+          );
+        }
+        if (method === 'GET' && /\/issue\/[^/]+$/.test(u.pathname)) {
+          const fields = String(u.searchParams.get('fields') ?? '');
+          const body: Record<string, unknown> = {};
+          if (fields.includes('status')) {
+            body.status = transitioned
+              ? { name: 'Done', statusCategory: { key: 'done' } }
+              : { name: 'To Do', statusCategory: { key: 'new' } };
+          }
+          if (fields.includes('updated') || fields === '')
+            body.updated = transitioned ? afterHistoryCreated : T0;
+          return Promise.resolve(reply({ status: 200, json: { fields: body } }));
+        }
+        return Promise.resolve(reply({ status: 404, statusText: 'Not Found' }));
+      }) as unknown as typeof globalThis.fetch;
+
+      const { claim } = await load('jira.mjs');
+      const result = await claim(ticket, {
+        transitionId: '21',
+        env: CREDENTIALS,
+        projectRoot: root,
+      });
+
+      expect(
+        result,
+        `a read-back category outside "indeterminate" must never verify, even with exactly one status history after the snapshot — ${JSON.stringify(result)}`,
+      ).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
+    });
+
+    it('refuses when the sole post-snapshot history entry is not itself a status change (pins the status-item check, jira.mjs ~643)', async () => {
+      const ticket = neutralTicket({ id: 'RP-13', updatedAt: T0 });
+      const root = await bootstrapProject(ticket, 'in-progress');
+      const afterHistoryCreated = bump(T0, 1000);
+      let transitioned = false;
+      globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+        const url = String(input);
+        const method = String(init.method ?? 'GET');
+        const u = new URL(url);
+        if (method === 'POST' && /\/transitions$/.test(u.pathname)) {
+          transitioned = true;
+          return Promise.resolve(reply({ status: 204 }));
+        }
+        if (method === 'GET' && /\/changelog$/.test(u.pathname)) {
+          const maxResults = Number(u.searchParams.get('maxResults') ?? '0');
+          // The category genuinely reads "indeterminate" below, but the one
+          // history entry that landed after the snapshot names a different
+          // field — a label change riding along, never a status change.
+          const values = transitioned
+            ? [{ created: afterHistoryCreated, items: [{ field: 'labels' }] }]
+            : [];
+          return Promise.resolve(
+            reply({ status: 200, json: { total: values.length, startAt: 0, maxResults, values } }),
+          );
+        }
+        if (method === 'GET' && /\/issue\/[^/]+$/.test(u.pathname)) {
+          const fields = String(u.searchParams.get('fields') ?? '');
+          const body: Record<string, unknown> = {};
+          if (fields.includes('status')) {
+            body.status = transitioned
+              ? { name: 'In Progress', statusCategory: { key: 'indeterminate' } }
+              : { name: 'To Do', statusCategory: { key: 'new' } };
+          }
+          if (fields.includes('updated') || fields === '')
+            body.updated = transitioned ? afterHistoryCreated : T0;
+          return Promise.resolve(reply({ status: 200, json: { fields: body } }));
+        }
+        return Promise.resolve(reply({ status: 404, statusText: 'Not Found' }));
+      }) as unknown as typeof globalThis.fetch;
+
+      const { claim } = await load('jira.mjs');
+      const result = await claim(ticket, {
+        transitionId: '21',
+        env: CREDENTIALS,
+        projectRoot: root,
+      });
+
+      expect(
+        result,
+        `a sole post-snapshot history entry that is not a status change must never verify — ${JSON.stringify(result)}`,
+      ).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
+    });
+  });
+
+  // invariants.md, "State the limits — and test them": a limit sentence is
+  // either generated from what it describes or a pointer to the test that
+  // proves it. This is jira.mjs's equivalent of the GitHub header test below.
+  it('states, in its own header, that every claim transition — a looped one included — writes its own changelog history, and that this is untested against a live tracker', async () => {
+    const source = await readFile(path.join(queueDir, 'jira.mjs'), 'utf8');
+    expect(source, 'the looped-transition assumption is not named near claim()').toMatch(
+      /loop(ed)?/i,
+    );
+    expect(source, 'the changelog-per-transition claim is not stated').toMatch(
+      /writes its own changelog history|appends one changelog history/i,
+    );
+    expect(source, 'the fake modelling this assumption is not named').toMatch(
+      /fake[\s\S]{0,60}models it|the fake in the tests models it/i,
+    );
+    expect(source, 'the assumption is not marked untested against a live tracker').toMatch(
+      /untested against a live tracker/i,
+    );
+  });
+});
+
+// round2.md item 3 (B4): both adapters' `claim()` headers currently claim
+// "none throws once the write has landed" without scoping WHICH write —
+// they must say the ambiguous case (the write itself failing) still rejects,
+// and point at the pin that already proves it for the mutating-call retry
+// rule (`queue-jira.test.ts` › "does not retry %s").
+describe('the claim() headers scope "never throws" to a write that has already landed', () => {
+  it('jira.mjs says claim() throws only if the write itself fails, and points at the retry pin', async () => {
+    const source = await readFile(path.join(queueDir, 'jira.mjs'), 'utf8');
+    expect(
+      source,
+      'jira.mjs does not scope the never-throws claim to "the write itself fails"',
+    ).toMatch(/throws only if the write itself fails/i);
+    expect(
+      source,
+      'jira.mjs does not point at the queue-jira.test.ts pin for a write that fails outright',
+    ).toMatch(/does not retry %s/);
+  });
+
+  it('github-issues.mjs says claim() throws only if the write itself fails', async () => {
+    const source = await readFile(path.join(queueDir, 'github-issues.mjs'), 'utf8');
+    expect(
+      source,
+      'github-issues.mjs does not scope the never-throws claim to "the write itself fails"',
+    ).toMatch(/throws only if the write itself fails/i);
+  });
+});
+
+// round2.md "Decision on B1": loop §9 currently says, unqualified, that "the
+// adapter re-reads the item before its write and verifies the write after
+// it" — true of Jira, true of GitHub only across distinct accounts, and
+// false of plan-md, whose claim writes nothing at all.
+describe('loop §9 states the verified-claim guarantee at its true, per-adapter scope', () => {
+  it('names Jira, scopes GitHub to distinct accounts, and says a plan-md claim verifies nothing', async () => {
+    const skillPath = path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'skills',
+      'loop',
+      'SKILL.md',
+    );
+    const source = await readFile(skillPath, 'utf8');
+    expect(source, '§9 no longer names Jira for the verified-claim guarantee').toMatch(/jira/i);
+    expect(source, '§9 does not scope the GitHub guarantee to distinct accounts').toMatch(
+      /distinct account|different account/i,
+    );
+    expect(source, '§9 does not say a plan-md claim verifies nothing').toMatch(
+      /plan-md[\s\S]{0,120}verifies nothing|verifies nothing[\s\S]{0,120}plan-md/i,
+    );
   });
 });
 
@@ -651,6 +882,13 @@ const installGhFake = async (state: {
   foreignLogin?: string;
   foreignEventAt?: string;
   ownEventAt?: string;
+  // Round2 B1 decision: two controllers under the SAME GitHub account race
+  // through the pre-read→write window. This fake cannot run two real
+  // processes concurrently, so it fakes the observable effect instead: the
+  // SECOND controller's pre-read ("issue view --json state,labels,updatedAt")
+  // is answered with the ORIGINAL (pre-write) labels, exactly as it would be
+  // had both controllers actually read before either wrote.
+  sameAccountRace?: boolean;
 }): Promise<{
   stub: StubHandle;
   statePath: string;
@@ -660,7 +898,7 @@ const installGhFake = async (state: {
   const dir = await mkdtemp(path.join(tmpdir(), 'rp220-gh-'));
   const statePath = path.join(dir, 'state.json');
   const logPath = path.join(dir, 'calls.log');
-  await writeFile(statePath, JSON.stringify(state));
+  await writeFile(statePath, JSON.stringify({ ...state, _originalLabels: [...state.labels] }));
   await writeFile(logPath, '');
 
   const handler = `
@@ -673,13 +911,19 @@ const installGhFake = async (state: {
 
     if (args[0] === 'issue' && args[1] === 'view') {
       const jsonIdx = args.indexOf('--json');
-      const fields = String(args[jsonIdx + 1] || '').split(',');
+      const fieldsArg = String(args[jsonIdx + 1] || '');
+      const fields = fieldsArg.split(',');
+      const isPreRead = fieldsArg === 'state,labels,updatedAt';
+      if (isPreRead) state._preReads = (state._preReads || 0) + 1;
+      const useOriginalLabels = state.sameAccountRace && isPreRead && state._preReads === 2;
+      const labelSource = useOriginalLabels ? state._originalLabels : state.labels;
       const out = {};
       for (const f of fields) {
         if (f === 'state') out.state = state.state;
-        if (f === 'labels') out.labels = state.labels.map((name) => ({ name }));
+        if (f === 'labels') out.labels = labelSource.map((name) => ({ name }));
         if (f === 'updatedAt') out.updatedAt = state.updatedAt;
       }
+      persist();
       return { stdout: JSON.stringify(out) + '\\n' };
     }
     if (args[0] === 'issue' && args[1] === 'edit') {
@@ -812,6 +1056,129 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
     const claimPath = claimPathFor(root, '42');
     const persisted = JSON.parse(await readFile(claimPath, 'utf8'));
     expect(persisted.workflowClaim).toBeUndefined();
+  });
+
+  // round2.md item 1 (B2): the reviewer's remaining GitHub mutations, pinned
+  // the same way as the Jira set above — verified by hand-applying each
+  // mutation to github-issues.mjs, watching this file go red, and reverting.
+  describe('B2 — pinning the verification rule against the reviewer-flagged mutations', () => {
+    it('does not count an in-progress labelled event that predates the selection snapshot (pins the created_at>snapshot filter, github-issues.mjs ~283)', async () => {
+      installed = await installGhFake({
+        state: 'OPEN',
+        labels: [],
+        updatedAt: T0,
+        login: 'me',
+        // A stale event from long before selection — the label was added
+        // and later removed, so it is absent from `labels` today but still
+        // sits in the issue's event history.
+        events: [
+          {
+            event: 'labeled',
+            label: { name: 'in-progress' },
+            actor: { login: 'me' },
+            created_at: bump(T0, -3_600_000),
+          },
+        ],
+        ownEventAt: bump(T0, 1000),
+      });
+      const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+      const root = await bootstrapProject(ticket, 'in-progress');
+
+      const { claim } = await load('github-issues.mjs');
+      const result = await claim(ticket, { projectRoot: root });
+
+      expect(
+        result,
+        `a pre-snapshot labelled event must never count toward contention — ${JSON.stringify(result)}`,
+      ).toMatchObject({ ok: true, claimed: true });
+    });
+
+    it('refuses as claim-unverifiable when the events page comes back full (100) — it may be truncated (pins the full-page refusal, github-issues.mjs ~272)', async () => {
+      const filler = Array.from({ length: 99 }, (_, i) => ({
+        event: 'commented',
+        label: { name: '' },
+        actor: { login: 'someone' },
+        created_at: bump(T0, -1000 * (i + 1)),
+      }));
+      installed = await installGhFake({
+        state: 'OPEN',
+        labels: [],
+        updatedAt: T0,
+        login: 'me',
+        events: filler,
+        ownEventAt: bump(T0, 1000),
+      });
+      const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+      const root = await bootstrapProject(ticket, 'in-progress');
+
+      const { claim } = await load('github-issues.mjs');
+      const result = await claim(ticket, { projectRoot: root });
+
+      expect(
+        result,
+        `an events page landing at exactly 100 must be treated as possibly truncated — ${JSON.stringify(result)}`,
+      ).toMatchObject({ ok: false, claimed: false, reason: 'claim-unverifiable' });
+    });
+
+    it('refuses as claim-contended when two in-progress labelled events by the caller land after the snapshot (pins the ===1 check, github-issues.mjs ~285)', async () => {
+      installed = await installGhFake({
+        state: 'OPEN',
+        labels: [],
+        updatedAt: T0,
+        login: 'me',
+        events: [
+          {
+            event: 'labeled',
+            label: { name: 'in-progress' },
+            actor: { login: 'me' },
+            created_at: bump(T0, 500),
+          },
+        ],
+        ownEventAt: bump(T0, 1000),
+      });
+      const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+      const root = await bootstrapProject(ticket, 'in-progress');
+
+      const { claim } = await load('github-issues.mjs');
+      const result = await claim(ticket, { projectRoot: root });
+
+      expect(
+        result,
+        `two in-progress labelled events after the snapshot by the caller must never verify — ${JSON.stringify(result)}`,
+      ).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
+    });
+  });
+
+  // round2.md "Decision on B1": the truthful semantics for GitHub are
+  // stale-selection safe and verified against OTHER accounts; the SAME
+  // account case is a stated, TESTED limit, never a claim of exclusivity.
+  it('the documented same-account limit: two same-account controllers can both come back claimed:true (not a claim of exclusivity)', async () => {
+    installed = await installGhFake({
+      state: 'OPEN',
+      labels: [],
+      updatedAt: T0,
+      login: 'me',
+      events: [],
+      ownEventAt: bump(T0, 1000),
+      sameAccountRace: true,
+    });
+    const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+    const rootA = await bootstrapProject(ticket, 'in-progress');
+    const rootB = await bootstrapProject(ticket, 'in-progress');
+
+    const { claim } = await load('github-issues.mjs');
+    const resultA = claim(ticket, { projectRoot: rootA });
+    const resultB = claim(ticket, { projectRoot: rootB });
+
+    expect(resultA, `controller A: ${JSON.stringify(resultA)}`).toMatchObject({
+      ok: true,
+      claimed: true,
+    });
+    expect(
+      resultB,
+      `the same-GitHub-account limit means a second controller under the identical login also ` +
+        `reads back as claimed:true — a stated, tested limit, never a claim of exclusivity: ${JSON.stringify(resultB)}`,
+    ).toMatchObject({ ok: true, claimed: true });
   });
 
   // invariants.md, "State the limits — and test them": a limit sentence is

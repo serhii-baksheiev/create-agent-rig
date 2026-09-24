@@ -230,12 +230,14 @@ const rebaseline = (ticket) => {
 /**
  * RP-220 — verified, stale-safe claim.
  *
- * The same contract as `jira.mjs`'s `claim`: every path returns; none throws
- * once `--add-label` has been sent, because a thrown write is retried by the
- * caller and lands twice. `reason` is `claim-stale` (refused before mutating),
- * `claim-contended` (mutated, but the read-back could not attribute the label
- * to this call) or `claim-unverifiable` (a request failed, or the events page
- * came back full enough that truncation cannot be ruled out).
+ * The same contract as `jira.mjs`'s `claim`: every path returns once the
+ * write has landed — claim() throws only if the write itself fails outright,
+ * never merely because verification could not confirm the outcome, because a
+ * thrown write is retried by the caller and lands twice. `reason` is
+ * `claim-stale` (refused before mutating), `claim-contended` (mutated, but
+ * the read-back could not attribute the label to this call) or
+ * `claim-unverifiable` (a request failed, or the events page came back full
+ * enough that truncation cannot be ruled out).
  *
  * 🔴 Stated limit, measured live (throwaway issue #306, 2026-09-24): re-adding
  * a label GitHub already considers present writes NO `labeled` event. Two
@@ -303,12 +305,20 @@ export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
   // Pre-read: a failing read throws as any read does today — nothing has
   // been written yet.
   const pre = ghJson(['issue', 'view', ticket.id, '--json', 'state,labels,updatedAt']);
-  if (String(pre?.state ?? '').toUpperCase() === 'CLOSED' || labelNames(pre).includes('in-progress')) {
+  const alreadyClosed = String(pre?.state ?? '').toUpperCase() === 'CLOSED';
+  const alreadyInProgress = labelNames(pre).includes('in-progress');
+  if (alreadyClosed || alreadyInProgress) {
     return {
       ok: false,
       claimed: false,
       reason: 'claim-stale',
-      detail: `the issue is already ${String(pre?.state ?? '').toLowerCase()} or in-progress`,
+      // Named separately rather than folded into one "already X or in-progress"
+      // string: an OPEN issue that already carries the label used to read as
+      // "already open or in-progress", which names the state the claim would
+      // have accepted as the reason it was refused.
+      detail: alreadyClosed
+        ? 'the issue is already closed'
+        : 'the issue is already labelled in-progress',
     };
   }
   if (new Date(pre?.updatedAt).getTime() !== snapshotMs) {

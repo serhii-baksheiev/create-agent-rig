@@ -566,15 +566,16 @@ const recordMarker = (ticket, updatedAt, env) => {
 };
 
 /**
- * `force: true` is the one difference from every other call site: a verified
- * claim (below) confirms the write it just made even when no run directory is
- * configured to receive the marker — `recordMarker` (the actual write) still
- * only fires when `RIG_RUN_DIR` is set. Every other caller (`comment`,
- * `escalate`, `close`) keeps the original all-or-nothing gate: no run
- * directory, no request at all.
+ * Best-effort, like `proposeTriage`'s baseline: only writes made through this
+ * adapter re-baseline, and only when a run directory is configured to receive
+ * the marker — no run directory, no request at all, the same all-or-nothing
+ * gate every caller here shares (`comment`, `escalate`, `close`, and the
+ * verified `claim` below). A read-back the tracker refused is announced on
+ * stderr, never thrown: the write has already landed, and a thrown rebaseline
+ * would be retried by the caller onto an item already transitioned.
  */
-const rebaseline = async (ticket, env, { force = false } = {}) => {
-  if (!force && !env?.RIG_RUN_DIR) return;
+const rebaseline = async (ticket, env) => {
+  if (!env?.RIG_RUN_DIR) return;
   let updatedAt;
   try {
     const after = await request(`/rest/api/3/issue/${ticket.id}?fields=updated`, { env });
@@ -592,22 +593,33 @@ const rebaseline = async (ticket, env, { force = false } = {}) => {
 /**
  * RP-220 — verified, stale-safe claim.
  *
- * Measured live against a Jira RP-board issue (RP-249, 2026-09-24): the
- * global `21 → In Progress` transition is offered even when the issue is
- * already In Progress, and POSTing it — including that looped case — always
- * appends one changelog history and moves `updated` to that history's
- * `created`. That is what makes the read-back below a sound race detector: two
- * claims racing from the same selection snapshot always leave two histories
- * after it, and whichever controller reads back after both writes have landed
- * sees two and refuses — so at most one of them is ever told `claimed: true`.
+ * Assumption, stated because nothing offline can prove it: every claim
+ * transition, a looped one included, writes its own changelog history —
+ * measured on a live Jira 2026-09-24 (RP-249: the global `21 → In Progress`
+ * transition is offered even when the issue is already In Progress, and
+ * POSTing it — including that looped case — always appended one changelog
+ * history and moved `updated` to that history's `created`); the fake in the
+ * tests models it; untested against a live tracker beyond that one
+ * measurement. It also assumes read-your-writes consistency: the read-back
+ * below lands on a node that has already applied the write it is reading.
+ * That pair is what makes the read-back a sound race detector: two claims
+ * racing from the same selection snapshot always leave two histories after
+ * it, and whichever controller reads back after both writes have landed sees
+ * two and refuses — so at most one of them is ever told `claimed: true`.
+ * Pinned by `test/template/queue-claim-verified.test.ts` (absent in a
+ * generated rig) › "states, in its own header, that every claim transition —
+ * a looped one included — writes its own changelog history, and that this is
+ * untested against a live tracker", so the assumption cannot silently vanish.
  *
- * Every path here returns; none throws once the transition POST has been
- * attempted, because a thrown write is retried by the caller and lands twice.
- * `reason` is one of `claim-stale` (refused before mutating — no selection
- * snapshot, or the item moved since selection), `claim-contended` (mutated,
- * but the read-back could not attribute the sole resulting history to this
- * call) or `claim-unverifiable` (a request failed and the outcome could not
- * be read at all). Pinned in the generator's
+ * claim() throws only if the write itself fails outright — every path returns
+ * once the write has landed, never merely because verification could not
+ * confirm the outcome — exactly as every other mutating call in this adapter,
+ * `test/template/queue-jira.test.ts` (absent in a generated rig) › "does not
+ * retry %s" pins. `reason` is one of `claim-stale` (refused before
+ * mutating — no selection snapshot, or the item moved since selection),
+ * `claim-contended` (mutated, but the read-back could not attribute the sole
+ * resulting history to this call) or `claim-unverifiable` (a request failed
+ * and the outcome could not be read at all). Pinned in the generator's
  * `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
  * every case under "jira claim() is verified and stale-selection safe
  * (RP-220)", including › "the Done criterion: two controllers racing from one
@@ -728,7 +740,7 @@ export const claim = async (
         `${error.message}\n`,
     );
   }
-  await rebaseline(ticket, env, { force: true });
+  await rebaseline(ticket, env);
   return { ok: true, claimed: true, workflowClaimRecorded };
 };
 

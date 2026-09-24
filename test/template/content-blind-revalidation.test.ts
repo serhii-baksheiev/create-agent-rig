@@ -197,20 +197,34 @@ const before = (p: Project, point: 'BEFORE_PR' | 'BEFORE_CLOSE') =>
 
 const claimThroughJiraAdapter = async (p: Project) => {
   const adapterUrl = pathToFileURL(path.join(scriptsDir, 'queue', 'jira.mjs')).href;
+  const callsPath = path.join(
+    await mkdtemp(path.join(tmpdir(), 'rp220-jira-calls-')),
+    'calls.json',
+  );
   // RP-220: `claim` now re-reads status/updated before mutating and reads back
   // after — so the stub has to behave like a tiny stateful Jira rather than
   // answer every call identically. `T1` is the snapshot this helper's callers
   // already select against (the default `jiraIssue()`'s `updated`); `T2` is
   // what the transition leaves behind, matching the fixtures those callers set
-  // afterwards via `p.setIssue(jiraIssue({ updated: T2, ... }))`. No route here
-  // answers `?fields=updated` alone (the post-verify `rebaseline` read): the
-  // `env` this script hands `claim` carries no `RIG_RUN_DIR`, so that call is
-  // never made, exactly as it wasn't before this change.
+  // afterwards via `p.setIssue(jiraIssue({ updated: T2, ... }))`.
+  //
+  // RP-220 round 2 (B3): the `env` this script hands `claim` carries no
+  // `RIG_RUN_DIR`, so once `rebaseline` is gated the same way as every other
+  // write in this adapter — force-free, `RIG_RUN_DIR`-only — the post-verify
+  // read-back for `?fields=updated` alone must never fire. Round 1 shipped
+  // `rebaseline(ticket, env, { force: true })`, which fires that GET
+  // regardless; the comment here used to assert the call "is never made"
+  // while the production code made it anyway (r1-code-reviewer.md's B3
+  // finding). Asserted below rather than left as prose, so the claim cannot
+  // go stale silently again. Red until the implementer removes `force`.
   const script = `
+    const fs = await import('node:fs/promises');
+    const calls = [];
     let transitioned = false;
     globalThis.fetch = async (input, init = {}) => {
       const u = new URL(String(input));
       const method = String(init.method || 'GET');
+      calls.push({ pathname: u.pathname, search: u.search, method });
       const reply = (json, status = 200) => ({
         ok: status >= 200 && status < 300,
         status,
@@ -257,6 +271,7 @@ const claimThroughJiraAdapter = async (p: Project) => {
         },
       },
     );
+    await fs.writeFile(${JSON.stringify(callsPath)}, JSON.stringify(calls));
   `;
   const result = await run(
     process.execPath,
@@ -265,6 +280,19 @@ const claimThroughJiraAdapter = async (p: Project) => {
     p.env,
   );
   expect(result.code, result.out).toBe(0);
+  const calls = JSON.parse(await readFile(callsPath, 'utf8')) as Array<{
+    pathname: string;
+    search: string;
+    method: string;
+  }>;
+  const rebaselineOnlyCalls = calls.filter(
+    (c) =>
+      c.method === 'GET' && /\/issue\/[^/]+$/.test(c.pathname) && c.search === '?fields=updated',
+  );
+  expect(
+    rebaselineOnlyCalls,
+    `a rebaseline GET for ?fields=updated alone fired with no RIG_RUN_DIR configured: ${JSON.stringify(calls)}`,
+  ).toHaveLength(0);
   await git(['add', '.rig/claims/RP-50.json'], p.root);
   await git(['commit', '-q', '--allow-empty', '-m', 'record Rig claim transition'], p.root);
 };
