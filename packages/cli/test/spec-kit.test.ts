@@ -149,23 +149,22 @@ function isInside(directory: string, candidate: string): boolean {
 // eight running slowly at once.
 //
 // A single flat figure had to fit inside the SMALLER (elsewhere) case budget
-// of 15_000, which left no headroom on hosted Windows: there, every child is
-// a PowerShell start plus a C# compile plus the fixture payload — RP-162
-// measured a single PowerShell start alone at 6.8 s and, separately, over
-// 15 s; hosted windows-e2e runs of this file's own children have taken up to
-// ~4 s on average and the file's busiest (nine-child) case up to 37 s while
-// still passing. A child that stalls for 10-30 s and then recovers used to
-// finish inside the file's 60 s Windows case budget; a flat 8_000 ms bound
-// would fail it instead of the genuine hang the bound exists to catch. So the
-// bound is per platform, each branch sized against its own case budget minus
-// margin for this file's own fixture setup/teardown — following the same
-// "case budget minus a margin" shape as
-// `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS` in
+// of 15_000, which left no headroom on hosted Windows, where every child is a
+// PowerShell start plus a C# compile plus the fixture payload. Hosted
+// windows-e2e job 107547258922 (run 35973133420) shows both sides: the busiest
+// case timed out at 61 680 ms and hit EBUSY, while the launcher-refusal case
+// (about three children) took 43 664 ms and still passed — a stall that
+// recovered, which a flat 8_000 ms bound would have failed. So the bound is
+// per platform, each branch sized against its own case budget minus margin
+// for this file's own fixture setup/teardown — the same "case budget minus a
+// margin" shape as PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS in
 // package-manager-transport.test.ts. Elsewhere (15_000), 8_000 ms leaves room
 // for seven quick children plus setup/teardown even if the eighth hangs and
-// eats the whole bound, with several seconds of margin before vitest's own
-// case timeout would fire instead and leave the child's output unreported. On
-// win32 (60_000), 45_000 ms leaves 15 s of the same margin instead of none.
+// eats the whole bound. On win32 (60_000), 45_000 ms names a hung child before
+// the case budget on a healthy runner (the busiest case took 11 838 ms in job
+// 107565338372); on a uniformly slow runner a late hang can still reach the
+// case budget unnamed — a fixed per-child bound cannot both let a 40 s
+// recovering stall through and name every late hang.
 const SPEC_KIT_CHILD_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 8_000;
 
 /**
