@@ -276,7 +276,14 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
     const result = await run(edit(`${root}/.claude/skills/loop/SKILL.md`));
     expect(result.code, result.stderr).toBe(2); // still fails closed — never weakened
     expect(result.stderr).not.toMatch(/legacy machine-wide/i);
-    expect(result.stderr).toMatch(/root/i);
+    // code-reviewer round 1 advisory: `toMatch(/root/i)` is vacuous here —
+    // the guard's own static remedy text already contains `--root "$PWD"`,
+    // so it matched the OLD "legacy machine-wide" wording just as well and
+    // discriminated nothing beyond the `not.toMatch` line above. Matching the
+    // reason's actual distinctive wording (`unattended-flag.mjs`'s
+    // `readUnattended`, the unscoped-legacy branch) is what proves the new
+    // story, not just the absence of the old one.
+    expect(result.stderr).toMatch(/carries no checkout root/i);
   });
 
   it('finds the checkout-scoped flag from cwd when the harness omits CLAUDE_PROJECT_DIR', async () => {

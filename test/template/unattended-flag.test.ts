@@ -1,11 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { fifosAvailable, modeBitsDeny, skipUnless } from '../helpers/env.js';
+import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
+import { fifosAvailable, modeBitsDeny, needsGit, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -51,12 +53,16 @@ interface BoundedResult extends CliResult {
   timedOut: boolean;
 }
 
-const runCli = (args: string[], home: string): Promise<CliResult> =>
+const runCli = (
+  args: string[],
+  home: string,
+  extraEnv: Record<string, string> = {},
+): Promise<CliResult> =>
   new Promise((resolve) => {
     execFile(
       process.execPath,
       [scriptPath, ...args],
-      { env: { ...process.env, HOME: home } },
+      { env: { ...process.env, HOME: home, ...extraEnv } },
       (error, stdout, stderr) => {
         resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stdout, stderr });
       },
@@ -262,7 +268,12 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     expect(mode.why).toMatch(/rulebook/);
   });
 
-  it('writeUnattended refuses an allow entry that widens the rulebook, keeps one outside it, and the CLI exits 1 on the wide one', async () => {
+  it('writeUnattended refuses an allow entry that widens the rulebook, keeps one outside it, and the CLI exits 1 on the wide one', async (ctx) => {
+    // RP-258 round 2: `on`/`verify` now confirm `--root` is a real git
+    // checkout toplevel before doing anything else, so this fixture needs to
+    // be one too, or the CLI call below refuses for THAT reason instead of
+    // the widening reason this test actually pins.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const { writeUnattended, readUnattended, clearUnattended } = await load();
     expect(() =>
       writeUnattended({ item: 'AR-51', runDir: '/runs/1', allow: ['.claude/'] }, env()),
@@ -285,6 +296,7 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     // to supply one to reach the widening check at all.
     const wideningCheckout = path.join(home, 'widening-cli-checkout');
     await mkdir(wideningCheckout, { recursive: true });
+    execFileSync('git', ['init', '-q', wideningCheckout], { env: withoutGitLocation() });
     const result = await runCli(
       ['on', '--root', wideningCheckout, '--item', 'AR-51', '--allow', '.'],
       home,
@@ -658,11 +670,15 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
       },
     );
 
-    it('the CLI refuses `on --allow .Claude/` exactly as it refuses `on --allow .claude/`, and writes no flag', async () => {
+    it('the CLI refuses `on --allow .Claude/` exactly as it refuses `on --allow .claude/`, and writes no flag', async (ctx) => {
       // RP-258: `--root` is mandatory now — supply one so this stays a test
       // of the widening refusal, not of the (separately tested) root refusal.
+      // RP-258 round 2: and it must be a real git checkout toplevel, or the
+      // root check refuses first, for the wrong reason.
+      skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
       const miscasedCheckout = path.join(home, 'miscased-cli-checkout');
       await mkdir(miscasedCheckout, { recursive: true });
+      execFileSync('git', ['init', '-q', miscasedCheckout], { env: withoutGitLocation() });
       const miscased = await runCli(
         ['on', '--root', miscasedCheckout, '--item', 'RP-215', '--allow', '.Claude/'],
         home,
@@ -905,12 +921,17 @@ describe('the CLI the loop skill calls', () => {
     }
   });
 
-  it('scopes on/off to --root so concurrent checkout CLIs do not share a flag', async () => {
+  it('scopes on/off to --root so concurrent checkout CLIs do not share a flag', async (ctx) => {
+    // RP-258 round 2: both roots must be real git checkout toplevels, or the
+    // new root check refuses before either `on` call reaches its own point.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const { readUnattended, unattendedFlags } = await load();
     const checkoutA = path.join(home, 'cli-checkout-a');
     const checkoutB = path.join(home, 'cli-checkout-b');
     await mkdir(checkoutA, { recursive: true });
     await mkdir(checkoutB, { recursive: true });
+    execFileSync('git', ['init', '-q', checkoutA], { env: withoutGitLocation() });
+    execFileSync('git', ['init', '-q', checkoutB], { env: withoutGitLocation() });
 
     const envA = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA };
     const envB = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB };
@@ -929,9 +950,11 @@ describe('the CLI the loop skill calls', () => {
     }
   });
 
-  it('`on --root … --item … --run-dir … --allow …` writes the scoped flag and prints its path', async () => {
+  it('`on --root … --item … --run-dir … --allow …` writes the scoped flag and prints its path', async (ctx) => {
     // RP-258: `--root` is mandatory now — the happy path supplies it and
     // reads back the checkout-scoped path, not the unscoped legacy one.
+    // RP-258 round 2: and it must be a real git checkout toplevel.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     //
     // 🔴 Precondition, not a cleanup, same as "scopes on/off to --root" above:
     // a SCOPED write mirrors into the real password-database home too (the
@@ -941,6 +964,9 @@ describe('the CLI the loop skill calls', () => {
     const { unattendedFlags } = await load();
     const checkout = path.join(home, 'on-happy-path-checkout');
     await mkdir(checkout, { recursive: true });
+    // RP-258 round 2: a real git checkout toplevel, or the new root check
+    // refuses before the happy path this test pins is ever reached.
+    execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
     const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     try {
       const result = await runCli(
@@ -959,11 +985,30 @@ describe('the CLI the loop skill calls', () => {
         home,
       );
       expect(result.code, result.stderr).toBe(0);
-      // Scoped writes mirror into both homes with the password-database home
-      // FIRST (`writeUnattended`'s own doc comment) — the path the CLI
-      // prints is that first-written one, i.e. the last candidate here.
-      const candidates = unattendedFlags(scopedEnv);
-      const printedPath = candidates[candidates.length - 1]!;
+      // code-reviewer round 1 advisory (independent-oracle invariant,
+      // `invariants.md`): the expected path used to come from production's
+      // own `unattendedFlags`, so a bug in that function's scoping scheme
+      // could never be caught by this assertion — the test and the code
+      // would agree by construction. Instead this re-derives the scheme
+      // `unattended-flag.mjs` documents on `scopedBasename`/`checkoutId`
+      // (sha256 of the realpath, first 16 hex chars, spliced into the
+      // basename) by hand, and the home-mirroring order from `homesOf`'s own
+      // doc comment ("the env-derived home is first" — `stop-flag.mjs`) —
+      // and `writeUnattended` mirrors with the password-database home
+      // written FIRST, so the printed path is the LAST of these two homes,
+      // exactly as before, just computed independently of `unattendedFlags`.
+      const canonicalCheckout = realpathSync.native(checkout);
+      const scopedId = createHash('sha256').update(canonicalCheckout).digest('hex').slice(0, 16);
+      const scopedBasename = FLAG_NAME.replace('-loop-UNATTENDED', `-${scopedId}-loop-UNATTENDED`);
+      let passwordHome: string | null = null;
+      try {
+        passwordHome = userInfo().homedir;
+      } catch {
+        // no password entry — only the env-derived home exists
+      }
+      const homes = [...new Set([home, passwordHome].filter((h): h is string => h !== null))];
+      const writtenFirst = homes.length > 1 ? homes[1]! : homes[0]!;
+      const printedPath = path.join(writtenFirst, '.claude', scopedBasename);
       expect(result.stdout).toContain(printedPath);
       expect(JSON.parse(await readFile(printedPath, 'utf8'))).toEqual({
         item: 'AR-51',
@@ -1040,13 +1085,17 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
   // looking for the quoted name in this file — a name assembled from
   // concatenated string literals is not found, so the citation reads as dead
   // even while the test passes. Measured: it reported exactly that.
-  it('refuses when no flag is armed, naming the item and the unguarded rulebook', async () => {
+  it('refuses when no flag is armed, naming the item and the unguarded rulebook', async (ctx) => {
     // RP-258: `--root` is mandatory now (for `verify` too) — supply a
     // checkout with no flag armed at all, so this stays a test of the
     // "nothing armed" refusal rather than the (separately tested) missing
     // `--root` refusal.
+    // RP-258 round 2: and it must be a real git checkout toplevel, or the
+    // root check refuses first, for the wrong reason.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const checkout = path.join(home, 'verify-none-armed-checkout');
     await mkdir(checkout, { recursive: true });
+    execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
     const result = await runCli(['verify', '--root', checkout, '--item', 'AR-103'], home);
     expect(result.code).not.toBe(0);
     // Not just "a file is missing" — the reader needs the CONSEQUENCE, or
@@ -1059,14 +1108,17 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
     );
   });
 
-  it('refuses when the armed flag names a different item, naming both', async () => {
+  it('refuses when the armed flag names a different item, naming both', async (ctx) => {
     // RP-258: armed through the CLI, scoped to a real `--root`, so this
     // exercises the "different item, correctly scoped" case rather than the
     // unscoped legacy fallback (covered separately below). A scoped `on`
     // mirrors into the real password-database home too, same as every other
     // scoped-write case in this file — removed in `finally`.
+    // RP-258 round 2: and `--root` must be a real git checkout toplevel.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const checkout = path.join(home, 'verify-item-mismatch-checkout');
     await mkdir(checkout, { recursive: true });
+    execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
     const { unattendedFlags } = await load();
     const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     try {
@@ -1109,9 +1161,12 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
 
   // The passing direction, so the check above cannot be satisfied by a
   // `verify` that simply always exits nonzero.
-  it('exits 0 when a flag armed with a narrow allow-list matches the item asked about', async () => {
+  it('exits 0 when a flag armed with a narrow allow-list matches the item asked about', async (ctx) => {
+    // RP-258 round 2: `--root` must be a real git checkout toplevel.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const checkout = path.join(home, 'verify-success-checkout');
     await mkdir(checkout, { recursive: true });
+    execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
     const { unattendedFlags } = await load();
     const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     try {
@@ -1144,11 +1199,14 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
   // still refuses at `on` and still writes NOTHING — this is the existing
   // case near line 264 above, restated here only to spell out that `verify`
   // must not be the thing that makes that refusal write a flag after all.
-  it('does not change `on`: a widening --allow still exits 1 and still writes no flag', async () => {
+  it('does not change `on`: a widening --allow still exits 1 and still writes no flag', async (ctx) => {
     // RP-258: `--root` is mandatory now — supply one so this stays a test of
     // the widening refusal, not of the (separately tested) missing-root one.
+    // RP-258 round 2: and it must be a real git checkout toplevel.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const checkout = path.join(home, 'on-widening-checkout');
     await mkdir(checkout, { recursive: true });
+    execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
     const result = await runCli(
       ['on', '--root', checkout, '--item', 'AR-103', '--allow', '.'],
       home,
@@ -1158,12 +1216,26 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
     expect(existsSync(flagPath())).toBe(false);
   });
 
-  it('`verify` without --root exits 1 and names the missing --root, even with a scoped flag armed for cwd (RP-258)', async () => {
+  it('`verify` without --root exits 1 and names the missing --root, even with a scoped flag armed for cwd (RP-258)', async (ctx) => {
     // The mandatory-`--root` refusal must fire before any lookup, not only
     // when nothing is armed anywhere — otherwise a caller relying on cwd
     // fallback could still slip past it by accident.
+    // RP-258 round 2: the checkout armed below must be a real git checkout
+    // toplevel, or `on` itself refuses before this test's own case is set up.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
+    //
+    // code-reviewer round 1 advisory: the name and this comment claim "armed
+    // for cwd" / "fires before any lookup", but the child process this test
+    // spawned carried no `CLAUDE_PROJECT_DIR` at all — so the unrooted
+    // `verify` had nothing to find regardless of ordering, and a refusal
+    // placed AFTER an empty lookup would have passed this test too. Setting
+    // `CLAUDE_PROJECT_DIR` on the child to the exact scoped checkout that was
+    // just armed is what makes the property real: the flag genuinely IS
+    // discoverable from this env, and `verify` must still refuse for the
+    // sole reason that `--root` itself is missing.
     const checkout = path.join(home, 'verify-missing-root-checkout');
     await mkdir(checkout, { recursive: true });
+    execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
     const { unattendedFlags } = await load();
     const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     try {
@@ -1173,13 +1245,133 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
       );
       expect(onResult.code, onResult.stderr).toBe(0);
 
-      const result = await runCli(['verify', '--item', 'RP-258'], home);
+      const result = await runCli(['verify', '--item', 'RP-258'], home, {
+        CLAUDE_PROJECT_DIR: checkout,
+      });
       expect(result.code).toBe(1);
       expect(result.stderr).toMatch(/--root/);
     } finally {
       await Promise.all(
         unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
       );
+    }
+  });
+});
+
+/**
+ * PR #325 (RP-258), round-1 gate findings on the head that made `--root`
+ * mandatory. `hasRoot` only refuses a value that starts with `--`, so a
+ * blank one — an empty string, or whitespace — passed straight through:
+ * `canonicalCheckout` trims it to `''` and returns `null`, exactly the
+ * unscoped state `--root` exists to make unreachable. code-reviewer's probe
+ * reproduced it: `on --root "" --item X` exited 0 and wrote the unscoped
+ * legacy record, and `verify --root "" --item X` read it back and printed
+ * `armed` — while `guard-rulebook`, always scoped by the harness, refuses
+ * that very file as an unscoped legacy record. Two callers of one flag,
+ * disagreeing about whether it authorizes anything (code-reviewer BLOCKER).
+ *
+ * security-scanner's second, in-scope advisory is the same shape one layer
+ * down: `canonicalPath` falls back to `resolve()` when `realpathSync.native`
+ * cannot resolve a path, so a `--root` that does not exist, or one that
+ * exists but is a subdirectory of a checkout rather than its git toplevel,
+ * still arms/reads a flag — scoped to a directory `guard-rulebook` (which
+ * always scopes itself by `git rev-parse --show-toplevel` of the REAL
+ * checkout) can never see. `on`/`verify` need to refuse before doing
+ * anything with such a root, the same way they already refuse a missing one.
+ */
+describe('on/verify: a blank, nonexistent, or non-checkout-root --root authorizes nothing (RP-258 round 2)', () => {
+  it.each(['', '   ', '\t'])(
+    '`on --root %j --item …` refuses a blank root and writes nothing',
+    async (blank) => {
+      const result = await runCli(['on', '--root', blank, '--item', 'RP-258'], home);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/--root/);
+      expect(existsSync(path.join(home, '.claude'))).toBe(false);
+    },
+  );
+
+  it.each(['', '   '])(
+    '`verify --root %j --item …` never reports armed, even when an unscoped legacy flag matches the item',
+    async (blank) => {
+      // Armed directly (bypassing `on`) so this test does not depend on the
+      // "on refuses a blank root" case above to already hold — it pins the
+      // read side of the same contract independently.
+      await arm(JSON.stringify({ item: 'RP-258', runDir: '/runs/1', allow: [] }));
+      const result = await runCli(['verify', '--root', blank, '--item', 'RP-258'], home);
+      expect(result.code).toBe(1);
+      expect(result.stdout).not.toMatch(/armed/);
+      expect(result.stderr).toMatch(/--root/);
+    },
+  );
+
+  it('`on --root <nonexistent path> --item …` refuses, names the path problem, and writes nothing', async () => {
+    const missing = path.join(home, 'does-not-exist-checkout');
+    const result = await runCli(['on', '--root', missing, '--item', 'RP-258'], home);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(missing);
+    expect(result.stderr).toMatch(/does not exist|no such (file or )?directory/i);
+    expect(existsSync(path.join(home, '.claude'))).toBe(false);
+  });
+
+  it('`verify --root <nonexistent path> --item …` refuses, naming the path problem rather than "no usable flag"', async () => {
+    const missing = path.join(home, 'verify-does-not-exist-checkout');
+    const result = await runCli(['verify', '--root', missing, '--item', 'RP-258'], home);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain(missing);
+    expect(result.stderr).toMatch(/does not exist|no such (file or )?directory/i);
+    // Distinguishes this from the generic "nothing is armed" refusal `verify`
+    // already gives for an unrooted-but-otherwise-fine lookup — the message
+    // here must be about the ROOT itself, checked before any flag lookup.
+    expect(result.stderr).not.toMatch(/no usable unattended flag/i);
+  });
+
+  // A `--root` that EXISTS but is a subdirectory of a checkout, not the
+  // checkout's own git toplevel, must be refused too: `guard-rulebook`
+  // always scopes itself by the real checkout's toplevel, and would never
+  // see a flag scoped to one of its subdirectories.
+  it('`on --root <subdirectory of a git checkout> --item …` refuses, names the checkout-root problem, and writes nothing', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
+    const checkout = await mkdtemp(path.join(tmpdir(), 'rp258-subroot-on-'));
+    try {
+      execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
+      const subdir = path.join(checkout, 'nested', 'deeper');
+      await mkdir(subdir, { recursive: true });
+
+      const result = await runCli(['on', '--root', subdir, '--item', 'RP-258'], home);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toContain(subdir);
+      expect(result.stderr).toMatch(/checkout root|toplevel/i);
+      expect(existsSync(path.join(home, '.claude'))).toBe(false);
+    } finally {
+      await removeFixture(checkout);
+    }
+  });
+
+  it('`verify --root <subdirectory of a git checkout> --item …` refuses, naming the checkout-root problem rather than "no usable flag"', async (ctx) => {
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
+    const checkout = await mkdtemp(path.join(tmpdir(), 'rp258-subroot-verify-'));
+    try {
+      execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
+      const subdir = path.join(checkout, 'nested', 'deeper');
+      await mkdir(subdir, { recursive: true });
+
+      // Armed for the REAL checkout root first — so a `verify` that merely
+      // fell through to "nothing found" for the subdirectory's own
+      // (different) scope could not be mistaken for the specific refusal
+      // this test pins.
+      const onResult = await runCli(['on', '--root', checkout, '--item', 'RP-258'], home);
+      expect(onResult.code, onResult.stderr).toBe(0);
+      try {
+        const result = await runCli(['verify', '--root', subdir, '--item', 'RP-258'], home);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain(subdir);
+        expect(result.stderr).toMatch(/checkout root|toplevel/i);
+        expect(result.stderr).not.toMatch(/no usable unattended flag/i);
+      } finally {
+        await runCli(['off', '--root', checkout], home);
+      }
+    } finally {
+      await removeFixture(checkout);
     }
   });
 });

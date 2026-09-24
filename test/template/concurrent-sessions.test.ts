@@ -1,12 +1,14 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
+import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { validateEvidenceRow } from '../helpers/evidence-row.js';
 import type { EvidenceRow } from '../helpers/evidence-row.js';
+import { needsGit, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 // RP-120, narrowed to the Rig's own state: which parts of it two sessions on
@@ -104,7 +106,11 @@ describe('two sessions in one directory share one unattended flag, and nothing r
   // would leave a fixture flag in the operator's `~/.claude/`. The `finally`
   // removes every candidate the module itself would read, as
   // unattended-flag.test.ts does for the same reason.
-  it('a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both', async () => {
+  it('a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both', async (ctx) => {
+    // RP-258 round 2: `on`/`verify` now confirm `--root` is a real git
+    // checkout toplevel before doing anything else, so this fixture needs to
+    // be one too.
+    skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const { readUnattended, unattendedFlags } = (await load('unattended-flag.mjs')) as {
       readUnattended: (env?: NodeJS.ProcessEnv) => { on: boolean; item?: string };
       unattendedFlags: (env?: NodeJS.ProcessEnv) => string[];
@@ -112,6 +118,7 @@ describe('two sessions in one directory share one unattended flag, and nothing r
     home = await mkdtemp(path.join(tmpdir(), 'same-dir-'));
     const checkout = path.join(home, 'checkout');
     await mkdir(checkout, { recursive: true });
+    execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
     const env = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     const cli = (args: string[]) => run([scriptPath, ...args], env);
 
