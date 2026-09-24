@@ -1,4 +1,5 @@
-import { access, lstat, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, lstat, mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import {
   initInstallSet,
@@ -317,6 +318,14 @@ async function readIfPresent(repoDir: string, rel: string): Promise<PresentFile>
 }
 
 /**
+ * The most bytes {@link nestedClaudeShimOnDisk} reads to find one line — the
+ * shim's real first line is a few dozen characters, so this leaves generous
+ * room without ever reading an unbounded amount of a file this function does
+ * not even intend to write through.
+ */
+const MAX_SHIM_PROBE_BYTES = 4096;
+
+/**
  * Whether `.claude/CLAUDE.md` on disk is recognisably THIS rig's nested
  * CLAUDE.md shim — code-review round 1 advisory A3 (PR #324), the one signal
  * a bootstrapped (no manifest) upgrade has for a nested rig. Read by first
@@ -326,12 +335,56 @@ async function readIfPresent(repoDir: string, rel: string): Promise<PresentFile>
  * first line, never the root shim's `@AGENTS.md` — is safe to compare
  * exactly. A same-named file that merely happens to sit there and does not
  * start with that exact line is left as the user's own, unrecognised.
+ *
+ * code-reviewer round 2 advisory N1 (PR #324): this only ever CLASSIFIES the
+ * path — it never writes through it — so it must not go through
+ * {@link readIfPresent} / {@link writableOnDisk}, which THROWS `UpgradeError`
+ * for anything a write must refuse through, including a symlink. A user who
+ * happens to keep `.claude/CLAUDE.md` as a symlink (to a dotfiles repo, say)
+ * and then loses the manifest must not have a bootstrapped upgrade refuse
+ * outright over a file it was never going to write in the first place.
+ * `lstat`s the path itself: anything non-regular (a symlink, a directory,
+ * anything else) is simply "not the nested shim", falling through to
+ * whatever `root` placement would have decided — the same bounded-read
+ * approach as {@link readKeptRootClaudeMd} in `init.ts`, capped at
+ * {@link MAX_SHIM_PROBE_BYTES} rather than `init`'s much larger
+ * `MAX_KEPT_BYTES`, since only one short line is ever compared.
  */
 async function nestedClaudeShimOnDisk(repoDir: string): Promise<boolean> {
-  const present = await readIfPresent(repoDir, NESTED_CLAUDE);
-  if (present.kind !== 'file') return false;
-  const firstLine = present.bytes.toString('utf8').split(/\r?\n/, 1)[0];
-  return firstLine === '@../AGENTS.md';
+  const dest = onDisk(repoDir, NESTED_CLAUDE);
+  let entry: Awaited<ReturnType<typeof lstat>>;
+  try {
+    entry = await lstat(dest);
+  } catch {
+    return false;
+  }
+  if (!entry.isFile()) return false;
+  const flags =
+    constants.O_RDONLY |
+    (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(dest, flags);
+  } catch {
+    return false;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > MAX_SHIM_PROBE_BYTES) return false;
+    const bytes = Buffer.alloc(MAX_SHIM_PROBE_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const firstLine = bytes.subarray(0, offset).toString('utf8').split(/\r?\n/, 1)[0];
+    return firstLine === '@../AGENTS.md';
+  } catch {
+    return false;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
 }
 
 /**

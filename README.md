@@ -93,6 +93,12 @@ it, so both harnesses read the same rules. The hook scripts live once in
 `.codex/hooks.json`. Review agents and skills are projected into each harness's
 own format.
 
+A repository that already has its own root `CLAUDE.md` keeps it untouched —
+Rig installs its shim nested at `.claude/CLAUDE.md` instead, and Claude Code
+loads both files (measured, not assumed: see
+[`docs/decisions/agents-md-canonical.md`](docs/decisions/agents-md-canonical.md),
+"CLAUDE.md coexistence — measured (RP-256 slice 1)").
+
 The harnesses are not identical, and Rig does not pretend they are. Two hooks —
 the subagent model guard and the routing warning — exist only for Claude Code.
 MCP wiring goes into Claude Code's `.mcp.json` entry by entry, but into Codex's

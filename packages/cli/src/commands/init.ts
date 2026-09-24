@@ -1,4 +1,5 @@
-import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, lstat, mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
@@ -450,10 +451,14 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     // own file — never in `files`, so the loop above never touches it, and
     // it needs its own evidence entry under the manifest's `kept` (RP-182's
     // meaning: seen and left, not owned). `null` when there is nothing there
-    // to record (or the placement is `root`, where this is simply not a
-    // question).
+    // to record: the placement is `root` (simply not a question), the target
+    // is not a regular file within {@link MAX_KEPT_BYTES}, or — security-
+    // scanner round 2 advisory A1 (PR #324) — the target resolves outside
+    // `repoDir` and so is not this repository's evidence to commit.
     const keptRootClaude =
-      placement === 'nested' ? await readKeptRootClaudeMd(path.join(repoDir, ROOT_CLAUDE)) : null;
+      placement === 'nested'
+        ? await readKeptRootClaudeMd(repoDir, path.join(repoDir, ROOT_CLAUDE))
+        : null;
     const extraKept =
       keptRootClaude !== null ? { [ROOT_CLAUDE]: sha256(keptRootClaude) } : undefined;
     // code-review round 1 blocker B2/advisory A2 (PR #324): once `nested`,
@@ -498,23 +503,85 @@ async function readRegularFile(abs: string): Promise<Buffer | null> {
 }
 
 /**
+ * The largest root `CLAUDE.md` this rig will hash into a committed
+ * manifest's `kept`. Generous for a rulebook a human edits by hand, and
+ * still a real bound: {@link readKeptRootClaudeMd} allocates this many bytes
+ * plus one, once, never more — regardless of what is actually at the far
+ * end of a symlink a repository itself controls (security-scanner round 2
+ * blocker B1, PR #324).
+ */
+const MAX_KEPT_BYTES = 1024 * 1024;
+
+/**
  * The bytes to vouch for under `kept['CLAUDE.md']` on a `nested` placement —
  * read by FOLLOWING a symlink (code-review round 1 blocker B1, PR #324): a
  * symlink at root CLAUDE.md is the user's own file exactly like a regular
  * file is, per {@link hasOwnRootClaudeMd}, so `kept` records the same thing
  * for one that it records for the other — the sha256 of the content a
- * reader opening the file would see, following the link to get there,
- * never a marker meaning "nothing was found." A directory, a missing path,
- * or a target this process cannot read all fall back to `null` — there is
- * no content there to vouch for, same as {@link readRegularFile}.
+ * reader opening the file would see, following the link to get there.
+ *
+ * security-scanner round 2 blocker B1 (PR #324): a repository-controlled
+ * symlink can point at a FIFO, a device, or a file of unbounded size, and
+ * the earlier two-step `lstat` + `readFile` had no defence against any of
+ * the three — a FIFO with no writer hung `init` mid-`open()`, after every
+ * other file had already been written, and no manifest was ever produced
+ * for a re-run to repair. This opens the path directly with
+ * `O_RDONLY | O_NONBLOCK` (so `open()` on a FIFO with nothing on the write
+ * end returns immediately instead of blocking the event loop), `fstat`s
+ * that SAME handle — never a second, independent `lstat`/`stat` call, which
+ * would leave a window for the target to change underneath — and reads only
+ * from that handle, only when it names a REGULAR file no larger than
+ * {@link MAX_KEPT_BYTES}.
+ *
+ * security-scanner round 2 advisory A1 (PR #324): `kept` is evidence about
+ * THIS repository, committed into a manifest the user pushes — so a target
+ * that resolves OUTSIDE `repoDir` gets no entry at all. Nothing about a
+ * file the rig never touched, and that may not even be the user's to
+ * disclose (an outside symlink can point anywhere readable), belongs in a
+ * document this project commits. The containment check follows the same
+ * `realpath(repoDir)`-prefix, separator-aware comparison every other
+ * escapes-root check in this codebase uses (`../lib/safe-path.ts`,
+ * `uninstall.ts`) — there is no separate Windows case rule: `realpath`
+ * itself returns the on-disk casing for both sides, so the plain string
+ * comparison already agrees with how Windows resolves the path.
+ *
+ * `null` for anything else: a directory, a missing path, a non-regular
+ * target, a target over the cap, a target outside the repo, or a target
+ * this process cannot read.
  */
-async function readKeptRootClaudeMd(abs: string): Promise<Buffer | null> {
+async function readKeptRootClaudeMd(repoDir: string, abs: string): Promise<Buffer | null> {
+  const flags = constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NONBLOCK);
+  let handle: Awaited<ReturnType<typeof open>>;
   try {
-    const st = await lstat(abs);
-    if (!st.isFile() && !st.isSymbolicLink()) return null;
-    return await readFile(abs);
+    handle = await open(abs, flags);
   } catch {
     return null;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.size > MAX_KEPT_BYTES) return null;
+    let repoReal: string;
+    let targetReal: string;
+    try {
+      repoReal = await realpath(repoDir);
+      targetReal = await realpath(abs);
+    } catch {
+      return null;
+    }
+    if (targetReal !== repoReal && !targetReal.startsWith(repoReal + path.sep)) return null;
+    const bytes = Buffer.alloc(MAX_KEPT_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    if (offset > MAX_KEPT_BYTES) return null;
+    return bytes.subarray(0, offset);
+  } catch {
+    return null;
+  } finally {
+    await handle.close().catch(() => undefined);
   }
 }
 

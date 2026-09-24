@@ -1640,6 +1640,46 @@ describe('planUpgrade — a nested rig, CLAUDE.md beside AGENTS.md (RP-256 slice
     expect(plan.actions.find((a) => a.rel === NESTED_CLAUDE)).toBeDefined();
   });
 
+  // code-reviewer round 2 advisory N1 (PR #324): `nestedClaudeShimOnDisk`
+  // (the bootstrapped path's only signal) reads `.claude/CLAUDE.md` through
+  // `readIfPresent` -> `writableOnDisk`, which THROWS `UpgradeError` for
+  // anything a write must refuse through — including a symlink, even though
+  // this call only ever wants to CLASSIFY the path, never to write through
+  // it. A user who happens to keep `.claude/CLAUDE.md` as a symlink (to a
+  // dotfiles repo, say) and then loses the manifest gets an upgrade that
+  // refuses outright over a file it was never going to write in the first
+  // place. Detection must `lstat` and treat a non-regular file as "not the
+  // nested shim" — falling through to whatever `root` placement would have
+  // decided — rather than propagating the write-safety refusal into a
+  // read-only classification. This pins only that `planUpgrade` itself does
+  // not throw; whether the LATER root-placement path still refuses to WRITE
+  // through that same symlink is a separate question this test does not
+  // answer.
+  it('a bootstrapped upgrade does not throw when `.claude/CLAUDE.md` is a user symlink — detection treats it as not-the-shim', async (context) => {
+    await installNestedRig();
+    await rm(abs(MANIFEST_REL));
+    await rm(abs(NESTED_CLAUDE));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rp256-n1-outside-'));
+    try {
+      const target = path.join(outside, 'host.md');
+      await writeFile(target, '@../AGENTS.md\nnot actually the shim, just named like it\n');
+      try {
+        await symlink(target, abs(NESTED_CLAUDE), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+
+      expect(plan).toBeDefined();
+      expect(plan.bootstrapped).toBe(true);
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
   // code-reviewer round 1 advisory A4 (PR #324): the reason a `deleted`
   // AGENTS.md gives names its importer unconditionally as "CLAUDE.md" and
   // its import as `` `@AGENTS.md` `` — correct on a `root` rig, but on a
