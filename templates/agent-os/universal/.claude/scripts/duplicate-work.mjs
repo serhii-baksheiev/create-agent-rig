@@ -93,11 +93,16 @@
 // - The `branch` source reads only the remote named `origin` — a fork
 //   workflow that pushes to a differently-named remote, or renames `origin`,
 //   is invisible to it.
-// - The `pr` source reads whichever GitHub repository `gh` selects among ALL
-//   configured remotes, by gh's own remote-priority rules — not necessarily
-//   `origin`: with a non-GitHub `origin` and a GitHub `upstream`, it reads
-//   `upstream`'s PRs (measured with gh 2.45; untested here). It is
-//   `not-applicable` only when gh finds no known GitHub host among any remote.
+// - With no `origin` at all, `gh` is never asked: both sources are
+//   `not-applicable` and the verdict can be `clean` even where gh could have
+//   listed a matching PR through another remote (a renamed `origin`, a fork
+//   that only has `upstream`).
+// - Otherwise the `pr` source reads whichever GitHub repository `gh` selects
+//   among ALL configured remotes, by gh's own remote-priority rules — not
+//   necessarily `origin`: with a non-GitHub `origin` and a GitHub
+//   `upstream`, it reads `upstream`'s PRs (measured with gh 2.45; untested
+//   here). It is then `not-applicable` only when gh finds no known GitHub
+//   host among any remote.
 //   A GitHub Enterprise host gh is not logged in to gets that same answer from
 //   gh, so its PRs are read as `not-applicable` rather than `unavailable`,
 //   and fork PRs there go unseen (measured; untested here).
