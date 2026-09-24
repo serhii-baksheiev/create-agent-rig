@@ -33,6 +33,7 @@ import type {
 } from './commands/uninstall.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest, sha256 } from './lib/manifest.js';
+import { templatesRoot } from './templates.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
 import { promptConfirm } from './lib/prompts.js';
 import { collectGovernance, renderSummary } from './lib/summary.js';
@@ -141,7 +142,57 @@ Also: create-agent-rig memory <doctor|load> [args…]
   60 s bound). No manifest answers unsupported/absent (exit 0); an invalid
   invocation exits 2.`;
 
+/**
+ * `<command> --help` / `-h` (RP-239 finding A1): the same short-circuit
+ * `main()`'s own top-level `values.help` branch already gives the whole CLI,
+ * extended to each subcommand. Checked as a raw string before that
+ * subcommand's own `parseArgs` (or, for `setup`, before any verb dispatch) so
+ * it never fails as an unrecognised option, never runs the command, and never
+ * touches the filesystem.
+ *
+ * RP-239 finding A1, round 3 (code-reviewer HOLD on PR #317, r2): every call
+ * site below only consults this function when `--json` is absent from the
+ * same raw args. Round 2's `stripHelpIfJson` instead answered `--json --help`
+ * as if `--help` had never been typed — on `uninstall --json --yes --help`
+ * that meant a real, consented removal, because dropping `--help` left a
+ * fully consented `uninstall --json --yes` behind. `--help`/`-h` must never
+ * cause a command to execute, so whenever `--json` is among a subcommand's
+ * raw args, the help flag is answered differently: it is neither stripped
+ * nor short-circuited. The unmodified argument list reaches the
+ * subcommand's own parsing exactly as released 1.0.1 (before RP-239) parsed
+ * that same argv — `--help` is just another argument the command's own
+ * `parseArgs`/dispatch either does not declare (refused as an unrecognised
+ * option) or, for `setup`/`doctor`, refuses through their own
+ * `--json`-aware paths.
+ */
+function wantsHelp(rawArgs: readonly string[]): boolean {
+  return rawArgs.includes('--help') || rawArgs.includes('-h');
+}
+
+/**
+ * The `Also: create-agent-rig <command> …` block(s) already in {@link USAGE}
+ * for one subcommand, reused rather than duplicated — `setup` has several
+ * (the legacy `--memory-root` path, `list`, the bare wizard, `add`, `apply`,
+ * `remove`), and all of them come back for `setup --help`.
+ */
+function subcommandUsage(command: string): string {
+  const prefix = `create-agent-rig ${command}`;
+  const blocks = USAGE.split(/\n(?=Also: )/g).map((block) => block.replace(/^Also: /, ''));
+  const matches = blocks.filter((block) => {
+    const firstLine = block.split('\n')[0] ?? '';
+    if (!firstLine.startsWith(prefix)) return false;
+    const next = firstLine.charAt(prefix.length);
+    return next === '' || next === ' ' || next === '[';
+  });
+  if (matches.length === 0) return `${USAGE}\n`;
+  return `Usage: ${matches.join('\n\nUsage: ')}\n`;
+}
+
 async function runSetup(rawArgs: string[]): Promise<number> {
+  if (!rawArgs.includes('--json') && wantsHelp(rawArgs)) {
+    process.stdout.write(subcommandUsage('setup'));
+    return 0;
+  }
   // Integration verbs and legacy machine-scoped Memory registration are
   // separate dispatch paths.
   const verb = rawArgs[0];
@@ -271,6 +322,10 @@ function resolveLayerFlag(
 }
 
 async function runInit(rawArgs: string[]): Promise<number> {
+  if (!rawArgs.includes('--json') && wantsHelp(rawArgs)) {
+    process.stdout.write(subcommandUsage('init'));
+    return 0;
+  }
   let values: {
     'dry-run'?: boolean;
     force?: boolean;
@@ -382,6 +437,19 @@ const MARK: Record<UpgradeVerdict, string> = {
   retired: 'x',
 };
 
+/**
+ * RP-239 finding A5: `action.templatePath` is an absolute path on the
+ * machine that ran the CLI (an npx-cache path in the field) — never fit to
+ * print. This names the path INSIDE the package instead, relative to the one
+ * directory above `templatesRoot()`, so it reads as
+ * `templates/agent-os/universal/<rel>` regardless of where the package
+ * happens to be unpacked.
+ */
+function inPackageTemplatePath(absolute: string): string {
+  const rel = path.relative(path.dirname(templatesRoot()), absolute);
+  return rel.split(path.sep).join('/');
+}
+
 function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
   const of = (verdict: UpgradeVerdict) => plan.actions.filter((a) => a.verdict === verdict);
   const lines: string[] = [
@@ -411,8 +479,12 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
         `  ${MARK[verdict]} ${action.rel}` + (action.reason ? `  — ${action.reason}` : ''),
       );
       // A conflict is only useful if the new version can be diffed by hand.
+      // RP-239 finding A5: name the package and the in-package path, never
+      // the absolute filesystem path this CLI happened to run from.
       if (verdict === 'conflict' && action.templatePath) {
-        lines.push(`      new version: ${action.templatePath}`);
+        lines.push(
+          `      new version: create-agent-rig@${plan.toVersion} ${inPackageTemplatePath(action.templatePath)}`,
+        );
       }
     }
   }
@@ -552,6 +624,10 @@ function renderAgentsRescueNotice(status: AgentsRescueStatus, isDryRun: boolean)
 }
 
 async function runUpgrade(rawArgs: string[]): Promise<number> {
+  if (!rawArgs.includes('--json') && wantsHelp(rawArgs)) {
+    process.stdout.write(subcommandUsage('upgrade'));
+    return 0;
+  }
   let values: { 'dry-run'?: boolean; yes?: boolean; 'no-color'?: boolean };
   try {
     ({ values } = parseArgs({
@@ -646,7 +722,14 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   const adoptsShimThisRun = claudeAction?.verdict === 'update';
 
   const result = await applyUpgrade(cwd, plan);
-  process.stdout.write(`\nWrote ${result.written.length} files.\n`);
+  // RP-239 finding A6: `applyUpgrade` always rewrites the manifest, even when
+  // it replaced zero files — say so on the same line, so "Wrote 0 files."
+  // does not read as "this run did nothing at all". The exact substring
+  // "Wrote 0 files." is pinned by test/e2e/agents-md-migration.test.ts and
+  // must never change.
+  process.stdout.write(
+    `\nWrote ${result.written.length} files. The rig's own manifest was rewritten too.\n`,
+  );
   if (adoptsShimThisRun) {
     process.stdout.write('CLAUDE.md now imports AGENTS.md.\n');
   }
@@ -834,6 +917,10 @@ function renderUninstallPlan(repoDir: string, plan: UninstallPlan): string {
 }
 
 async function runUninstall(rawArgs: string[]): Promise<number> {
+  if (!rawArgs.includes('--json') && wantsHelp(rawArgs)) {
+    process.stdout.write(subcommandUsage('uninstall'));
+    return 0;
+  }
   let positionals: string[];
   let values: {
     'dry-run'?: boolean;
@@ -1119,7 +1206,12 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
 
 async function main(): Promise<number> {
   if (process.argv[2] === 'doctor') {
-    const result = await runDoctor({ cwd: process.cwd(), args: process.argv.slice(3) });
+    const args = process.argv.slice(3);
+    if (!args.includes('--json') && wantsHelp(args)) {
+      process.stdout.write(subcommandUsage('doctor'));
+      return 0;
+    }
+    const result = await runDoctor({ cwd: process.cwd(), args });
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);
     return result.exitCode;
@@ -1140,7 +1232,19 @@ async function main(): Promise<number> {
     // The consumer path of the RP-19 handshake: manifest → `--version --json`
     // → exit 4 on a foreign major → doctor/load passed through (`load` gains a
     // default `--timeout-ms` when the caller names none — commands/memory.ts).
-    const [verb = '', ...args] = process.argv.slice(3);
+    const memoryArgs = process.argv.slice(3);
+    // RP-239 finding A1, round 2 (code-reviewer HOLD on PR #317, r1): checking
+    // the WHOLE argv (as `wantsHelp` does everywhere else) intercepted
+    // `memory load --help` too, never letting it reach Memory's own dispatch.
+    // The rig's usage is printed only for a BARE `memory --help`/`-h` — the
+    // help flag is the first argument after `memory`, i.e. no verb was
+    // given at all; a help flag anywhere after a verb passes through to
+    // Memory verbatim, exactly as every other argument does.
+    if (memoryArgs[0] === '--help' || memoryArgs[0] === '-h') {
+      process.stdout.write(subcommandUsage('memory'));
+      return 0;
+    }
+    const [verb = '', ...args] = memoryArgs;
     const result = await runMemory({ verb, args });
     process.stdout.write(result.stdout);
     process.stderr.write(result.stderr);

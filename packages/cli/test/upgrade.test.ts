@@ -141,6 +141,30 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     expect((await readManifest(repo))?.files[WORKFLOW]).toBeUndefined();
   });
 
+  // RP-239, RP-237 addendum (onboarding-friction triage, comment 20140): the
+  // action above already drops the manifest claim on this file (never
+  // recorded in `files` — see the comment beside `actions.push` for the
+  // `conflict` verdict in upgrade.ts), but the reason text says only "edited
+  // since it was installed", leaving a reader with no idea that ownership
+  // was dropped too. The `retired` verdict already says this for a
+  // different case — "no longer shipped by this release — the rig no
+  // longer manages it; it is now yours" (upgrade.ts, `verdict: 'retired'`)
+  // — and the conflict line should say the same thing about itself.
+  it('an edited, previously-owned file also says the rig no longer manages it (RP-237 addendum)', async () => {
+    await installRig();
+    const edited = `${await read(WORKFLOW)} `;
+    await write(WORKFLOW, edited);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    const action = plan.actions.find((a) => a.rel === WORKFLOW);
+    expect(action?.verdict).toBe('conflict');
+    // fixture sanity: the exact branch the finding names, not the
+    // `kept`-by-init or `not a version this rig ever released` branches,
+    // which already carry a "treated as yours" phrase.
+    expect(action?.reason).toMatch(/edited since it was installed/);
+    expect(action?.reason).toMatch(/no longer manages it/i);
+  });
+
   it('installs a file this release added, and does not resurrect one the user deleted', async () => {
     await installRig();
 

@@ -62,9 +62,12 @@ interface CliRun {
   stderr: string;
 }
 
-const runCli = async (cwd: string, args: string[]): Promise<CliRun> => {
+const runCli = async (cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<CliRun> => {
   try {
-    const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], { cwd });
+    const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], {
+      cwd,
+      ...(env ? { env } : {}),
+    });
     return { code: 0, stdout, stderr };
   } catch (error) {
     const e = error as { code?: number; stdout?: string; stderr?: string };
@@ -82,6 +85,19 @@ const numbersIn = (line: string): number[] => (line.match(/\d+/g) ?? []).map(Num
 const sum = (numbers: number[]): number => numbers.reduce((total, n) => total + n, 0);
 
 const abs = (rel: string): string => path.join(repo, ...rel.split('/'));
+
+/**
+ * A stable, sorted, DEEP listing of every file and directory under `dir` —
+ * the ground truth for "did this run touch the filesystem at all" (RP-239
+ * A1, round 3). Used in place of a second run of the same command in the
+ * same directory: the round-2 oracles ran the same argv with `--help`
+ * dropped, in the SAME repo, as their "what would this have done" check —
+ * exactly the shape the code-reviewer HOLD on PR #317 (r2) showed can itself
+ * mutate state (`uninstall --json --yes --help` removed all 63 installed
+ * files). A filesystem snapshot never runs the command under test twice.
+ */
+const snapshot = async (dir: string): Promise<string[]> =>
+  (await readdir(dir, { recursive: true })).sort();
 
 /** The rig as `init` leaves it: files installed, manifest written. */
 const installRig = (): Promise<unknown> => initProject(repo, {});
@@ -800,5 +816,335 @@ describe('a customised-but-readable AGENTS.md conflict is QUIET — no rescue fi
     // every other kept file gets, nothing AGENTS.md-specific.
     const line = lineMatching(run.stdout, /AGENTS\.md/);
     expect(line).toMatch(/edited since it was installed/);
+  });
+});
+
+// RP-239 (onboarding-friction triage, comment 20140), finding A1: no
+// subcommand accepts `--help` today — each one falls through to whatever
+// that subcommand does with an argument it does not recognise (a
+// `parseArgs` failure, a usage exit, or — for `setup` — the interactive
+// wizard's non-interactive refusal). Desired: `<cmd> --help` prints that
+// subcommand's own usage to stdout and exits 0, the same way the top-level
+// `--help`/`-h` already does (`main()`'s `values.help` branch in
+// src/index.ts) — never running the command, never touching the
+// filesystem, and never falling into the setup wizard.
+describe('`--help` on a subcommand (RP-239 A1)', () => {
+  // Each assertion below is expected to fail against today's build, for the
+  // reason the finding names for that subcommand: `init`/`upgrade` treat
+  // `--help` as an unrecognised `parseArgs` option (exit 1, "Unknown
+  // option"); `uninstall` the same, with node's own suggestion to place it
+  // after `--` since positionals are allowed there; `doctor` exits 2 with
+  // "doctor accepts only --json"; `memory` exits 2 with "memory needs a
+  // verb" (`--help` is not `doctor`/`load`); `setup` falls into the
+  // wizard's non-interactive refusal, exit 1, because a verb starting with
+  // `-` that is not `--memory-root` routes there today.
+  it('init --help prints usage to stdout, exits 0, and writes nothing', async () => {
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['init', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/Unknown option/);
+    expect(run.stdout).toContain('create-agent-rig init [--dry-run] [--layer workflow]');
+    expect((await readdir(repo)).sort()).toEqual(before);
+  });
+
+  it('upgrade --help prints usage to stdout, exits 0, and touches nothing', async () => {
+    await installRig();
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['upgrade', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/Unknown option/);
+    expect(run.stdout).toContain('create-agent-rig upgrade [--dry-run] [--yes]');
+    expect((await readdir(repo)).sort()).toEqual(before);
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+  });
+
+  it('uninstall --help prints usage to stdout, exits 0, and removes nothing', async () => {
+    await installRig();
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['uninstall', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/Unknown option/);
+    expect(run.stdout).toContain(
+      'create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]',
+    );
+    expect((await readdir(repo)).sort()).toEqual(before);
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+  });
+
+  it('doctor --help prints usage to stdout and exits 0, never the "accepts only --json" refusal', async () => {
+    const run = await runCli(repo, ['doctor', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toContain('doctor accepts only --json');
+    expect(run.stdout).toContain('create-agent-rig doctor [--json]');
+  });
+
+  it('memory --help prints usage to stdout and exits 0, never "memory needs a verb"', async () => {
+    const run = await runCli(repo, ['memory', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/memory needs a verb/);
+    expect(run.stdout).toContain('create-agent-rig memory <doctor|load> [args…]');
+  });
+
+  it('setup --help prints usage to stdout and exits 0, never entering the interactive wizard', async () => {
+    const run = await runCli(repo, ['setup', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toContain('setup-wizard-requires-an-interactive-terminal');
+    expect(run.stdout).toContain('Choose a provider and harness interactively');
+  });
+});
+
+// RP-239, finding A5: `upgrade`'s "new version" line for a conflicted file
+// prints `action.templatePath` — an ABSOLUTE path on the machine that ran
+// the CLI (an npx-cache path such as `~/.npm/_npx/<hash>/…` in the field,
+// this sandbox's own build root here). Desired: name the package version
+// (`create-agent-rig@<version>`) and the path INSIDE the package
+// (`templates/agent-os/universal/<rel>`), never the host filesystem path.
+describe('a conflict names the package, never a filesystem cache path (RP-239 A5)', () => {
+  it('the "new version" line names create-agent-rig@<version> and the in-package template path', async () => {
+    await installRig();
+    const rel = '.claude/rules/workflow.md';
+    const edited = `${await readFile(abs(rel), 'utf8')} `;
+    await writeFile(abs(rel), edited);
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const line = lineMatching(run.stdout, /new version:/);
+    expect(line, 'fixture: no conflict action printed a "new version" line').toBeTruthy();
+
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      version: string;
+    };
+    expect(line).toContain(`create-agent-rig@${pkg.version}`);
+    expect(line).toContain(
+      ['templates', 'agent-os', 'universal', '.claude', 'rules', 'workflow.md'].join('/'),
+    );
+    // Never the absolute path on the machine that built/ran this CLI —
+    // `sandbox` stands in here for what an npx cache path is in the field.
+    expect(line).not.toContain(sandbox);
+  });
+});
+
+// RP-239, finding A6: `applyUpgrade` always rewrites the manifest
+// (`upgrade.ts`, `await writeManifest(repoDir, plan.manifest)`, unconditional),
+// but a run that replaced zero files says only "Wrote 0 files." — read as
+// "nothing happened at all". Desired: the same line also reflects the
+// manifest write, WITHOUT dropping the exact substring
+// `test/e2e/agents-md-migration.test.ts` pins ("a legacy rig whose
+// AGENTS.md was customised … a second run is a no-op" › `toContain('Wrote
+// 0 files.')`).
+describe('a no-op upgrade still reports the manifest write (RP-239 A6)', () => {
+  it('a fresh install immediately re-upgraded: "Wrote 0 files." names the manifest write on the same line', async () => {
+    await installRig();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+
+    expect(run.code, run.stderr).toBe(0);
+    // The pinned substring — never remove or reword this part of the line.
+    expect(run.stdout).toContain('Wrote 0 files.');
+    // But the same line must say the manifest was rewritten, not leave a
+    // reader thinking this run did nothing at all.
+    expect(run.stdout).toMatch(/Wrote 0 files\.[^\n]*manifest/i);
+  });
+});
+
+// RP-239 A1, round 3 (code-reviewer HOLD on PR #317, r2): round 2's
+// `stripHelpIfJson` dropped `--help`/`-h` from the args a subcommand's own
+// parsing ever saw whenever `--json` was present, so the command ran exactly
+// as if `--help` had never been typed — on `uninstall --json --yes --help`,
+// against an INSTALLED rig, that meant a real, consented removal: every one
+// of the 63 installed files gone (base 1.0.1, with no help-awareness at all,
+// refused the same argv outright; round 1's own stripping-free build removed
+// nothing either — round 2 is the one build in this sequence that deletes).
+// `setup add <id> --json --yes --help` reaches the identical shape: stripped
+// down to `setup add <id> --json --yes`, it is a fully consented apply.
+//
+// Loop decision: `--help`/`-h` never causes a command to execute. Once
+// `--json` is among a subcommand's arguments, the help flag is answered
+// differently — it is NEITHER stripped NOR short-circuited. The command
+// parses its ENTIRE, unmodified argument list exactly as it would with no
+// help-awareness in the picture at all — i.e. exactly as released 1.0.1
+// parsed that same argv, before this PR existed. For `init`/`upgrade`, which
+// never declared a `--json` option, that argv fails `parseArgs` outright
+// (an unrecognised option) precisely because `--json` itself is unrecognised
+// there — `--help` never gets a chance to be the thing that fails.
+// `uninstall` does declare `--json`, so there `--help` alone is the
+// unrecognised option, same refusal shape. `setup`'s dispatch reaches its own
+// per-verb `--json`-aware refusal (the wizard's non-interactive refusal for
+// the bare form, `runIntegrationsCommand`'s own parse-refusal for `add`).
+// `doctor` already refuses any option it does not know, which `-h` is.
+// Without `--json` present at all, round 1's short-circuit is unaffected:
+// usage prose, exit 0, nothing touched — pinned above, in "`--help` on a
+// subcommand (RP-239 A1)".
+//
+// Each test below never re-runs the command under test in the SAME
+// directory to build its expectation — that is exactly the shape that hid
+// round 2's bug (an independent "with --help dropped" run in the same repo
+// silently performed the destructive act the assertions then measured as
+// "answered with JSON"). The oracle here is filesystem state captured
+// BEFORE the run under test, plus the shape of `stdout` alone.
+describe('`--json` present: `--help`/`-h` is inert — never stripped, never short-circuited (RP-239 A1, round 3)', () => {
+  /**
+   * `docs/command-contract.md`'s Output rule ("Under --json, stdout carries
+   * exactly one JSON object and nothing else") allows for a refusal that
+   * never reaches JSON-payload construction at all (a raw `parseArgs`
+   * throw, handled before the command's own `json` flag is even read) to
+   * print nothing on stdout instead — the usage/error prose for such a
+   * refusal goes to stderr in every command below. Either shape is
+   * acceptable here; usage PROSE on stdout is not.
+   */
+  const stdoutIsEmptyOrOneJsonObject = (stdout: string): boolean => {
+    if (stdout.trim() === '') return true;
+    try {
+      return JSON.stringify(JSON.parse(stdout.trim())) === stdout.trim();
+    } catch {
+      return false;
+    }
+  };
+
+  it('uninstall --json --yes --help leaves every installed file in place, never removes anything, and prints no usage prose to stdout', async () => {
+    const configHome = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-uninstall-help-'));
+    try {
+      await installRig();
+      const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+      const before = await snapshot(repo);
+
+      const run = await runCli(repo, ['uninstall', '--json', '--yes', '--help'], {
+        ...process.env,
+        HOME: configHome,
+        APPDATA: configHome,
+      });
+
+      expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+      expect(
+        stdoutIsEmptyOrOneJsonObject(run.stdout),
+        `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
+      ).toBe(true);
+      expect(run.stdout).not.toContain('Usage: create-agent-rig');
+      expect(run.stdout).not.toContain('agent-rig uninstall');
+      // The load-bearing assertion: nothing on disk moved at all.
+      expect(await snapshot(repo)).toEqual(before);
+      expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+    } finally {
+      await removeFixture(configHome);
+    }
+  });
+
+  it('setup add <id> --json --yes --help writes no wiring at all, and never answers as a completed apply', async () => {
+    // figma-mcp: the id integrations-cli.test.ts already exercises for `setup add`.
+    const before = await snapshot(repo);
+
+    const run = await runCli(repo, ['setup', 'add', 'figma-mcp', '--json', '--yes', '--help']);
+
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+    expect(
+      stdoutIsEmptyOrOneJsonObject(run.stdout),
+      `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
+    ).toBe(true);
+    // Never the shape a completed, applied `add` answers with.
+    if (run.stdout.trim() !== '') {
+      expect(JSON.parse(run.stdout)).not.toMatchObject({ outcome: 'written' });
+    }
+    // Neither file `setup add figma-mcp --yes --json` (no --help) writes —
+    // see integrations-cli.test.ts's "applies then removes an owned
+    // integration through the built CLI" — exists here at all.
+    await expect(readFile(abs('.rig/integrations.json'), 'utf8')).rejects.toThrow();
+    await expect(readFile(abs('.mcp.json'), 'utf8')).rejects.toThrow();
+    expect(await snapshot(repo)).toEqual(before);
+  });
+
+  it('init --json --help writes nothing into an empty directory', async () => {
+    const before = await snapshot(repo);
+
+    const run = await runCli(repo, ['init', '--json', '--help']);
+
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+    // Never round 1's usage text (pinned above, in "init --help prints usage
+    // to stdout" — that pin is for `--help` WITHOUT `--json`).
+    expect(run.stdout).not.toContain('create-agent-rig init [--dry-run] [--layer workflow]');
+    expect(await snapshot(repo)).toEqual(before);
+  });
+
+  it('upgrade --json --help on an installed rig touches nothing — the manifest is byte-identical afterward', async () => {
+    await installRig();
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+    const before = await snapshot(repo);
+
+    const run = await runCli(repo, ['upgrade', '--json', '--help']);
+
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+    expect(run.stdout).not.toContain('create-agent-rig upgrade [--dry-run] [--yes]');
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+    expect(await snapshot(repo)).toEqual(before);
+  });
+
+  it('doctor --json -h answers with JSON or nothing, never the usage text', async () => {
+    const run = await runCli(repo, ['doctor', '--json', '-h']);
+
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+    expect(
+      stdoutIsEmptyOrOneJsonObject(run.stdout),
+      `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
+    ).toBe(true);
+    expect(run.stdout).not.toContain('create-agent-rig doctor [--json]');
+  });
+
+  it('setup --json --help answers with JSON or nothing, never the interactive-wizard usage text', async () => {
+    const run = await runCli(repo, ['setup', '--json', '--help']);
+
+    expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
+    expect(
+      stdoutIsEmptyOrOneJsonObject(run.stdout),
+      `stdout was neither empty nor one JSON object: ${JSON.stringify(run.stdout)}`,
+    ).toBe(true);
+    expect(run.stdout).not.toContain('Choose a provider and harness interactively');
+  });
+});
+
+// RP-239 A1, round 2 — the second HOLD blocker: `memory` checked the WHOLE
+// argv for `--help`/`-h`, so it intercepted `memory load --help` too, never
+// letting it reach Memory. Loop decision: only a bare `memory --help`/`-h`
+// with NO verb (the help flag is the first argument after `memory`) prints
+// the rig's own usage; a help flag anywhere after a verb passes through to
+// Memory verbatim, exactly as it did before this PR.
+describe('`memory <verb> --help` passes through to Memory, not the rig usage (RP-239 A1, round 2)', () => {
+  it('memory load --help does not print the rig usage, and reaches the Memory passthrough path', async () => {
+    // Isolated from whatever subsystems manifest this host actually has — the
+    // same envFor(tmp) idiom memory.test.ts uses, so "no manifest installed"
+    // is guaranteed by the fixture rather than incidental to this machine.
+    const configHome = await mkdtemp(path.join(tmpdir(), 'caf-cli-report-memory-'));
+    try {
+      const run = await runCli(repo, ['memory', 'load', '--help'], {
+        ...process.env,
+        HOME: configHome,
+        APPDATA: configHome,
+      });
+
+      // Never the rig's own subcommand usage line (pinned above, in
+      // "`--help` on a subcommand (RP-239 A1)" › "memory --help …").
+      expect(run.stdout).not.toContain('create-agent-rig memory <doctor|load> [args…]');
+      // The exact, hermetic "no manifest on this machine" answer `runMemory`
+      // gives — the same payload memory.test.ts's own "reports
+      // unsupported/absent and never spawns Memory when this machine has no
+      // manifest" fixture pins — reachable only if `--help` passed through
+      // to Memory's own dispatch (the manifest gate, which runs before any
+      // verb-specific handling) instead of being intercepted by the rig.
+      expect(run.code, run.stderr).toBe(0);
+      expect(run.stdout).toBe(
+        `${JSON.stringify({ schemaVersion: 1, result: 'unsupported', reason: 'absent' })}\n`,
+      );
+    } finally {
+      await removeFixture(configHome);
+    }
   });
 });

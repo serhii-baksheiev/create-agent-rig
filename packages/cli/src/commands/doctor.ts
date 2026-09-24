@@ -269,7 +269,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       status: check.status === 'pass' ? 'ok' : check.status,
       detail:
         check.reason === 'workflow-verified'
-          ? 'Workflow and frozen revalidation scripts match this package; the RP-26 decision is not observed.'
+          ? 'Workflow and frozen revalidation scripts match this package; the owner-level decision this mechanism depends on is not observed by doctor.'
           : check.id === 'rig-version' && rigVersion
             ? `${check.reason.replaceAll('-', ' ')} (cli ${rigVersion.cli}, repository ${rigVersion.repository})`
             : check.reason.replaceAll('-', ' '),
