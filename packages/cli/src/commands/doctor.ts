@@ -16,6 +16,7 @@ import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
 import { packageVersion } from '../lib/version.js';
+import type { runProviderProcess } from '../integrations/spawn.js';
 
 type Status = 'pass' | 'warn' | 'fail';
 /**
@@ -58,7 +59,13 @@ type Check = {
    */
   ownedFilePaths?: OwnedFilePaths;
 };
-export type DoctorOptions = { cwd: string; args: string[]; env?: NodeJS.ProcessEnv };
+export type DoctorOptions = {
+  cwd: string;
+  args: string[];
+  env?: NodeJS.ProcessEnv;
+  /** Test seam: replaces the guard fixture batch runner; production callers never pass it. */
+  guardRunner?: typeof runProviderProcess;
+};
 export type DoctorResult = { exitCode: number; stdout: string; stderr: string };
 
 const STRICT_SEMVER = /^\d+\.\d+\.\d+$/;
@@ -233,7 +240,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const checks = await rigChecks(options.cwd, intent?.targets?.codex?.fileHash);
   if (checks.some((check) => check.id === 'rig-manifest' && check.status === 'pass')) {
     const [guards, workflow] = await Promise.all([
-      inspectGuards({ repoDir: options.cwd }),
+      inspectGuards({ repoDir: options.cwd, runner: options.guardRunner }),
       inspectWorkflow({ repoDir: options.cwd }),
     ]);
     checks.push({ id: 'guards', ...guards }, { id: 'workflow', ...workflow });
