@@ -998,7 +998,14 @@ three poisons the only channel by which this project learns.
 - **Opening:** claim the item **before the first file is edited** — the same turn
   that creates the branch or worktree. Not when the PR opens. An item being worked
   while it still reads as available is invisible to the human and re-selectable by
-  the very next query.
+  the very next query. Before that claim, run
+  `node .claude/scripts/duplicate-work.mjs --ticket <item-id>` — exit 2 (another
+  branch or open PR already carries this id) or 3 (a source could not be checked)
+  means do not claim: re-read the item and the other branch/PR, take over through
+  the tracker or move to the next item, and journal it. Pinned in the
+  generator's `test/template/duplicate-work.test.ts` (absent in a generated rig)
+  › "exit 2, verdict duplicate-work — another branch on origin carries the id"
+  and › "exit 3, verdict unverifiable — gh is missing/failing, never reported as clean".
 - **Closing:** first ask whether the item is still the item you took up — a
   late comment or a status somebody else moved is not published as `Done`
   underneath it:

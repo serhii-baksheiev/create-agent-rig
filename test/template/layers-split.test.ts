@@ -55,6 +55,9 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/detect-missed-gate.mjs',
   '.claude/scripts/decision-router.mjs',
   '.claude/scripts/reconcile-external-prs.mjs',
+  // RP-222: the pre-claim/pre-PR duplicate-work check the loop and pr-ship
+  // skills run before taking up or shipping a ticket
+  '.claude/scripts/duplicate-work.mjs',
   // the unattended run's own preflight, and the deploy verdict it reads
   '.claude/scripts/preflight.mjs',
   '.claude/scripts/run-state.mjs',

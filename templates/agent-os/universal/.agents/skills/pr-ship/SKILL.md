@@ -51,7 +51,15 @@ blockers.
    removes is the honest failure mode, a run that keeps re-reviewing because no
    check ever went red; it does not stop a session that skips it.
 
-1. **The diff first — and the branch's own premises next.** Establish what is actually shipping: fetch, then diff
+1. **Duplicate work, before anything else.** Run
+   `node .claude/scripts/duplicate-work.mjs --ticket <item-id>`. Exit 2 (another
+   branch or open PR already carries this id) or 3 (a source could not be
+   checked) is a `HOLD` with one blocker naming `rule: duplicate-work` — do not
+   open or continue the PR; re-read the item and the other branch/PR first.
+   Pinned in `test/template/duplicate-work.test.ts` (absent in a generated rig)
+   › "exit 2, source pr — an open PR from another branch carries the id in its title".
+
+   **The diff first — and the branch's own premises next.** Establish what is actually shipping: fetch, then diff
    against the **remote** default branch (`origin/<default>`), not a local
    copy that may be behind — diagnosing from stale local code produces
    confidently-wrong reviews. Everything below is scoped to this diff.
