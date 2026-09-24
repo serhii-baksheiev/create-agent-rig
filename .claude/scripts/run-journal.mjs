@@ -85,7 +85,8 @@
  * they held the one lock `append()` promises. See
  * `test/template/run-journal-writers.test.ts` (absent in a generated rig) ›
  * "writes the record and leaves no lock file behind, once the existing lock is
- * old enough to be stale" (the ordinary case) and ›
+ * old enough to be stale" (the ordinary case), and
+ * `test/template/run-journal-writers.test.ts` (absent in a generated rig) ›
  * "runs the eight-writer race against a pre-planted stale lock repeatedly, and
  * readRun never breaks" (the race the marker exists to close). A reclaim
  * marker itself left behind by a writer that crashed between creating it and

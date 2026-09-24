@@ -47,8 +47,7 @@
  * This module has no equivalent: `readState`/`writeState` here is read-then-
  * write with no lock, so two processes sharing a run directory can each read
  * the same state, compute independently, and one write clobbers the other's —
- * a silently lost patch, not a refused one. Measured: four processes × 200
- * increments recorded 215. The loss is always downward, so the stop this file
+ * a silently lost patch, not a refused one. The loss is always downward, so the stop this file
  * exists to fire fires **late or never** — never early. One run directory per
  * run is the caller's part of the contract, and the `loop` skill states it;
  * closing this gap the way the journal closed its own is future work, not

@@ -6,8 +6,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { modeBitsDeny, skipUnless } from '../helpers/env.js';
 
-// RP-225 slice 1 — the run journal currently assumes one writer (its own header,
-// `run-journal.mjs`: "⚠ It assumes one writer"). The upcoming observe-only
+// RP-225 slice 1 — before this change the run journal assumed one writer (its
+// header then said "⚠ It assumes one writer"). The upcoming observe-only
 // dispatch hooks fire reviewers in parallel, and each one is expected to call
 // `recordEvent`/`recordDecision` against the SAME run directory — which is
 // exactly the case the header disclaims. Without a lock, two writers can read
@@ -236,9 +236,8 @@ describe('a stale lock is reclaimed rather than honoured forever', () => {
 // checklist item 6's ownership defect, not a second one next to it: a release
 // or a reclaim that never checks whose lock is on disk is exactly "a writer
 // whose lock was taken over removes another writer's lock" — the two
-// blockers describe one gap in the same two functions. There is no seam in
-// today's module to plant a foreign owner's token directly (the lock file
-// carries no content to distinguish writers), so this stress is the only
+// blockers describe one gap in the same two functions. The module exposes no
+// seam to plant a foreign owner's token directly, so this stress is the only
 // test in this file for that gap; it is written to make the interleaving
 // likely rather than merely possible.
 describe('a stale lock reclaimed by two writers at once must not double-admit', () => {
