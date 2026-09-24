@@ -230,6 +230,42 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
     });
   });
 
+  // --- 2b. `rig-version` reason values (RP-229) -----------------------------
+  //
+  // "## Doctor" enumerates fixed check ids in a closed pipe table, but does
+  // not enumerate every id's reason strings the same way — those are
+  // otherwise only prose ("absent is a warning, unreadable or corrupt is a
+  // failure" for `rig-manifest`). RP-229 is nonetheless expected to spell out
+  // its own four reasons literally, the same way the existing `not-selected`
+  // (`workflow`) reason already appears in backtick code in this section: a
+  // developer reading "## Doctor" needs to be able to find
+  // `cli-older-than-repository` without reading `doctor.ts`. The expected set
+  // below is the RP-229 item's own four reasons, not derived from
+  // `doctor.ts` — there is no such check to derive it from yet, and this test
+  // must still fail before one exists.
+
+  describe('"## Doctor" documents the rig-version check and its reasons (RP-229)', () => {
+    const RIG_VERSION_REASONS = [
+      'cli-older-than-repository',
+      'versions-match',
+      'repository-older-than-cli',
+      'version-uncomparable',
+    ];
+
+    it('names `rig-version` in backtick code in "## Doctor"', async () => {
+      const doctorSection = section(await loadContract(), /^##\s+Doctor\b/);
+      expect(codeSpans(doctorSection).has('rig-version')).toBe(true);
+    });
+
+    it.each(RIG_VERSION_REASONS)(
+      'names the %s reason in backtick code in "## Doctor"',
+      async (reason) => {
+        const doctorSection = section(await loadContract(), /^##\s+Doctor\b/);
+        expect(codeSpans(doctorSection).has(reason)).toBe(true);
+      },
+    );
+  });
+
   // --- 3. `setup add`/`apply`/`remove` --json `outcome` values --------------
   //
   // Observed empirically (four real `runIntegrationsCommand` calls) rather
