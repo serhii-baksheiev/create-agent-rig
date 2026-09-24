@@ -140,19 +140,42 @@ const PACKAGE_MANAGER_START_CASE_BUDGET_DECLARATION =
 // as compliant.
 
 // Matches a `const NAME = <expr>;` declaration whose NAME is SCREAMING_CASE
-// ending in `_BOUND_MS` or `_CHILD_TIMEOUT_MS`, and whose `<expr>` is either a
-// bare numeric literal or `PACKAGE_MANAGER_START_CASE_TIMEOUT_MS - <number>`.
+// ending in `_BOUND_MS` or `_CHILD_TIMEOUT_MS`, and whose `<expr>` is one of:
+// a bare numeric literal, `PACKAGE_MANAGER_START_CASE_TIMEOUT_MS - <number>`,
+// or a per-platform `process.platform === 'win32' ? <number> : <number>`
+// (RP-248: spec-kit.test.ts's case budget is itself per-platform, so a child
+// bound sized against it is too). Any other expression — a bare identifier,
+// a computed value, an unrelated ternary — does not match, and is never
+// picked up as a bound; that is what keeps the check strict.
 const NAMED_BOUND_DECLARATION =
-  /^const ([A-Z][A-Z0-9_]*(?:_BOUND_MS|_CHILD_TIMEOUT_MS)) = (PACKAGE_MANAGER_START_CASE_TIMEOUT_MS\s*-\s*\d[\d_]*|\d[\d_]*);$/gm;
+  /^const ([A-Z][A-Z0-9_]*(?:_BOUND_MS|_CHILD_TIMEOUT_MS)) = (PACKAGE_MANAGER_START_CASE_TIMEOUT_MS\s*-\s*\d[\d_]*|process\.platform === 'win32' \? \d[\d_]* : \d[\d_]*|\d[\d_]*);$/gm;
 
-// Resolves every declaration `NAMED_BOUND_DECLARATION` finds to its numeric
-// value, substituting `caseValue` for `PACKAGE_MANAGER_START_CASE_TIMEOUT_MS`
-// where the declaration is expressed as a margin below it.
-function resolveNamedBounds(source: string, caseValue: number): Map<string, number> {
-  const bounds = new Map<string, number>();
+// A bound declared as `process.platform === 'win32' ? <win32> : <other>`
+// resolves to both branches, not one figure — the file's case budget is
+// per-platform, so each branch is checked against the matching half of it
+// regardless of which platform this very test run happens to be on.
+type PerPlatformBound = { win32: number; other: number };
+
+// Resolves every declaration `NAMED_BOUND_DECLARATION` finds to its value,
+// substituting `caseValue` for `PACKAGE_MANAGER_START_CASE_TIMEOUT_MS` where
+// the declaration is expressed as a margin below it, and resolving a
+// per-platform ternary to both of its branches.
+function resolveNamedBounds(
+  source: string,
+  caseValue: number,
+): Map<string, number | PerPlatformBound> {
+  const bounds = new Map<string, number | PerPlatformBound>();
   for (const match of source.matchAll(NAMED_BOUND_DECLARATION)) {
     const name = match[1] ?? '';
     const expr = match[2] ?? '';
+    const asTernary = expr.match(/^process\.platform === 'win32' \? (\d[\d_]*) : (\d[\d_]*)$/);
+    if (asTernary) {
+      bounds.set(name, {
+        win32: Number((asTernary[1] ?? '').replaceAll('_', '')),
+        other: Number((asTernary[2] ?? '').replaceAll('_', '')),
+      });
+      continue;
+    }
     const asMargin = expr.match(/^PACKAGE_MANAGER_START_CASE_TIMEOUT_MS\s*-\s*(\d[\d_]*)$/);
     const value = asMargin
       ? caseValue - Number((asMargin[1] ?? '').replaceAll('_', ''))
@@ -160,6 +183,36 @@ function resolveNamedBounds(source: string, caseValue: number): Map<string, numb
     bounds.set(name, value);
   }
   return bounds;
+}
+
+/**
+ * Checks every bound `resolveNamedBounds` finds in `source` against
+ * `budgets` — the file's own case budget, per platform. A file whose case
+ * budget does not vary by platform passes the same figure as both `win32`
+ * and `other`. A plain (non-per-platform) bound is checked against whichever
+ * half matches the platform this test is actually running on; a per-platform
+ * bound is checked branch-for-branch against both halves, regardless of
+ * which platform is running the check — so a bad win32 branch is caught even
+ * from a non-Windows run.
+ */
+function assertNamedBoundsBelowCaseBudget(source: string, budgets: PerPlatformBound): void {
+  const caseValue = process.platform === 'win32' ? budgets.win32 : budgets.other;
+  const bounds = resolveNamedBounds(source, caseValue);
+  expect(bounds.size, 'named child-process bounds declared in the file').toBeGreaterThan(0);
+  for (const [name, value] of bounds) {
+    if (typeof value === 'number') {
+      expect(value, `${name} must be numerically below the case budget`).toBeLessThan(caseValue);
+      continue;
+    }
+    expect(
+      value.win32,
+      `${name}'s win32 branch must be numerically below this file's win32 case budget`,
+    ).toBeLessThan(budgets.win32);
+    expect(
+      value.other,
+      `${name}'s non-win32 branch must be numerically below this file's non-win32 case budget`,
+    ).toBeLessThan(budgets.other);
+  }
 }
 
 // Matches `timeout` set as a direct option of an it/test/describe call —
@@ -232,11 +285,8 @@ describe('the package-manager CLI start cases', () => {
     expect(caseBudget).not.toBeNull();
     const caseValue = Number((caseBudget?.[1] ?? '').replaceAll('_', ''));
 
+    assertNamedBoundsBelowCaseBudget(source, { win32: caseValue, other: caseValue });
     const namedBounds = resolveNamedBounds(source, caseValue);
-    expect(namedBounds.size, 'at least one named child bound is declared').toBeGreaterThan(0);
-    for (const [name, value] of namedBounds) {
-      expect(value, `${name} must be numerically below the case budget`).toBeLessThan(caseValue);
-    }
 
     // The one genuine vitest per-case budget, and nothing else classified as
     // one — unchanged from the check above, restated here so the exclusion
@@ -330,19 +380,35 @@ async function readSpecKitTestSource(): Promise<string> {
 }
 
 // The file's one describe block declares its case budget inline, per
-// platform, rather than through a named constant — read literally, and
-// resolved for whichever platform this very check is running on, which is
-// the platform its own `describe(...)` will resolve to as well.
+// platform, rather than through a named constant — read literally, both
+// branches at once, since a check run on one platform must still catch a bad
+// bound declared for the other.
 const SPEC_KIT_CASE_BUDGET_DECLARATION =
   /timeout:\s*process\.platform === 'win32' \? (\d[\d_]*) : (\d[\d_]*)/;
 
-function specKitCaseBudget(source: string): number {
+function specKitCaseBudgets(source: string): PerPlatformBound {
   const declared = source.match(SPEC_KIT_CASE_BUDGET_DECLARATION);
   expect(declared, 'spec-kit.test.ts declares its case budget the expected way').not.toBeNull();
-  const win32Budget = declared?.[1] ?? '';
-  const otherBudget = declared?.[2] ?? '';
-  const chosen = process.platform === 'win32' ? win32Budget : otherBudget;
-  return Number(chosen.replaceAll('_', ''));
+  return {
+    win32: Number((declared?.[1] ?? '').replaceAll('_', '')),
+    other: Number((declared?.[2] ?? '').replaceAll('_', '')),
+  };
+}
+
+/**
+ * True when `args` (the raw text between a call's parentheses) sets
+ * `timeoutMs:` and a `...` spread appears anywhere after that key. A spread
+ * *before* the named key is safe — the explicit key comes later in the
+ * object literal and always wins. A spread *after* it is not: if the spread
+ * object happens to carry its own `timeoutMs`, that one wins instead, and
+ * the checker reading only the first `timeoutMs:` text it finds would never
+ * see the override.
+ */
+function timeoutMsFollowedBySpread(args: string): boolean {
+  const declared = args.match(/timeoutMs\s*:\s*([^,}\n]+)/);
+  if (!declared) return false;
+  const matchEnd = (declared.index ?? 0) + declared[0].length;
+  return /\.\.\./.test(args.slice(matchEnd));
 }
 
 describe('the spec-kit lifecycle test children (RP-248)', () => {
@@ -358,6 +424,11 @@ describe('the spec-kit lifecycle test children (RP-248)', () => {
         declaredTimeoutMs,
         `runProviderProcess(${args.trim().slice(0, 80)}) must set its own timeoutMs`,
       ).not.toBeNull();
+      expect(
+        timeoutMsFollowedBySpread(args),
+        `runProviderProcess(${args.trim().slice(0, 80)})'s timeoutMs is followed by an object ` +
+          `spread that could silently override it — put any spread before the named timeoutMs key`,
+      ).toBe(false);
       const value = (declaredTimeoutMs?.[1] ?? '').trim();
       expect(
         value,
@@ -368,12 +439,54 @@ describe('the spec-kit lifecycle test children (RP-248)', () => {
 
   it('declares at least one named child bound strictly below the case budget', async () => {
     const source = await readSpecKitTestSource();
-    const budget = specKitCaseBudget(source);
-    const bounds = resolveNamedBounds(source, budget);
-    expect(bounds.size, 'named child-process bounds declared in the file').toBeGreaterThan(0);
-    for (const [name, value] of bounds) {
-      expect(value, `${name} must be numerically below the case budget`).toBeLessThan(budget);
-    }
+    assertNamedBoundsBelowCaseBudget(source, specKitCaseBudgets(source));
+  });
+});
+
+describe('resolveNamedBounds and its per-platform checks (RP-248, synthetic sources)', () => {
+  it("accepts a bound declared as process.platform === 'win32' ? <literal> : <literal>", () => {
+    const source = "const FOO_CHILD_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 5_000;";
+    const bounds = resolveNamedBounds(source, 999_999);
+    expect(bounds.get('FOO_CHILD_TIMEOUT_MS')).toEqual({ win32: 30_000, other: 5_000 });
+  });
+
+  it('stays strict: an expression that is neither a literal, a margin below the package-manager case value, nor the per-platform ternary is never picked up as a bound', () => {
+    const source = 'const FOO_CHILD_TIMEOUT_MS = someOtherConstant;';
+    const bounds = resolveNamedBounds(source, 999_999);
+    expect(bounds.size).toBe(0);
+  });
+
+  it("fails a per-platform bound whose win32 branch is not below the file's win32 case budget (mutation)", () => {
+    const source = "const FOO_CHILD_TIMEOUT_MS = process.platform === 'win32' ? 60_000 : 5_000;";
+    expect(() =>
+      assertNamedBoundsBelowCaseBudget(source, { win32: 60_000, other: 15_000 }),
+    ).toThrow();
+  });
+
+  it("fails a per-platform bound whose non-win32 branch is not below the file's non-win32 case budget (mutation)", () => {
+    const source = "const FOO_CHILD_TIMEOUT_MS = process.platform === 'win32' ? 30_000 : 15_000;";
+    expect(() =>
+      assertNamedBoundsBelowCaseBudget(source, { win32: 60_000, other: 15_000 }),
+    ).toThrow();
+  });
+
+  it('passes a per-platform bound whose branches are each strictly below the matching half of the budget', () => {
+    const source = "const FOO_CHILD_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 8_000;";
+    expect(() =>
+      assertNamedBoundsBelowCaseBudget(source, { win32: 60_000, other: 15_000 }),
+    ).not.toThrow();
+  });
+});
+
+describe('the runProviderProcess timeoutMs check catches a spread that can override it (RP-248, synthetic sources)', () => {
+  it('flags timeoutMs followed by an object spread, since the spread can silently override it', () => {
+    const args = 'executable, args, repoDir, timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS, ...request';
+    expect(timeoutMsFollowedBySpread(args)).toBe(true);
+  });
+
+  it('does not flag timeoutMs that comes after the spread, since a later key always wins', () => {
+    const args = '...request, timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS';
+    expect(timeoutMsFollowedBySpread(args)).toBe(false);
   });
 });
 
@@ -414,10 +527,6 @@ describe("the createProject test's own git children (RP-248)", () => {
   it('declares at least one named child bound strictly below the case budget', async () => {
     const source = await readCreateTestSource();
     const budget = createCaseBudget(source);
-    const bounds = resolveNamedBounds(source, budget);
-    expect(bounds.size, 'named child-process bounds declared in the file').toBeGreaterThan(0);
-    for (const [name, value] of bounds) {
-      expect(value, `${name} must be numerically below the case budget`).toBeLessThan(budget);
-    }
+    assertNamedBoundsBelowCaseBudget(source, { win32: budget, other: budget });
   });
 });

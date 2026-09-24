@@ -146,13 +146,27 @@ function isInside(directory: string, candidate: string): boolean {
 // eight real child spawns back to back through `trustedRunner`, none of which
 // is expected to take more than a fraction of a second on a healthy host — the
 // bound below exists only to catch the one that stalls, not to budget for all
-// eight running slowly at once. Sized against the SMALLER (elsewhere) case
-// budget of 15_000 — the platform this bound actually has to fit inside —
-// 8_000 ms leaves room for seven quick children plus this file's own fixture
-// setup/teardown even if the eighth hangs and eats the whole bound, with
-// several seconds of margin before vitest's own case timeout would fire
-// instead and leave the child's output unreported.
-const SPEC_KIT_CHILD_TIMEOUT_MS = 8_000;
+// eight running slowly at once.
+//
+// A single flat figure had to fit inside the SMALLER (elsewhere) case budget
+// of 15_000, which left no headroom on hosted Windows: there, every child is
+// a PowerShell start plus a C# compile plus the fixture payload — RP-162
+// measured a single PowerShell start alone at 6.8 s and, separately, over
+// 15 s; hosted windows-e2e runs of this file's own children have taken up to
+// ~4 s on average and the file's busiest (nine-child) case up to 37 s while
+// still passing. A child that stalls for 10-30 s and then recovers used to
+// finish inside the file's 60 s Windows case budget; a flat 8_000 ms bound
+// would fail it instead of the genuine hang the bound exists to catch. So the
+// bound is per platform, each branch sized against its own case budget minus
+// margin for this file's own fixture setup/teardown — following the same
+// "case budget minus a margin" shape as
+// `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS` in
+// package-manager-transport.test.ts. Elsewhere (15_000), 8_000 ms leaves room
+// for seven quick children plus setup/teardown even if the eighth hangs and
+// eats the whole bound, with several seconds of margin before vitest's own
+// case timeout would fire instead and leave the child's output unreported. On
+// win32 (60_000), 45_000 ms leaves 15 s of the same margin instead of none.
+const SPEC_KIT_CHILD_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 8_000;
 
 /**
  * Names the child and carries its output when a provider call does not
