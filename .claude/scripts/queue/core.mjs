@@ -501,6 +501,65 @@ export const hygieneOf = (ticket, { owner = null } = {}) => {
 };
 
 /**
+ * The default staleness window, in days, for `staleInProgressOf` below. The
+ * override key is `options.staleInProgressDays` in `.claude/queue.json` — the
+ * same per-queue-tunable convention `DEFAULT_MAX_GATE_ROUNDS` /
+ * `options.maxGateRounds` already sets.
+ */
+export const DEFAULT_STALE_IN_PROGRESS_DAYS = 3;
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * RP-223 — an in-progress item whose tracker `updated` timestamp is older
+ * than the threshold: advisory hygiene only. No automatic takeover, no
+ * automatic reassignment, no heartbeat, no background daemon — a human or
+ * controller decides through the tracker, and this function never mutates
+ * anything.
+ *
+ * Pure and `now`-injected (`.claude/rules/node-ts.md`); `now` is an ISO
+ * string or an epoch-ms number, and the CLI supplies `Date.now()` at the
+ * edge only.
+ *
+ * `null` when: the item is not `in-progress`; it carries the `escalated`
+ * label (left in progress on purpose while it waits on a human — it already
+ * has its own signal); or `ticket.updatedAt` is absent or unparseable. The
+ * last case is the normal state of the `plan-md` adapter, which carries no
+ * per-item timestamp at all — "cannot judge" is the honest answer there,
+ * never "assume fresh" and never a crash.
+ */
+export const staleInProgressOf = (ticket, { now, days } = {}) => {
+  if (ticket?.state !== 'in-progress') return null;
+  if ((ticket.labels ?? []).includes('escalated')) return null;
+
+  const updatedAt = ticket.updatedAt;
+  if (typeof updatedAt !== 'string') return null;
+  const updatedMs = Date.parse(updatedAt);
+  if (Number.isNaN(updatedMs)) return null;
+
+  const nowMs = typeof now === 'number' ? now : Date.parse(now);
+  if (Number.isNaN(nowMs)) return null;
+
+  const threshold =
+    typeof days === 'number' && Number.isFinite(days) && days > 0
+      ? days
+      : DEFAULT_STALE_IN_PROGRESS_DAYS;
+
+  const ageDays = (nowMs - updatedMs) / MS_PER_DAY;
+  if (ageDays <= threshold) return null;
+
+  return {
+    kind: 'stale-in-progress',
+    id: ticket.id,
+    why:
+      `last updated ${updatedAt}, ${ageDays.toFixed(1)} days ago — over the ` +
+      `${threshold} days stale-in-progress threshold. Reassigning it, or ` +
+      'moving it back, is a human or controller decision made in the ' +
+      'tracker — never automatic.',
+  };
+};
+
+/**
  * A dependency **line**, matching the convention `github-issues.mjs` parses.
  *
  * Anchoring to the line start is what makes it honest rather than merely narrow.
