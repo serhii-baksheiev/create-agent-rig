@@ -278,3 +278,146 @@ describe('the package-manager CLI start cases', () => {
     }
   });
 });
+
+// RP-248. On a hosted windows-e2e stall window, `runSpecKitLifecycle` cases
+// (packages/cli/test/spec-kit.test.ts) and `createProject` cases
+// (packages/cli/test/create.test.ts) time out at 60 s with no child output
+// kept: their own children are bounded at 120 s (production's
+// `invoke()`, packages/cli/src/integrations/spec-kit.ts:255) or at
+// `runProviderProcess`'s 60 s default when no `timeoutMs` is given at all
+// (packages/cli/src/integrations/spawn.ts) — both at or above the vitest CASE
+// budget these two files run their cases under, so vitest aborts the case
+// before either bound would ever fire, the child is left running with the
+// fixture as its cwd, and `afterEach`'s `removeFixture` hits EBUSY instead of
+// reporting the child that actually stalled. A case cannot out-wait a child
+// whose own bound is not strictly smaller than the case's.
+//
+// The fix these two checks require of each file: every child process spawn it
+// makes carries its OWN named bound — reusing the `_BOUND_MS` /
+// `_CHILD_TIMEOUT_MS` convention `resolveNamedBounds` above already reads —
+// strictly below that file's case budget, and never forwards a caller-supplied
+// or default timeout unexamined.
+
+/**
+ * Every call to `calleeName(...)` in `source`, as the raw argument text
+ * between its parentheses. Textual, not a parse: a paren inside a string or a
+ * `/* *\/`-style comment would mis-balance the scan. Neither check below feeds
+ * it a file where one occurs — verified by reading both files once, not
+ * enforced here.
+ */
+function extractCallArgs(source: string, calleeName: string): string[] {
+  const callsites: string[] = [];
+  const opener = new RegExp(`\\b${calleeName}\\(`, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(source)) !== null) {
+    let depth = 1;
+    let i = match.index + match[0].length;
+    const start = i;
+    while (i < source.length && depth > 0) {
+      if (source[i] === '(') depth += 1;
+      else if (source[i] === ')') depth -= 1;
+      i += 1;
+    }
+    callsites.push(source.slice(start, i - 1));
+  }
+  return callsites;
+}
+
+const NAMED_BOUND_IDENTIFIER = /^[A-Z][A-Z0-9_]*(?:_BOUND_MS|_CHILD_TIMEOUT_MS)$/;
+
+async function readSpecKitTestSource(): Promise<string> {
+  return readFile(path.join(repoRoot, 'packages', 'cli', 'test', 'spec-kit.test.ts'), 'utf8');
+}
+
+// The file's one describe block declares its case budget inline, per
+// platform, rather than through a named constant — read literally, and
+// resolved for whichever platform this very check is running on, which is
+// the platform its own `describe(...)` will resolve to as well.
+const SPEC_KIT_CASE_BUDGET_DECLARATION =
+  /timeout:\s*process\.platform === 'win32' \? (\d[\d_]*) : (\d[\d_]*)/;
+
+function specKitCaseBudget(source: string): number {
+  const declared = source.match(SPEC_KIT_CASE_BUDGET_DECLARATION);
+  expect(declared, 'spec-kit.test.ts declares its case budget the expected way').not.toBeNull();
+  const win32Budget = declared?.[1] ?? '';
+  const otherBudget = declared?.[2] ?? '';
+  const chosen = process.platform === 'win32' ? win32Budget : otherBudget;
+  return Number(chosen.replaceAll('_', ''));
+}
+
+describe('the spec-kit lifecycle test children (RP-248)', () => {
+  it('gives every runProviderProcess call its own named bound, never a forwarded or default one', async () => {
+    const source = await readSpecKitTestSource();
+    const code = source.replace(/\/\/[^\n]*/g, '');
+    const calls = extractCallArgs(code, 'runProviderProcess');
+    expect(calls.length, 'runProviderProcess call sites in the file').toBeGreaterThan(0);
+
+    for (const args of calls) {
+      const declaredTimeoutMs = args.match(/timeoutMs\s*:\s*([^,}\n]+)/);
+      expect(
+        declaredTimeoutMs,
+        `runProviderProcess(${args.trim().slice(0, 80)}) must set its own timeoutMs`,
+      ).not.toBeNull();
+      const value = (declaredTimeoutMs?.[1] ?? '').trim();
+      expect(
+        value,
+        `runProviderProcess's timeoutMs ("${value}") must name one of this file's own declared bounds, not a forwarded caller value or a bare literal`,
+      ).toMatch(NAMED_BOUND_IDENTIFIER);
+    }
+  });
+
+  it('declares at least one named child bound strictly below the case budget', async () => {
+    const source = await readSpecKitTestSource();
+    const budget = specKitCaseBudget(source);
+    const bounds = resolveNamedBounds(source, budget);
+    expect(bounds.size, 'named child-process bounds declared in the file').toBeGreaterThan(0);
+    for (const [name, value] of bounds) {
+      expect(value, `${name} must be numerically below the case budget`).toBeLessThan(budget);
+    }
+  });
+});
+
+async function readCreateTestSource(): Promise<string> {
+  return readFile(path.join(repoRoot, 'packages', 'cli', 'test', 'create.test.ts'), 'utf8');
+}
+
+const CREATE_CASE_BUDGET_DECLARATION =
+  /describe\('createProject',\s*\{\s*timeout:\s*(\d[\d_]*)\s*\}/;
+
+function createCaseBudget(source: string): number {
+  const declared = source.match(CREATE_CASE_BUDGET_DECLARATION);
+  expect(declared, 'create.test.ts declares its case budget the expected way').not.toBeNull();
+  return Number((declared?.[1] ?? '').replaceAll('_', ''));
+}
+
+describe("the createProject test's own git children (RP-248)", () => {
+  it("gives every git child call its own named bound — none of the file's exec('git', …) calls carry a timeout today", async () => {
+    const source = await readCreateTestSource();
+    const code = source.replace(/\/\/[^\n]*/g, '');
+    const calls = extractCallArgs(code, 'exec').filter((args) => /^\s*'git'/.test(args));
+    expect(calls.length, "exec('git', …) call sites in the file").toBeGreaterThan(0);
+
+    for (const args of calls) {
+      const declaredTimeout = args.match(/\btimeout\s*:\s*([^,}\n]+)/);
+      expect(
+        declaredTimeout,
+        `exec(${args.trim().slice(0, 60)}) must set its own timeout`,
+      ).not.toBeNull();
+      const value = (declaredTimeout?.[1] ?? '').trim();
+      expect(
+        value,
+        `exec's timeout ("${value}") must name one of this file's own declared bounds, never a bare literal`,
+      ).toMatch(NAMED_BOUND_IDENTIFIER);
+    }
+  });
+
+  it('declares at least one named child bound strictly below the case budget', async () => {
+    const source = await readCreateTestSource();
+    const budget = createCaseBudget(source);
+    const bounds = resolveNamedBounds(source, budget);
+    expect(bounds.size, 'named child-process bounds declared in the file').toBeGreaterThan(0);
+    for (const [name, value] of bounds) {
+      expect(value, `${name} must be numerically below the case budget`).toBeLessThan(budget);
+    }
+  });
+});

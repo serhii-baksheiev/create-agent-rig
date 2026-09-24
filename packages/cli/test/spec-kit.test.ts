@@ -140,6 +140,39 @@ function isInside(directory: string, candidate: string): boolean {
   return candidate === directory || candidate.startsWith(`${directory}${path.sep}`);
 }
 
+// RP-248. This file's case budget is 60_000 on win32 / 15_000 elsewhere (the
+// `describe(...)` below). The busiest case in the file ('initializes a clean
+// repository once, then adds only a missing harness on a later add') runs
+// eight real child spawns back to back through `trustedRunner`, none of which
+// is expected to take more than a fraction of a second on a healthy host — the
+// bound below exists only to catch the one that stalls, not to budget for all
+// eight running slowly at once. Sized against the SMALLER (elsewhere) case
+// budget of 15_000 — the platform this bound actually has to fit inside —
+// 8_000 ms leaves room for seven quick children plus this file's own fixture
+// setup/teardown even if the eighth hangs and eats the whole bound, with
+// several seconds of margin before vitest's own case timeout would fire
+// instead and leave the child's output unreported.
+const SPEC_KIT_CHILD_TIMEOUT_MS = 8_000;
+
+/**
+ * Names the child and carries its output when a provider call does not
+ * finish as expected — the counterpart, for a result object that never
+ * throws, to how `commandFailureReport` (test/e2e/run.ts) and
+ * `PACKAGE_MANAGER_START_CHILD_TIMEOUT_MS` (package-manager-transport.test.ts)
+ * report a timed-out child from a caught `execFile` error. `runProviderProcess`
+ * reports a stalled or capped child as a `status` instead of a rejection, so
+ * there is no error object to reuse the same helper against — this reads the
+ * result directly.
+ */
+function describeProviderResult(label: string, result: ProviderProcessResult): string {
+  return (
+    `${label} did not complete as expected (status: ${result.status}, ` +
+    `exitCode: ${String(result.exitCode)})\n` +
+    `--- child stdout ---\n${result.stdout || '(empty)'}\n` +
+    `--- child stderr ---\n${result.stderr || '(empty)'}`
+  );
+}
+
 async function commitFixturePaths(git: string, paths: string[]): Promise<void> {
   for (const args of [
     ['add', '--', ...paths],
@@ -154,22 +187,52 @@ async function commitFixturePaths(git: string, paths: string[]): Promise<void> {
       'fixture launchers',
     ],
   ]) {
-    expect((await runProviderProcess({ executable: git, args, repoDir: repo })).status).toBe('ok');
+    const result = await runProviderProcess({
+      executable: git,
+      args,
+      repoDir: repo,
+      timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS,
+    });
+    expect(result.status, describeProviderResult(`git ${args.join(' ')}`, result)).toBe('ok');
   }
+}
+
+/**
+ * A `timeout`/`output-limit`/`cleanup-unconfirmed` status is never the
+ * expected outcome of any case in this file — only a stalled or runaway
+ * child produces one, which is exactly the failure `SPEC_KIT_CHILD_TIMEOUT_MS`
+ * exists to catch. Reported here, at the one seam every child in the file
+ * passes through, so the case fails naming the child and its output instead
+ * of leaving the child running for `afterEach`'s `removeFixture` to hit EBUSY
+ * on (RP-248). A `failed` status is left alone: several cases legitimately
+ * drive the fake upstream to a non-zero exit.
+ */
+function throwIfBoundFired(request: ProviderProcessOptions, result: ProviderProcessResult): void {
+  const abnormal =
+    result.status === 'timeout' ||
+    result.status === 'output-limit' ||
+    result.status === 'cleanup-unconfirmed';
+  if (!abnormal) return;
+  throw new Error(
+    describeProviderResult(`${request.executable} ${request.args.join(' ')}`, result),
+  );
 }
 
 const trustedRunner: typeof runProviderProcess = async (
   request: ProviderProcessOptions,
 ): Promise<ProviderProcessResult> => {
   calls.push({ ...request, args: [...request.args] });
-  if (!isUv(request.executable)) return runProviderProcess(request);
-  return runProviderProcess({
-    executable: process.execPath,
-    args: [fake, stateFile, ...request.args],
-    repoDir: request.repoDir,
-    timeoutMs: request.timeoutMs,
-    maxOutputBytes: request.maxOutputBytes,
-  });
+  const result = isUv(request.executable)
+    ? await runProviderProcess({
+        executable: process.execPath,
+        args: [fake, stateFile, ...request.args],
+        repoDir: request.repoDir,
+        timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS,
+        maxOutputBytes: request.maxOutputBytes,
+      })
+    : await runProviderProcess({ ...request, timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS });
+  throwIfBoundFired(request, result);
+  return result;
 };
 
 async function run(options: {
@@ -395,23 +458,7 @@ describe('runSpecKitLifecycle', { timeout: process.platform === 'win32' ? 60_000
     const foreign = await writeExistingSpecKit();
     await configureFake({ installed: ['claude'] });
     const git = await executableOnPath('git');
-    for (const args of [
-      ['add', '--', '.specify'],
-      [
-        '-c',
-        'user.name=Fixture',
-        '-c',
-        'user.email=fixture@example.test',
-        'commit',
-        '--quiet',
-        '-m',
-        'upstream fixture',
-      ],
-    ]) {
-      expect((await runProviderProcess({ executable: git, args, repoDir: repo })).status).toBe(
-        'ok',
-      );
-    }
+    await commitFixturePaths(git, ['.specify']);
 
     const result = await run({
       operation: 'add',
