@@ -39,14 +39,19 @@
  * uses it verbatim, exactly as `run-journal.mjs` does. Two owners of one
  * convention disagree the first time either changes.
  *
- * ⚠ **It assumes one writer**, like the journal beside it — but degrades
- * differently, and the difference is worth knowing before relying on either.
- * The journal *detects* a collision through its sequence and refuses; this
- * merge is read-then-write with no lock, so two processes sharing a run
- * directory silently lose one of their patches. Measured: four processes ×
- * 200 increments recorded 215. The loss is always downward, so the stop this
- * file exists to fire fires **late or never** — never early. One run directory
- * per run is the caller's part of the contract, and the `loop` skill states it.
+ * ⚠ **It assumes one writer, unlike the journal beside it.** `run-journal.mjs`
+ * now takes an exclusive lock before it reads or writes, so concurrent writers
+ * sharing a run directory take turns rather than racing
+ * (`test/template/run-journal-writers.test.ts`, absent in a generated rig, ›
+ * "eight concurrent recordEvent calls land as one run with seq exactly 1..8").
+ * This module has no equivalent: `readState`/`writeState` here is read-then-
+ * write with no lock, so two processes sharing a run directory can each read
+ * the same state, compute independently, and one write clobbers the other's —
+ * a silently lost patch, not a refused one. The loss is always downward, so the stop this file
+ * exists to fire fires **late or never** — never early. One run directory per
+ * run is the caller's part of the contract, and the `loop` skill states it;
+ * closing this gap the way the journal closed its own is future work, not
+ * something this file's own writes protect against today.
  */
 
 import {
