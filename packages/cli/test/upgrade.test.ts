@@ -1649,8 +1649,8 @@ describe('planUpgrade — a nested rig, CLAUDE.md beside AGENTS.md (RP-256 slice
   // has gathered MORE than 4 KiB of trailing content afterward (the user's
   // own notes, say), is refused detection entirely on a bootstrapped
   // upgrade — falling back to `root`, which plans root `CLAUDE.md` and
-  // offers to replace the user's own file with the shim, exactly the
-  // data-loss direction the manifest-present case above already forbids.
+  // tells the user to replace their own file with the shim, the misleading
+  // advice the manifest-present case above already rules out.
   it('a bootstrapped upgrade recognises a nested rig from `.claude/CLAUDE.md` even when the file carries more than 4 KiB AFTER its `@../AGENTS.md` first line', async () => {
     const shimBytes = await installNestedRig();
     const firstNewline = shimBytes.indexOf('\n');

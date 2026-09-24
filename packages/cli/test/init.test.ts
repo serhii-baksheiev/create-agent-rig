@@ -469,12 +469,9 @@ describe('initProject — a symlinked root CLAUDE.md (RP-256 slice 1, code-revie
   // before the FIFO/`isFile()` check or the size-cap check is ever reached.
   // A mutation that deletes either of those checks leaves every test above
   // green, because the containment check alone still produces the same
-  // `kept === undefined` outcome. These four cases place the target INSIDE
+  // `kept === undefined` outcome. The cases below place the target INSIDE
   // the repo, so containment passes and the isFile()/size-cap checks are the
-  // only thing left deciding the outcome — proven by mutation, not merely
-  // asserted: see the round-3 report for the two mutation runs (isFile()
-  // removed → the in-repo FIFO case below goes red; the size cap removed →
-  // the in-repo over-cap case and the exact-boundary "+1" case below go red).
+  // only thing left deciding the outcome.
 
   it('does not block on a root CLAUDE.md symlinked to an IN-REPO FIFO, and records no kept entry for it', async (context) => {
     skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
