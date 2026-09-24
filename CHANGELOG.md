@@ -14,6 +14,27 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## Unreleased
+
+### Added
+
+- **`doctor`'s `rig-owned-files` check reports per-reason counts.** The JSON
+  record gains an additive
+  `counts: { absent, contentDrift, lineDrift, unreadable }` field, so a caller
+  can see an absent owned file and a content-drifted one at once instead of
+  `reason`'s single precedence-picked word masking one behind the other;
+  `fix` now names the specific affected paths, bounded, while `reason` and
+  `detail` never do (RP-239 A2).
+
+### Fixed
+
+- **`decision-router` diagnoses a missing `origin/HEAD` instead of printing
+  git's raw `fatal:` transcript.** A fresh `git init` checkout with no remote
+  never sets `origin/HEAD`, and the default diff used to hand git's own
+  "ambiguous argument" text straight to stderr; it now names the missing ref
+  and points at `git remote set-head origin --auto` or `--base <ref>`, and
+  still fails closed the same way (RP-239 A3).
+
 ## 1.0.1
 
 **1.0.1 is a patch on the 1.0 line.** It closes guard gaps an unattended run
