@@ -233,11 +233,13 @@ const rebaseline = (ticket) => {
  * The same contract as `jira.mjs`'s `claim`: every path returns once the
  * write has landed — claim() throws before its write (a failed pre-read)
  * or when the write itself fails outright, never merely because verification
- * could not confirm the outcome, because a thrown write is retried by the caller and lands twice. `reason` is
- * `claim-stale` (refused before mutating), `claim-contended` (mutated, but
- * the read-back could not attribute the label to this call) or
- * `claim-unverifiable` (a request failed, or the events page came back full
- * enough that truncation cannot be ruled out).
+ * could not confirm the outcome, because a thrown write is retried by the
+ * caller and lands twice. `reason` is `claim-stale` (refused before
+ * mutating — the issue is closed or already labelled in progress),
+ * `claim-contended` (mutated, but the read-back could not attribute the label
+ * to this call) or `claim-unverifiable` (no selection snapshot, refused with
+ * no request; a request failed; or the events page came back full enough that
+ * truncation cannot be ruled out).
  *
  * 🔴 Stated limit, measured live (throwaway issue #306, 2026-09-24): re-adding
  * a label GitHub already considers present writes NO `labeled` event. Two

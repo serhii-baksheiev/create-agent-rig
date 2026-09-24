@@ -617,10 +617,11 @@ const rebaseline = async (ticket, env) => {
  * confirm the outcome — exactly as every other mutating call in this adapter,
  * `test/template/queue-jira.test.ts` (absent in a generated rig) › "does not
  * retry %s" pins. `reason` is one of `claim-stale` (refused before
- * mutating — the item moved since selection), `claim-contended` (mutated,
- * but the read-back could not attribute the sole resulting history to this
- * call) or `claim-unverifiable` (no selection snapshot, refused with no
- * request; or a request failed and the outcome could not be read at all). Pinned in the generator's
+ * mutating — the item is no longer to do, or moved since selection),
+ * `claim-contended` (mutated, but the read-back could not attribute the sole
+ * resulting history to this call) or `claim-unverifiable` (no selection
+ * snapshot, refused with no request; or a request failed and the outcome could
+ * not be read at all). Pinned in the generator's
  * `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
  * every case under "jira claim() is verified and stale-selection safe
  * (RP-220)", including › "the Done criterion: two controllers racing from one
