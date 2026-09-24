@@ -72,8 +72,8 @@ Also: create-agent-rig init [--dry-run] [--layer workflow]
   A rig that already has the workflow layer keeps it on a plain re-run with
   no flag — the flag only ever adds the layer, never drops one a previous
   run already recorded.
-  --force is deprecated: it refuses and points at upgrade, which refreshes a
-  rig file by file. It is removed in 0.6.
+  --force is refused and points at upgrade, which refreshes a rig file by
+  file.
 
 Also: create-agent-rig upgrade [--dry-run] [--yes]
   Bring the rig in the CURRENT repo up to this version. Replaces the files it

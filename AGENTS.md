@@ -99,7 +99,11 @@ it a hook via the `new-invariant` skill.
   vocabulary in `.claude/scripts/lib/secrets.mjs`; `block-no-verify` refuses
   pre-commit bypasses;
   `guard-bash` refuses the "Never" tier — force-pushing a shared branch, a
-  production deploy, a filesystem wipe — and carries the kill switch;
+  production deploy, a filesystem wipe — and carries the kill switch. It
+  protects specific Rig/git/credential invariants; it is not general command
+  isolation or a sandbox. General OS/process isolation is the harness's own
+  native sandbox setting (Claude Code / Codex sandboxing), not guard-bash's
+  job;
   `gate-stop-dod` refuses to end the session when a configured
   Definition-of-Done check fails; without `dod-checks.json` it is deliberately
   inert (generator evidence, absent in a generated rig:
