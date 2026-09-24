@@ -279,6 +279,19 @@ was never this checkout's. Pinned in the generator's
 `test/template/queue-owner.test.ts` — absent in a generated rig — › "holds an
 item whose owner is another repository, with the cause named".
 
+🔴 **The tracker's own assignee is human ownership authority, not a hint.**
+Unassigned is takeable regardless of whether this run knows its
+own identity; assigned to this run's own tracker identity is takeable;
+assigned to anyone else — or assigned at all while this run could not confirm
+its own identity — is the holding cause `assigned`, freed only by a human
+reassigning or unassigning it in the tracker. Never cleared by waiting, and
+never by refilling the queue. The same gate runs again at claim time (§9):
+an item reassigned to someone else between selection and claim() refuses as
+`claim-stale`, before any mutating request. Pinned in the generator's
+`test/template/queue-assignee.test.ts` — absent in a generated rig — ›
+"holds an item assigned to another actor, naming the cause and the
+tracker's assignee".
+
 🔴 **An item's lifecycle is a label a human wrote, and the loop infers none of
 it**. Four words, read by `lifecycleOf` in `core.mjs` so every adapter
 means the same thing — three of lifecycle, one of scheduling:
@@ -587,13 +600,15 @@ Four of them deserve their reasons repeated:
   queue**: the elevated spacing (a normal or prose-only item lands), a blocker (its item
   closes), in-progress (the other session finishes), a trigger (a human
   declares it — and for a `trigger-auto` item that declaration is **written**,
-  §2, so this is the one hold that needs a command rather than only time), and
-  an owner (§2: the item is another repository's, and a human moves it or
-  re-marks it — neither time nor interleaving frees it). The
-  stop line names how many and by which, because the two endings ask the owner
+  §2, so this is the one hold that needs a command rather than only time), an
+  owner (§2: the item is another repository's, and a human moves it or
+  re-marks it — neither time nor interleaving frees it), and an assignee
+  (§2: the tracker's own assignee is someone else, or unknown, and a human
+  reassigns or unassigns it — neither time nor interleaving frees it either).
+  The stop line names how many and by which, because the two endings ask the owner
   for opposite things: an empty queue wants refilling, a held one wants
-  interleaving, time, or — for a trigger or an owner — a human act the line
-  names. 🔴 **A parked cause outranks a holding one on the
+  interleaving, time, or — for a trigger, an owner or an assignee — a human
+  act the line names. 🔴 **A parked cause outranks a holding one on the
   same item** — an escalated item is left claimed on purpose, so it arrives
   carrying `in-progress` too. **Neither ending is an invitation to refill the
   queue or invent work.** Why the two are split, and how the parked pile grows
@@ -1050,6 +1065,25 @@ three poisons the only channel by which this project learns.
   › "refuses as claim-stale when the item moved to In Progress after selection, with no mutation"
   and › "the documented same-account limit: two same-account controllers can both come back
   claimed:true (not a claim of exclusivity)".
+
+  🔴 **The same reassignment gate runs again at claim time, before any
+  mutating request.** Selection already checked the tracker's assignee; a
+  human can still reassign the item in the window between selection and
+  claim(), and both adapters re-check it there — the Jira adapter folds the
+  recheck into the SAME pre-read that already reads status and `updated`,
+  while the GitHub adapter reads assignees on a SECOND, deliberately separate
+  call. Call `claim()` the way the take-up step above does, with no
+  `currentActor` key at all: an OMITTED option resolves this run's own
+  tracker identity itself, through the same `currentActor()` function
+  selection already called — passing one resolved earlier would just be a
+  second resolution of the same fact, which is exactly what leaving the key
+  out avoids. An EXPLICIT `currentActor: null` is a different thing
+  entirely — "known unknown" — and still refuses fail closed on an assigned
+  item. Pinned in `test/template/queue-assignee.test.ts` (absent in a
+  generated rig) › "refuses as claim-stale, with zero transition POSTs, when
+  the pre-read shows it now assigned to another actor" and › "refuses as
+  claim-stale, with zero label-edit calls, when the pre-read shows it now
+  assigned to another login".
 - **Closing:** first ask whether the item is still the item you took up — a
   late comment or a status somebody else moved is not published as `Done`
   underneath it:

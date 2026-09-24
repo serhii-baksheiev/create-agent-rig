@@ -39,6 +39,25 @@ const PRIORITY = /^(?:priority[:-]|p)(\d+)$/i;
 const labelNames = (issue) =>
   (issue?.labels ?? []).map((label) => (typeof label === 'string' ? label : (label?.name ?? '')));
 
+/**
+ * RP-221 round 2 — an `assignees` entry PRESENT but with no readable `login`
+ * (a partially-deleted or app-installed assignee entry can carry this shape)
+ * is never dropped the way an ABSENT entry is: dropping it folded "assigned,
+ * but unreadable" onto the exact same list an issue with NO assignees
+ * produces. `UNREADABLE_ASSIGNEE` is a control character no real GitHub
+ * login ever contains, so it can never equal a resolved actor's login and
+ * always reads as a mismatch (`invariants.md`: present-but-unreadable is the
+ * refusal case, not the fail-open one).
+ */
+const UNREADABLE_ASSIGNEE = '\u0000rp221-unreadable-github-assignee';
+
+/** The assignee logins GitHub carries on an issue, as `assignees: [{ login }]`. */
+const assigneeLogins = (issue) =>
+  (issue?.assignees ?? []).map((assignee) => {
+    const login = typeof assignee === 'string' ? assignee : assignee?.login;
+    return typeof login === 'string' && login !== '' ? login : UNREADABLE_ASSIGNEE;
+  });
+
 /** The blocker ids this issue's body links to — several per line is fine. */
 export const blockerIdsOf = (issue) => {
   const ids = [];
@@ -59,6 +78,7 @@ export const toTicket = (issue, states = {}) => {
   const labels = labelNames(issue);
   const priorityLabel = labels.map((label) => PRIORITY.exec(label)).find(Boolean);
   const comments = Array.isArray(issue.comments) ? issue.comments : [];
+  const assignees = assigneeLogins(issue);
 
   return {
     id: String(issue.number),
@@ -109,6 +129,10 @@ export const toTicket = (issue, states = {}) => {
     owner: ownerOfLabels(labels),
     // The lifecycle and the scheduling flag (AR-144), read above the seam.
     ...lifecycleOf(labels),
+    // RP-221: GitHub allows several assignees; `null` when there are none, so
+    // an empty `assignees: []` reads as unassigned rather than as a mismatch
+    // nothing can ever satisfy.
+    assignee: assignees.length > 0 ? assignees : null,
   };
 };
 
@@ -142,7 +166,7 @@ const ghText = (args) =>
 
 const ghJson = (args) => JSON.parse(ghText(args));
 
-const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments';
+const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments,assignees';
 
 /**
  * A `--state` (or triage) window that came back exactly at its cap: older
@@ -204,6 +228,22 @@ export const listEligible = ({ limit = 100, issues = null } = {}) => {
   });
 };
 
+/**
+ * RP-221 — this run's own tracker identity: the caller's GitHub login.
+ * Never throws — a missing `gh` auth, a network failure, anything `gh api
+ * user` cannot answer resolves to `null`, and the caller (`selectionOf`,
+ * `claim`) already reads `null` as "fail closed on an assigned item", never
+ * as "assume unassigned".
+ */
+export const currentActor = async () => {
+  try {
+    const login = String(ghText(['api', 'user', '--jq', '.login'])).trim();
+    return login !== '' ? { id: login } : null;
+  } catch {
+    return null;
+  }
+};
+
 export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) => !b.resolved);
 
 /** `To Do → In Progress` before the first file is edited, not when the PR opens. */
@@ -235,12 +275,17 @@ const rebaseline = (ticket) => {
  * or when the write itself fails outright, never merely because verification
  * could not confirm the outcome, because a thrown write is retried by the
  * caller and lands twice. `reason` is `claim-stale` (refused before
- * mutating — the issue is closed, already labelled in progress, or moved
- * since selection),
+ * mutating — the issue is closed, already labelled in progress, moved since
+ * selection, reassigned to another actor since selection, or assigned while
+ * this run's own login could not be resolved — RP-221 round 2 tells the last
+ * two apart in `detail`, never by repeating a login),
  * `claim-contended` (mutated, but the read-back could not attribute the label
  * to this call) or `claim-unverifiable` (no selection snapshot, refused with
  * no request; a request failed; or the events page came back full enough that
- * truncation cannot be ruled out).
+ * truncation cannot be ruled out). The two assignee-gate details are pinned
+ * in `test/template/queue-assignee.test.ts` (absent in a generated rig) ›
+ * every case under "github-issues claim() refusal detail tells a genuine
+ * mismatch apart from an unresolved actor (RP-221 round 2)".
  *
  * 🔴 Stated limit, measured live (throwaway issue #306, 2026-09-24): re-adding
  * a label GitHub already considers present writes NO `labeled` event. Two
@@ -299,7 +344,63 @@ const verifyGithubClaim = (ticket, snapshotMs) => {
   };
 };
 
-export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
+/**
+ * The mutation and everything after the assignee gate — factored out so
+ * `claim` below can stay a PLAIN function and return a plain object
+ * synchronously on the no-assignee path (no `async`, no Promise wrapper),
+ * exactly as it did before RP-221 round 2. `content-blind-revalidation.test.ts`
+ * (absent in a generated rig) calls `github.claim(ticket, …)` and reads the
+ * result with a synchronous `expect(...).toMatchObject(...)` — never
+ * awaited — on a ticket that carries no assignees; that test is the reason
+ * this stays a plain function rather than `async`, which would always return
+ * a Promise regardless of whether an `await` was ever reached inside it.
+ */
+const mutateAndVerifyGithubClaim = (ticket, snapshotMs, projectRoot) => {
+  // The mutation itself — never retried, exactly as every other write here.
+  ghText(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
+
+  // Past this point nothing throws: the label has already landed, and a
+  // rejection here would be retried by the caller onto an item already
+  // labelled.
+  let verified;
+  try {
+    verified = verifyGithubClaim(ticket, snapshotMs);
+  } catch (error) {
+    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: error.message };
+  }
+  if (!verified.ok) {
+    // Not rolled back: another controller may hold the item now.
+    return { ok: false, claimed: false, reason: verified.reason, detail: verified.detail };
+  }
+
+  let workflowClaimRecorded = false;
+  try {
+    workflowClaimRecorded =
+      recordClaimTransition({ projectRoot, ticket, claimedState }) !== null;
+  } catch (error) {
+    process.stderr.write(
+      `#${ticket.id}: the workflow claim landed, but its durable acknowledgement was NOT recorded — ` +
+        `${error.message}\n`,
+    );
+  }
+  rebaseline(ticket);
+  return { ok: true, claimed: true, workflowClaimRecorded };
+};
+
+export const claim = (
+  ticket,
+  {
+    projectRoot = process.cwd(),
+    // RP-221 round 2: an OMITTED option (the key absent, so this destructures
+    // to `undefined`) resolves this run's own login through the same
+    // `currentActor()` selection already calls — the documented take-up
+    // shape, `adapter.claim(ticket, { projectRoot })`, must not be read as
+    // "actor unknown" merely because the caller did not repeat a resolution
+    // selection already made. An EXPLICIT `currentActor: null` stays "known
+    // unknown" and still fails closed below on an assigned item.
+    currentActor: currentActorOption,
+  } = {},
+) => {
   if (!ticket?.updatedAt) {
     return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no selection snapshot' };
   }
@@ -332,36 +433,50 @@ export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
       detail: `updatedAt moved from ${ticket.updatedAt} (selection) to ${pre?.updatedAt} before the claim`,
     };
   }
+  // RP-221: a human reassignment between selection and claim wins, without a
+  // mutating request — the same gate as `jira.mjs`'s `claim`. Unassigned or
+  // assigned to the current actor proceeds; assigned to anyone else, or
+  // assigned at all while the actor is unknown, refuses fail closed.
+  //
+  // A SECOND read, deliberately kept apart from the pre-read above, rather
+  // than folded into its `--json state,labels,updatedAt` list: that literal
+  // field string is what `test/template/queue-claim-verified.test.ts`'s own
+  // same-account-race fake (absent in a generated rig) uses to recognise
+  // "this is the pre-read" and hand back the pre-write labels — widening the
+  // string would silently stop that fake from recognising the call it exists
+  // to intercept, which is a race-detection regression a passing assertion on
+  // `assignees` alone would never surface.
+  const preAssignees = assigneeLogins(ghJson(['issue', 'view', ticket.id, '--json', 'assignees']));
 
-  // The mutation itself — never retried, exactly as every other write here.
-  ghText(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
+  const gateThenFinish = (actor) => {
+    if (preAssignees.length > 0 && (!actor || !preAssignees.includes(actor.id))) {
+      return {
+        ok: false,
+        claimed: false,
+        reason: 'claim-stale',
+        // RP-221 round 2: two distinct causes, told apart without repeating
+        // a login. A KNOWN actor that does not match is a genuine
+        // reassignment; no actor at all is this run failing to confirm
+        // anything — not the same claim.
+        detail: actor
+          ? 'assigned to another actor since selection'
+          : "this run's tracker identity could not be resolved, and the item is assigned — a match cannot be confirmed",
+      };
+    }
+    return mutateAndVerifyGithubClaim(ticket, snapshotMs, projectRoot);
+  };
 
-  // Past this point nothing throws: the label has already landed, and a
-  // rejection here would be retried by the caller onto an item already
-  // labelled.
-  let verified;
-  try {
-    verified = verifyGithubClaim(ticket, snapshotMs);
-  } catch (error) {
-    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: error.message };
+  if (preAssignees.length === 0) {
+    // Nothing to gate: stays fully synchronous, never touching `currentActor`
+    // at all — an unassigned item never needs this run's own login.
+    return gateThenFinish(null);
   }
-  if (!verified.ok) {
-    // Not rolled back: another controller may hold the item now.
-    return { ok: false, claimed: false, reason: verified.reason, detail: verified.detail };
-  }
-
-  let workflowClaimRecorded = false;
-  try {
-    workflowClaimRecorded =
-      recordClaimTransition({ projectRoot, ticket, claimedState }) !== null;
-  } catch (error) {
-    process.stderr.write(
-      `#${ticket.id}: the workflow claim landed, but its durable acknowledgement was NOT recorded — ` +
-        `${error.message}\n`,
-    );
-  }
-  rebaseline(ticket);
-  return { ok: true, claimed: true, workflowClaimRecorded };
+  // Resolved only now the item is actually assigned — this is the one path
+  // that becomes a Promise, because reading this run's own login is
+  // inherently asynchronous (`gh api user` via `currentActor()`).
+  const actorPromise =
+    currentActorOption === undefined ? currentActor() : Promise.resolve(currentActorOption);
+  return actorPromise.then(gateThenFinish);
 };
 
 /**
