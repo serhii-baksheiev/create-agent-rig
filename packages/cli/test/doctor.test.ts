@@ -49,6 +49,7 @@ type Check = {
   id: string;
   status: 'ok' | 'warn' | 'fail';
   reason?: string;
+  detail?: string;
   fix?: string;
 };
 
@@ -85,6 +86,41 @@ function report(stdout: string): Report {
 
 const hasFailure = (result: Report): boolean =>
   result.checks.some((check) => check.status === 'fail');
+
+// RP-239 A4 (onboarding-friction triage, comment 20140): a third-party pilot
+// found an internal tracker id leaking into a doctor detail sentence — an
+// operator outside this repository has nowhere to look "RP-26" up. The
+// sentence must keep its meaning in plain words instead.
+describe('doctor detail/fix text names no internal tracker id (RP-239 A4)', () => {
+  it('the workflow check states the frozen-mechanism decision in plain words, not as a ticket id', async () => {
+    await initProject(repo, { withWorkflow: true });
+
+    const result = await doctor();
+    expect(result.exitCode, result.stderr).toBe(0);
+    const parsed = report(result.stdout);
+    const workflow = parsed.checks.find((check) => check.id === 'workflow');
+    expect(workflow, 'fixture: no workflow check in this report').toBeTruthy();
+    // Fixture sanity: this is the exact branch the finding names
+    // (doctor.ts's `reason === 'workflow-verified'` detail).
+    expect(workflow?.reason).toBe('workflow-verified');
+    expect(workflow?.detail).toBeTruthy();
+    expect(workflow?.detail).not.toMatch(/\bRP-\d+\b/);
+    expect(workflow?.detail).not.toMatch(/\bAR-\d+\b/);
+  });
+
+  it('no check in a full report names an RP- or AR- tracker id in its detail or fix text', async () => {
+    await initProject(repo, { withWorkflow: true });
+
+    const result = await doctor();
+    expect(result.exitCode, result.stderr).toBe(0);
+    const parsed = report(result.stdout);
+    const offenders = parsed.checks.filter(
+      (check) =>
+        /\b(RP|AR)-\d+\b/.test(check.detail ?? '') || /\b(RP|AR)-\d+\b/.test(check.fix ?? ''),
+    );
+    expect(offenders, JSON.stringify(offenders)).toEqual([]);
+  });
+});
 
 describe('aggregated doctor (RP-21)', () => {
   it('distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets', async () => {

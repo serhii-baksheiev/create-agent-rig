@@ -802,3 +802,142 @@ describe('a customised-but-readable AGENTS.md conflict is QUIET — no rescue fi
     expect(line).toMatch(/edited since it was installed/);
   });
 });
+
+// RP-239 (onboarding-friction triage, comment 20140), finding A1: no
+// subcommand accepts `--help` today — each one falls through to whatever
+// that subcommand does with an argument it does not recognise (a
+// `parseArgs` failure, a usage exit, or — for `setup` — the interactive
+// wizard's non-interactive refusal). Desired: `<cmd> --help` prints that
+// subcommand's own usage to stdout and exits 0, the same way the top-level
+// `--help`/`-h` already does (`main()`'s `values.help` branch in
+// src/index.ts) — never running the command, never touching the
+// filesystem, and never falling into the setup wizard.
+describe('`--help` on a subcommand (RP-239 A1)', () => {
+  // Each assertion below is expected to fail against today's build, for the
+  // reason the finding names for that subcommand: `init`/`upgrade` treat
+  // `--help` as an unrecognised `parseArgs` option (exit 1, "Unknown
+  // option"); `uninstall` the same, with node's own suggestion to place it
+  // after `--` since positionals are allowed there; `doctor` exits 2 with
+  // "doctor accepts only --json"; `memory` exits 2 with "memory needs a
+  // verb" (`--help` is not `doctor`/`load`); `setup` falls into the
+  // wizard's non-interactive refusal, exit 1, because a verb starting with
+  // `-` that is not `--memory-root` routes there today.
+  it('init --help prints usage to stdout, exits 0, and writes nothing', async () => {
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['init', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/Unknown option/);
+    expect(run.stdout).toContain('create-agent-rig init [--dry-run] [--layer workflow]');
+    expect((await readdir(repo)).sort()).toEqual(before);
+  });
+
+  it('upgrade --help prints usage to stdout, exits 0, and touches nothing', async () => {
+    await installRig();
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['upgrade', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/Unknown option/);
+    expect(run.stdout).toContain('create-agent-rig upgrade [--dry-run] [--yes]');
+    expect((await readdir(repo)).sort()).toEqual(before);
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+  });
+
+  it('uninstall --help prints usage to stdout, exits 0, and removes nothing', async () => {
+    await installRig();
+    const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
+    const before = (await readdir(repo)).sort();
+
+    const run = await runCli(repo, ['uninstall', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/Unknown option/);
+    expect(run.stdout).toContain(
+      'create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]',
+    );
+    expect((await readdir(repo)).sort()).toEqual(before);
+    expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
+  });
+
+  it('doctor --help prints usage to stdout and exits 0, never the "accepts only --json" refusal', async () => {
+    const run = await runCli(repo, ['doctor', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toContain('doctor accepts only --json');
+    expect(run.stdout).toContain('create-agent-rig doctor [--json]');
+  });
+
+  it('memory --help prints usage to stdout and exits 0, never "memory needs a verb"', async () => {
+    const run = await runCli(repo, ['memory', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toMatch(/memory needs a verb/);
+    expect(run.stdout).toContain('create-agent-rig memory <doctor|load> [args…]');
+  });
+
+  it('setup --help prints usage to stdout and exits 0, never entering the interactive wizard', async () => {
+    const run = await runCli(repo, ['setup', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stderr).not.toContain('setup-wizard-requires-an-interactive-terminal');
+    expect(run.stdout).toContain('Choose a provider and harness interactively');
+  });
+});
+
+// RP-239, finding A5: `upgrade`'s "new version" line for a conflicted file
+// prints `action.templatePath` — an ABSOLUTE path on the machine that ran
+// the CLI (an npx-cache path such as `~/.npm/_npx/<hash>/…` in the field,
+// this sandbox's own build root here). Desired: name the package version
+// (`create-agent-rig@<version>`) and the path INSIDE the package
+// (`templates/agent-os/universal/<rel>`), never the host filesystem path.
+describe('a conflict names the package, never a filesystem cache path (RP-239 A5)', () => {
+  it('the "new version" line names create-agent-rig@<version> and the in-package template path', async () => {
+    await installRig();
+    const rel = '.claude/rules/workflow.md';
+    const edited = `${await readFile(abs(rel), 'utf8')} `;
+    await writeFile(abs(rel), edited);
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    const line = lineMatching(run.stdout, /new version:/);
+    expect(line, 'fixture: no conflict action printed a "new version" line').toBeTruthy();
+
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      version: string;
+    };
+    expect(line).toContain(`create-agent-rig@${pkg.version}`);
+    expect(line).toContain(
+      ['templates', 'agent-os', 'universal', '.claude', 'rules', 'workflow.md'].join('/'),
+    );
+    // Never the absolute path on the machine that built/ran this CLI —
+    // `sandbox` stands in here for what an npx cache path is in the field.
+    expect(line).not.toContain(sandbox);
+  });
+});
+
+// RP-239, finding A6: `applyUpgrade` always rewrites the manifest
+// (`upgrade.ts`, `await writeManifest(repoDir, plan.manifest)`, unconditional),
+// but a run that replaced zero files says only "Wrote 0 files." — read as
+// "nothing happened at all". Desired: the same line also reflects the
+// manifest write, WITHOUT dropping the exact substring
+// `test/e2e/agents-md-migration.test.ts` pins ("a legacy rig whose
+// AGENTS.md was customised … a second run is a no-op" › `toContain('Wrote
+// 0 files.')`).
+describe('a no-op upgrade still reports the manifest write (RP-239 A6)', () => {
+  it('a fresh install immediately re-upgraded: "Wrote 0 files." names the manifest write on the same line', async () => {
+    await installRig();
+
+    const run = await runCli(repo, ['upgrade', '--yes']);
+
+    expect(run.code, run.stderr).toBe(0);
+    // The pinned substring — never remove or reword this part of the line.
+    expect(run.stdout).toContain('Wrote 0 files.');
+    // But the same line must say the manifest was rewritten, not leave a
+    // reader thinking this run did nothing at all.
+    expect(run.stdout).toMatch(/Wrote 0 files\.[^\n]*manifest/i);
+  });
+});
