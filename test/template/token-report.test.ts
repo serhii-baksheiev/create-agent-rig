@@ -418,6 +418,32 @@ describe('token-report.mjs money line', () => {
     expect(data.runs.read).toBe(0);
   });
 
+  it('a lone unknown-harness usage does not flip the money line to "usage measured" when no group displays it', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-96',
+      now: T1,
+    });
+    // harness is deliberately omitted, so the group's harness is 'unknown'
+    // and neither usage.claude nor usage.codex is ever populated for it.
+    dispatchStart(runA, T2, { agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: claudeUsage(),
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const group = data.dispatchGroups[0]!;
+    expect(group.harness).toBe('unknown');
+    expect(group.usage.claude).toBeNull();
+    expect(group.usage.codex).toBeNull();
+    expect(data.money.line).toBe('usage unavailable; monetary cost unavailable');
+  });
+
   it('the text render ends with the money line', async () => {
     const runsDir = await runsRoot();
     const runA = await mkrun(runsDir, 'run-a');
@@ -550,6 +576,163 @@ describe('token-report.mjs dispatch grouping: run -> controller/harness -> ticke
   });
 });
 
+describe('token-report.mjs usage summing within a dispatch group', () => {
+  it('sums a numeric usage counter across every ended dispatch in the same group', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-80',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: claudeUsage({ inputTokens: 100 }),
+    });
+    dispatchStart(runA, T4, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r2' });
+    dispatchEnd(runA, T5, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r2',
+      usage: claudeUsage({ inputTokens: 1000 }),
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.dispatchGroups).toHaveLength(1);
+    const group = data.dispatchGroups[0]!;
+    expect(group.dispatches).toEqual({ ended: 2, noEndObserved: 0 });
+    expect(group.usage.claude?.inputTokens).toBe(1100);
+  });
+
+  it('a counter present on one usage-bearing dispatch and absent on another in the same group is null, never partially summed', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-81',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: {
+        evidenceSource: 'transcript',
+        requests: 1,
+        inputTokens: 50,
+        outputTokens: 10,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 10,
+      },
+    });
+    dispatchStart(runA, T4, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r2' });
+    dispatchEnd(runA, T5, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r2',
+      usage: {
+        evidenceSource: 'transcript',
+        requests: 1,
+        inputTokens: 50,
+        outputTokens: 10,
+        cacheCreationInputTokens: 0,
+        // cacheReadInputTokens deliberately absent on this dispatch
+      },
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const group = data.dispatchGroups[0]!;
+    expect(group.usage.claude?.inputTokens).toBe(100);
+    expect(group.usage.claude?.cacheReadInputTokens).toBeNull();
+  });
+
+  it('each group reports how many of its dispatches carried usage, so partial coverage is visible', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-82',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: claudeUsage(),
+    });
+    dispatchStart(runA, T4, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r2' });
+    dispatchEnd(runA, T5, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r2' });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const group = data.dispatchGroups[0]!;
+    expect(group.dispatches).toEqual({ ended: 2, noEndObserved: 0, withUsage: 1 });
+  });
+});
+
+describe('token-report.mjs usage: absent fields stay null, never 0', () => {
+  it('an absent claude usage field is null, not zero', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-83',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: {
+        evidenceSource: 'transcript',
+        requests: 1,
+        inputTokens: 100,
+        outputTokens: 20,
+        cacheCreationInputTokens: 0,
+        // cacheReadInputTokens deliberately absent
+      },
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.dispatchGroups[0]!.usage.claude?.cacheReadInputTokens).toBeNull();
+  });
+
+  it('an absent codex usage field is null, not zero', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-84',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'codex', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'codex',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: {
+        inputTokens: 80,
+        cachedInputTokens: 5,
+        outputTokens: 15,
+        // reasoningOutputTokens deliberately absent
+      },
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.dispatchGroups[0]!.usage.codex?.reasoningOutputTokens).toBeNull();
+  });
+});
+
 describe('token-report.mjs ticket attribution', () => {
   it('a dispatch before any selection in the run is bucketed under no-ticket', async () => {
     const runsDir = await runsRoot();
@@ -622,6 +805,41 @@ describe('token-report.mjs ticket attribution', () => {
   });
 });
 
+describe('token-report.mjs --since filtering', () => {
+  it("excludes a decision or dispatch whose own at is before --since from every section, mirroring revalidation-report.mjs's at >= since semantics", async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    const OLD = '2020-01-01T00:00:00.000Z';
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-OLD',
+      now: OLD,
+    });
+    dispatchStart(runA, OLD, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'old' });
+    dispatchEnd(runA, OLD, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'old' });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-NEW',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'new' });
+    dispatchEnd(runA, T3, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'new' });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(
+      data.tickets.find((t) => t.ticket === 'RP-OLD'),
+      JSON.stringify(data.tickets),
+    ).toBeUndefined();
+    const newTicket = data.tickets.find((t) => t.ticket === 'RP-NEW');
+    expect(newTicket, JSON.stringify(data.tickets)).toBeDefined();
+    expect(newTicket!.attempts).toBe(1);
+    expect(data.dispatchGroups).toHaveLength(1);
+    expect(data.dispatchGroups[0]!.ticket).toBe('RP-NEW');
+  });
+});
+
 describe('token-report.mjs gate rounds, reviewer outcomes and final outcome', () => {
   it('counts reviewer-fan-out decisions in the window, tallies every round, and reports the last round as the outcome', async () => {
     const runsDir = await runsRoot();
@@ -690,6 +908,53 @@ describe('token-report.mjs gate rounds, reviewer outcomes and final outcome', ()
     const occurrence = ticket!.occurrences[0]!;
     expect(occurrence.gateRounds).toBe(0);
     expect(occurrence.outcome).toBeNull();
+  });
+});
+
+describe('token-report.mjs reviewerOutcomes counts only the fan-out-named reviewers', () => {
+  it('excludes check-premises and review-routing:* decisions from reviewerOutcomes even though they fall inside the window', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-95',
+      now: T1,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'reviewer-fan-out',
+      verdict: 'launched',
+      reviewers: ['code-reviewer'],
+      headSha: HEAD,
+      now: T2,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'check-premises',
+      verdict: 'PASS',
+      now: T3,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'review-routing:fast-path',
+      verdict: 'model',
+      now: T4,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'code-reviewer',
+      verdict: 'SHIP',
+      headSha: HEAD,
+      now: T5,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T6 });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const ticket = data.tickets.find((t) => t.ticket === 'RP-95');
+    expect(ticket, JSON.stringify(data.tickets)).toBeDefined();
+    const occurrence = ticket!.occurrences[0]!;
+    expect(occurrence.reviewerOutcomes).toEqual({ 'code-reviewer': { SHIP: 1 } });
   });
 });
 
@@ -786,6 +1051,107 @@ describe('token-report.mjs dispatch pairing', () => {
     expect(ticket, JSON.stringify(data.tickets)).toBeDefined();
     expect(ticket!.occurrences[0]!.dispatches).toBe('unavailable');
     expect(data.dispatchGroups).toEqual([]);
+  });
+});
+
+describe('token-report.mjs reviewerOutcomes resist prototype pollution', () => {
+  it("a decision whose gate is '__proto__', named as a reviewer by its own fan-out, does not pollute Object.prototype for a later run in the same report", async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-90',
+      now: T1,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'reviewer-fan-out',
+      verdict: 'launched',
+      reviewers: ['__proto__'],
+      headSha: HEAD,
+      now: T2,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: '__proto__',
+      verdict: 'inputTokens',
+      headSha: HEAD,
+      now: T3,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: '__proto__',
+      verdict: 'agentType',
+      headSha: HEAD,
+      now: T4,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T5 });
+
+    const runB = await mkrun(runsDir, 'run-b');
+    journal.recordDecision({
+      runDir: runB,
+      gate: 'item-selection',
+      verdict: 'taken RP-91',
+      now: T1,
+    });
+    // agentType is deliberately omitted from the start record, and
+    // inputTokens from the end record's usage — both should read as
+    // 'unknown'/null, never as the polluted value run-a wrote above.
+    dispatchStart(runB, T2, { harness: 'claude', agentRef: 'r1' });
+    dispatchEnd(runB, T3, {
+      harness: 'claude',
+      agentRef: 'r1',
+      usage: {
+        evidenceSource: 'transcript',
+        requests: 1,
+        outputTokens: 10,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const groupB = data.dispatchGroups.find((g) => g.run === 'run-b');
+    expect(groupB, JSON.stringify(data.dispatchGroups)).toBeDefined();
+    expect(groupB!.agentType).toBe('unknown');
+    expect(groupB!.usage.claude?.inputTokens).toBeNull();
+  });
+
+  it("a decision whose gate is literally 'constructor' is tallied under its own key, not routed to the Function constructor", async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-92',
+      now: T1,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'reviewer-fan-out',
+      verdict: 'launched',
+      reviewers: ['constructor'],
+      headSha: HEAD,
+      now: T2,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'constructor',
+      verdict: 'SHIP',
+      headSha: HEAD,
+      now: T3,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T4 });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const ticket = data.tickets.find((t) => t.ticket === 'RP-92');
+    expect(ticket, JSON.stringify(data.tickets)).toBeDefined();
+    const occurrence = ticket!.occurrences[0]!;
+    expect(Object.prototype.hasOwnProperty.call(occurrence.reviewerOutcomes, 'constructor')).toBe(
+      true,
+    );
+    expect(occurrence.reviewerOutcomes['constructor']).toEqual({ SHIP: 1 });
   });
 });
 

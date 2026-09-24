@@ -8,97 +8,172 @@
  * selection loop's own `item-selection` decisions and the reviewer fan-out's
  * `reviewer-fan-out`/per-reviewer decisions already in the run journal. See
  * test/template/token-report.test.ts (absent in a generated rig) for the
- * exact contract; every behaviour claim below points at the test that proves
- * it, rather than restating a number nothing checks.
+ * exact contract.
  *
  *   node .claude/scripts/token-report.mjs --since <ISO> [--runs <dir>] [--json]
  *
- * `--json` prints the full structured report (› "exits 0 with a JSON document
- * on --json"). Without it, the default is a short human text render — runs
- * read/skipped, one line per dispatch group (run, controller/harness, ticket,
- * agentType, model/effort, dispatch counts, per-harness usage), one line per
- * ticket occurrence (attempts, gate rounds, outcome, wall time, dispatches) —
- * ending with the money line (› "the text render ends with the money line").
+ * `--json` prints the full structured report — test/template/token-report.test.ts
+ * (absent in a generated rig) › "exits 0 with a JSON document on --json".
+ * Without it, the default is a short human text render — runs read/skipped,
+ * one line per dispatch group (run, controller/harness, ticket, agentType,
+ * model/effort, dispatch counts, per-harness usage), one line per ticket
+ * occurrence (attempts, gate rounds, outcome, wall time, dispatches) —
+ * ending with the money line — test/template/token-report.test.ts (absent
+ * in a generated rig) › "the text render ends with the money line".
  *
- * Reads `<runs>/<run-id>/` the same way `revalidation-report.mjs` does — this
- * script reuses that script's `readRuns` (default `--runs` also resolves
- * through `queue/checkout.mjs`'s `mainCheckoutRoot`, the same main-checkout
- * rule) and `run-journal.mjs`'s `readRun`. A run `readRun` refuses is counted
- * under `runs.skipped`, with why, never dropped silently
- * (› "a run readRun refuses is counted under skipped, with why, and excluded
- * from every other section").
+ * Reads `<runs>/<run-id>/` the same way `revalidation-report.mjs` does —
+ * this script reuses that script's `readRuns` (default `--runs` also
+ * resolves through `queue/checkout.mjs`'s `mainCheckoutRoot`, the same
+ * main-checkout rule) and `run-journal.mjs`'s `readRun`. A run `readRun`
+ * refuses is counted under `runs.skipped`, with why, never dropped silently
+ * — test/template/token-report.test.ts (absent in a generated rig) › "a run
+ * readRun refuses is counted under skipped, with why, and excluded from
+ * every other section".
  *
- * It is read-only: no write/append call appears in this file's own source
- * (› "contains no write-call literal in its own source"), and running it,
- * CLI included, leaves every run directory byte-identical
- * (› "leaves the run-directory tree byte-identical after tokenReportOf and
- * the CLI both run").
+ * It is read-only: no write/append call appears in this file's own source —
+ * test/template/token-report.test.ts (absent in a generated rig) › "contains
+ * no write-call literal in its own source" — and running it, CLI included,
+ * leaves every run directory byte-identical — test/template/token-report.test.ts
+ * (absent in a generated rig) › "leaves the run-directory tree byte-identical
+ * after tokenReportOf and the CLI both run".
+ *
+ * `--since` is a PER-RECORD filter — `Date.parse(record.at) >= since`,
+ * applied to every decision and event before attribution or grouping ever
+ * sees it, mirroring `revalidation-report.mjs`'s own `at >= since` semantics
+ * (a record whose own `at` fails to parse falls OUT, the same NaN-safe
+ * direction that script takes) — test/template/token-report.test.ts (absent
+ * in a generated rig) › "excludes a decision or dispatch whose own at is
+ * before --since from every section, mirroring revalidation-report.mjs's at
+ * >= since semantics".
  *
  * DISPATCH GROUPING — one row per (run, controller, harness, ticket,
  * agentType, model, effort) combination actually seen in a `dispatch-start`
- * event (› "groups one dispatch pair by its declared model/effort, with the
- * ticket the selection named"). `controller`/`harness`/`agentType` are
- * `'unknown'` when the start record carries no such field, never guessed
- * (› "reports unknown (never guessed) for every field a dispatch record
- * omits"). `model`/`effort` are the start's own `declaredModel`/
- * `declaredEffort` when present (`modelSource`/`effortSource`: `'declared'`),
- * else `'unknown'`/`'unknown'` — this script never infers a model from
- * anywhere else. A Claude dispatch and a Codex dispatch are always separate
- * groups, each carrying only its own harness's usage object — usage is never
- * summed across harnesses (› "a Claude dispatch and a Codex dispatch under
- * the same ticket and agent role render as two separate groups, never
- * summed").
+ * event — test/template/token-report.test.ts (absent in a generated rig) ›
+ * "groups one dispatch pair by its declared model/effort, with the ticket
+ * the selection named". `controller`/`harness`/`agentType` are `'unknown'`
+ * when the start record carries no such field, never guessed —
+ * test/template/token-report.test.ts (absent in a generated rig) › "reports
+ * unknown (never guessed) for every field a dispatch record omits".
+ * `model`/`effort` are the start's own `declaredModel`/`declaredEffort` when
+ * present (`modelSource`/`effortSource`: `'declared'`), else
+ * `'unknown'`/`'unknown'` — this script never infers a model from anywhere
+ * else. A Claude dispatch and a Codex dispatch are always separate groups,
+ * each carrying only its own harness's usage object — usage is never summed
+ * across harnesses — test/template/token-report.test.ts (absent in a
+ * generated rig) › "a Claude dispatch and a Codex dispatch under the same
+ * ticket and agent role render as two separate groups, never summed".
+ *
+ * USAGE — a group's `usage.claude`/`usage.codex` is the SUM, per numeric
+ * field, across every ended dispatch in that group whose `dispatch-end`
+ * carried a `usage` object — test/template/token-report.test.ts (absent in
+ * a generated rig) › "sums a numeric usage counter across every ended
+ * dispatch in the same group". A field absent or non-numeric on ANY
+ * usage-bearing dispatch in the group makes the group's total for that
+ * field `null` — never a partial sum, and never `0` for "not measured" —
+ * test/template/token-report.test.ts (absent in a generated rig) › "a
+ * counter present on one usage-bearing dispatch and absent on another in
+ * the same group is null, never partially summed", and test/template/token-report.test.ts
+ * (absent in a generated rig) › "an absent claude usage field is null, not
+ * zero" (codex: › "an absent codex usage field is null, not zero"). Each
+ * group's `dispatches.withUsage` — how many of its ended dispatches carried
+ * a usage object — is present only when that count is strictly between `0`
+ * and `dispatches.ended`, so a fully- or never-measured group is not made
+ * noisier than the plain `ended`/`noEndObserved` pair already is —
+ * test/template/token-report.test.ts (absent in a generated rig) › "each
+ * group reports how many of its dispatches carried usage, so partial
+ * coverage is visible".
  *
  * TICKET ATTRIBUTION — which ticket a record (a dispatch-start, here) belongs
  * to is the latest `item-selection` decision whose verdict matches
- * `/^taken (.+)$/` at a smaller seq than the record's own; a `stopped ...`
- * selection is invisible to attribution (› "a 'stopped' selection is
- * invisible to attribution: dispatches after it still belong to the last
- * taken ticket"). A record with no such decision before it attributes to
- * `'no-ticket'` (› "a dispatch before any selection in the run is bucketed
- * under no-ticket").
+ * `/^taken (.+)$/` at a smaller seq than the record's own; a
+ * `"stopped" selection is invisible to attribution: dispatches after it
+ * still belong to the last taken ticket — test/template/token-report.test.ts
+ * (absent in a generated rig) › "a "stopped" selection is invisible to
+ * attribution: dispatches after it still belong to the last taken ticket".
+ * A record with no such decision before it attributes to `'no-ticket'` —
+ * test/template/token-report.test.ts (absent in a generated rig) › "a
+ * dispatch before any selection in the run is bucketed under no-ticket".
  *
  * TICKET OCCURRENCES — each `taken <id>` selection opens exactly one
  * occurrence, whose WINDOW (gateRounds/reviewerOutcomes/outcome/wallTimeMs/
  * dispatches) runs from that decision's own seq up to the seq of the very
  * next `item-selection` decision of ANY verdict — including `stopped`, which
  * closes the window without opening one of its own — or the run end when
- * there is none after it (› "measures from the selection to the next
- * selection, whatever its verdict", › "measures to the run end when there is
- * no next selection"). `gateRounds` counts `reviewer-fan-out` decisions in
- * the window; `reviewerOutcomes` tallies every other decision in the window
- * by its own `gate` name and `verdict`; `outcome` is the tally restricted to
- * decisions after the window's LAST `reviewer-fan-out` round, or `null` when
- * the window has none (› "counts reviewer-fan-out decisions in the window,
- * tallies every round, and reports the last round as the outcome", › "a
- * window with no reviewer-fan-out at all reports zero gate rounds and a null
- * outcome"). `attempts` is a count of `taken <id>` decisions for that ticket
- * across every run read, not scoped to one run (› "attempts counts 'taken
- * <id>' across every run read, not scoped to one run"). One synthetic
- * `'no-ticket'` entry covers dispatch/decision activity before a run's first
- * `taken` selection, when any exists; its occurrences carry `seq`/`at`/
- * `wallTimeMs` as `null` — there is no selection to measure from.
+ * there is none after it — test/template/token-report.test.ts (absent in a
+ * generated rig) › "measures from the selection to the next selection,
+ * whatever its verdict", and test/template/token-report.test.ts (absent in
+ * a generated rig) › "measures to the run end when there is no next
+ * selection". `gateRounds` counts `reviewer-fan-out` decisions in the
+ * window; `reviewerOutcomes` tallies, by `gate` name and `verdict`, every
+ * OTHER decision in the window whose `gate` is one the window's own
+ * `reviewer-fan-out` decision(s) actually named in their `reviewers` list —
+ * a gate that ran without being named by a fan-out round (`check-premises`,
+ * a `review-routing:*` lane) is invisible to both `reviewerOutcomes` and
+ * `outcome` — test/template/token-report.test.ts (absent in a generated
+ * rig) › "excludes check-premises and review-routing:* decisions from
+ * reviewerOutcomes even though they fall inside the window". `outcome` maps
+ * each such reviewer gate to its verdict from after the window's LAST
+ * `reviewer-fan-out` round — one verdict per reviewer, not a tally — or
+ * `null` when the window has no fan-out round at all —
+ * test/template/token-report.test.ts (absent in a generated rig) › "counts
+ * reviewer-fan-out decisions in the window, tallies every round, and
+ * reports the last round as the outcome", and test/template/token-report.test.ts
+ * (absent in a generated rig) › "a window with no reviewer-fan-out at all
+ * reports zero gate rounds and a null outcome". `attempts` is a count of
+ * `taken <id>` decisions for that ticket across every run read, not scoped
+ * to one run — test/template/token-report.test.ts (absent in a generated
+ * rig) › "attempts counts "taken <id>" across every run read, not scoped to
+ * one run". One synthetic `'no-ticket'` entry covers every record — decision
+ * or event, of any kind — that sits before a run's first `item-selection`
+ * decision of any verdict, when any such record exists; its occurrences
+ * carry `seq`/`at`/`wallTimeMs` as `null` — there is no selection to measure
+ * from.
  *
  * DISPATCH PAIRING — a `dispatch-start`/`dispatch-end` pair sharing the same
  * `agentRef` (matched FIFO per `agentRef`, oldest unmatched start first) is
  * `ended`; a `dispatch-start` with no matching `dispatch-end` is
- * `noEndObserved` (› "pairs a dispatch-start and dispatch-end sharing
- * agentRef as ended", › "a dispatch-start with no matching dispatch-end
- * counts as noEndObserved"). A run that journals NO dispatch event at all
- * (neither kind) reports `dispatches: 'unavailable'` for every occurrence in
- * that run — never `0`, which would read as "checked and found none" (› "a
- * run with no dispatch events at all reports dispatches as unavailable,
- * never zero").
+ * `noEndObserved` — test/template/token-report.test.ts (absent in a
+ * generated rig) › "pairs a dispatch-start and dispatch-end sharing
+ * agentRef as ended", and test/template/token-report.test.ts (absent in a
+ * generated rig) › "a dispatch-start with no matching dispatch-end counts
+ * as noEndObserved". A run that journals NO dispatch event at all (neither
+ * kind) reports `dispatches: 'unavailable'` for every occurrence in that
+ * run — never `0`, which would read as "checked and found none" —
+ * test/template/token-report.test.ts (absent in a generated rig) › "a run
+ * with no dispatch events at all reports dispatches as unavailable, never
+ * zero".
  *
  * MONEY — `money.line` is exactly one of two sentences (Jira RP-225 comment
  * 20198): `'usage measured; monetary cost unavailable'` when at least one
- * dispatch anywhere in the runs READ (not skipped) carries a `usage` object,
- * else `'usage unavailable; monetary cost unavailable'` (› both money-line
- * tests). `money.estimate` is always `null` — the optional API-equivalent
- * estimate from a user-supplied dated pricing file is explicitly deferred,
- * not in this script; the CLI refuses `--pricing` as an unrecognised
- * argument for the same reason (› "refuses --pricing as an unrecognised
- * argument — the optional estimate is deferred, not in this PR").
+ * DISPLAYED `dispatchGroups[].usage.claude`/`.codex` slot is non-null, else
+ * `'usage unavailable; monetary cost unavailable'` —
+ * test/template/token-report.test.ts (absent in a generated rig) › "reads
+ * "usage measured; monetary cost unavailable" when any dispatch anywhere
+ * carries usage", and test/template/token-report.test.ts (absent in a
+ * generated rig) › "reads "usage unavailable; monetary cost unavailable"
+ * when no dispatch anywhere carries usage". A dispatch whose harness this
+ * script does not recognise never reaches a displayed slot, so it cannot
+ * flip the line even though the dispatch itself carried usage —
+ * test/template/token-report.test.ts (absent in a generated rig) › "a lone
+ * unknown-harness usage does not flip the money line to "usage measured"
+ * when no group displays it". `money.estimate` is always `null` — the
+ * optional API-equivalent estimate from a user-supplied dated pricing file
+ * is explicitly deferred, not in this script; the CLI refuses `--pricing` as
+ * an unrecognised argument for the same reason — test/template/token-report.test.ts
+ * (absent in a generated rig) › "refuses --pricing as an unrecognised
+ * argument — the optional estimate is deferred, not in this PR".
+ *
+ * SAFETY — `reviewerOutcomes` and its per-gate `outcome` are keyed by a
+ * journal-supplied `gate` name, so both are built on `Object.create(null)`
+ * rather than an object literal: a gate literally named `__proto__` or
+ * `constructor` is tallied under its own key instead of reaching
+ * `Object.prototype`/the `Object` constructor itself —
+ * test/template/token-report.test.ts (absent in a generated rig) › "a
+ * decision whose gate is '__proto__', named as a reviewer by its own
+ * fan-out, does not pollute Object.prototype for a later run in the same
+ * report", and test/template/token-report.test.ts (absent in a generated
+ * rig) › "a decision whose gate is literally 'constructor' is tallied under
+ * its own key, not routed to the Function constructor".
  *
  * LIMITS:
  *   - Grouping and attribution are exact-match only — no fuzzy ticket-id or
@@ -107,10 +182,18 @@
  *     decision is never an occurrence; activity after such a decision and
  *     before the next `taken` one is visible only through dispatch-group
  *     attribution, never through any `tickets[].occurrences` entry.
- *   - Usage totals are copied from the dispatch-end record's own `usage`
- *     object verbatim (defaulting an absent numeric field to `0` and an
- *     absent `evidenceSource` to `'unknown'`) — this script does not
- *     validate that the harness's own accounting is correct.
+ *   - This script does not validate that the harness's own usage accounting
+ *     is correct — it only sums and never invents a number for a field a
+ *     dispatch did not report.
+ *   - Window and attribution scans are O(records × selections) per run — one
+ *     filter pass per selection window, and one scan of `takenSelections`
+ *     per dispatch. Fine at the journal sizes this rig produces; not bounded
+ *     against an adversarially large journal.
+ *   - The text render strips C0/C1 control characters from every raw
+ *     journal-derived string it interpolates (run id, controller, harness,
+ *     agentType, model, effort, ticket, and a skip reason), so a hostile
+ *     journal cannot plant a terminal escape in the operator's shell; `--json`
+ *     output goes through `JSON.stringify`, which already escapes them.
  */
 
 import { realpathSync } from 'node:fs';
@@ -121,37 +204,60 @@ import { readRuns } from './revalidation-report.mjs';
 
 const TAKEN_RE = /^taken (.+)$/;
 
-const num = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
+/** Sums one numeric field across every raw usage object in the list; `null`
+ * unless the field is a finite number on every one of them — never a partial
+ * sum, and never `0` standing in for "not measured". */
+const summedField = (rawList, field) => {
+  let sum = 0;
+  for (const raw of rawList) {
+    const value = raw?.[field];
+    if (!Number.isFinite(value)) return null;
+    sum += value;
+  }
+  return sum;
+};
 
-const claudeUsageOf = (raw) => {
-  if (!raw || typeof raw !== 'object') return null;
+/** The one `evidenceSource` every raw usage object in the list agrees on;
+ * `null` when any of them omits it or disagrees. */
+const sharedEvidenceSource = (rawList) => {
+  const first = rawList[0]?.evidenceSource;
+  if (typeof first !== 'string') return null;
+  for (const raw of rawList) {
+    if (raw?.evidenceSource !== first) return null;
+  }
+  return first;
+};
+
+const claudeUsageOf = (rawList) => {
+  if (rawList.length === 0) return null;
   return {
-    evidenceSource: typeof raw.evidenceSource === 'string' ? raw.evidenceSource : 'unknown',
-    requests: num(raw.requests),
-    inputTokens: num(raw.inputTokens),
-    outputTokens: num(raw.outputTokens),
-    cacheCreationInputTokens: num(raw.cacheCreationInputTokens),
-    cacheReadInputTokens: num(raw.cacheReadInputTokens),
+    evidenceSource: sharedEvidenceSource(rawList),
+    requests: summedField(rawList, 'requests'),
+    inputTokens: summedField(rawList, 'inputTokens'),
+    outputTokens: summedField(rawList, 'outputTokens'),
+    cacheCreationInputTokens: summedField(rawList, 'cacheCreationInputTokens'),
+    cacheReadInputTokens: summedField(rawList, 'cacheReadInputTokens'),
   };
 };
 
-const codexUsageOf = (raw) => {
-  if (!raw || typeof raw !== 'object') return null;
+const codexUsageOf = (rawList) => {
+  if (rawList.length === 0) return null;
   return {
-    inputTokens: num(raw.inputTokens),
-    cachedInputTokens: num(raw.cachedInputTokens),
-    outputTokens: num(raw.outputTokens),
-    reasoningOutputTokens: num(raw.reasoningOutputTokens),
+    inputTokens: summedField(rawList, 'inputTokens'),
+    cachedInputTokens: summedField(rawList, 'cachedInputTokens'),
+    outputTokens: summedField(rawList, 'outputTokens'),
+    reasoningOutputTokens: summedField(rawList, 'reasoningOutputTokens'),
   };
 };
 
 /** The report over already-read runs — pure, so the grouping is testable alone. */
 export const tokenReportOf = ({ runs, since }) => {
+  const sinceMs = Date.parse(since);
   const read = [];
   const skipped = [];
   const dispatchGroups = new Map();
+  const groupUsageRaw = new Map();
   const ticketMap = new Map();
-  let usageSeen = false;
 
   const ensureTicket = (ticket) => {
     let entry = ticketMap.get(ticket);
@@ -169,17 +275,18 @@ export const tokenReportOf = ({ runs, since }) => {
     }
     read.push(entry.run);
     const runName = entry.run;
-    const decisions = entry.decisions ?? [];
-    const events = entry.events ?? [];
+    // Per-record filter, applied before attribution/grouping ever sees a
+    // record — mirrors revalidation-report.mjs's `at >= since`. Written as
+    // "inside the window", so an `at` that does not parse falls OUT (the NaN
+    // comparison would otherwise count it in).
+    const decisions = (entry.decisions ?? []).filter(
+      (record) => Date.parse(record.at) >= sinceMs,
+    );
+    const events = (entry.events ?? []).filter((record) => Date.parse(record.at) >= sinceMs);
     const all = [
       ...decisions.map((record) => ({ ...record, __type: 'decision' })),
       ...events.map((record) => ({ ...record, __type: 'event' })),
     ].sort((a, b) => a.seq - b.seq);
-
-    for (const event of events) {
-      if (event.kind !== 'dispatch-start' && event.kind !== 'dispatch-end') continue;
-      if (event.data && typeof event.data === 'object' && event.data.usage) usageSeen = true;
-    }
 
     const selections = decisions
       .filter((record) => record.gate === 'item-selection')
@@ -249,6 +356,7 @@ export const tokenReportOf = ({ runs, since }) => {
           usage: { claude: null, codex: null },
         };
         dispatchGroups.set(key, group);
+        groupUsageRaw.set(key, { claude: [], codex: [], withUsage: 0 });
       }
       if (pair.end) group.dispatches.ended += 1;
       else group.dispatches.noEndObserved += 1;
@@ -256,8 +364,10 @@ export const tokenReportOf = ({ runs, since }) => {
       if (pair.end) {
         const usageRaw = pair.end.data?.usage;
         if (usageRaw && typeof usageRaw === 'object') {
-          if (harness === 'claude') group.usage.claude = claudeUsageOf(usageRaw);
-          else if (harness === 'codex') group.usage.codex = codexUsageOf(usageRaw);
+          const raws = groupUsageRaw.get(key);
+          raws.withUsage += 1;
+          if (harness === 'claude') raws.claude.push(usageRaw);
+          else if (harness === 'codex') raws.codex.push(usageRaw);
         }
       }
     }
@@ -267,21 +377,31 @@ export const tokenReportOf = ({ runs, since }) => {
       const fanOuts = inWindow.filter(
         (record) => record.__type === 'decision' && record.gate === 'reviewer-fan-out',
       );
+      const reviewerNames = new Set();
+      for (const fan of fanOuts) {
+        if (Array.isArray(fan.reviewers)) {
+          for (const name of fan.reviewers) if (typeof name === 'string') reviewerNames.add(name);
+        }
+      }
       const reviewerDecisions = inWindow.filter(
         (record) =>
           record.__type === 'decision' &&
           record.gate !== 'item-selection' &&
-          record.gate !== 'reviewer-fan-out',
+          record.gate !== 'reviewer-fan-out' &&
+          reviewerNames.has(record.gate),
       );
-      const reviewerOutcomes = {};
+      // Object.create(null): `decision.gate` is journal-supplied, and a gate
+      // literally named __proto__/constructor must not reach
+      // Object.prototype/Object itself through a plain object literal.
+      const reviewerOutcomes = Object.create(null);
       for (const decision of reviewerDecisions) {
-        const bucket = (reviewerOutcomes[decision.gate] ??= {});
+        const bucket = (reviewerOutcomes[decision.gate] ??= Object.create(null));
         bucket[decision.verdict] = (bucket[decision.verdict] ?? 0) + 1;
       }
       let outcome = null;
       if (fanOuts.length > 0) {
         const lastRoundSeq = fanOuts[fanOuts.length - 1].seq;
-        outcome = {};
+        outcome = Object.create(null);
         for (const decision of reviewerDecisions) {
           if (decision.seq > lastRoundSeq) outcome[decision.gate] = decision.verdict;
         }
@@ -351,8 +471,20 @@ export const tokenReportOf = ({ runs, since }) => {
     }
   }
 
+  for (const [key, group] of dispatchGroups) {
+    const raws = groupUsageRaw.get(key);
+    group.usage.claude = claudeUsageOf(raws.claude);
+    group.usage.codex = codexUsageOf(raws.codex);
+    if (raws.withUsage > 0 && raws.withUsage < group.dispatches.ended) {
+      group.dispatches.withUsage = raws.withUsage;
+    }
+  }
+
+  const usageDisplayed = [...dispatchGroups.values()].some(
+    (group) => group.usage.claude !== null || group.usage.codex !== null,
+  );
   const money = {
-    line: usageSeen
+    line: usageDisplayed
       ? 'usage measured; monetary cost unavailable'
       : 'usage unavailable; monetary cost unavailable',
     estimate: null,
@@ -367,11 +499,18 @@ export const tokenReportOf = ({ runs, since }) => {
   };
 };
 
+/** Strips C0/C1 control characters from a raw journal-derived string before
+ * it reaches the operator's terminal in the text render — see the header's
+ * LIMITS. `--json` output is unaffected: JSON.stringify already escapes
+ * them. */
+// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+const safe = (value) => (typeof value === 'string' ? value.replace(/[\x00-\x1F\x7F-\x9F]/g, '') : value);
+
 /** The short human text render — ends with the money line, always. */
 export const render = (report) => {
   const lines = [`token usage since ${report.since}`];
   lines.push(`runs: ${report.runs.read} read, ${report.runs.skipped.length} skipped`);
-  for (const { run, why } of report.runs.skipped) lines.push(`  skipped ${run} — ${why}`);
+  for (const { run, why } of report.runs.skipped) lines.push(`  skipped ${safe(run)} — ${safe(why)}`);
 
   lines.push(`dispatch groups: ${report.dispatchGroups.length}`);
   for (const group of report.dispatchGroups) {
@@ -379,17 +518,19 @@ export const render = (report) => {
     if (group.usage.claude) usageParts.push(`claude=${JSON.stringify(group.usage.claude)}`);
     if (group.usage.codex) usageParts.push(`codex=${JSON.stringify(group.usage.codex)}`);
     const usage = usageParts.length > 0 ? usageParts.join(' ') : 'usage=none';
+    const withUsage =
+      group.dispatches.withUsage === undefined ? '' : ` withUsage=${group.dispatches.withUsage}`;
     lines.push(
-      `  ${group.run} ${group.controller}/${group.harness} ${group.ticket} ${group.agentType} ` +
-        `model=${group.model}(${group.modelSource}) effort=${group.effort}(${group.effortSource}) ` +
-        `ended=${group.dispatches.ended} noEndObserved=${group.dispatches.noEndObserved} ${usage}`,
+      `  ${safe(group.run)} ${safe(group.controller)}/${safe(group.harness)} ${safe(group.ticket)} ${safe(group.agentType)} ` +
+        `model=${safe(group.model)}(${group.modelSource}) effort=${safe(group.effort)}(${group.effortSource}) ` +
+        `ended=${group.dispatches.ended} noEndObserved=${group.dispatches.noEndObserved}${withUsage} ${usage}`,
     );
   }
 
   lines.push(`tickets: ${report.tickets.length}`);
   for (const ticket of report.tickets) {
     lines.push(
-      `  ${ticket.ticket} attempts=${ticket.attempts} occurrences=${ticket.occurrences.length}`,
+      `  ${safe(ticket.ticket)} attempts=${ticket.attempts} occurrences=${ticket.occurrences.length}`,
     );
     for (const occurrence of ticket.occurrences) {
       const dispatches =
@@ -397,7 +538,7 @@ export const render = (report) => {
           ? 'unavailable'
           : `ended=${occurrence.dispatches.ended} noEndObserved=${occurrence.dispatches.noEndObserved}`;
       lines.push(
-        `    run=${occurrence.run} seq=${occurrence.seq ?? 'n/a'} gateRounds=${occurrence.gateRounds} ` +
+        `    run=${safe(occurrence.run)} seq=${occurrence.seq ?? 'n/a'} gateRounds=${occurrence.gateRounds} ` +
           `outcome=${occurrence.outcome ? JSON.stringify(occurrence.outcome) : 'null'} ` +
           `wallTimeMs=${occurrence.wallTimeMs ?? 'null'} dispatches=${dispatches}`,
       );
