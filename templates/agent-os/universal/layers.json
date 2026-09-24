@@ -72,6 +72,7 @@
     ".claude/scripts/decision-router.mjs",
     ".claude/scripts/reconcile-external-prs.mjs",
     ".claude/scripts/duplicate-work.mjs",
+    ".claude/scripts/continuation.mjs",
     ".claude/scripts/preflight.mjs",
     ".claude/scripts/run-state.mjs",
     ".claude/scripts/revalidate.mjs",

@@ -800,6 +800,28 @@ the journal entry. In continuous mode the notification matters more than it does
 in a bounded run — nobody is watching, so a silent stop is indistinguishable from
 a run still working.
 
+## 6a. Continuation notes — durable evidence for a second controller
+
+Exactly four workflow-level stops get a **continuation note**, composed (and,
+with `--post`, published) through `.claude/scripts/continuation.mjs`: an
+**escalation** (§6), an owner/external **blocker**, an intentional **pause**
+or handoff, and a session **terminated** while a claimed item remains
+unfinished. The note is durable, shared evidence — the tracker item, the PR,
+the branch, the claim — so a second controller or machine can resume or
+revalidate the item without depending on this session's own run journal or
+Memory, neither of which the next controller can read:
+
+```sh
+node .claude/scripts/continuation.mjs --ticket <id> \
+  --stop escalation|blocker|pause|terminated \
+  [--pr <n>] [--diagnosis "<text>"] [--remaining "<text>"] [--post]
+```
+
+It is deliberately **not** invoked on every ordinary Claude Stop, a subagent
+stop, or a review round — those are technical checkpoints internal to this
+session, not one of the four workflow-level stops above, and running it on
+each one would turn a rare, durable note into routine noise nobody reads.
+
 ## 7. The journal, and closing the loop
 
 Write a checkpoint entry **every few completed items and at every stop**, not only
