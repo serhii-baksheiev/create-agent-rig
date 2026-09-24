@@ -366,6 +366,9 @@ describe('every authored git spawn passes an explicit environment', () => {
     // environment, and acted on the shared repository (journal/2026-08.md).
     'test/template/gate-rounds.test.ts',
     'test/template/proposal-asof.test.ts',
+    // RP-222: spawns both `git` (via `withoutGitLocation()`) and `gh` to check
+    // for duplicate ticket work before a claim or a PR.
+    'templates/agent-os/universal/.claude/scripts/duplicate-work.mjs',
   ];
 
   it.each(files)('%s', async (rel) => {

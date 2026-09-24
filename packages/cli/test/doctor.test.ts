@@ -1,16 +1,55 @@
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runDoctor } from '../src/commands/doctor.js';
 import { initProject } from '../src/commands/init.js';
 import { runIntegrationsCommand } from '../src/commands/integrations.js';
+import { readManifest, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
+
+// Same walk `version.test.ts` uses from `test/` to the repo root — an
+// independent oracle for the CLI version. The comparison under test must
+// never be asked "what does packageVersion() say" and then re-asked the same
+// question of itself; it is read here straight off the committed
+// `package.json`.
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+async function cliVersion(): Promise<{ major: number; minor: number; patch: number; raw: string }> {
+  const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+    version: string;
+  };
+  const [major, minor, patch] = pkg.version.split('.').map(Number);
+  return { major: major!, minor: minor!, patch: patch!, raw: pkg.version };
+}
+
+/** A version strictly greater than the real CLI version, by patch alone. */
+async function newerThanCli(): Promise<string> {
+  const { major, minor, patch } = await cliVersion();
+  return `${major}.${minor}.${patch + 1000}`;
+}
+
+/**
+ * A version strictly lower than the real CLI version. `0.0.0` is lower than
+ * every version this project has ever released or will release while its own
+ * major stays above zero — true today (`package.json` reports `1.0.1`) — so
+ * this is deliberately not derived by decrementing the real version, which
+ * would need to special-case `0.0.0`/`x.0.0` itself.
+ */
+const OLDER_THAN_CLI = '0.0.0';
+
+async function withManifestVersion(repo: string, version: string): Promise<void> {
+  const manifest = await readManifest(repo);
+  if (manifest === null) throw new Error('fixture: no manifest');
+  await writeManifest(repo, { ...manifest, version });
+}
 
 type Check = {
   id: string;
   status: 'ok' | 'warn' | 'fail';
   reason?: string;
+  fix?: string;
 };
 
 type Report = {
@@ -272,5 +311,198 @@ describe('aggregated doctor (RP-21)', () => {
 
     expect(result.exitCode).toBe(2);
     expect(result.stdout).toBe('');
+  });
+
+  // RP-229 — doctor compares the local CLI version with the committed Rig
+  // manifest version, so a developer running a mutating command (setup,
+  // upgrade) against a repository whose manifest was written by a newer rig
+  // finds out before acting on stale assumptions, not after.
+  describe('rig-version check (RP-229)', () => {
+    it("warns to update create-agent-rig first, naming both setup and upgrade as the operations to hold off on, and quoting the repository's recorded version, when the manifest records a newer version", async () => {
+      await initProject(repo, {});
+      const recordedVersion = await newerThanCli();
+      await withManifestVersion(repo, recordedVersion);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      // warn never changes the exit code or the overall pass/fail split.
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.status).toBe('warn');
+      const check = body.checks.find((c) => c.id === 'rig-version');
+      expect(check).toMatchObject({ status: 'warn', reason: 'cli-older-than-repository' });
+      const fix = check?.fix ?? '';
+      const fixLower = fix.toLowerCase();
+      // Both mutating operations the item names are held off on, not just one.
+      expect(fixLower).toContain('setup');
+      expect(fixLower).toContain('upgrade');
+      expect(fixLower).toContain('create-agent-rig');
+      // The fix names the actual recorded version, not just "newer" in the
+      // abstract — read here from the fixture that wrote it, never from the
+      // production comparison the check itself performs.
+      expect(fix).toContain(recordedVersion);
+      // The generic `rig-` fix text ("Review the installation with
+      // create-agent-rig upgrade…") is exactly the wrong advice here: running
+      // `upgrade` with an older CLI cannot install what a newer CLI wrote.
+      // This is narrower than forbidding the word "upgrade" outright — the
+      // fix is expected to name `upgrade` as an operation to hold off on; it
+      // must never fall back to the generic instruction to run it.
+      expect(fix).not.toContain('Review the installation with create-agent-rig upgrade');
+    });
+
+    it('reports ok, matching versions, when the manifest version equals the CLI version', async () => {
+      await initProject(repo, {});
+      const { raw } = await cliVersion();
+      await withManifestVersion(repo, raw);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.checks).toContainEqual(
+        expect.objectContaining({ id: 'rig-version', status: 'ok', reason: 'versions-match' }),
+      );
+    });
+
+    it('reports ok, not a warning, when the manifest version is older than the CLI (ordinary PR-review upgrade territory)', async () => {
+      await initProject(repo, {});
+      await withManifestVersion(repo, OLDER_THAN_CLI);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.checks).toContainEqual(
+        expect.objectContaining({
+          id: 'rig-version',
+          status: 'ok',
+          reason: 'repository-older-than-cli',
+        }),
+      );
+    });
+
+    it.each([
+      ['a prerelease-shaped version', '1.0.1-rc.1'],
+      ['a non-semver garbage version parseManifest still accepts', 'not-a-version'],
+    ])('warns version-uncomparable, never guessing a direction, for %s', async (_case, version) => {
+      await initProject(repo, {});
+      await withManifestVersion(repo, version);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      // Still only a warning — comparison failing is not the same as the
+      // installation being broken.
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.checks).toContainEqual(
+        expect.objectContaining({
+          id: 'rig-version',
+          status: 'warn',
+          reason: 'version-uncomparable',
+        }),
+      );
+    });
+
+    it.each([
+      ['a prerelease-shaped version', '1.0.1-rc.1'],
+      ['a non-semver garbage version parseManifest still accepts', 'not-a-version'],
+    ])(
+      'tells the developer to compare CLI and manifest versions by hand for %s, never to update to the recorded version itself',
+      async (_case, version) => {
+        await initProject(repo, {});
+        await withManifestVersion(repo, version);
+
+        const result = await doctor();
+        const body = report(result.stdout);
+
+        expect(result.exitCode, result.stderr).toBe(0);
+        const check = body.checks.find((c) => c.id === 'rig-version');
+        expect(check).toMatchObject({ status: 'warn', reason: 'version-uncomparable' });
+        const fix = check?.fix ?? '';
+        expect(fix.length).toBeGreaterThan(0);
+        const fixLower = fix.toLowerCase();
+        // The recorded version may itself be the garbage that made the
+        // comparison fail (`not-a-version`) — telling the developer to
+        // "update to" it, the cli-older fix's own move, would be nonsense
+        // here. The uncomparable fix instead sends them to compare by hand.
+        expect(fixLower).not.toContain("repository's recorded version");
+        expect(fixLower).toContain('compare');
+        expect(fixLower).toContain('setup');
+        expect(fixLower).toContain('upgrade');
+      },
+    );
+
+    it('gives version-uncomparable a fix distinct from the cli-older-than-repository one', async () => {
+      await initProject(repo, {});
+      await withManifestVersion(repo, await newerThanCli());
+      const olderResult = await doctor();
+      const olderFix = report(olderResult.stdout).checks.find((c) => c.id === 'rig-version')?.fix;
+
+      const uncomparableRepo = await mkdtemp(path.join(tmpdir(), 'caf-doctor-'));
+      try {
+        await initProject(uncomparableRepo, {});
+        await withManifestVersion(uncomparableRepo, 'not-a-version');
+        const uncomparableResult = await runDoctor({
+          cwd: uncomparableRepo,
+          args: ['--json'],
+          env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+        });
+        const uncomparableFix = report(uncomparableResult.stdout).checks.find(
+          (c) => c.id === 'rig-version',
+        )?.fix;
+
+        expect(olderFix).toBeTruthy();
+        expect(uncomparableFix).toBeTruthy();
+        expect(uncomparableFix).not.toBe(olderFix);
+      } finally {
+        await removeFixture(uncomparableRepo);
+      }
+    });
+
+    it("shows both the CLI version and the repository's recorded version on the human-readable rig-version line", async () => {
+      await initProject(repo, {});
+      const recordedVersion = await newerThanCli();
+      await withManifestVersion(repo, recordedVersion);
+      const { raw: cliRaw } = await cliVersion();
+
+      const result = await runDoctor({
+        cwd: repo,
+        args: [],
+        env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+      });
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      const lines = result.stdout.split('\n');
+      const rigVersionLine = lines.find((line) => line.includes(': rig-version: '));
+      expect(rigVersionLine).toBeDefined();
+      expect(rigVersionLine).toContain(cliRaw);
+      expect(rigVersionLine).toContain(recordedVersion);
+    });
+
+    it('emits no rig-version check when the manifest is absent', async () => {
+      // No initProject: an empty repository has no manifest at all.
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      expect(body.checks.find((c) => c.id === 'rig-manifest')).toMatchObject({
+        status: 'warn',
+        reason: 'not-installed',
+      });
+      expect(body.checks.find((c) => c.id === 'rig-version')).toBeUndefined();
+    });
+
+    it('emits no rig-version check when the manifest is unreadable', async () => {
+      await initProject(repo, {});
+      await writeFile(path.join(repo, '.claude', '.rig-manifest.json'), 'not json at all {{{');
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      expect(body.checks.find((c) => c.id === 'rig-manifest')).toMatchObject({
+        status: 'fail',
+        reason: 'unreadable-manifest',
+      });
+      expect(body.checks.find((c) => c.id === 'rig-version')).toBeUndefined();
+    });
   });
 });

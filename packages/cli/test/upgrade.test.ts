@@ -1647,12 +1647,15 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // full-install figure moved once more (98→101) when RP-203 added the
   // `release-propose` skill's two shipped copies plus
   // `.claude/scripts/release-evidence.mjs`; the core-only figure stayed 62
-  // because all three are workflow-layer only.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 101 manifest entries to 62', async () => {
+  // because all three are workflow-layer only. The full-install figure moved
+  // once more (101→102) when RP-222 added `.claude/scripts/duplicate-work.mjs`
+  // to the workflow layer; the core-only figure stayed 62 because that file
+  // is workflow-layer only.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 102 manifest entries to 62', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(101);
+    expect(Object.keys(before!.files).length).toBe(102);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
