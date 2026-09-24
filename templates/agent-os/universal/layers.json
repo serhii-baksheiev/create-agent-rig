@@ -68,6 +68,7 @@
     ".agents/skills/plan-slices/SKILL.md",
     ".agents/skills/release-propose/SKILL.md",
     ".claude/scripts/release-evidence.mjs",
+    ".claude/scripts/token-report.mjs",
     ".claude/scripts/detect-missed-gate.mjs",
     ".claude/scripts/decision-router.mjs",
     ".claude/scripts/reconcile-external-prs.mjs",
