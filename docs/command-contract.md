@@ -415,6 +415,22 @@ has to tell apart. The cost is a field that is empty on a passing check, and it
 is paid by nobody, because the rule below restricts consumers to `status` alone
 and a consumer therefore never reads `fix` at all.
 
+One record, `rig-owned-files`, carries a fifth field additively: `counts`, an
+object of `{ absent, contentDrift, lineDrift, unreadable }` — always all four
+keys, each the number of owned files behind that reason, never a path (RP-239
+A2). `reason` still names only the single, precedence-picked drift `doctor`
+found first; `counts` is what lets a human reading the payload see that a run
+had both an absent file and a content-drifted one instead of the first masking
+the second. That reading is diagnostic, not a branch: the rule below —
+consumers act on `status` alone — still governs every automated decision a
+caller makes from this record, `counts` included. No other record carries
+this field.
+
+`fix` on `rig-owned-files` names the specific paths behind the drift, up to
+ten of them (`MAX_NAMED_OWNED_FILES`, `packages/cli/src/commands/doctor.ts`);
+beyond that bound the list is truncated and ends with `, and N more`, `N`
+being the count of paths left unnamed.
+
 The payload carries the records under `checks`, and a `status` of its own, which
 is the worst status any record carries. It is a convenience, not a second source
 of truth: a consumer that disagrees with it should trust the records.

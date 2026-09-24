@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,7 @@ import { runDoctor } from '../src/commands/doctor.js';
 import { initProject } from '../src/commands/init.js';
 import { runIntegrationsCommand } from '../src/commands/integrations.js';
 import { readManifest, writeManifest } from '../src/lib/manifest.js';
+import type { ProviderProcessResult } from '../src/integrations/spawn.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 // Same walk `version.test.ts` uses from `test/` to the repo root — an
@@ -51,6 +52,10 @@ type Check = {
   reason?: string;
   detail?: string;
   fix?: string;
+  // RP-239 A2: `rig-owned-files` alone carries this — a per-reason count that
+  // lets a caller see absence and content drift at once instead of one
+  // masking the other by precedence. No paths in it: that is `fix`'s job.
+  counts?: { absent: number; contentDrift: number; lineDrift: number; unreadable: number };
 };
 
 type Report = {
@@ -72,11 +77,27 @@ afterEach(async () => {
   await removeFixture(home);
 });
 
+// RP-261: every case in this file that runs through `doctor()` was paying for
+// `inspectGuards`'s real fixture batch (a PowerShell job-wrapper launch plus a
+// node process and 10 hook processes on Windows) even though none of these
+// cases are about guard behavior — that coverage lives in
+// doctor-guards.test.ts. A stub that answers `guardRunner` the way a passing
+// run always does is the fix `DoctorOptions` needs: `runDoctor` threads it
+// straight to `inspectGuards`'s existing `runner` option instead of always
+// launching the real batch.
+const passingGuardRunner = async (): Promise<ProviderProcessResult> => ({
+  status: 'ok',
+  exitCode: 0,
+  stdout: '',
+  stderr: '',
+});
+
 async function doctor(args = ['--json']) {
   return runDoctor({
     cwd: repo,
     args,
     env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+    guardRunner: passingGuardRunner,
   });
 }
 
@@ -122,6 +143,92 @@ describe('doctor detail/fix text names no internal tracker id (RP-239 A4)', () =
   });
 });
 
+// RP-261 (master red on hosted Windows): `inspectGuards` already accepts an
+// optional `runner` (doctor-guards.ts) that replaces its real fixture-batch
+// launch, but `runDoctor`'s own options had no way to reach it — every
+// `doctor()` case in this file paid for the real batch regardless of what it
+// was actually testing. These two tests are the independent oracle for the
+// wiring itself: the guard-runner is a plain stub that records how many times
+// it was called and returns a result this test alone controls, so a pass here
+// can only mean the stub's answer reached the report — never that the real
+// batch happened to agree with it.
+describe('doctor threads an injected guard-batch runner through the guards check (RP-261)', () => {
+  it('calls the injected guardRunner exactly once and reports its success, never launching the real fixture batch', async () => {
+    await initProject(repo, {});
+    let calls = 0;
+    const guardRunner = async (): Promise<ProviderProcessResult> => {
+      calls += 1;
+      return { status: 'ok', exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+      guardRunner,
+    });
+    const body = report(result.stdout);
+
+    // Independent oracle: the stub, not the real batch, must have run — and
+    // exactly once (`inspectGuards` issues one batch call per `runDoctor`
+    // invocation), never falling back to a second, real launch.
+    expect(calls).toBe(1);
+    expect(body.checks).toContainEqual(
+      expect.objectContaining({ id: 'guards', status: 'ok', reason: 'guards-verified' }),
+    );
+  });
+
+  it("reflects a failing injected guardRunner's answer in the guards check, not the real fixture batch's own", async () => {
+    await initProject(repo, {});
+    // A clean `initProject` fixture always makes the REAL fixture batch pass —
+    // so a 'fail' here can only come from this stub's answer reaching the
+    // report, never from the real batch happening to fail too.
+    const guardRunner = async (): Promise<ProviderProcessResult> => ({
+      status: 'failed',
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+    });
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+      guardRunner,
+    });
+    const body = report(result.stdout);
+
+    expect(body.checks).toContainEqual(
+      expect.objectContaining({
+        id: 'guards',
+        status: 'fail',
+        reason: 'guard-fixture-batch-failed',
+      }),
+    );
+  });
+});
+
+// A static guard against regression: every `runDoctor(` call in this file
+// must thread a `guardRunner`, or a future case can silently reintroduce the
+// real fixture-batch launch (a PowerShell job-wrapper plus a node process and
+// 10 hook processes) this file exists to avoid.
+describe('every runDoctor( call in this file threads a guardRunner (RP-261 static guard)', () => {
+  it('has no runDoctor( call site missing guardRunner in its own object literal', async () => {
+    const source = await readFile(fileURLToPath(import.meta.url), 'utf8');
+    // Bounded and simple on purpose: this is a regression pin, not a
+    // general TS parser — a `runDoctor(` call site in this file is always a
+    // short object literal closed by `});` within a few hundred characters.
+    const CALL_SITE = /runDoctor\(\{[\s\S]{0,800}?\}\);/g;
+    const callSites = source.match(CALL_SITE) ?? [];
+    // Fixture sanity: this file is known to call runDoctor( directly more
+    // than once — an empty or single-match list would make the assertion
+    // below vacuous.
+    expect(callSites.length).toBeGreaterThan(3);
+    const missingGuardRunner = callSites.filter((site) => !site.includes('guardRunner'));
+    expect(missingGuardRunner).toEqual([]);
+  });
+});
+
 describe('aggregated doctor (RP-21)', () => {
   it('distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets', async () => {
     await initProject(repo, {});
@@ -138,6 +245,7 @@ describe('aggregated doctor (RP-21)', () => {
       cwd: repo,
       args: ['--json'],
       env: { HOME: home, APPDATA: home, PATH: '' },
+      guardRunner: passingGuardRunner,
     });
     const body = JSON.parse(result.stdout);
     expect(body.status).toBe('warn');
@@ -268,6 +376,7 @@ describe('aggregated doctor (RP-21)', () => {
       cwd: repo,
       args: ['--json'],
       env: { HOME: home, APPDATA: home, PATH: home },
+      guardRunner: passingGuardRunner,
     });
     const body = report(result.stdout);
 
@@ -340,6 +449,114 @@ describe('aggregated doctor (RP-21)', () => {
     expect(body.checks).not.toContainEqual(
       expect.objectContaining({ id: 'rig-owned-files', status: 'ok', reason: 'pristine' }),
     );
+  });
+
+  // RP-239 A2 (onboarding-friction triage, comment 20140): a real pilot's
+  // `rig-owned-files` had one file missing and a different file
+  // content-drifted at the same time, and the report said only
+  // `absent-owned-file` — the precedence order in `rigChecks` silently threw
+  // the content-drift information away, and neither reason named which paths
+  // were affected. `docs/command-contract.md`'s payload rule ("no file paths
+  // appear in any JSON this contract defines, except in a `fix` field")
+  // settles where a path may legally go once the check does name one.
+  describe('rig-owned-files distinguishes every drift reason present, and names paths only in fix (RP-239 A2)', () => {
+    it('counts an absent file and a content-drifted file separately instead of one masking the other', async () => {
+      await initProject(repo, {});
+      const drifted = path.join(repo, 'AGENTS.md');
+      await writeFile(drifted, `${await readFile(drifted, 'utf8')}\nmanual change\n`);
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      // Truthful and unchanged: a run with drift is still a warning, never a
+      // failure, and never changes the exit code.
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.status).toBe('warn');
+
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+      expect(check, 'fixture: no rig-owned-files check in this report').toBeTruthy();
+      expect(check?.status).toBe('warn');
+      // 🔴 Before this fix, `reason` alone could report only ONE of the two —
+      // `absent-owned-file`, by precedence — leaving the content-drifted file
+      // invisible to anything reading the payload. Both are counted now.
+      expect(check?.counts).toEqual({ absent: 1, contentDrift: 1, lineDrift: 0, unreadable: 0 });
+    });
+
+    it('names the specific absent and drifted paths only in the fix text, never in detail or reason', async () => {
+      await initProject(repo, {});
+      const drifted = path.join(repo, 'AGENTS.md');
+      await writeFile(drifted, `${await readFile(drifted, 'utf8')}\nmanual change\n`);
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      // Rule (h): a file path appears in NO field of a doctor record but `fix`.
+      expect(check?.reason ?? '').not.toContain('AGENTS.md');
+      expect(check?.reason ?? '').not.toContain('CLAUDE.md');
+      expect(check?.detail ?? '').not.toContain('AGENTS.md');
+      expect(check?.detail ?? '').not.toContain('CLAUDE.md');
+      expect(check?.fix ?? '').toContain('AGENTS.md');
+      expect(check?.fix ?? '').toContain('CLAUDE.md');
+    });
+
+    // Advisory A1, PR #322 round-1 code-review report: the strip that removes
+    // `ownedFilePaths` from the emitted record (`doctor.ts`'s
+    // `checks.map(({ rigVersion, ownedFilePaths, ...check }) => ...)`) had no
+    // test of its own. Every one of the tests above still passes if that
+    // destructure is deleted and `ownedFilePaths` rides along under its own
+    // key, because none of them assert the record's key SET — only that a
+    // path is absent from `reason`/`detail` and present in `fix`. This is a
+    // regression pin, not new behaviour: the strip already exists, so this is
+    // expected to pass today and to start failing the moment it regresses.
+    it('carries exactly the documented record keys plus counts — no ownedFilePaths key, and no key but fix names a path', async () => {
+      await initProject(repo, {});
+      const drifted = path.join(repo, 'AGENTS.md');
+      await writeFile(drifted, `${await readFile(drifted, 'utf8')}\nmanual change\n`);
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+      expect(check, 'fixture: no rig-owned-files check in this report').toBeTruthy();
+
+      expect(Object.keys(check!).sort()).toEqual(
+        ['counts', 'detail', 'fix', 'id', 'reason', 'status'].sort(),
+      );
+    });
+
+    it('counts a single absent owned file with the existing absent-owned-file reason, naming only that path in fix', async () => {
+      await initProject(repo, {});
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(check).toMatchObject({ status: 'warn', reason: 'absent-owned-file' });
+      expect(check?.counts).toEqual({ absent: 1, contentDrift: 0, lineDrift: 0, unreadable: 0 });
+      expect(check?.detail ?? '').not.toContain('CLAUDE.md');
+      expect(check?.fix ?? '').toContain('CLAUDE.md');
+    });
+
+    it("keeps a pristine install's counts all zero", async () => {
+      await initProject(repo, {});
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(check).toMatchObject({ status: 'ok', reason: 'pristine' });
+      expect(check?.counts).toEqual({ absent: 0, contentDrift: 0, lineDrift: 0, unreadable: 0 });
+    });
   });
 
   it('rejects invalid doctor arguments with CLI usage exit 2', async () => {
@@ -482,6 +699,7 @@ describe('aggregated doctor (RP-21)', () => {
           cwd: uncomparableRepo,
           args: ['--json'],
           env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+          guardRunner: passingGuardRunner,
         });
         const uncomparableFix = report(uncomparableResult.stdout).checks.find(
           (c) => c.id === 'rig-version',
@@ -505,6 +723,7 @@ describe('aggregated doctor (RP-21)', () => {
         cwd: repo,
         args: [],
         env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+        guardRunner: passingGuardRunner,
       });
 
       expect(result.exitCode, result.stderr).toBe(0);

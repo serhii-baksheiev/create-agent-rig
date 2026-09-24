@@ -16,8 +16,27 @@ import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
 import { packageVersion } from '../lib/version.js';
+import type { runProviderProcess } from '../integrations/spawn.js';
 
 type Status = 'pass' | 'warn' | 'fail';
+/**
+ * Per-reason counts for `rig-owned-files` — carried through to the report so
+ * a caller can see absence and content drift at once instead of `reason`'s
+ * single precedence-picked word masking one behind the other (RP-239 A2). No
+ * paths in it: that is `ownedFilePaths`'/`fix`'s job.
+ */
+type OwnedFileCounts = {
+  absent: number;
+  contentDrift: number;
+  lineDrift: number;
+  unreadable: number;
+};
+type OwnedFilePaths = {
+  absent: string[];
+  contentDrift: string[];
+  lineDrift: string[];
+  unreadable: string[];
+};
 type Check = {
   id: string;
   status: Status;
@@ -28,8 +47,25 @@ type Check = {
    * below and stripped before the record reaches the report (RP-229).
    */
   rigVersion?: { cli: string; repository: string };
+  /** `rig-owned-files` only — reaches the report as-is; see `OwnedFileCounts`. */
+  counts?: OwnedFileCounts;
+  /**
+   * `rig-owned-files` only — the specific paths behind each count above,
+   * carried from `rigChecks` only to build the bounded `fix` text below and
+   * stripped before the record reaches the report. A path appears in NO
+   * other field on this record — not `reason`, not `detail` — only `fix`
+   * (RP-239 A2; docs/command-contract.md, "fix is also the one field ... that
+   * may name a file path").
+   */
+  ownedFilePaths?: OwnedFilePaths;
 };
-export type DoctorOptions = { cwd: string; args: string[]; env?: NodeJS.ProcessEnv };
+export type DoctorOptions = {
+  cwd: string;
+  args: string[];
+  env?: NodeJS.ProcessEnv;
+  /** Test seam: replaces the guard fixture batch runner; production callers never pass it. */
+  guardRunner?: typeof runProviderProcess;
+};
 export type DoctorResult = { exitCode: number; stdout: string; stderr: string };
 
 const STRICT_SEMVER = /^\d+\.\d+\.\d+$/;
@@ -61,6 +97,24 @@ function rigVersionFix(reason: string, versions: { cli: string; repository: stri
     return `Update create-agent-rig to at least ${versions.repository} before running setup or upgrade in this repository.`;
   }
   return "Compare the CLI version with the version recorded in this repository's manifest by hand before running setup or upgrade.";
+}
+
+/** Bounded so a repository with an unusually large drift never grows `fix` without limit. */
+const MAX_NAMED_OWNED_FILES = 10;
+
+/**
+ * Bounded, human-facing list of the specific paths behind a `rig-owned-files`
+ * warning/failure. Paths appear ONLY here — never in `reason` or `detail`
+ * (RP-239 A2; docs/command-contract.md, "fix is also the one field ... that
+ * may name a file path"). Ordered unreadable, absent, content-drift,
+ * line-drift — the same precedence `reason` itself uses.
+ */
+function ownedFilesFix(paths: OwnedFilePaths): string {
+  const all = [...paths.unreadable, ...paths.absent, ...paths.contentDrift, ...paths.lineDrift];
+  const named = all.slice(0, MAX_NAMED_OWNED_FILES);
+  const remaining = all.length - named.length;
+  const list = remaining > 0 ? `${named.join(', ')}, and ${remaining} more` : named.join(', ');
+  return `Review the installation with create-agent-rig upgrade before accepting changes. Affected: ${list}.`;
 }
 
 function text(bytes: Buffer): string | undefined {
@@ -108,19 +162,21 @@ async function rigChecks(root: string, codexHash?: string): Promise<Check[]> {
       rigVersion,
     });
   }
-  let contentDrift = false;
-  let lineDrift = false;
-  let absent = false;
-  let unreadable = false;
+  const ownedFilePaths: OwnedFilePaths = {
+    absent: [],
+    contentDrift: [],
+    lineDrift: [],
+    unreadable: [],
+  };
   for (const [rel, recorded] of Object.entries(manifest.files)) {
     const expected = rel === '.codex/config.toml' ? (codexHash ?? recorded) : recorded;
     const file = await readBounded(root, rel, 1024 * 1024);
     if (file.status === 'absent') {
-      absent = true;
+      ownedFilePaths.absent.push(rel);
       continue;
     }
     if (file.status !== 'ok') {
-      unreadable = true;
+      ownedFilePaths.unreadable.push(rel);
       continue;
     }
     if (sha256(file.bytes) === expected) continue;
@@ -130,21 +186,35 @@ async function rigChecks(root: string, codexHash?: string): Promise<Check[]> {
       (sha256(decodedFile.replace(/\r\n/g, '\n')) === expected ||
         sha256(decodedFile.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n')) === expected)
     )
-      lineDrift = true;
-    else contentDrift = true;
+      ownedFilePaths.lineDrift.push(rel);
+    else ownedFilePaths.contentDrift.push(rel);
   }
+  const counts: OwnedFileCounts = {
+    absent: ownedFilePaths.absent.length,
+    contentDrift: ownedFilePaths.contentDrift.length,
+    lineDrift: ownedFilePaths.lineDrift.length,
+    unreadable: ownedFilePaths.unreadable.length,
+  };
   checks.push({
     id: 'rig-owned-files',
-    status: unreadable ? 'fail' : absent || contentDrift || lineDrift ? 'warn' : 'pass',
-    reason: unreadable
-      ? 'unreadable-owned-file'
-      : absent
-        ? 'absent-owned-file'
-        : contentDrift
-          ? 'content-drift'
-          : lineDrift
-            ? 'line-ending-drift'
-            : 'pristine',
+    status:
+      counts.unreadable > 0
+        ? 'fail'
+        : counts.absent > 0 || counts.contentDrift > 0 || counts.lineDrift > 0
+          ? 'warn'
+          : 'pass',
+    reason:
+      counts.unreadable > 0
+        ? 'unreadable-owned-file'
+        : counts.absent > 0
+          ? 'absent-owned-file'
+          : counts.contentDrift > 0
+            ? 'content-drift'
+            : counts.lineDrift > 0
+              ? 'line-ending-drift'
+              : 'pristine',
+    counts,
+    ownedFilePaths,
   });
   return checks;
 }
@@ -170,7 +240,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const checks = await rigChecks(options.cwd, intent?.targets?.codex?.fileHash);
   if (checks.some((check) => check.id === 'rig-manifest' && check.status === 'pass')) {
     const [guards, workflow] = await Promise.all([
-      inspectGuards({ repoDir: options.cwd }),
+      inspectGuards({ repoDir: options.cwd, runner: options.guardRunner }),
       inspectWorkflow({ repoDir: options.cwd }),
     ]);
     checks.push({ id: 'guards', ...guards }, { id: 'workflow', ...workflow });
@@ -264,7 +334,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const report = {
     schemaVersion: 1,
     status: status === 'pass' ? 'ok' : status,
-    checks: checks.map(({ rigVersion, ...check }) => ({
+    checks: checks.map(({ rigVersion, ownedFilePaths, ...check }) => ({
       ...check,
       status: check.status === 'pass' ? 'ok' : check.status,
       detail:
@@ -272,19 +342,23 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           ? 'Workflow and frozen revalidation scripts match this package; the owner-level decision this mechanism depends on is not observed by doctor.'
           : check.id === 'rig-version' && rigVersion
             ? `${check.reason.replaceAll('-', ' ')} (cli ${rigVersion.cli}, repository ${rigVersion.repository})`
-            : check.reason.replaceAll('-', ' '),
+            : check.id === 'rig-owned-files' && check.counts
+              ? `${check.reason.replaceAll('-', ' ')} (absent ${check.counts.absent}, content drift ${check.counts.contentDrift}, line drift ${check.counts.lineDrift}, unreadable ${check.counts.unreadable})`
+              : check.reason.replaceAll('-', ' '),
       fix:
         check.status === 'pass'
           ? ''
           : check.id === 'rig-version'
             ? rigVersionFix(check.reason, rigVersion ?? { cli: '', repository: '' })
-            : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
-              ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
-              : check.id === 'custom-memory'
-                ? 'Check the machine-scoped Memory installation and its compatible version.'
-                : check.id === 'spec-kit'
-                  ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
-                  : 'Review create-agent-rig setup list and the intended provider wiring.',
+            : check.id === 'rig-owned-files' && ownedFilePaths
+              ? ownedFilesFix(ownedFilePaths)
+              : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
+                ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
+                : check.id === 'custom-memory'
+                  ? 'Check the machine-scoped Memory installation and its compatible version.'
+                  : check.id === 'spec-kit'
+                    ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
+                    : 'Review create-agent-rig setup list and the intended provider wiring.',
     })),
     integrations,
     memory: { ...memory, status: memory.status === 'pass' ? 'ok' : memory.status },

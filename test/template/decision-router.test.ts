@@ -1534,6 +1534,154 @@ describe('a project that declares no elevated path is refused, never routed', ()
   });
 });
 
+// RP-239 A3 (onboarding-friction triage, comment 20140): a real repository
+// clone — never `git clone`d, so `origin/HEAD` was never set — hit the
+// default `origin/HEAD...HEAD` diff and the router printed git's own
+// multi-line `fatal:` text verbatim. The fail-closed OUTCOME is correct and
+// stays; what must change is that a Rig operator reading stderr sees a
+// diagnosis naming the missing ref and a way out, not a transcript of a git
+// internals error.
+describe('the CLI fails closed with a readable diagnosis when origin/HEAD is missing (RP-239 A3)', () => {
+  /** A promisified `git`, run with the same sanitised environment the router itself uses. */
+  const git = (
+    args: string[],
+    cwd: string,
+  ): Promise<{ code: number; stdout: string; stderr: string }> =>
+    new Promise((resolve) => {
+      execFile('git', args, { cwd, env: withoutGitLocation() }, (error, stdout, stderr) => {
+        resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stdout, stderr });
+      });
+    });
+
+  /**
+   * A real, local, one-commit git repository with no remote at all — so
+   * `origin/HEAD` cannot resolve. `git init` (never `git clone`) is exactly the
+   * shape a fresh `init`/`create` checkout has before a remote is added, which
+   * is the case this finding was filed against; no network access is needed or
+   * used.
+   */
+  const repoWithoutOriginHead = async (): Promise<string> => {
+    const dir = await temp('router-no-origin-head-');
+    const run = async (args: string[]): Promise<void> => {
+      const result = await git(args, dir);
+      if (result.code !== 0) {
+        throw new Error(`fixture: git ${args.join(' ')} failed: ${result.stderr}`);
+      }
+    };
+    await run(['init', '-q']);
+    await run(['config', 'user.email', 'router-fixture@example.com']);
+    await run(['config', 'user.name', 'router fixture']);
+    await writeFile(path.join(dir, 'a.txt'), 'hi\n');
+    await run(['add', 'a.txt']);
+    await run(['commit', '-q', '-m', 'init']);
+    return dir;
+  };
+
+  it("never prints git's raw fatal text on stderr", async () => {
+    const dir = await repoWithoutOriginHead();
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+
+    const result = await runCli(['--json'], dir, env);
+
+    // 🔴 Measured today (before this finding is fixed): exit 1, empty stdout,
+    // and a stderr that embeds
+    // "Command failed: git diff --name-status -z origin/HEAD...HEAD" followed
+    // by git's own "fatal: ambiguous argument … Use '--' to separate paths …"
+    // — none of which a Rig operator outside this repository can act on.
+    expect(result.stderr, result.out).not.toMatch(/fatal:/i);
+    expect(result.stderr, result.out).not.toMatch(/Command failed/);
+    expect(result.stderr, result.out).not.toMatch(/ambiguous argument/i);
+    expect(result.stderr, result.out).not.toMatch(/Use '--' to separate paths/);
+  });
+
+  it('names the missing ref and a way to supply it, and still fails closed', async () => {
+    const dir = await repoWithoutOriginHead();
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+
+    const result = await runCli(['--json'], dir, env);
+
+    // The outcome this finding says to KEEP: fail closed, the same way an
+    // unreadable diff already does elsewhere in this suite (see "a revision
+    // the router will not hand to git" above) — nothing routed, nothing on
+    // stdout to be mistaken for a lane.
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+
+    // The outcome this finding says to FIX: the diagnosis names the ref that
+    // could not resolve and at least one concrete remedy — passing `--base`
+    // (a flag this very router understands) or pointing `origin/HEAD` at a
+    // branch with `git remote set-head`.
+    expect(result.stderr, result.out).toMatch(/origin\/HEAD/);
+    expect(result.stderr, result.out).toMatch(/--base|git remote set-head/);
+  });
+});
+
+// PR #322 round-1 code-reviewer blocker B1 (RP-239 part 2): `refResolves`
+// read EVERY non-zero `git rev-parse --verify --quiet` exit as "the ref does
+// not resolve" and always printed A3's fresh-checkout / `origin/HEAD`
+// diagnosis for it. `git rev-parse --verify --quiet <ref>^{commit}` actually
+// has two distinct non-zero exits — 1 when the name truly does not resolve
+// (what A3's fix is about), 128 when git itself failed for an unrelated
+// reason (no repository here at all, a `safe.directory`/dubious-ownership
+// refusal, a corrupt repository). Only the first may get the missing-ref
+// remedy; the second must still surface git's own cause, the way it did
+// before this PR through the `gitFiles` catch.
+describe('refResolves tells a missing ref apart from a git failure (PR #322 round 1, B1)', () => {
+  it("surfaces git's own fatal cause, not the missing-ref remedy, outside a git repository", async () => {
+    const dir = await temp('router-not-a-repo-');
+    const env: NodeJS.ProcessEnv = {
+      ...withoutGitLocation(),
+      GIT_CEILING_DIRECTORIES: path.dirname(dir),
+    };
+    delete env['RIG_RUN_DIR'];
+
+    const result = await runCli(['--json'], dir, env);
+
+    // Fail-closed is unaffected either way — pinned so a message fix cannot
+    // regress the outcome while it changes the text.
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+
+    // This is not a missing ref: `git remote set-head` cannot fix "there is
+    // no repository here", so the A3 remedy must not appear for exit 128.
+    expect(result.stderr, result.out).not.toMatch(/set-head/);
+
+    // Git's own cause (measured: `fatal: not a git repository (or any of the
+    // parent directories): .git`, exit 128) must still reach the operator.
+    expect(result.stderr, result.out).toMatch(/not a git repository/i);
+  });
+
+  it('names a mistyped explicit --base without claiming a fresh checkout never set origin/HEAD', async () => {
+    const dir = await temp('router-explicit-base-');
+    const run = (args: string[]): Promise<void> =>
+      new Promise((resolve, reject) => {
+        execFile(
+          'git',
+          ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+          { cwd: dir, env: withoutGitLocation() },
+          (error, stdout, stderr) => (error ? reject(new Error(stderr || stdout)) : resolve()),
+        );
+      });
+    await run(['init', '-q', '-b', 'main']);
+    await run(['commit', '-q', '--allow-empty', '-m', 'init']);
+
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+    const result = await runCli(['--base', 'some-typo-ref', '--json'], dir, env);
+
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr, result.out).toMatch(/some-typo-ref/);
+
+    // Advisory A4: the caller named this base explicitly and mistyped it —
+    // that is not "a fresh checkout that never set origin/HEAD", and the
+    // message must not tell that story here.
+    expect(result.stderr, result.out).not.toMatch(/origin\/HEAD/);
+  });
+});
+
 // A router with no call site routes nothing. These are the correspondence tests
 // the rulebook requires when one fact lives in two artifacts.
 describe('the gate skill and the rules point at the router', () => {
