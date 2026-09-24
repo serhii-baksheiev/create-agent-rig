@@ -1164,10 +1164,12 @@ from read count, and is bounded by the number of import-shaped matches
 across files actually read, not by the size of the owned-path set — an
 irrelevant distinction at this release's real scale, pinned rather than
 merely asserted (`.claude/rules/invariants.md`, "State the limits — and test
-them") by `packages/cli/test/uninstall.test.ts` › "processes 400,000
-duplicate import matches to the same owned dependency in bounded time",
-stated here only so the claim matches what the code does rather than
-rounding up to "bounded by `|ownedPaths|`" in both places at once.
+them") by `packages/cli/test/uninstall.test.ts` › "reads each file once
+however many duplicate imports name the same owned dependency", which counts
+the reads a duplicate-heavy fixture costs against a single-import baseline —
+a count, where the earlier version of that test timed the plan — stated here only so the claim
+matches what the code does rather than rounding up to "bounded by
+`|ownedPaths|`" in both places at once.
 
 A wiring file this command cannot safely READ at that point (itself a
 symlink, or reached through one) protects every hook path this release owns

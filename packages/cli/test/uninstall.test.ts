@@ -691,27 +691,241 @@ describe('planUninstall — wiring files', () => {
   // `protectHookAndDeps`'s own doc comment (and `docs/command-contract.md`)
   // measure the walk's queue-duplication cost — many files each re-naming an
   // already-owned, already-visited dependency is cheap (one pop-and-skip per
-  // duplicate, never a second read) — but neither copy was backed by a test,
-  // which `.claude/rules/invariants.md` makes a blocker by rule: a
-  // "Measured:" sentence nothing re-measures is indistinguishable from a
-  // guess a month later. This measures it directly: one owned hook file
-  // overwritten with 400,000 duplicate imports of the SAME already-owned
-  // dependency, all queued before the first one is ever popped.
-  it('processes 400,000 duplicate import matches to the same owned dependency in bounded time', async () => {
+  // duplicate, never a second read). RP-245: a wall-clock oracle for that
+  // claim measures the HOST, not the property — it passed at 1.7 s idle (a 3x
+  // margin against the 5 s budget it used to assert) and still failed at
+  // 5.7 s in a pre-commit run under deliberate load, on the same code. The
+  // property this test actually owes evidence for is "one pop-and-skip per
+  // duplicate, never a second read" — which is a READ COUNT, not a duration,
+  // and a read count is what this test asserts: the verdict comes from the
+  // count, never from a duration (the case still has to finish inside the
+  // unit timeout, which is why DUPLICATES is sized below). Two independent
+  // assertions stand in for the two ways an extra read per duplicate would
+  // otherwise show up: (1) no owned path is ever read more than once during
+  // a single `planUninstall`, and (2) the TOTAL number of reads a run with
+  // `DUPLICATES` duplicate matches performs is exactly the same as a run
+  // whose hook names the same dependency only once — so a per-duplicate read
+  // that happened to land on a brand-new path each time (rather than
+  // re-reading one it had already read) is still caught, by the second
+  // assertion, even though the first would not see it.
+  //
+  // RP-245 round 2 (code-reviewer r1): the first cut of this fixture put the
+  // duplicate imports in `guard-bash.mjs` — but `.claude/settings.json` wires
+  // `guard-secret-file.mjs` FIRST (`hookFilesReferencedIn` returns hook paths
+  // in the text order they first appear, and a `Set` preserves first-
+  // occurrence order), and that hook's own single, real import of
+  // `hook-input.mjs` already visits it before `guard-bash.mjs`'s turn in the
+  // walk even starts. So EVERY duplicate was dropped at PUSH time
+  // (`!visited.has(resolved)` false already) and never queued at all — 0
+  // pop-and-skips, measured by instrumenting the walk directly. The
+  // duplicates now sit in `guard-secret-file.mjs` itself — the first hook the
+  // walk ever seeds, when `hook-input.mjs` is not yet visited — so every
+  // match is pushed within that one synchronous scan (`visited` is only ever
+  // updated when an entry is POPPED, never mid-scan) and then genuinely
+  // popped-and-skipped one at a time as the queue drains.
+  //
+  // RP-245 round 3 (prose-reviewer r2): this fixture originally pushed and
+  // popped 400,000 duplicates for real. The property it pins is a READ
+  // COUNT, not a duration, so it needs no margin against wall-clock noise —
+  // but pushing and popping 400,000 entries through a live event loop is
+  // itself a duration, and running it as part of the full file under the CI
+  // budget (`ci.yml`, `--testTimeout=15000`) timed out once in 7 runs.
+  // `DUPLICATES` below is picked with a second constraint the correct code
+  // path alone does not impose: it also has to stay decisive under the
+  // read-per-duplicate mutation this fixture exists to catch (round 3
+  // evidence, mutating `protectHookAndDeps`'s pop loop to
+  // `if (visited.has(rel)) { await readFileFn(onDisk(repoDir, rel)); continue; }`)
+  // — that mutation performs `DUPLICATES` extra real, serialized async reads
+  // before the count assertion below ever runs, and at 40,000 (the count
+  // first proposed for this round) that took long enough to hit
+  // `--testTimeout=15000` as a Vitest TIMEOUT rather than the intended
+  // AssertionError, which is exactly the "measures the HOST" failure mode
+  // this whole round exists to remove — just relocated onto the mutated path
+  // instead of the correct one. Measured directly: at `DUPLICATES = 10_000`
+  // the mutated run completes in ~8.5 s (a real AssertionError, count 10000
+  // vs. expected 1), a comfortable margin under the 15 s budget; the correct
+  // path stays well under a second either way, since it does no per-duplicate
+  // read at all.
+  it('reads each file once however many duplicate imports name the same owned dependency', async () => {
+    // See the RP-245 round 3 note above: large enough that a per-duplicate
+    // read regression is unmistakable, small enough that even that
+    // regression's real, serialized I/O finishes with margin inside the CI
+    // budget (`ci.yml`, `--testTimeout=15000`).
+    const DUPLICATES = 10_000;
+
+    // `.claude/settings.json` wires this hook first among the ones under
+    // `.claude/hooks/` — verified below, against the installed rig's own
+    // settings text, through the same `hookFilesReferencedIn` Set-of-
+    // first-occurrences contract production reads hook wiring order with, so
+    // a settings.json reorder fails this assertion loudly instead of
+    // silently making the walk seed (and pop-and-skip) a different file.
+    const firstWalkedHook = '.claude/hooks/guard-secret-file.mjs';
+    const hookInput = '.claude/hooks/lib/hook-input.mjs';
+
+    // A counting `readFile` stub — a hand-written structural stub against
+    // the seam's own consumer-facing shape (`.claude/rules/node-ts.md`: no
+    // mocking framework, no patching of module internals), never derived
+    // from `planUninstall`'s own logic (`.claude/rules/invariants.md`, "the
+    // independent-oracle invariant") — records the absolute path of every
+    // read in the order it happened, and delegates to the real
+    // `node:fs/promises` `readFile` so `planUninstall`'s actual behaviour
+    // (verdicts, errors) is completely unaffected by observing it.
+    //
+    // Limit: this oracle only sees a read that goes THROUGH the seam. A read
+    // performed via the module's own imported `readFile` instead of the
+    // `readFileFn` parameter is invisible to it — this test cannot catch
+    // that shape of regression by read COUNT alone; it is caught below by
+    // asserting which absolute paths were actually seen.
+    const countingReadFile = (reads: string[]): ((absolutePath: string) => Promise<Buffer>) => {
+      return async (absolutePath: string): Promise<Buffer> => {
+        reads.push(absolutePath);
+        return readFile(absolutePath);
+      };
+    };
+
+    // The baseline: a fresh, separate rig whose hook names the same
+    // dependency exactly once — never the SAME directory as the
+    // `DUPLICATES`-duplicate case, and built first, so neither run's
+    // file-system state (cache warmth, directory size) can be blamed for a
+    // difference the other run's fixture caused.
+    const baselineRepo = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-baseline-'));
+    let baselineReads: string[];
+    try {
+      await initProject(baselineRepo, {});
+      const baselineSettings = await readFile(
+        path.join(baselineRepo, ...SETTINGS.split('/')),
+        'utf8',
+      );
+      await writeFile(
+        path.join(baselineRepo, ...SETTINGS.split('/')),
+        baselineSettings.replace('"hooks"', '"myOwnKey": true, "hooks"'),
+      );
+      await writeFile(
+        path.join(baselineRepo, ...firstWalkedHook.split('/')),
+        "import { x } from './lib/hook-input.mjs';\n",
+      );
+      baselineReads = [];
+      await planUninstall(baselineRepo, { readFile: countingReadFile(baselineReads) });
+      // Sanity: proves the stub was actually wired into `planUninstall`,
+      // rather than silently ignored (a `readFile` option `planUninstall`
+      // does not yet accept is simply extra, unused data on a plain JS call
+      // — nothing about invoking it that way fails on its own, so a stub
+      // that is never called would otherwise let every assertion below pass
+      // vacuously on 0 reads compared with 0 reads).
+      expect(
+        baselineReads.length,
+        'the readFile stub recorded no reads at all — is `options.readFile` ' +
+          'actually threaded through planUninstall?',
+      ).toBeGreaterThan(0);
+    } finally {
+      await removeFixture(baselineRepo);
+    }
+
     await installRig();
+    const original = await read(SETTINGS);
+
+    // The fixture's premise: `firstWalkedHook` really is the first hook this
+    // settings.json wires — the same order production reads hook wiring in
+    // (`hookFilesReferencedIn`'s Set-of-first-occurrences contract). If a
+    // settings.json reorder ever changed which hook the walk seeds first,
+    // this fails loudly here instead of the fixture silently exercising 0
+    // pop-and-skips against a different file — the exact RP-245 round 2
+    // mistake, this time caught rather than found by instrumenting the walk
+    // by hand.
+    expect([...hookFilesReferencedIn(original)][0]).toBe(firstWalkedHook);
+
+    const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+    await write(SETTINGS, edited);
+    await write(firstWalkedHook, "import { x } from './lib/hook-input.mjs';\n".repeat(DUPLICATES));
+
+    const reads: string[] = [];
+    const plan = await planUninstall(repo, { readFile: countingReadFile(reads) });
+    // Same sanity as the baseline above, against the same silent-ignore trap.
+    expect(
+      reads.length,
+      'the readFile stub recorded no reads at all — is `options.readFile` ' +
+        'actually threaded through planUninstall?',
+    ).toBeGreaterThan(0);
+    // Closes the gap the manifest-read-alone sanity above leaves open: a
+    // `protectHookAndDeps` (or `protectedHooksFor`) that stopped threading
+    // the seam and read through the module's own `readFile` instead would
+    // still satisfy `reads.length > 0` on the manifest read alone, with
+    // every walk read silently missing. Naming the exact paths the walk
+    // must have gone through the seam for closes it.
+    expect(reads).toContain(abs(firstWalkedHook));
+    expect(reads).toContain(abs(hookInput));
+    expect(actionFor(plan, firstWalkedHook)?.verdict).toBe('preserved');
+    expect(actionFor(plan, hookInput)?.verdict).toBe('preserved');
+
+    const countsByPath = new Map<string, number>();
+    for (const p of reads) countsByPath.set(p, (countsByPath.get(p) ?? 0) + 1);
+    for (const [p, count] of countsByPath) {
+      expect(count, `${p} read more than once`).toBe(1);
+    }
+    // The independent oracle: not "did every per-path count stay at 1" (the
+    // loop above already answers that) but "is the TOTAL read count for
+    // `DUPLICATES` duplicate matches identical to one match" — a mutation
+    // that added a read per duplicate on a never-before-seen path each time
+    // would pass the per-path check above and still be caught here.
+    expect(reads.length, `total reads for ${DUPLICATES} duplicates vs. a single match`).toBe(
+      baselineReads.length,
+    );
+  });
+
+  // RP-245 round 2, code-reviewer r1 blocker: moving this read off the
+  // module's own `readFile` and onto the seam parameter also changed what
+  // happens when the read itself fails. `guard-secret-file.mjs` is the only
+  // seeder of `.claude/scripts/lib/secrets.mjs` in the shipped tree (see the
+  // symlink variant of this exploit two tests up), and `chmod 000` is a
+  // DIFFERENT unreadable shape than a symlink: `regularFileStatus` reports
+  // `'ok'` for a chmod-000 regular file (neither `lstat` nor `realpath`
+  // consults permission bits), so this hits `protectHookAndDeps`'s
+  // `try { ... } catch { continue; }` around the read, not the `'unsafe'`
+  // superset sweep the symlink case exercises. That `catch` swallows the
+  // read failure and moves on without protecting anything this file would
+  // have named — so `secrets.mjs`, reachable only through the now-unreadable
+  // seeder, is never reached, never protected, and falls through to an
+  // ordinary hash comparison that reports `remove`. Pins master's own
+  // behaviour rather than inventing a new one: origin/master (f32dfc2 /
+  // e5ba87b, before this read moved) rejects the whole plan with EACCES,
+  // which also satisfies the assertion below, so the implementer may either
+  // restore the rejection or make the dependency's verdict something other
+  // than `remove` by some other means — this test only pins the one thing
+  // that must never happen either way.
+  it('never lets an owned dependency be removed when its only protecting seeder is unreadable', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    await installRig();
+    const SECRETS_LIB = '.claude/scripts/lib/secrets.mjs';
+    const guardSecretFile = '.claude/hooks/guard-secret-file.mjs';
+    await expectImports(guardSecretFile, SECRETS_LIB);
+
     const original = await read(SETTINGS);
     const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
     await write(SETTINGS, edited);
 
-    const guardBash = '.claude/hooks/guard-bash.mjs';
-    const hookInput = '.claude/hooks/lib/hook-input.mjs';
-    await write(guardBash, "import { x } from './lib/hook-input.mjs';\n".repeat(400_000));
-
-    const start = Date.now();
-    const plan = await planUninstall(repo);
-    expect(Date.now() - start).toBeLessThan(5000);
-    expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
-    expect(actionFor(plan, hookInput)?.verdict).toBe('preserved');
+    await chmod(abs(guardSecretFile), 0o000);
+    try {
+      let plan: UninstallPlan | undefined;
+      try {
+        plan = await planUninstall(repo);
+      } catch (err) {
+        // A bare catch here would also accept a rejection this fixture never
+        // intended to trigger — e.g. the manifest read itself failing for an
+        // unrelated reason — and call that a pass. Pin the one rejection
+        // master's own behaviour actually produces: a raw Node fs error
+        // reading the seeder itself (never wrapped in `UninstallError`),
+        // EACCES, naming the seeder's own absolute path.
+        const fsError = err as NodeJS.ErrnoException;
+        expect(fsError.code).toBe('EACCES');
+        expect(fsError.path).toBe(abs(guardSecretFile));
+        plan = undefined; // rejecting the whole plan also satisfies this test
+      }
+      if (plan !== undefined) {
+        expect(actionFor(plan, SECRETS_LIB)?.verdict).not.toBe('remove');
+      }
+    } finally {
+      await chmod(abs(guardSecretFile), 0o644);
+    }
   });
 });
 
