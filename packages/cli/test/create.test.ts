@@ -1,6 +1,8 @@
+import { execFile } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { CreateError, createProject } from '../src/commands/create.js';
 import { projectNameFor } from '../src/commands/init.js';
@@ -8,6 +10,7 @@ import { planUpgrade } from '../src/commands/upgrade.js';
 import { gitEnv } from '../src/lib/git-env.js';
 import { readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
+import { commandFailureReport } from '../../../test/e2e/run.js';
 
 let work: string;
 
@@ -18,6 +21,45 @@ beforeEach(async () => {
 afterEach(async () => {
   await removeFixture(work);
 });
+
+const execFileAsync = promisify(execFile);
+
+// RP-248. Every direct git call below (through exec) talks to real, local git —
+// normally tens of milliseconds — so the bound only has to catch a genuine
+// hang, never a slow legitimate run. The busiest cases in this file
+// ('does not stage or commit the parent repo…' and 'ignores an inherited git
+// environment…') run up to seven of these sequentially around createProject's
+// own git calls (createProject's are unbounded still — filed separately as
+// RP-252, out of scope here), all inside this file's single 60_000 ms case
+// budget. 20_000 ms leaves room for six quick git calls plus createProject's
+// own work even if the seventh hangs and eats the whole bound, with real
+// margin left under the case budget.
+const CREATE_GIT_CHILD_TIMEOUT_MS = 20_000;
+
+/**
+ * The `exec` every git call below is written against — reports a stalled or
+ * failing child the way `test/e2e/run.ts`'s own `run()` does for every other
+ * command this suite spawns, through the same `commandFailureReport`, so a
+ * bound firing here fails with the command, the exit reason and the child's
+ * own output, not just Node's bare "Command failed: …" with no diagnostic
+ * and a child left running past the case for `afterEach`'s `removeFixture`
+ * to trip over.
+ */
+async function exec(
+  command: string,
+  args: string[],
+  options: Parameters<typeof execFileAsync>[2],
+): Promise<{ stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, options);
+    return { stdout: String(stdout), stderr: String(stderr) };
+  } catch (error) {
+    throw new Error(
+      commandFailureReport(`${command} ${args.join(' ')}`, error, '', options?.timeout),
+      { cause: error },
+    );
+  }
+}
 
 /**
  * RP-177: `create <dir>` is a thin convenience wrapper — `mkdir` → `git init`
@@ -223,20 +265,19 @@ describe('createProject', { timeout: 60_000 }, () => {
 
   it('initialises git with a pristine-template baseline commit', async () => {
     const { projectDir } = await createProject('gitted', { cwd: work });
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const exec = promisify(execFile);
     // sanitised like every git call in this file — under an inherited GIT_DIR
     // these would report on the repository running the suite, not on the
     // project just generated, and the assertion below would be meaningless
     const { stdout: log } = await exec('git', ['log', '--oneline'], {
       cwd: projectDir,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     expect(log.trim().split('\n')).toHaveLength(1);
     const { stdout: status } = await exec('git', ['status', '--porcelain'], {
       cwd: projectDir,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     expect(status.trim()).toBe(''); // everything generated is in the baseline, including the manifest
     await expect(
@@ -247,24 +288,32 @@ describe('createProject', { timeout: 60_000 }, () => {
   it('does not stage or commit the parent repo when child git init fails', async () => {
     const outer = path.join(work, 'outer');
     await mkdir(outer, { recursive: true });
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const exec = promisify(execFile);
     const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
-    await exec('git', ['init', '--quiet'], { cwd: outer, env: gitEnv() });
+    await exec('git', ['init', '--quiet'], {
+      cwd: outer,
+      env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
+    });
     await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
-    await exec('git', [...identity, 'add', '-A'], { cwd: outer, env: gitEnv() });
+    await exec('git', [...identity, 'add', '-A'], {
+      cwd: outer,
+      env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
+    });
     await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     const { stdout: beforeHead } = await exec('git', ['rev-parse', 'HEAD'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     const { stdout: beforeIndex } = await exec('git', ['diff', '--cached', '--name-status'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
 
     // The shim makes only `git init` fail. A later baseline `git add` or
@@ -291,10 +340,12 @@ describe('createProject', { timeout: 60_000 }, () => {
     const { stdout: afterHead } = await exec('git', ['rev-parse', 'HEAD'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     const { stdout: afterIndex } = await exec('git', ['diff', '--cached', '--name-status'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     expect(afterHead).toBe(beforeHead);
     expect(afterIndex).toBe(beforeIndex);
@@ -308,9 +359,6 @@ describe('createProject', { timeout: 60_000 }, () => {
   it('ignores an inherited git environment — the baseline is the new repo, never the caller’s', async () => {
     const outer = path.join(work, 'outer');
     await mkdir(outer, { recursive: true });
-    const { execFile } = await import('node:child_process');
-    const { promisify } = await import('node:util');
-    const exec = promisify(execFile);
     const identity = ['-c', 'user.name=t', '-c', 'user.email=t@localhost'];
     // 🔴 This test's OWN git calls are sanitised, every one of them. It runs
     // under whatever environment the suite inherited — and when the suite is a
@@ -319,12 +367,21 @@ describe('createProject', { timeout: 60_000 }, () => {
     // the repository running the suite **bare** and the seed commit lands on
     // its checked-out branch. Both happened here, in the commit that added
     // this test.
-    await exec('git', ['init', '--quiet'], { cwd: outer, env: gitEnv() });
+    await exec('git', ['init', '--quiet'], {
+      cwd: outer,
+      env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
+    });
     await writeFile(path.join(outer, 'seed.txt'), 'seed\n');
-    await exec('git', [...identity, 'add', '-A'], { cwd: outer, env: gitEnv() });
+    await exec('git', [...identity, 'add', '-A'], {
+      cwd: outer,
+      env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
+    });
     await exec('git', [...identity, 'commit', '--quiet', '-m', 'outer seed'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
 
     // The GIT_DIR under test is a LINKED WORKTREE's gitdir, not `outer/.git`,
@@ -336,6 +393,7 @@ describe('createProject', { timeout: 60_000 }, () => {
     await exec('git', ['worktree', 'add', '--quiet', '--detach', linked], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     const worktreeGitDir = path.join(outer, '.git', 'worktrees', 'linked');
 
@@ -358,18 +416,21 @@ describe('createProject', { timeout: 60_000 }, () => {
     const { stdout: log } = await exec('git', ['log', '--oneline'], {
       cwd: projectDir,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     expect(log.trim().split('\n')).toHaveLength(1);
     // ...and the caller's repository was left exactly as it was
     const { stdout: outerLog } = await exec('git', ['log', '--oneline'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     expect(outerLog.trim().split('\n')).toHaveLength(1);
     expect(outerLog).toContain('outer seed');
     const { stdout: bare } = await exec('git', ['config', '--get', 'core.bare'], {
       cwd: outer,
       env: gitEnv(),
+      timeout: CREATE_GIT_CHILD_TIMEOUT_MS,
     });
     expect(bare.trim()).toBe('false'); // a redirected `git init` flips this
   });

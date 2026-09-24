@@ -99,11 +99,19 @@
  *
  * **Contention is told apart from a directory that simply refuses the
  * write.** `EEXIST` is ordinary contention. `EACCES`/`EPERM` count as
- * contention only when the lock path itself can be `lstat`-ed — i.e. some
- * other handle is the reason the open failed; when the path does not exist at
- * all, the directory is the one refusing the write, and no amount of waiting
- * makes it writable, so this fails fast as a non-`'busy'` refusal instead of
- * spending the whole bounded wait first. See the same file ›
+ * contention when the lock path itself can still be `lstat`-ed — some other
+ * handle is the reason the open failed. When it cannot be `lstat`-ed either,
+ * one more question decides it: can this directory accept a DIFFERENTLY
+ * named file right now? A uniquely named probe (opened `wx`, then closed and
+ * removed) answers it. A genuinely unwritable directory refuses the probe
+ * too, so this fails fast as a non-`'busy'` refusal instead of spending the
+ * whole bounded wait first. On Windows, a lock file `rmSync` just removed can
+ * instead sit DELETE-PENDING — invisible to `lstat` (`ENOENT`) while the same
+ * name is still refused — and there the probe succeeds, so this is read as
+ * ordinary contention and the caller keeps waiting. See the same file
+ * (absent in a generated rig) ›
+ * "runs the eight-writer race against a pre-planted stale lock repeatedly,
+ * and readRun never breaks", and the fast-fail case stays fast: ›
  * "fails fast as a non-busy refusal when the directory cannot even hold a
  * lock file".
  *
@@ -396,25 +404,65 @@ const sleepSync = (ms) => {
 const newToken = () => `${process.pid}:${randomBytes(8).toString('hex')}`;
 
 /**
+ * Can `runDir` still accept a brand-new file right now? Used only when an
+ * `EACCES`/`EPERM` on the lock path itself cannot be attributed to a visible
+ * file (see `isLockContention`) — a uniquely named probe never collides with
+ * whatever made the lock path itself unreadable, so its own outcome tells
+ * apart a directory that refuses writes outright from one that merely still
+ * refuses that one, specific name (the Windows delete-pending case). Bounded
+ * to exactly one open, one close, one best-effort remove — no loop, no retry.
+ */
+const dirAcceptsWrites = (runDir) => {
+  const probePath = join(runDir, `.journal.probe-${randomBytes(6).toString('hex')}`);
+  let fd;
+  try {
+    fd = openSync(probePath, 'wx');
+  } catch {
+    return false;
+  }
+  try {
+    closeSync(fd);
+  } finally {
+    try {
+      rmSync(probePath, { force: true });
+    } catch {
+      // Best-effort: a probe file this call cannot remove is harmless — its
+      // name is unique and nothing else ever reads it.
+    }
+  }
+  return true;
+};
+
+/**
  * Is the error from `openSync(path, 'wx')` ordinary contention — another
  * handle already owns `path` — rather than the directory itself refusing the
- * write? `EEXIST` always is. `EACCES`/`EPERM` are contention only when `path`
- * can still be `lstat`-ed: some other handle is the reason the open failed.
- * When `path` does not exist at all, nothing is holding it — the directory
- * refused the write outright, and no amount of waiting fixes that, so the
- * caller must not spend the bounded wait on it: see
- * `test/template/run-journal-writers.test.ts` (absent in a generated rig) ›
+ * write? `EEXIST` always is. `EACCES`/`EPERM` are contention when `path` can
+ * still be `lstat`-ed: some other handle is the reason the open failed.
+ *
+ * When `path` cannot be `lstat`-ed either, the same errno means two different
+ * things and only a probe tells them apart. Ordinarily it means nothing is
+ * holding `path` and the directory itself refused the write outright — no
+ * amount of waiting fixes that, so the caller must not spend the bounded wait
+ * on it: see `test/template/run-journal-writers.test.ts`
+ * (absent in a generated rig) ›
  * "fails fast as a non-busy refusal when the directory cannot even hold a
- * lock file".
+ * lock file". But on Windows a lock file this same process (or another) just
+ * removed can sit DELETE-PENDING: invisible to `lstat` (`ENOENT`) while the
+ * filesystem still refuses to create anything under that exact name until the
+ * delete completes. A differently-named probe is unaffected by a
+ * delete-pending name, so `dirAcceptsWrites` succeeding there is read as
+ * ordinary contention instead — see the same file (absent in a generated
+ * rig) › "runs the eight-writer race against a pre-planted stale lock
+ * repeatedly, and readRun never breaks".
  */
-const isLockContention = (error, path) => {
+const isLockContention = (error, path, runDir) => {
   if (error?.code === 'EEXIST') return true;
   if (error?.code !== 'EACCES' && error?.code !== 'EPERM') return false;
   try {
     lstatSync(path);
     return true;
   } catch {
-    return false;
+    return dirAcceptsWrites(runDir);
   }
 };
 
@@ -504,7 +552,7 @@ const acquireLock = (runDir) => {
       writeFileSync(fd, token);
       return { lockPath, fd, token };
     } catch (error) {
-      if (!isLockContention(error, lockPath)) {
+      if (!isLockContention(error, lockPath, runDir)) {
         throw new RunJournalError(
           'unusable',
           `the run journal in ${runDir} could not take its lock (${error?.code ?? 'unknown error'}), ` +
