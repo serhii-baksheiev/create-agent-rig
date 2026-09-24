@@ -197,6 +197,20 @@ describe('create-agent-rig init --layer (RP-180)', () => {
     expect(`${result.stdout}${result.stderr}`).not.toContain('--with-workflow');
   });
 
+  // RP-259: `--force` is refused, not gone — `runInit(['--force'])` above still
+  // exits non-zero and still names the flag. "removed in 0.6" is therefore
+  // false today, in every release since 0.6, and it goes stale again the
+  // moment the next release ships — a reason tied to a past release number is
+  // never true for long. The usage text should say what --force does NOW
+  // (refused, in favour of upgrade), not cite a release that already passed.
+  it('does not claim --force was removed in a past release, while still saying it is refused', async () => {
+    const result = await runInit(['--help']);
+    const text = `${result.stdout}${result.stderr}`;
+    expect(text).toMatch(/--force/);
+    expect(text).toMatch(/refus/i);
+    expect(text).not.toMatch(/removed in 0\.6/i);
+  });
+
   // RP-225 slice 2: `record-dispatch.mjs` sits under `.claude/hooks/` like the
   // process-layer guards, but `layers.json` places it in the WORKFLOW set —
   // its one reader is `lib/gate-coverage.mjs`'s `witness` answer, which only

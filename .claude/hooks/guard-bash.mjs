@@ -287,6 +287,20 @@ const isCatastrophic = (target) =>
   CATASTROPHIC_SUBTREES.some((root) => target.startsWith(`${root}/`));
 
 /**
+ * The subset of CATASTROPHIC that is credential/key material rather than the
+ * filesystem root or the whole home directory. Same targets, same block —
+ * only the stated reason differs, because "this deletes the filesystem root
+ * or the whole home directory" is simply false for `~/.ssh`: what is actually
+ * destroyed is SSH key material, and a reason that misnames the risk is
+ * misleading regardless of whether the command is still refused
+ * (`.claude/rules/invariants.md`, "the remedy belongs to the refusal").
+ */
+const CREDENTIAL_TARGETS = new Set(['~/.ssh', '$HOME/.ssh', '~/.ssh/*', '$HOME/.ssh/*']);
+const isCredentialTarget = (target) =>
+  CREDENTIAL_TARGETS.has(target) ||
+  CATASTROPHIC_SUBTREES.some((root) => target.startsWith(`${root}/`));
+
+/**
  * While the brake is on, the network clients are refused.
  *
  * Pushing to a protected branch is refused with or without the brake, so the only
@@ -753,6 +767,14 @@ function checkRm({ args }, atCatastrophicCwd) {
   for (const { value } of operandsOf(args)) {
     const target = normalizeTarget(value);
     if (isCatastrophic(target)) {
+      if (isCredentialTarget(target)) {
+        return (
+          'BLOCKED — this deletes SSH credentials/key material under ~/.ssh, ' +
+          'which breaks authentication and cannot be recovered from a delete. If a ' +
+          'specific key genuinely needs removing, name it precisely and confirm ' +
+          'with the human who owns that key first.'
+        );
+      }
       return (
         'BLOCKED — this deletes the filesystem root or the whole home directory, ' +
         'which no task in this project requires. If a path really needs removing, ' +

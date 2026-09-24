@@ -26,6 +26,22 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   `fix` now names the specific affected paths, bounded, while `reason` and
   `detail` never do (RP-239 A2).
 
+### Changed
+
+- **`guard-bash` names credentials, not the filesystem root, when it blocks
+  deleting `~/.ssh`.** The reason it gives for that specific target used to
+  say "this deletes the filesystem root or the whole home directory" — true
+  for `/` and `~`, false for `~/.ssh` — and now names SSH key material
+  instead; the command is refused exactly as before. `AGENTS.md` and
+  `README.md` also now state, next to where `guard-bash` is introduced, that
+  it protects specific Rig/git/credential invariants rather than acting as a
+  general command sandbox — that job is the harness's own native sandbox
+  setting. **`init --force`'s help text, JSDoc and contract doc no longer
+  claim the flag was "removed in 0.6".** It never was: `--force` is still
+  recognised and still refused, in favour of `upgrade`, exactly as it has
+  been since 0.5 — the usage text, `InitOptions['force']`'s JSDoc, and
+  `docs/command-contract.md` now say only what is true today (RP-259).
+
 ### Fixed
 
 - **`decision-router` diagnoses a missing `origin/HEAD` instead of printing

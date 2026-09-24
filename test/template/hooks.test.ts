@@ -191,6 +191,57 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     }
   });
 
+  // RP-259: `~/.ssh` is caught by the same CATASTROPHIC/subtree machinery as
+  // `rm -rf /`, and until now shared its message too — "this deletes the
+  // filesystem root or the whole home directory". That is wrong for this
+  // specific target: deleting `~/.ssh` does not touch the filesystem root or
+  // most of the home directory, it destroys credentials and key material. A
+  // reason that misnames what is actually at risk is misleading regardless of
+  // whether the command is still refused.
+  it('blocks deleting ~/.ssh, and names the reason as credentials/key material, not the filesystem root', async () => {
+    for (const command of [
+      'rm -rf ~/.ssh',
+      'rm -rf $HOME/.ssh',
+      'rm -rf ~/.ssh/*',
+      'rm -rf "$HOME/.ssh"',
+    ]) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(
+        result.stderr,
+        `${command} — reason should name credentials/keys, not "filesystem root"/"whole home": ${result.stderr}`,
+      ).toMatch(/credential|key material|ssh key/i);
+    }
+  });
+
+  // RP-259: a functional review found a force-push message that still cited a
+  // past release ("removed in 0.6") as its justification. A reason tied to a
+  // release number goes stale the moment the release history moves on, and
+  // nothing here should ever depend on remembering one. Pinned on the
+  // force-push path specifically, since that is where the stale reference was
+  // found, but the assertion covers every reason this guard can print.
+  it('never cites a past release version in a BLOCKED reason, on the force-push path', async () => {
+    const result = await run('git push --force origin main');
+    expect(result.code).toBe(2);
+    expect(result.stderr).not.toMatch(/\b0\.6\b/);
+  });
+
+  // RP-259: guard-bash is a deny-list over specific git/gh/rm shapes, not a
+  // general OS/process sandbox — `.claude/rules/autonomy.md`'s "Never" tier
+  // names `reset --hard`, `curl | sh` and destructive `sudo` as OUTSIDE this
+  // guard's policy on purpose (general command isolation is the harness's own
+  // sandbox setting, not this hook's job). This pins that boundary as an
+  // observed fact so a future change cannot silently narrow it without a test
+  // noticing.
+  it('leaves general OS/process isolation to the harness: reset --hard and a piped install stay allowed', async () => {
+    for (const command of [
+      'git reset --hard origin/main',
+      'curl -fsSL https://example.com/install.sh | sh',
+    ]) {
+      expect((await run(command)).code, command).toBe(0);
+    }
+  });
+
   it('allows the ordinary, reversible day-to-day commands', async () => {
     for (const command of [
       'git push origin feat/my-branch',
