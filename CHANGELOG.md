@@ -18,6 +18,17 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ### Added
 
+- **The dispatch journal records Claude subagent token usage.** On a Claude
+  `SubagentStop`, `record-dispatch.mjs` reads the subagent's own transcript
+  (only an `agent_transcript_path` named `agent-<agent_id>.jsonl` for that
+  event's `agent_id`), sums the assistant records' `message.usage` counters
+  deduplicated per request, and journals them as `usage`, with
+  `measuredModel` when every record names the same model. Reading is bounded
+  (32 MiB total, 8 MiB per line, 3 s); a crossed bound, a mismatched or
+  unreadable path, or a malformed line records `usageUnavailable` with a
+  reason code instead of a partial number, and no path or message content is
+  ever journalled. Codex dispatches are unchanged (RP-226).
+
 - **`doctor`'s `rig-owned-files` check reports per-reason counts.** The JSON
   record gains an additive
   `counts: { absent, contentDrift, lineDrift, unreadable }` field, so a caller
