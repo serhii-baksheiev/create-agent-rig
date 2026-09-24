@@ -17,7 +17,7 @@ import { modeBitsDeny, skipUnless } from '../helpers/env.js';
 //
 // This file pins the intended fix: `append()` takes an exclusive lock file
 // (`<runDir>/.journal.lock`, opened `wx`), waits out contention in short steps
-// up to a bounded total (~2s), reclaims a lock whose mtime is stale (~10s), and
+// up to a bounded number of steps (~2s nominal), reclaims a lock whose mtime is stale (~10s), and
 // gives up with a NEW failure kind, `'busy'` — classified by `isTraceExhausted`
 // the same as `'unusable'`/`'ended'`, because a busy lock is a lost RECORD, not
 // a reason to stop the run that lost it. `readRun` stays lock-free (many
@@ -311,28 +311,32 @@ describe('a lock nobody releases fails the write, not the run', () => {
     // shape of a second writer genuinely overlapping a live one.
     await writeFile(lockPath, '');
 
+    const startedAt = Date.now();
     const error = await refusalFrom(() => recordEventOrThrowIfNoLock(runDir, T0));
+    const elapsedMs = Date.now() - startedAt;
 
     // Bounded, not merely "eventually": a wait that never gives up would
-    // convert one stuck writer into a hung caller, which is the failure this
-    // kind exists to avoid turning into. The bound is a COUNT of open attempts,
-    // pinned here from the design's own literals (2 s nominal / 25 ms steps),
-    // not a wall-clock reading: a first version asserted elapsed < 4 s and the
-    // hosted macOS runner measured 4850 ms, because one Atomics.wait step there
-    // sleeps longer than asked. What the host's timer does is not the property.
+    // convert one stuck writer into a hung caller. The bound is the COUNT of
+    // lock opens the call really made, pinned from the design's own literals
+    // (2 s nominal / 25 ms steps) — not an upper wall-clock reading: a first
+    // version asserted elapsed < 4 s and hosted macOS measured 4850 ms, because
+    // an Atomics.wait step there sleeps longer than asked. The lower bound
+    // below is safe on any host (a step never wakes early): it catches a loop
+    // that stopped sleeping; the count catches one that tries more or less.
     expect(error.failure).toBe('busy');
-    const { LOCK_MAX_ATTEMPTS } = await load();
-    expect(LOCK_MAX_ATTEMPTS).toBe(Math.ceil(2_000 / 25));
-    expect((error as { attempts?: unknown }).attempts).toBe(LOCK_MAX_ATTEMPTS);
-
+    const attempts = Math.ceil(2_000 / 25);
+    expect((error as { attempts?: unknown }).attempts).toBe(attempts);
+    // First attempt reclaims instead of sleeping, the last one does not sleep.
+    expect(elapsedMs).toBeGreaterThanOrEqual((attempts - 2) * 25 - 50);
     const { isTraceExhausted } = await load();
     // Same "record lost, work continues" semantics as `unusable`/`ended` — a
     // caller must not abandon the run over a lock another writer is holding.
     expect(isTraceExhausted(error)).toBe(true);
 
     expect(await linesIn(runDir, 'events.jsonl')).toEqual([]);
-    // The case budget only backstops a hang; macOS spent ~4.9 s in the 80
-    // steps, so the default unit budget, not a tighter per-case one, applies.
+    // The case budget only backstops a hang; macOS spent ~4.9 s in these 78
+    // sleeps, so the template project's default budget, not a tighter
+    // per-case one, applies.
   });
 
   it('lists `busy` in the exported failure vocabulary', async () => {
@@ -425,7 +429,7 @@ describe('a run directory with no write permission is not "busy"', () => {
       // writer to report as holding one.
       expect((error as Error & { failure?: unknown }).failure).not.toBe('busy');
       // And fast — today's misclassification spins out the whole LOCK_WAIT_MS
-      // (~2s) bound before giving up; a correct refusal has no wait to do at
+      // (~2s nominal) bound before giving up; a correct refusal has no wait to do at
       // all, since the directory was never going to become writable.
       expect(elapsedMs).toBeLessThan(500);
     },

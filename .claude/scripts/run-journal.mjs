@@ -495,9 +495,11 @@ const acquireLock = (runDir) => {
   const lockPath = join(runDir, LOCK_FILE);
   const token = newToken();
   let reclaimAttempted = false;
+  let opens = 0;
 
   for (let attempt = 0; attempt < LOCK_MAX_ATTEMPTS; attempt += 1) {
     try {
+      opens += 1;
       const fd = openSync(lockPath, 'wx');
       writeFileSync(fd, token);
       return { lockPath, fd, token };
@@ -524,11 +526,13 @@ const acquireLock = (runDir) => {
 
   const busy = new RunJournalError(
     'busy',
-    `the run journal in ${runDir} could not take its lock in ${LOCK_MAX_ATTEMPTS} attempts ` +
+    `the run journal in ${runDir} could not take its lock in ${opens} attempts ` +
       `(about ${LOCK_WAIT_MS}ms nominal): another writer is holding it. This record is ` +
       "lost, not the run — the caller's own work continues.",
   );
-  busy.attempts = LOCK_MAX_ATTEMPTS;
+  // The opens actually made, not the constant: what a caller (and the test)
+  // reads as proof the wait stopped where its bound says.
+  busy.attempts = opens;
   throw busy;
 };
 
