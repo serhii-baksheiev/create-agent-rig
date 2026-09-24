@@ -4,8 +4,15 @@
 // All upstream test pointers in this script name the generator suite, absent in a generated rig.
 //
 //   node .claude/scripts/unattended-flag.mjs on --root <checkout> --item AR-51 --run-dir <dir> --allow <prefix> [<prefix>…]
+//   node .claude/scripts/unattended-flag.mjs verify --root <checkout> --item AR-51
 //   node .claude/scripts/unattended-flag.mjs off --root <checkout>
 //   node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>
+//
+// `--root` is mandatory for `on` and `verify` (RP-258) — an unrooted `on`
+// wrote a flag `readUnattended` could not tell apart from stale legacy
+// machine-wide state, and an unrooted `verify` then read that same ambiguity
+// back as armed; both now refuse before doing anything else. `off` keeps its
+// own unscoped fallback (see its branch below).
 //
 // It is a FILE, not an environment variable: a `PreToolUse` hook is spawned by
 // the harness with the harness's own environment, never with a variable the
@@ -52,6 +59,7 @@
 // Cleanup preserves the same distinction: an owned legacy record that cannot
 // be inspected is an error, not evidence that nothing remains — › "exits
 // nonzero and leaves an unreadable owned legacy flag in place".
+import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   closeSync,
@@ -62,10 +70,12 @@ import {
   readSync,
   realpathSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withoutGitLocation } from './git-env.mjs';
 import { homesOf } from './stop-flag.mjs';
 
 export const FLAG_BASENAME = '__PROJECT_NAME__-loop-UNATTENDED';
@@ -380,9 +390,17 @@ export const readUnattended = (env = process.env) => {
     if (legacy.failure) return legacy.failure;
     path = legacy.present[0]?.path;
     if (path) {
+      // The remedy ("re-arm it with `on --root …` or remove it") is deliberately
+      // not part of this reason: re-arming only makes sense to a caller that is
+      // about to arm something, and `why` also surfaces inside `off`'s own
+      // refusal (whose remedy is "remove it", not "re-arm it") and inside
+      // `guard-rulebook`'s BLOCKED message (which already names its own fix).
+      // `why` stays a pure statement of what is wrong; each caller that can
+      // usefully re-arm says so itself.
       return unreadable(
         path,
-        'legacy machine-wide unattended flag cannot authorize a scoped checkout; migrate or remove it explicitly',
+        'the armed unattended flag is an unscoped legacy record that carries no checkout root, so it ' +
+          'cannot authorize this checkout',
       );
     }
   }
@@ -547,15 +565,111 @@ if (invokedDirectly()) {
     return index === -1 ? null : (rest[index + 1] ?? null);
   };
   const root = valueOf('--root');
-  const cliEnv = root && !root.startsWith('--')
-    ? { ...process.env, CLAUDE_PROJECT_DIR: root }
-    : process.env;
+  const hasRoot = root !== null && !root.startsWith('--') && root.trim() !== '';
+  const cliEnv = hasRoot ? { ...process.env, CLAUDE_PROJECT_DIR: root } : process.env;
+  // RP-258: `on` and `verify` both scope the flag to a checkout — an unrooted
+  // `on` writes a flag `readUnattended` cannot tell apart from stale legacy
+  // machine-wide state, and an unrooted `verify` reads that same ambiguity
+  // back as armed. `--root` is required for both, checked before either does
+  // anything else (before `on` writes, before `verify` looks anything up).
+  // `off` is unaffected: it already falls back to unscoped cleanup on
+  // purpose (see its own branch below).
+  //
+  // RP-258 round 2: requiring the flag *to be present* was not enough — a
+  // blank, nonexistent, or merely-a-subdirectory `--root` still let
+  // `canonicalCheckout` (via its `resolve()` fallback) scope a flag to a
+  // spelling `guard-rulebook` can never produce, because the guard is always
+  // handed the checkout's own toplevel — `CLAUDE_PROJECT_DIR` on the Claude
+  // harness, `git rev-parse --show-toplevel` on the Codex one. `on`/`verify`
+  // reported success while arming/reading a flag the guard would never see —
+  // the same "authorized nothing while claiming to" shape as the
+  // missing-root case above, one level down. So both now also confirm the
+  // root realpaths to an existing directory AND is that directory's own git
+  // checkout toplevel — checked before any flag write or lookup, exactly
+  // like the presence check above. A root git cannot place in any checkout
+  // at all (absent git, no repository there) is refused rather than
+  // accepted, the same direction as every other unconfirmable case here:
+  // nothing distinguishes it from the ambiguous cases above closely enough
+  // to trust it.
+  const GIT_ROOT_TIMEOUT_MS = 10_000;
+  /** The realpath of `candidate` if it exists and is a directory, else null. */
+  const existingDirectoryRealpath = (candidate) => {
+    let real;
+    try {
+      real = realpathSync.native(candidate);
+    } catch {
+      return null;
+    }
+    try {
+      return statSync(real).isDirectory() ? real : null;
+    } catch {
+      return null;
+    }
+  };
+  /**
+   * The git checkout toplevel for `dir`, or null when git cannot confirm
+   * one — absent, not a repository, or any other failure; never accepted.
+   * Bounded like every other child this template spawns (`gate-stop-dod.mjs`'s
+   * own pattern): a sanitised env (`withoutGitLocation`, so an inherited
+   * `GIT_DIR`/`GIT_INDEX_FILE` cannot redirect it at the caller's repo — see
+   * `git-env.mjs`) and a fixed timeout, never an unbounded wait.
+   */
+  const gitCheckoutToplevel = (dir) => {
+    let output;
+    try {
+      output = execFileSync('git', ['-C', dir, 'rev-parse', '--show-toplevel'], {
+        encoding: 'utf8',
+        env: withoutGitLocation(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: GIT_ROOT_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+      });
+    } catch {
+      return null;
+    }
+    return existingDirectoryRealpath(output.trim());
+  };
+  const requireRoot = (subcommand) => {
+    if (!hasRoot) {
+      process.stderr.write(
+        `unattended-flag ${subcommand}: --root <checkout> is required — an unrooted flag cannot be ` +
+          'scoped to the checkout it authorizes, and an unscoped read cannot tell a scoped flag from a stale legacy one\n',
+      );
+      process.exit(1);
+    }
+    const realRoot = existingDirectoryRealpath(root);
+    if (realRoot === null) {
+      process.stderr.write(
+        `unattended-flag ${subcommand}: --root ${root} does not exist — an unattended flag cannot be ` +
+          'scoped to a checkout that is not there\n',
+      );
+      process.exit(1);
+    }
+    const toplevel = gitCheckoutToplevel(realRoot);
+    if (toplevel === null) {
+      process.stderr.write(
+        `unattended-flag ${subcommand}: --root ${root} could not be confirmed as a git checkout root — ` +
+          'git found no repository there (or could not be run), so this run cannot verify what it would be ' +
+          'scoping the flag to\n',
+      );
+      process.exit(1);
+    }
+    if (toplevel !== realRoot) {
+      process.stderr.write(
+        `unattended-flag ${subcommand}: --root ${root} is not a git checkout root — its toplevel is ` +
+          `${toplevel}, and a flag scoped to a subdirectory is invisible to guard-rulebook, which always scopes ` +
+          'itself by the real checkout toplevel\n',
+      );
+      process.exit(1);
+    }
+  };
   if (word === 'on') {
     const item = valueOf('--item');
     if (!item || item.startsWith('--')) {
       process.stderr.write('unattended-flag on: --item <id> is required — the flag names the item whose paths are allowed\n');
       process.exit(1);
     }
+    requireRoot('on');
     const allowIndex = rest.indexOf('--allow');
     const allow =
       allowIndex === -1
@@ -632,6 +746,7 @@ if (invokedDirectly()) {
       );
       process.exit(1);
     }
+    requireRoot('verify');
     const state = readUnattended(cliEnv);
     // ⚠ `unreadable` carries `on: true` — it means "a flag is THERE and cannot be
     // trusted", which is what `off` needs in order to refuse to clear it blindly.
@@ -641,8 +756,14 @@ if (invokedDirectly()) {
     // for the right refusal.
     if (!state.on || state.unreadable) {
       const why = state.why ? ` (${state.why})` : '';
+      // `why` is a pure reason (see its own comment in `readUnattended`); the
+      // re-arm remedy belongs here, where re-arming is actually the answer —
+      // `off`'s own refusal (above) already has its own, different one.
+      const remedy = state.unreadable
+        ? ' Re-arm it with `on --root <checkout> --item <id>` or remove it, then verify again.'
+        : '';
       process.stderr.write(
-        `unattended-flag verify: NO usable unattended flag is armed for ${item}${why}. ` +
+        `unattended-flag verify: NO usable unattended flag is armed for ${item}${why}.${remedy} ` +
           'guard-rulebook reads an absent flag as an attended session and refuses nothing, so this run is ' +
           'UNGUARDED against the rulebook — every rule, hook, skill and settings path is editable. ' +
           'Arm it with a narrower --allow (an allow-list narrows the rulebook, never widens it) and verify again, or stop the run.\n',
