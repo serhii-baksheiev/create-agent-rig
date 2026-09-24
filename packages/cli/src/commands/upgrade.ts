@@ -1,6 +1,13 @@
 import { access, lstat, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { initInstallSet, initManifest, layerOnlyPaths, projectNameFor } from './init.js';
+import {
+  initInstallSet,
+  initManifest,
+  layerOnlyPaths,
+  NESTED_CLAUDE,
+  projectNameFor,
+} from './init.js';
+import type { ClaudeMdPlacement } from './init.js';
 import { isReadableRulebook } from '../lib/elevated-paths.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
@@ -505,12 +512,20 @@ export async function planUpgrade(
   //   before it was not enough.
   const inference = manifest === null ? await detectLayersOnDisk(repoDir) : null;
   const layers: Layer[] = manifest?.layers ?? inference!.layers;
+  // RP-256 slice 1: placement is a MANIFEST question, never re-guessed from
+  // disk — a nested rig's manifest already carries `.claude/CLAUDE.md` under
+  // `files`, and that is the one fact this reads. `null` (bootstrapped, no
+  // manifest at all) falls back to `root`, exactly the pre-256 behaviour: with
+  // nothing recorded there is no basis to recognise a nested rig, only
+  // `detectLayersOnDisk`'s own quorum over the ordinary process-layer files.
+  const claudePlacement: ClaudeMdPlacement =
+    manifest?.files[NESTED_CLAUDE] !== undefined ? 'nested' : 'root';
   // A path an OLDER manifest still names but this rig's OWN recorded layers
   // no longer cover (a manifest hand-edited to drop a layer, or one from a
   // release that shipped a layer this one renamed) falls out of `files`
   // below exactly like a path RP-177 retired outright: never written, never
   // deleted, simply no longer this plan's to manage.
-  const files = await initInstallSet(repoDir, project, layers);
+  const files = await initInstallSet(repoDir, project, layers, claudePlacement);
   // Blocker A's second half, and round 5's correction to it: even an
   // ADOPTED bootstrapped opt-in layer must never manufacture a file it did
   // not find, but "does not create it" is not the same thing as "forgets it

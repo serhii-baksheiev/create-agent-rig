@@ -82,6 +82,11 @@ export const RULEBOOK_PREFIXES = Object.freeze([
   '.claude/.rig-manifest.json',
   '.claude/doctor-exemptions.json',
   '.claude/agents/',
+  // RP-256 slice 1: the nested Rig shim a CLAUDE.md-coexistence install
+  // writes at `.claude/CLAUDE.md` decides which rulebook Claude Code reads,
+  // the same role root `CLAUDE.md` plays below — an unattended run must not
+  // be able to rewrite it either.
+  '.claude/CLAUDE.md',
   '.claude/hooks/',
   '.claude/settings.json',
   '.claude/queue.json',

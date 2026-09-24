@@ -571,6 +571,11 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
       ['.claude/.rig-manifest.json', false],
       ['.claude/doctor-exemptions.json', false],
       ['.claude/agents/', false],
+      // RP-256 slice 1: the nested Rig shim a CLAUDE.md-coexistence install
+      // writes at `.claude/CLAUDE.md` — a file entry, same shape as root
+      // `CLAUDE.md` below, so an allow-listed exact match does not widen
+      // anything either.
+      ['.claude/CLAUDE.md', false],
       ['.claude/hooks/', false],
       ['.claude/settings.json', false],
       ['.claude/queue.json', false],

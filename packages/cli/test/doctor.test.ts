@@ -342,6 +342,40 @@ describe('aggregated doctor (RP-21)', () => {
     );
   });
 
+  // RP-256 slice 1: a nested rig (installed beside a pre-existing root
+  // CLAUDE.md — see `init.test.ts`) records that file under the manifest's
+  // `kept`, never `files`. `rig-owned-files` only ever walks `manifest.files`
+  // (this file's own `rigChecks`), so the user's own edits to their own
+  // CLAUDE.md must never be read as drift in a rig-owned file.
+  describe('rig-owned-files on a nested rig (RP-256 slice 1)', () => {
+    it('reports pristine right after installing beside a user CLAUDE.md', async () => {
+      await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules\n');
+      await initProject(repo, {});
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.checks).toContainEqual(
+        expect.objectContaining({ id: 'rig-owned-files', status: 'ok', reason: 'pristine' }),
+      );
+    });
+
+    it('never counts the user editing their own CLAUDE.md as drift', async () => {
+      await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules\n');
+      await initProject(repo, {});
+      await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules, edited by the operator later\n');
+
+      const result = await doctor();
+      const body = report(result.stdout);
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(body.checks).toContainEqual(
+        expect.objectContaining({ id: 'rig-owned-files', status: 'ok', reason: 'pristine' }),
+      );
+    });
+  });
+
   it('rejects invalid doctor arguments with CLI usage exit 2', async () => {
     const result = await doctor(['--unexpected']);
 

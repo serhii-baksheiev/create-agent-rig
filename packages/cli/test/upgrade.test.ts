@@ -1534,6 +1534,86 @@ describe('planUpgrade — a path `kept` by init, not written (RP-182)', () => {
   });
 });
 
+// RP-256 slice 1: `init` may now leave a repo's own root CLAUDE.md in place
+// and install the Rig shim nested at `.claude/CLAUDE.md` instead (see
+// `init.test.ts`). Placement must be derived from the MANIFEST — never
+// re-guessed from what happens to be on disk — so `upgrade` reads
+// `files['.claude/CLAUDE.md']` to recognise a nested rig, and from that
+// point on root CLAUDE.md is simply not this rig's file: never planned,
+// never shimmed, never accused of "shadowing" AGENTS.md.
+describe('planUpgrade — a nested rig, CLAUDE.md beside AGENTS.md (RP-256 slice 1)', () => {
+  const NESTED_CLAUDE = '.claude/CLAUDE.md';
+
+  /**
+   * Builds the manifest/file shape a nested `init` install (RP-256 slice 1)
+   * is expected to leave, out of an ordinary `installRig()`: the shim bytes
+   * `init` wrote at root `CLAUDE.md` are moved to `.claude/CLAUDE.md`, the
+   * user's own text takes root `CLAUDE.md`'s place, and the manifest is
+   * edited with the same primitives every other fixture in this file uses
+   * (`readManifest`/`writeManifest`) — `files['CLAUDE.md']` removed,
+   * `files['.claude/CLAUDE.md']` added, the user's bytes recorded under
+   * `kept['CLAUDE.md']`. This never calls any not-yet-written nested-install
+   * code; it only constructs the state that code is expected to leave.
+   */
+  const installNestedRig = async (userClaudeContent = '# host rules\n'): Promise<string> => {
+    await installRig();
+    // The nested shim imports `@../AGENTS.md`, not the root shim's
+    // `@AGENTS.md` — take the release's own nested template bytes.
+    const shimBytes = await readFile(path.join(agentOsUniversalDir(), NESTED_CLAUDE), 'utf8');
+    await write(NESTED_CLAUDE, shimBytes);
+    await write('CLAUDE.md', userClaudeContent);
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    delete manifest.files['CLAUDE.md'];
+    manifest.files[NESTED_CLAUDE] = sha256(shimBytes);
+    manifest.kept = { ...manifest.kept, 'CLAUDE.md': sha256(userClaudeContent) };
+    await writeManifest(repo, manifest);
+    return shimBytes;
+  };
+
+  it('never plans root CLAUDE.md, even after the user edits their own file', async () => {
+    await installNestedRig();
+    await write('CLAUDE.md', '# host rules, edited later\n');
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(plan.actions.find((a) => a.rel === 'CLAUDE.md')).toBeUndefined();
+  });
+
+  it('plans the nested shim like any other owned file: `unchanged` while untouched', async () => {
+    await installNestedRig();
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(verdictFor(plan, NESTED_CLAUDE)).toBe('unchanged');
+  });
+
+  it('plans the nested shim like any other owned file: `conflict` once edited', async () => {
+    const shimBytes = await installNestedRig();
+    await write(NESTED_CLAUDE, `${shimBytes}\nmy own note\n`);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(verdictFor(plan, NESTED_CLAUDE)).toBe('conflict');
+  });
+
+  it('carries the kept user CLAUDE.md forward, byte-identical, and keeps tracking the nested shim', async () => {
+    const userBytes = '# host rules\n';
+    await installNestedRig(userBytes);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    await applyUpgrade(repo, plan);
+
+    expect(await read('CLAUDE.md')).toBe(userBytes);
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(userBytes));
+    expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+    // The upgrade must not silently drop the manifest's record of the nested
+    // shim just because it is not on the fixed MAPS list.
+    expect(manifest?.files[NESTED_CLAUDE]).toBeTruthy();
+  });
+});
+
 // RP-180: the workflow layer (queue/loop/pr-ship/run-state/journal/
 // revalidation/claim-records/PR-lifecycle helpers) is an opt-in layer.
 // `upgrade` must refresh only the layers a rig's manifest recorded — and an

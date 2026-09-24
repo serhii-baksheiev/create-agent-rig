@@ -103,7 +103,16 @@ export interface InitResult {
 
 const SETTINGS = '.claude/settings.json';
 const CODEX_HOOKS = '.codex/hooks.json';
-const MAPS = ['CLAUDE.md', 'AGENTS.md'] as const;
+const ROOT_CLAUDE = 'CLAUDE.md';
+/**
+ * Where the CLAUDE.md shim lives on a `nested` placement (RP-256 slice 1).
+ * Exported so `upgrade.ts` and `uninstall.ts` derive the SAME path rather
+ * than each spelling it out again (`invariants.md`, "one spelling of a
+ * fact") — `upgrade.ts` reads it to recognise a nested rig from its
+ * manifest, `uninstall.ts` to widen the ownership boundary it is held to.
+ */
+export const NESTED_CLAUDE = '.claude/CLAUDE.md';
+const AGENTS_MAP = 'AGENTS.md';
 /**
  * Plain, static files this install always ships alongside the process layer,
  * beside the two generated wiring files and the two maps above — neither
@@ -113,6 +122,60 @@ const MAPS = ['CLAUDE.md', 'AGENTS.md'] as const;
  */
 const STATIC_EXTRAS = ['.codex/config.toml'] as const;
 
+/**
+ * Where the Rig's CLAUDE.md shim goes (RP-256 slice 1). `root` is the
+ * pre-existing behaviour: `CLAUDE.md` at the repo root, byte-identical to the
+ * one AGENTS.md shim every earlier release wrote. `nested` is new: a repo
+ * that already has its OWN root `CLAUDE.md` keeps it untouched, and the shim
+ * installs instead at `.claude/CLAUDE.md`, importing the rulebook as
+ * `@../AGENTS.md` (one directory up from where it now sits) rather than the
+ * root shim's `@AGENTS.md`. Claude Code loads both files, so nothing is lost.
+ */
+export type ClaudeMdPlacement = 'root' | 'nested';
+
+/** The two map paths, in refusal-check order, for a given placement. */
+function mapsFor(placement: ClaudeMdPlacement): readonly [string, string] {
+  return [placement === 'nested' ? NESTED_CLAUDE : ROOT_CLAUDE, AGENTS_MAP];
+}
+
+/**
+ * Whether `p` is a REGULAR file — `lstat`, never `access`, and never
+ * following a symlink through to whatever it points at. Placement is decided
+ * from this, not from `exists` (which follows symlinks): a symlink sitting at
+ * `CLAUDE.md` is not the user's own file to leave untouched.
+ */
+async function isRegularFile(p: string): Promise<boolean> {
+  try {
+    return (await lstat(p)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The placement THIS install should use, derived from the manifest first and
+ * the filesystem only when the manifest is silent on it:
+ *
+ * - the manifest already records `.claude/CLAUDE.md` (a previous run already
+ *   went nested) → stay `nested`, regardless of what root `CLAUDE.md` looks
+ *   like today;
+ * - no manifest entry for `CLAUDE.md` at all, and a regular file already
+ *   sits at root `CLAUDE.md` → `nested`, so that file is never claimed as the
+ *   rig's own;
+ * - anything else (a clean repo, or a manifest that already recorded root
+ *   `CLAUDE.md`) → `root`, unchanged from every earlier release.
+ */
+async function claudeMdPlacementForInstall(
+  repoDir: string,
+  previous: RigManifest | null,
+): Promise<ClaudeMdPlacement> {
+  if (previous?.files[NESTED_CLAUDE] !== undefined) return 'nested';
+  if (previous?.files[ROOT_CLAUDE] === undefined) {
+    if (await isRegularFile(path.join(repoDir, ROOT_CLAUDE))) return 'nested';
+  }
+  return 'root';
+}
+
 async function loadManifest(): Promise<Manifest> {
   const raw = await readFile(path.join(agentOsUniversalDir(), 'layers.json'), 'utf8');
   return JSON.parse(raw) as Manifest;
@@ -120,7 +183,7 @@ async function loadManifest(): Promise<Manifest> {
 
 /**
  * Exactly `layers.json`'s own array for one layer — never the always-added
- * extras (`SETTINGS`, `CODEX_HOOKS`, `STATIC_EXTRAS`, `MAPS`) `initManifest`
+ * extras (`SETTINGS`, `CODEX_HOOKS`, `STATIC_EXTRAS`, `mapsFor`'s two paths) `initManifest`
  * appends to every layer regardless of which one was asked for. A caller
  * that wants to know whether a SPECIFIC layer's own files are on disk (RP-180
  * round 3, `commands/upgrade.ts`'s `detectLayersOnDisk`) needs this
@@ -168,12 +231,15 @@ export function projectNameFor(repoDir: string): string {
  * copied: derived from the shipped settings so they name exactly the hooks
  * that travelled.
  */
-export async function initManifest(layers: readonly Layer[] = DEFAULT_LAYERS): Promise<InitFile[]> {
+export async function initManifest(
+  layers: readonly Layer[] = DEFAULT_LAYERS,
+  placement: ClaudeMdPlacement = 'root',
+): Promise<InitFile[]> {
   const manifest = await loadManifest();
   const universal = agentOsUniversalDir();
 
   const layerFiles = layers.flatMap((layer) => manifest[layer]);
-  const files: InitFile[] = [...layerFiles, ...STATIC_EXTRAS, ...MAPS].map((rel) => ({
+  const files: InitFile[] = [...layerFiles, ...STATIC_EXTRAS, ...mapsFor(placement)].map((rel) => ({
     rel,
     source: path.join(universal, rel),
   }));
@@ -195,13 +261,14 @@ export async function initFileContents(
   repoDir: string,
   project?: RigProject,
   layers: readonly Layer[] = DEFAULT_LAYERS,
+  placement: ClaudeMdPlacement = 'root',
 ): Promise<Map<string, string>> {
   const projectName = project?.name ?? projectNameFor(repoDir);
   const ctx: SubstitutionContext = {
     projectName,
   };
 
-  const files = await initManifest(layers);
+  const files = await initManifest(layers, placement);
   const contents = new Map<string, string>();
   const sourceFiles = files.filter(
     (file): file is InitFile & { source: string } => file.source !== null,
@@ -239,9 +306,10 @@ export async function initInstallSet(
   repoDir: string,
   project?: RigProject,
   layers: readonly Layer[] = DEFAULT_LAYERS,
+  placement: ClaudeMdPlacement = 'root',
 ): Promise<InstalledFile[]> {
-  const files = await initManifest(layers);
-  const contents = await initFileContents(repoDir, project, layers);
+  const files = await initManifest(layers, placement);
+  const contents = await initFileContents(repoDir, project, layers, placement);
   return files.map(({ rel, source }) => ({ rel, source, content: contents.get(rel) ?? '' }));
 }
 
@@ -253,12 +321,21 @@ export interface PlanInitOptions {
 export async function planInit(repoDir: string, options: PlanInitOptions = {}): Promise<InitPlan> {
   const previous = await readManifest(repoDir);
   const layers = effectiveLayers(previous, options.withWorkflow === true);
-  const files = (await initManifest(layers)).map((f) => f.rel);
+  const placement = await claudeMdPlacementForInstall(repoDir, previous);
+  const files = (await initManifest(layers, placement)).map((f) => f.rel);
   const conflicts = (
     await mapConcurrent(files, 16, async (rel) =>
       (await exists(path.join(repoDir, rel))) ? rel : null,
     )
   ).filter((rel): rel is string => rel !== null);
+  // RP-256 slice 1: root CLAUDE.md is deliberately NOT in `files` once
+  // placement goes `nested` — the install plans `.claude/CLAUDE.md` instead
+  // — so the generic loop above never sees it. It is still worth reporting:
+  // it is present, and it is kept rather than overwritten, which is exactly
+  // what this list already means for every other entry in it.
+  if (placement === 'nested' && (await exists(path.join(repoDir, ROOT_CLAUDE)))) {
+    conflicts.push(ROOT_CLAUDE);
+  }
   return { files: files.map((p) => ({ path: p })), conflicts };
 }
 
@@ -270,7 +347,8 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
 
   const previous = await readManifest(repoDir);
   const layers = effectiveLayers(previous, options.withWorkflow === true);
-  const files = (await initManifest(layers)).map((f) => f.rel);
+  const placement = await claudeMdPlacementForInstall(repoDir, previous);
+  const files = (await initManifest(layers, placement)).map((f) => f.rel);
 
   // Resolve the whole write set before the first edit. A lexical child can
   // still escape through a symlink at the leaf or in any existing parent, and
@@ -286,9 +364,14 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     destinations.set(rel, dest);
   }
 
-  // Refuse to clobber an existing CLAUDE.md — init edits someone's working
-  // repository (brief §4, non-negotiable).
-  for (const map of MAPS) {
+  // Refuse to clobber whichever CLAUDE.md slot this run actually plans to
+  // write (root, or nested at `.claude/CLAUDE.md`), and AGENTS.md — init
+  // edits someone's working repository (brief §4, non-negotiable). RP-256
+  // slice 1: a pre-existing ROOT CLAUDE.md no longer reaches this loop at
+  // all once placement is `nested` — it is not in `files`, so it is never
+  // this rig's to overwrite in the first place; see `recordInstall` below for
+  // where it is recorded instead.
+  for (const map of mapsFor(placement)) {
     const dest = destinations.get(map);
     if (dest !== undefined && (await exists(dest))) {
       // A map this rig wrote and that still matches its manifest is safe to
@@ -301,17 +384,24 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
         continue;
       }
       // "AGENTS.md" starts with a vowel SOUND ("a" said as a letter, /eɪ/);
-      // "CLAUDE.md" does not — so the article is picked per file rather than
-      // hardcoded to "an", which read as "an CLAUDE.md".
+      // "CLAUDE.md" (root or nested) does not — so the article is picked per
+      // file rather than hardcoded to "an", which read as "an CLAUDE.md".
       const article = /^[aeiou]/i.test(map) ? 'an' : 'a';
+      // Suggesting `upgrade` only makes sense once there is a rig for it to
+      // refresh. With no manifest at all, that suggestion loops straight
+      // into upgrade's OWN "no rig found, run init" refusal — the bug this
+      // slice closes for AGENTS.md's refusal in particular.
+      const remedy =
+        previous !== null
+          ? 'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.'
+          : 'Merge the agent-os map in by hand.';
       throw new InitError(
-        `This repo already has ${article} ${map}. Refusing to overwrite it. ` +
-          'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.',
+        `This repo already has ${article} ${map}. Refusing to overwrite it. ${remedy}`,
       );
     }
   }
 
-  const contents = await initFileContents(repoDir, options.project, layers);
+  const contents = await initFileContents(repoDir, options.project, layers, placement);
   const plannedCount = files.length;
   const actions = await mapConcurrent(files, 16, async (rel) => {
     const dest = destinations.get(rel)!;
@@ -332,7 +422,17 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   const skipped = actions.filter(({ verdict }) => verdict === 'skipped').map(({ rel }) => rel);
 
   if (!options.dryRun) {
-    await recordInstall(repoDir, written, skipped, contents, layers, options.project);
+    // RP-256 slice 1: on a `nested` placement, root CLAUDE.md is the user's
+    // own file — never in `files`, so the loop above never touches it, and
+    // it needs its own evidence entry under the manifest's `kept` (RP-182's
+    // meaning: seen and left, not owned). `undefined` when there is nothing
+    // there to record (or the placement is `root`, where this is simply not
+    // a question).
+    const keptRootClaude =
+      placement === 'nested' ? await readRegularFile(path.join(repoDir, ROOT_CLAUDE)) : null;
+    const extraKept =
+      keptRootClaude !== null ? { [ROOT_CLAUDE]: sha256(keptRootClaude) } : undefined;
+    await recordInstall(repoDir, written, skipped, contents, layers, options.project, extraKept);
   }
 
   return { written, skipped, plannedCount };
@@ -391,9 +491,11 @@ async function readRegularFile(abs: string): Promise<Buffer | null> {
  *
  * The item that asked for this also floated refusing `init` outright on a
  * `create` manifest. It is already refused a step earlier and for a different
- * reason — {@link initProject} throws on the existing `CLAUDE.md`. The gap that
- * leaves is a `create` rig whose `CLAUDE.md` was deleted, and this function is
- * what makes that case safe.
+ * reason — {@link initProject} throws on the existing `AGENTS.md` (root
+ * `CLAUDE.md` no longer refuses outright since RP-256 slice 1; a `nested`
+ * placement leaves it as `kept` instead). The gap that leaves is a `create`
+ * rig whose `AGENTS.md` was deleted, and this function is what makes that
+ * case safe.
  */
 async function recordInstall(
   repoDir: string,
@@ -402,12 +504,18 @@ async function recordInstall(
   contents: Map<string, string>,
   layers: readonly Layer[],
   project?: RigProject,
+  // RP-256 slice 1: evidence for a path that is not in `written`/`skipped` at
+  // all — a `nested` placement's root CLAUDE.md, which `files` never
+  // included in the first place, so the generic loops below never see it.
+  // Merged in exactly like an ordinary `kept` entry once computed by the
+  // caller (`initProject`), which already knows whether it applies.
+  extraKept?: Record<string, string>,
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
   const files = { ...(previous?.files ?? {}) };
   for (const rel of written) files[rel] = sha256(contents.get(rel) ?? '');
-  const kept = { ...(previous?.kept ?? {}) };
+  const kept = { ...(previous?.kept ?? {}), ...(extraKept ?? {}) };
   for (const rel of written) delete kept[rel];
   for (const rel of skipped) {
     if (files[rel] !== undefined) continue; // the rig wrote it once; still its bytes to vouch for

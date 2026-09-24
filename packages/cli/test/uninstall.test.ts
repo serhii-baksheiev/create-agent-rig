@@ -2236,6 +2236,57 @@ describe('planUninstall — the CLAUDE.md/AGENTS.md pair disclosure (round 4, bl
   });
 });
 
+// RP-256 slice 1: on a nested rig (see `init.test.ts`), root CLAUDE.md was
+// never the rig's file — it is the user's, recorded only in `kept` — and
+// `.claude/CLAUDE.md` is the rig-owned shim. The CLAUDE.md/AGENTS.md pair
+// disclosure above exists because removing one half of that PAIR can leave
+// the rulebook unreadable; that reasoning does not apply to a nested rig's
+// root CLAUDE.md at all, because it was never the rig's copy of the
+// rulebook to begin with — AGENTS.md's only rig-owned sibling is the nested
+// shim, not root CLAUDE.md.
+describe('planUninstall — a nested rig preserves the kept CLAUDE.md, without a false pair note (RP-256 slice 1)', () => {
+  const NESTED_CLAUDE = '.claude/CLAUDE.md';
+
+  /** Same construction as `upgrade.test.ts`'s nested-rig fixture. */
+  const installNestedRig = async (userClaudeContent = '# host rules\n'): Promise<string> => {
+    await installRig();
+    const shimBytes = await read('CLAUDE.md');
+    await write(NESTED_CLAUDE, shimBytes);
+    await write('CLAUDE.md', userClaudeContent);
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    delete manifest.files['CLAUDE.md'];
+    manifest.files[NESTED_CLAUDE] = sha256(shimBytes);
+    manifest.kept = { ...manifest.kept, 'CLAUDE.md': sha256(userClaudeContent) };
+    await writeManifest(repo, manifest);
+    return shimBytes;
+  };
+
+  it('removes AGENTS.md and the nested shim, and preserves the user CLAUDE.md byte-identical', async () => {
+    const userBytes = '# host rules\n';
+    await installNestedRig(userBytes);
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, 'AGENTS.md')?.verdict).toBe('remove');
+    expect(actionFor(plan, NESTED_CLAUDE)?.verdict).toBe('remove');
+    expect(actionFor(plan, 'CLAUDE.md')?.verdict).toBe('preserved');
+
+    await applyUninstall(repo, plan);
+    expect(await read('CLAUDE.md')).toBe(userBytes);
+    await expect(readFile(abs('AGENTS.md'))).rejects.toThrow();
+    await expect(readFile(abs(NESTED_CLAUDE))).rejects.toThrow();
+  });
+
+  it('emits no "only rulebook copy" pair note for the kept user CLAUDE.md when AGENTS.md is removed', async () => {
+    await installNestedRig();
+
+    const plan = await planUninstall(repo);
+    const agents = actionFor(plan, 'AGENTS.md');
+    expect(agents?.verdict).toBe('remove');
+    expect(agents?.note).toBeUndefined();
+  });
+});
+
 // PR #241 round 4, blocker 1: the sibling `upgrade` writes when AGENTS.md
 // cannot be resolved automatically (`AGENTS_MD_RESCUE`, never recorded in
 // the manifest) is invisible to the ordinary per-file loop — this is the

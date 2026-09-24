@@ -14,6 +14,16 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## Unreleased
+
+### Added
+
+- **`init` installs beside a pre-existing root `CLAUDE.md` instead of
+  refusing outright.** A repo that already has its own `CLAUDE.md` keeps it
+  byte-identical; the Rig shim installs nested at `.claude/CLAUDE.md`
+  instead, importing the rulebook as `@../AGENTS.md`. Claude Code loads both
+  files. A pre-existing `AGENTS.md` is still refused (RP-256 slice 1).
+
 ## 1.0.1
 
 **1.0.1 is a patch on the 1.0 line.** It closes guard gaps an unattended run

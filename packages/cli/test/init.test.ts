@@ -81,24 +81,51 @@ describe('initProject — the install', () => {
     ).rejects.toThrow();
   });
 
-  it('refuses to clobber an existing CLAUDE.md unless forced', async () => {
-    await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
-    await expect(initProject(repo, {})).rejects.toThrow(InitError);
-    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# mine');
-  });
-
-  // PR #241 round 3 advisory: "already has an CLAUDE.md" is a grammar defect
-  // ("an" before a consonant), pinned here as its own assertion so a later
-  // rewrite of this message cannot silently reintroduce it.
-  it('says "a CLAUDE.md", not "an CLAUDE.md"', async () => {
-    await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
-    await expect(initProject(repo, {})).rejects.toThrow('already has a CLAUDE.md');
-  });
-
-  it('refuses to clobber an existing AGENTS.md', async () => {
+  // RP-256 slice 1: an AGENTS.md refusal is the one MAPS refusal left in this
+  // slice (CLAUDE.md now coexists — see "initProject — CLAUDE.md
+  // coexistence" below). The old blanket-refusal message suggested `upgrade`
+  // unconditionally, which loops straight into upgrade's own "no rig found,
+  // run init" refusal when nothing has been installed yet (the bug this
+  // ticket exists to close) — so the message must not do that while there is
+  // no rig manifest on disk, and it must actually name AGENTS.md, with the
+  // grammatically correct article ("an", not "a", before the vowel sound).
+  it('refuses to clobber an existing AGENTS.md, without looping into the upgrade refusal', async () => {
     await writeFile(path.join(repo, 'AGENTS.md'), '# mine');
-    await expect(initProject(repo, {})).rejects.toThrow(InitError);
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/already has an AGENTS\.md/);
+    expect(message).not.toMatch(/create-agent-rig upgrade/);
     expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe('# mine');
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  // The MAPS loop used to check CLAUDE.md before AGENTS.md and throw on the
+  // first hit — so when BOTH already existed, the message blamed CLAUDE.md
+  // even though slice 1 no longer refuses over CLAUDE.md alone. The message
+  // must name the file that actually blocks the run.
+  it('when both CLAUDE.md and AGENTS.md already exist, blames AGENTS.md — not the coexisting CLAUDE.md', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules\n');
+    await writeFile(path.join(repo, 'AGENTS.md'), '# host agents doc\n');
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/AGENTS\.md/);
+    expect(message).not.toMatch(/already has a CLAUDE\.md/);
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules\n');
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe('# host agents doc\n');
+    await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+    await expect(readManifest(repo)).resolves.toBeNull();
   });
 
   it('never overwrites a pre-existing process file it did not write', async () => {
@@ -116,6 +143,112 @@ describe('initProject — the install', () => {
     expect(result.written).toEqual([]);
     await expect(readFile(path.join(repo, '.claude', 'rules', 'workflow.md'))).rejects.toThrow();
     expect(result.plannedCount).toBeGreaterThan(0);
+  });
+});
+
+// RP-256 slice 1: a repo that already has its own root CLAUDE.md no longer
+// refuses outright. Claude Code loads BOTH `./CLAUDE.md` and
+// `./.claude/CLAUDE.md`, with imports resolved relative to the importing
+// file — so `init` leaves the user's CLAUDE.md byte-for-byte untouched and
+// installs the Rig shim nested at `.claude/CLAUDE.md` instead, importing the
+// canonical rulebook as `@../AGENTS.md`. The user's file is recorded in the
+// manifest's `kept` (evidence, not ownership); `.claude/CLAUDE.md` is an
+// ordinary `files` entry like any other rig-owned path.
+describe('initProject — CLAUDE.md coexistence (RP-256 slice 1)', () => {
+  const USER_CLAUDE = '# host rules — do not touch\n';
+
+  it('installs the nested shim beside a user CLAUDE.md, leaving it byte-identical', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    expect(result.written).toContain('AGENTS.md');
+    expect(result.written).not.toContain('CLAUDE.md');
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+    const shim = await readFile(path.join(repo, '.claude', 'CLAUDE.md'), 'utf8');
+    // Imports resolve relative to the IMPORTING file — `.claude/CLAUDE.md` is
+    // one directory below the repo root, so it climbs back up to AGENTS.md,
+    // unlike the root shim's plain `@AGENTS.md`.
+    expect(shim.split(/\r?\n/, 1)[0]).toBe('@../AGENTS.md');
+  });
+
+  it('records the user CLAUDE.md under `kept`, never `files`, and the nested shim under `files`', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+
+    await initProject(repo, {});
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(USER_CLAUDE));
+    expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+    expect(manifest?.files['.claude/CLAUDE.md']).toBeTruthy();
+    expect(manifest?.files['AGENTS.md']).toBeTruthy();
+  });
+
+  it('is idempotent: a second init leaves the user CLAUDE.md and the nested shim untouched', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+    await initProject(repo, {});
+
+    const second = await initProject(repo, {});
+
+    expect(second.written).toEqual([]);
+    expect(second.skipped).toContain('.claude/CLAUDE.md');
+    expect(second.skipped).toContain('AGENTS.md');
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+  });
+
+  it('a dry run writes nothing when a user CLAUDE.md is present', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+
+    const result = await initProject(repo, { dryRun: true });
+
+    expect(result.written).toEqual([]);
+    await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  // Explicit regression pin: nothing about a CLEAN repo's install may change
+  // because a DIFFERENT repo now takes the nested path — no `.claude/CLAUDE.md`
+  // appears, and the manifest gets no `kept` entry at all, exactly as before.
+  it('a clean repo (no pre-existing CLAUDE.md) is installed exactly as before: no nested shim, no `kept`', async () => {
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('CLAUDE.md');
+    expect(result.written).not.toContain('.claude/CLAUDE.md');
+    await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.files['CLAUDE.md']).toBeTruthy();
+    expect(manifest?.files['.claude/CLAUDE.md']).toBeUndefined();
+    expect(manifest?.kept).toBeUndefined();
+  });
+
+  // The one case still refused in this slice: a pre-existing `.claude/CLAUDE.md`
+  // that this rig never wrote (no manifest entry vouches for it) means the
+  // nested slot is already occupied by something unknown — `init` must not
+  // guess whether it is safe to overwrite, so it refuses exactly like the
+  // AGENTS.md case above, and it must name the file actually in its way.
+  it('refuses when the nested slot is already occupied by an unrecorded `.claude/CLAUDE.md`, and writes nothing', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+    await mkdir(path.join(repo, '.claude'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'CLAUDE.md'), '# something already living here\n');
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    expect((caught as Error).message).toMatch(/\.claude[/\\]CLAUDE\.md/);
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+    expect(await readFile(path.join(repo, '.claude', 'CLAUDE.md'), 'utf8')).toBe(
+      '# something already living here\n',
+    );
+    await expect(readFile(path.join(repo, 'AGENTS.md'))).rejects.toThrow();
+    await expect(readManifest(repo)).resolves.toBeNull();
   });
 });
 
