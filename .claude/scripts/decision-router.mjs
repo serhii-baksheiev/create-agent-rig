@@ -1076,7 +1076,14 @@ const revisionOrNull = (value) =>
   typeof value === 'string' && value !== '' && !value.startsWith('-') ? value : null;
 
 const parseArgs = (argv) => {
-  const args = { base: 'origin/HEAD', head: 'HEAD', files: null, json: false, bad: null };
+  const args = {
+    base: 'origin/HEAD',
+    baseExplicit: false,
+    head: 'HEAD',
+    files: null,
+    json: false,
+    bad: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
@@ -1084,7 +1091,10 @@ const parseArgs = (argv) => {
       const key = arg.slice(2);
       const value = revisionOrNull(argv[++i]);
       if (value === null) args.bad = arg;
-      else args[key] = value;
+      else {
+        args[key] = value;
+        if (key === 'base') args.baseExplicit = true;
+      }
     } else if (arg === '--files') args.files = argv[++i] ?? '';
     // An unrecognised flag was silently ignored, so `--file README.md` routed
     // the whole branch diff at exit 0 — a different change than the caller
@@ -1138,11 +1148,19 @@ const gitFiles = (base, head) => {
  * `rev-parse --verify --quiet` rather than matching that text, so a future
  * change to git's own wording cannot silently break the diagnosis below.
  *
- * `true` when git itself could not even be asked (no `git` on PATH, a
- * signal) — that is a spawn failure, not a "the ref does not exist" answer,
- * so it is reported as "resolves" and left for `gitFiles`'s own catch to
- * surface as the ordinary unreadable-diff message instead of being
- * misreported as a missing ref.
+ * `git rev-parse --verify --quiet <ref>^{commit}` has two distinct non-zero
+ * exits, and only one of them means "the ref does not resolve":
+ *
+ * - **1** — the name genuinely does not resolve. This is the only case this
+ *   function reports as `false`, and the only one the missing-ref message
+ *   above is written for.
+ * - **anything else** — a number that is not 1 (128: no repository here, a
+ *   `safe.directory`/dubious-ownership refusal, a corrupt repository), or no
+ *   number at all (a spawn failure — no `git` on PATH, a signal). Neither is
+ *   "the ref does not exist": this function reports `true` ("resolves") for
+ *   both, so the caller falls through to `gitFiles`, whose own catch surfaces
+ *   git's real cause (its `fatal:` text) instead of the false fresh-checkout
+ *   diagnosis (PR #322 round 1, B1).
  */
 const refResolves = (ref) => {
   try {
@@ -1153,7 +1171,7 @@ const refResolves = (ref) => {
     });
     return true;
   } catch (error) {
-    return typeof error?.status !== 'number';
+    return error?.status !== 1;
   }
 };
 
@@ -1194,12 +1212,22 @@ if (invokedDirectly()) {
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
   if (args.files === null && !refResolves(args.base)) {
+    // The remedy differs by *how* the base got here. The default came from
+    // this file, so a fresh `init`/`create` checkout (`git init`, never `git
+    // clone`) never having set `origin/HEAD` is a real, common explanation and
+    // worth naming. An explicit `--base` came from the caller, so that story
+    // is not true of it — telling it anyway would send an operator chasing
+    // `origin/HEAD` for a ref they typed themselves.
+    const remedy = args.baseExplicit
+      ? 'Check that the ref name is correct — a typo, or a branch that has not ' +
+        'been fetched into this checkout.'
+      : 'A fresh checkout (`git init`, never `git clone`) never sets `origin/HEAD` ' +
+        '— point it at a branch with `git remote set-head origin --auto`, or pass ' +
+        'an explicit `--base <ref>`.';
     process.stderr.write(
       `decision-router: the base revision "${args.base}" does not resolve to a commit in ` +
-        'this repository, so the changed-file diff cannot run. A fresh checkout (`git ' +
-        'init`, never `git clone`) never sets `origin/HEAD` — point it at a branch with ' +
-        '`git remote set-head origin --auto`, or pass an explicit `--base <ref>`. Nothing ' +
-        'was routed — treat this as the expensive lane.\n',
+        `this repository, so the changed-file diff cannot run. ${remedy} Nothing was ` +
+        'routed — treat this as the expensive lane.\n',
     );
     process.exit(1);
   }

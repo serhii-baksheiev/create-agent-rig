@@ -1618,6 +1618,70 @@ describe('the CLI fails closed with a readable diagnosis when origin/HEAD is mis
   });
 });
 
+// PR #322 round-1 code-reviewer blocker B1 (RP-239 part 2): `refResolves`
+// read EVERY non-zero `git rev-parse --verify --quiet` exit as "the ref does
+// not resolve" and always printed A3's fresh-checkout / `origin/HEAD`
+// diagnosis for it. `git rev-parse --verify --quiet <ref>^{commit}` actually
+// has two distinct non-zero exits — 1 when the name truly does not resolve
+// (what A3's fix is about), 128 when git itself failed for an unrelated
+// reason (no repository here at all, a `safe.directory`/dubious-ownership
+// refusal, a corrupt repository). Only the first may get the missing-ref
+// remedy; the second must still surface git's own cause, the way it did
+// before this PR through the `gitFiles` catch.
+describe('refResolves tells a missing ref apart from a git failure (PR #322 round 1, B1)', () => {
+  it("surfaces git's own fatal cause, not the missing-ref remedy, outside a git repository", async () => {
+    const dir = await temp('router-not-a-repo-');
+    const env: NodeJS.ProcessEnv = {
+      ...withoutGitLocation(),
+      GIT_CEILING_DIRECTORIES: path.dirname(dir),
+    };
+    delete env['RIG_RUN_DIR'];
+
+    const result = await runCli(['--json'], dir, env);
+
+    // Fail-closed is unaffected either way — pinned so a message fix cannot
+    // regress the outcome while it changes the text.
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+
+    // This is not a missing ref: `git remote set-head` cannot fix "there is
+    // no repository here", so the A3 remedy must not appear for exit 128.
+    expect(result.stderr, result.out).not.toMatch(/set-head/);
+
+    // Git's own cause (measured: `fatal: not a git repository (or any of the
+    // parent directories): .git`, exit 128) must still reach the operator.
+    expect(result.stderr, result.out).toMatch(/not a git repository/i);
+  });
+
+  it('names a mistyped explicit --base without claiming a fresh checkout never set origin/HEAD', async () => {
+    const dir = await temp('router-explicit-base-');
+    const run = (args: string[]): Promise<void> =>
+      new Promise((resolve, reject) => {
+        execFile(
+          'git',
+          ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+          { cwd: dir, env: withoutGitLocation() },
+          (error, stdout, stderr) => (error ? reject(new Error(stderr || stdout)) : resolve()),
+        );
+      });
+    await run(['init', '-q', '-b', 'main']);
+    await run(['commit', '-q', '--allow-empty', '-m', 'init']);
+
+    const env = withoutGitLocation();
+    delete env['RIG_RUN_DIR'];
+    const result = await runCli(['--base', 'some-typo-ref', '--json'], dir, env);
+
+    expect(result.code, result.out).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr, result.out).toMatch(/some-typo-ref/);
+
+    // Advisory A4: the caller named this base explicitly and mistyped it —
+    // that is not "a fresh checkout that never set origin/HEAD", and the
+    // message must not tell that story here.
+    expect(result.stderr, result.out).not.toMatch(/origin\/HEAD/);
+  });
+});
+
 // A router with no call site routes nothing. These are the correspondence tests
 // the rulebook requires when one fact lives in two artifacts.
 describe('the gate skill and the rules point at the router', () => {

@@ -399,6 +399,32 @@ describe('aggregated doctor (RP-21)', () => {
       expect(check?.fix ?? '').toContain('CLAUDE.md');
     });
 
+    // Advisory A1, PR #322 round-1 code-review report: the strip that removes
+    // `ownedFilePaths` from the emitted record (`doctor.ts`'s
+    // `checks.map(({ rigVersion, ownedFilePaths, ...check }) => ...)`) had no
+    // test of its own. Every one of the tests above still passes if that
+    // destructure is deleted and `ownedFilePaths` rides along under its own
+    // key, because none of them assert the record's key SET — only that a
+    // path is absent from `reason`/`detail` and present in `fix`. This is a
+    // regression pin, not new behaviour: the strip already exists, so this is
+    // expected to pass today and to start failing the moment it regresses.
+    it('carries exactly the documented record keys plus counts — no ownedFilePaths key, and no key but fix names a path', async () => {
+      await initProject(repo, {});
+      const drifted = path.join(repo, 'AGENTS.md');
+      await writeFile(drifted, `${await readFile(drifted, 'utf8')}\nmanual change\n`);
+      const missing = path.join(repo, 'CLAUDE.md');
+      await unlink(missing);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+      expect(check, 'fixture: no rig-owned-files check in this report').toBeTruthy();
+
+      expect(Object.keys(check!).sort()).toEqual(
+        ['counts', 'detail', 'fix', 'id', 'reason', 'status'].sort(),
+      );
+    });
+
     it('counts a single absent owned file with the existing absent-owned-file reason, naming only that path in fix', async () => {
       await initProject(repo, {});
       const missing = path.join(repo, 'CLAUDE.md');

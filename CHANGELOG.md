@@ -19,11 +19,12 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 ### Added
 
 - **`doctor`'s `rig-owned-files` check reports per-reason counts.** The JSON
-  record gains an additive `counts: { absent, contentDrift, lineDrift,
-unreadable }` field, so a caller can see an absent owned file and a
-  content-drifted one at once instead of `reason`'s single precedence-picked
-  word masking one behind the other; `fix` now names the specific affected
-  paths, bounded, while `reason` and `detail` never do (RP-239 A2).
+  record gains an additive
+  `counts: { absent, contentDrift, lineDrift, unreadable }` field, so a caller
+  can see an absent owned file and a content-drifted one at once instead of
+  `reason`'s single precedence-picked word masking one behind the other;
+  `fix` now names the specific affected paths, bounded, while `reason` and
+  `detail` never do (RP-239 A2).
 
 ### Fixed
 
