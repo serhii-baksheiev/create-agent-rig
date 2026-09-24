@@ -345,10 +345,14 @@ const MAX_SHIM_PROBE_BYTES = 4096;
  * outright over a file it was never going to write in the first place.
  * `lstat`s the path itself: anything non-regular (a symlink, a directory,
  * anything else) is simply "not the nested shim", falling through to
- * whatever `root` placement would have decided — the same bounded-read
- * approach as {@link readKeptRootClaudeMd} in `init.ts`, capped at
- * {@link MAX_SHIM_PROBE_BYTES} rather than `init`'s much larger
- * `MAX_KEPT_BYTES`, since only one short line is ever compared.
+ * whatever `root` placement would have decided. Unlike
+ * {@link readKeptRootClaudeMd} in `init.ts`, which vouches for a whole
+ * file's content and so must refuse anything over its cap, this only ever
+ * compares one line — so it never rejects on the file's total size. It
+ * reads at most {@link MAX_SHIM_PROBE_BYTES} bytes, takes the first line of
+ * whatever that read returned, and compares that line alone; a shim with
+ * project-specific content after its first line, however large, is still
+ * recognised.
  */
 async function nestedClaudeShimOnDisk(repoDir: string): Promise<boolean> {
   const dest = onDisk(repoDir, NESTED_CLAUDE);
@@ -370,8 +374,8 @@ async function nestedClaudeShimOnDisk(repoDir: string): Promise<boolean> {
   }
   try {
     const info = await handle.stat();
-    if (!info.isFile() || info.size > MAX_SHIM_PROBE_BYTES) return false;
-    const bytes = Buffer.alloc(MAX_SHIM_PROBE_BYTES + 1);
+    if (!info.isFile()) return false;
+    const bytes = Buffer.alloc(MAX_SHIM_PROBE_BYTES);
     let offset = 0;
     while (offset < bytes.length) {
       const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, null);

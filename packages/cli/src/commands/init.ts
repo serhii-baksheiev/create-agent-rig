@@ -531,7 +531,12 @@ const MAX_KEPT_BYTES = 1024 * 1024;
  * that SAME handle — never a second, independent `lstat`/`stat` call, which
  * would leave a window for the target to change underneath — and reads only
  * from that handle, only when it names a REGULAR file no larger than
- * {@link MAX_KEPT_BYTES}.
+ * {@link MAX_KEPT_BYTES}. The containment check below this DOES resolve the
+ * path a second time, through `realpath(abs)` rather than the handle — that
+ * one is answering a different question (is the target inside `repoDir` at
+ * all, for the advisory A1 rule below) than the size/regularity fstat
+ * settles, and reads the bytes it vouches for from the handle opened
+ * earlier regardless of what a race did to the path in between.
  *
  * security-scanner round 2 advisory A1 (PR #324): `kept` is evidence about
  * THIS repository, committed into a manifest the user pushes — so a target

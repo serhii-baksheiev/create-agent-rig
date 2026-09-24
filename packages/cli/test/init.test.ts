@@ -462,6 +462,137 @@ describe('initProject — a symlinked root CLAUDE.md (RP-256 slice 1, code-revie
       await removeFixture(outside);
     }
   });
+
+  // code-reviewer round 3 blocker: every case above builds its target
+  // OUTSIDE the repo, so `readKeptRootClaudeMd`'s containment check
+  // (`targetReal` outside `repoReal`) already returns `null` on its own,
+  // before the FIFO/`isFile()` check or the size-cap check is ever reached.
+  // A mutation that deletes either of those checks leaves every test above
+  // green, because the containment check alone still produces the same
+  // `kept === undefined` outcome. These four cases place the target INSIDE
+  // the repo, so containment passes and the isFile()/size-cap checks are the
+  // only thing left deciding the outcome — proven by mutation, not merely
+  // asserted: see the round-3 report for the two mutation runs (isFile()
+  // removed → the in-repo FIFO case below goes red; the size cap removed →
+  // the in-repo over-cap case and the exact-boundary "+1" case below go red).
+
+  it('does not block on a root CLAUDE.md symlinked to an IN-REPO FIFO, and records no kept entry for it', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    skipUnless(context, fifosAvailable().ok, fifosAvailable().reason);
+    const target = path.join(repo, 'fifo');
+    try {
+      execFileSync('mkfifo', [target]);
+      await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+      // Same generous bound as the outside-repo FIFO case above: the
+      // property this pins is "does not block", not a tight timing figure.
+      const BOUND_MS = 4_000;
+      const TIMED_OUT = Symbol('initProject did not settle within the bound');
+      const start = Date.now();
+      const outcome = await Promise.race([
+        initProject(repo, {}),
+        new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), BOUND_MS)),
+      ]);
+      const elapsed = Date.now() - start;
+
+      expect(
+        outcome,
+        'initProject did not settle before the bound — it likely blocked reading the FIFO target through the symlink',
+      ).not.toBe(TIMED_OUT);
+      expect(elapsed).toBeLessThan(BOUND_MS);
+      const result = outcome as Awaited<ReturnType<typeof initProject>>;
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      const manifest = await readManifest(repo);
+      expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    } finally {
+      // Best-effort, itself non-blocking — see the outside-repo FIFO case
+      // above for why this cannot turn a red test into a hung process.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          const fh = await open(target, constants.O_WRONLY | constants.O_NONBLOCK);
+          await fh.close();
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+      }
+    }
+  }, 10_000);
+
+  it('records no kept entry for a root CLAUDE.md symlinked to an IN-REPO regular file over the size cap', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(repo, 'docs'), { recursive: true });
+    const target = path.join(repo, 'docs', 'big.md');
+    // ~1.1 MiB — comfortably over a 1 MiB cap without ever approaching a
+    // size that stresses the host.
+    const OVER_CAP_BYTES = 1024 * 1024 + 100 * 1024;
+    await writeFile(target, Buffer.alloc(OVER_CAP_BYTES, 'x'));
+    await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+  });
+
+  it('records a kept entry (the exact bytes, hashed) for an IN-REPO regular target of EXACTLY the 1 MiB cap', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(repo, 'docs'), { recursive: true });
+    const target = path.join(repo, 'docs', 'exact-cap.md');
+    const AT_CAP_BYTES = 1024 * 1024;
+    const content = Buffer.alloc(AT_CAP_BYTES, 'x');
+    await writeFile(target, content);
+    await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(content));
+  });
+
+  it('records no kept entry for an IN-REPO regular target exactly ONE BYTE over the 1 MiB cap', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(repo, 'docs'), { recursive: true });
+    const target = path.join(repo, 'docs', 'one-over-cap.md');
+    const ONE_OVER_CAP_BYTES = 1024 * 1024 + 1;
+    await writeFile(target, Buffer.alloc(ONE_OVER_CAP_BYTES, 'x'));
+    await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+  });
+
+  // code-reviewer round 3, item 3: the containment check is
+  // `targetReal !== repoReal && !targetReal.startsWith(repoReal + path.sep)`
+  // — separator-aware on purpose. A plain `targetReal.startsWith(repoReal)`
+  // (no trailing separator) would treat a SIBLING directory whose name
+  // merely starts with the repo dir's own name as "inside" it — e.g. repo
+  // `.../caf-init-XXXX` and sibling `.../caf-init-XXXX-evil` — even though
+  // the sibling is a different directory entirely.
+  it('records no kept entry for a root CLAUDE.md symlinked into a sibling directory whose name merely starts with the repo directory name', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    const evilSibling = `${repo}-evil`;
+    await mkdir(evilSibling, { recursive: true });
+    try {
+      const targetContent = '# a sibling directory, not the repo itself\n';
+      const target = path.join(evilSibling, 'host.md');
+      await writeFile(target, targetContent);
+      await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+      const result = await initProject(repo, {});
+
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      const manifest = await readManifest(repo);
+      expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    } finally {
+      await removeFixture(evilSibling);
+    }
+  });
 });
 
 // code-reviewer round 1 advisory A8, folded into this round's fix for B1: a

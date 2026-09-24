@@ -1640,6 +1640,38 @@ describe('planUpgrade — a nested rig, CLAUDE.md beside AGENTS.md (RP-256 slice
     expect(plan.actions.find((a) => a.rel === NESTED_CLAUDE)).toBeDefined();
   });
 
+  // code-reviewer round 3 advisory N3 (PR #324): `nestedClaudeShimOnDisk`
+  // rejects on `info.size > MAX_SHIM_PROBE_BYTES` — the file's TOTAL size —
+  // rather than reading only the first `MAX_SHIM_PROBE_BYTES` to find the
+  // one line that matters. Its own doc comment says it reads "the most bytes
+  // ... to find one line", which a total-size rejection does not implement: a
+  // nested shim whose first line is still exactly `@../AGENTS.md`, but which
+  // has gathered MORE than 4 KiB of trailing content afterward (the user's
+  // own notes, say), is refused detection entirely on a bootstrapped
+  // upgrade — falling back to `root`, which plans root `CLAUDE.md` and
+  // offers to replace the user's own file with the shim, exactly the
+  // data-loss direction the manifest-present case above already forbids.
+  it('a bootstrapped upgrade recognises a nested rig from `.claude/CLAUDE.md` even when the file carries more than 4 KiB AFTER its `@../AGENTS.md` first line', async () => {
+    const shimBytes = await installNestedRig();
+    const firstNewline = shimBytes.indexOf('\n');
+    // Comfortably over the 4 KiB probe bound, appended AFTER the first line
+    // — the first line itself, the only thing the probe is documented to
+    // need, is untouched.
+    const bulkyShim = `${shimBytes.slice(0, firstNewline + 1)}${'#'.repeat(4200)}\n${shimBytes.slice(firstNewline + 1)}`;
+    await write(NESTED_CLAUDE, bulkyShim);
+    await rm(abs(MANIFEST_REL));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(plan.bootstrapped).toBe(true);
+    // never planned as the shim target, never told to replace the user's own
+    // root CLAUDE.md — root CLAUDE.md is simply not this rig's file once a
+    // nested rig is recognised.
+    expect(plan.actions.find((a) => a.rel === 'CLAUDE.md')).toBeUndefined();
+    // the nested shim itself is still tracked
+    expect(plan.actions.find((a) => a.rel === NESTED_CLAUDE)).toBeDefined();
+  });
+
   // code-reviewer round 2 advisory N1 (PR #324): `nestedClaudeShimOnDisk`
   // (the bootstrapped path's only signal) reads `.claude/CLAUDE.md` through
   // `readIfPresent` -> `writableOnDisk`, which THROWS `UpgradeError` for
