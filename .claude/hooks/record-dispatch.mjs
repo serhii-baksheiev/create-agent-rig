@@ -17,9 +17,11 @@
 // else this hook writes nothing at all: a run nobody declared is not a run
 // this hook may invent one for.
 //
-// The record is bounded by ONE allowlist, `DISPATCH_FIELDS`, exported here for
-// the reader side (`lib/gate-coverage.mjs`) and for the independent copy this
-// hook's own test keeps (`.claude/rules/invariants.md`, the independent-oracle
+// The record is bounded by ONE allowlist, `DISPATCH_FIELDS`: every key is
+// filtered through it immediately before the write, so a field added to the
+// payload handling but not to the list never reaches the journal. It is
+// exported so this hook's own test can compare it with the independent copy it
+// keeps (`.claude/rules/invariants.md`, the independent-oracle
 // invariant): `schema`, `harness`, `controller`, `agentType`, `agentRef`,
 // `declaredModel`, `declaredEffort`, `declaredSource`. `controller` and
 // `agentRef` are never the raw `session_id`/`agent_id` — they are
@@ -243,7 +245,10 @@ function main() {
     }
 
     try {
-      recordEvent({ runDir, kind, data, now: new Date().toISOString() });
+      const bounded = Object.fromEntries(
+        Object.entries(data).filter(([key]) => DISPATCH_FIELDS.includes(key)),
+      );
+      recordEvent({ runDir, kind, data: bounded, now: new Date().toISOString() });
     } catch {
       // Every `RunJournalError` (undeclared, missing, ended, unusable, busy) is
       // swallowed here on purpose — this hook is observe-only, and a lost

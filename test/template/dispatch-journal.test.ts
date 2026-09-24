@@ -27,7 +27,7 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 //     contention) rather than letting one surface as a crash or a stall.
 //
 // The record it writes is bounded by one allowlist, `DISPATCH_FIELDS`,
-// exported from the hook itself for the READER side (`lib/gate-coverage.mjs`).
+// which the hook filters every record's `data` through before the write.
 // The test below keeps its OWN literal copy rather than importing that export
 // for the allowlist assertion — `invariants.md`'s independent-oracle rule: a
 // test that only ever compares the export to itself cannot see a field that
@@ -600,7 +600,7 @@ describe('record-dispatch.mjs — the event-data allowlist (DISPATCH_FIELDS)', (
           dispatch({
             hook_event_name: 'SubagentStop',
             agent_type: 'code-reviewer',
-            last_assistant_message: 'sbaksheiev@gmail.com finished the review',
+            last_assistant_message: 'reviewer@example.invalid finished the review',
           }),
         ),
         env,
@@ -620,7 +620,7 @@ describe('record-dispatch.mjs — the event-data allowlist (DISPATCH_FIELDS)', (
 describe('record-dispatch.mjs — never persists the payload fields the item forbids', () => {
   it('leaves no trace of cwd, transcript paths, last_assistant_message, or raw session_id/agent_id in events.jsonl', async () => {
     const env = isolatedEnv({ RIG_RUN_DIR: runDir });
-    const canaryEmail = 'sbaksheiev+canary@gmail.com';
+    const canaryEmail = 'reviewer+canary@example.invalid';
     const rawSessionId = 'session-do-not-persist-8f31';
     const rawAgentId = 'agent-do-not-persist-4c02';
     const cwdCanary = '/Users/do-not-persist/workdir';
