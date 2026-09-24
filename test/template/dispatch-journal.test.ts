@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -118,6 +118,25 @@ async function eventsFileBytes(runDir: string): Promise<string> {
   }
 }
 
+/**
+ * RP-263 — `writeUnattended` mirrors a scoped flag into `os.userInfo().homedir`
+ * regardless of `env.HOME` (`unattended-flag.mjs`'s two-home lookup,
+ * `stop-flag.mjs:31-34` shares the same reasoning). A test that writes one and
+ * never calls `clearUnattended` leaves a real
+ * `__PROJECT_NAME__-<hash>-loop-UNATTENDED` file behind in the machine's own
+ * home on every run. This lists (never deletes — the owner sweeps leaks
+ * separately) the names present under the REAL home's `.claude`, so a test can
+ * assert no new one survived it.
+ */
+async function realHomeUnattendedFlagNames(): Promise<string[]> {
+  try {
+    const entries = await readdir(path.join(userInfo().homedir, '.claude'));
+    return entries.filter((name) => name.includes('-loop-UNATTENDED')).sort();
+  } catch {
+    return [];
+  }
+}
+
 let home: string;
 let runDir: string;
 
@@ -229,6 +248,23 @@ describe('record-dispatch.mjs — a run directory has to be declared before it w
 });
 
 describe('record-dispatch.mjs — where the run directory comes from', () => {
+  // RP-263 guard: an armed-then-unarmed unattended flag must leave nothing
+  // behind in the REAL home this process actually runs under — never mind
+  // that every test here points HOME/APPDATA at an isolated fixture.
+  let unattendedFlagNamesBefore: string[];
+
+  beforeEach(async () => {
+    unattendedFlagNamesBefore = await realHomeUnattendedFlagNames();
+  });
+
+  afterEach(async () => {
+    const after = await realHomeUnattendedFlagNames();
+    const leaked = after.filter((name) => !unattendedFlagNamesBefore.includes(name));
+    expect(leaked, `unattended flag(s) leaked into the real home: ${leaked.join(', ')}`).toEqual(
+      [],
+    );
+  });
+
   it('writes into RIG_RUN_DIR when it is declared', async () => {
     const result = await runHook(
       JSON.stringify(dispatch({})),
@@ -243,11 +279,12 @@ describe('record-dispatch.mjs — where the run directory comes from', () => {
 
   it('falls back to the armed unattended flag’s runDir when RIG_RUN_DIR is unset', async () => {
     const project = await mkdtemp(path.join(tmpdir(), 'record-dispatch-project-'));
+    const { writeUnattended, clearUnattended } = (await import(unattendedFlagUrl)) as {
+      writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
+      clearUnattended(env: NodeJS.ProcessEnv): string[];
+    };
+    const env = isolatedEnv({ CLAUDE_PROJECT_DIR: project });
     try {
-      const { writeUnattended } = (await import(unattendedFlagUrl)) as {
-        writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
-      };
-      const env = isolatedEnv({ CLAUDE_PROJECT_DIR: project });
       writeUnattended({ item: 'RP-225', runDir, allow: [] }, env);
 
       const result = await runHook(JSON.stringify(dispatch({})), env, ['--harness=claude']);
@@ -255,6 +292,11 @@ describe('record-dispatch.mjs — where the run directory comes from', () => {
       const events = await readEvents(runDir);
       expect(events).toHaveLength(1);
     } finally {
+      // Disarm BEFORE removing `project`: the flag's mirrored path is derived
+      // from `realpath(project)` (RP-263) — once `project` is gone,
+      // `clearUnattended` would resolve a different (non-existent) path and
+      // leave the real, already-written flag behind.
+      clearUnattended(env);
       await removeFixture(project);
     }
   });
@@ -262,11 +304,12 @@ describe('record-dispatch.mjs — where the run directory comes from', () => {
   it('prefers RIG_RUN_DIR over an armed unattended flag naming a different run', async () => {
     const project = await mkdtemp(path.join(tmpdir(), 'record-dispatch-project-'));
     const otherRunDir = await mkdtemp(path.join(tmpdir(), 'record-dispatch-other-run-'));
+    const { writeUnattended, clearUnattended } = (await import(unattendedFlagUrl)) as {
+      writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
+      clearUnattended(env: NodeJS.ProcessEnv): string[];
+    };
+    const env = isolatedEnv({ CLAUDE_PROJECT_DIR: project, RIG_RUN_DIR: runDir });
     try {
-      const { writeUnattended } = (await import(unattendedFlagUrl)) as {
-        writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
-      };
-      const env = isolatedEnv({ CLAUDE_PROJECT_DIR: project, RIG_RUN_DIR: runDir });
       writeUnattended({ item: 'RP-225', runDir: otherRunDir, allow: [] }, env);
 
       const result = await runHook(JSON.stringify(dispatch({})), env, ['--harness=claude']);
@@ -274,6 +317,9 @@ describe('record-dispatch.mjs — where the run directory comes from', () => {
       expect(await readEvents(runDir)).toHaveLength(1);
       expect(await readEvents(otherRunDir)).toHaveLength(0);
     } finally {
+      // Disarm BEFORE removing `project` — same reasoning as the sibling test
+      // above (RP-263): the flag path is keyed off `realpath(project)`.
+      clearUnattended(env);
       await removeFixture(project);
       await removeFixture(otherRunDir);
     }
