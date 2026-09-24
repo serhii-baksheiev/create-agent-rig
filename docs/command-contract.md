@@ -1166,9 +1166,8 @@ irrelevant distinction at this release's real scale, pinned rather than
 merely asserted (`.claude/rules/invariants.md`, "State the limits — and test
 them") by `packages/cli/test/uninstall.test.ts` › "reads each file once
 however many duplicate imports name the same owned dependency", which counts
-every actual read against a 400,000-duplicate fixture — never a wall-clock
-budget, which a slow disk or a loaded CI runner could blow without the
-per-path invariant itself having broken — stated here only so the claim
+the reads a duplicate-heavy fixture costs against a single-import baseline —
+a count, where the earlier version of that test timed the plan — stated here only so the claim
 matches what the code does rather than rounding up to "bounded by
 `|ownedPaths|`" in both places at once.
 

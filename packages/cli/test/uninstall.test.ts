@@ -697,36 +697,68 @@ describe('planUninstall — wiring files', () => {
   // 5.7 s in a pre-commit run under deliberate load, on the same code. The
   // property this test actually owes evidence for is "one pop-and-skip per
   // duplicate, never a second read" — which is a READ COUNT, not a duration,
-  // and a read count is exactly what a deterministic oracle can pin without
-  // ever asking what the CPU happened to be doing. Two independent
+  // and a read count is what this test asserts: the verdict comes from the
+  // count, never from a duration (the case still has to finish inside the
+  // unit timeout, which is why DUPLICATES is sized below). Two independent
   // assertions stand in for the two ways an extra read per duplicate would
   // otherwise show up: (1) no owned path is ever read more than once during
   // a single `planUninstall`, and (2) the TOTAL number of reads a run with
-  // 400,000 duplicate matches performs is exactly the same as a run whose
-  // hook names the same dependency only once — so a per-duplicate read that
-  // happened to land on a brand-new path each time (rather than re-reading
-  // one it had already read) is still caught, by the second assertion, even
-  // though the first would not see it.
+  // `DUPLICATES` duplicate matches performs is exactly the same as a run
+  // whose hook names the same dependency only once — so a per-duplicate read
+  // that happened to land on a brand-new path each time (rather than
+  // re-reading one it had already read) is still caught, by the second
+  // assertion, even though the first would not see it.
   //
   // RP-245 round 2 (code-reviewer r1): the first cut of this fixture put the
-  // 400,000 duplicate imports in `guard-bash.mjs` — but `.claude/settings.json`
-  // wires `guard-secret-file.mjs` FIRST (`hookFilesReferencedIn` returns hook
-  // paths in the text order they first appear, and a `Set` preserves first-
+  // duplicate imports in `guard-bash.mjs` — but `.claude/settings.json` wires
+  // `guard-secret-file.mjs` FIRST (`hookFilesReferencedIn` returns hook paths
+  // in the text order they first appear, and a `Set` preserves first-
   // occurrence order), and that hook's own single, real import of
   // `hook-input.mjs` already visits it before `guard-bash.mjs`'s turn in the
-  // walk even starts. So EVERY one of the 400,000 duplicates was dropped at
-  // PUSH time (`!visited.has(resolved)` false already) and never queued at
-  // all — 0 pop-and-skips, measured by instrumenting the walk directly. The
+  // walk even starts. So EVERY duplicate was dropped at PUSH time
+  // (`!visited.has(resolved)` false already) and never queued at all — 0
+  // pop-and-skips, measured by instrumenting the walk directly. The
   // duplicates now sit in `guard-secret-file.mjs` itself — the first hook the
-  // walk ever seeds, when `hook-input.mjs` is not yet visited — so all
-  // 400,000 matches are pushed within that one synchronous scan (`visited` is
-  // only ever updated when an entry is POPPED, never mid-scan) and then
-  // genuinely popped-and-skipped one at a time as the queue drains.
+  // walk ever seeds, when `hook-input.mjs` is not yet visited — so every
+  // match is pushed within that one synchronous scan (`visited` is only ever
+  // updated when an entry is POPPED, never mid-scan) and then genuinely
+  // popped-and-skipped one at a time as the queue drains.
+  //
+  // RP-245 round 3 (prose-reviewer r2): this fixture originally pushed and
+  // popped 400,000 duplicates for real. The property it pins is a READ
+  // COUNT, not a duration, so it needs no margin against wall-clock noise —
+  // but pushing and popping 400,000 entries through a live event loop is
+  // itself a duration, and running it as part of the full file under the CI
+  // budget (`ci.yml`, `--testTimeout=15000`) timed out once in 7 runs.
+  // `DUPLICATES` below is picked with a second constraint the correct code
+  // path alone does not impose: it also has to stay decisive under the
+  // read-per-duplicate mutation this fixture exists to catch (round 3
+  // evidence, mutating `protectHookAndDeps`'s pop loop to
+  // `if (visited.has(rel)) { await readFileFn(onDisk(repoDir, rel)); continue; }`)
+  // — that mutation performs `DUPLICATES` extra real, serialized async reads
+  // before the count assertion below ever runs, and at 40,000 (the count
+  // first proposed for this round) that took long enough to hit
+  // `--testTimeout=15000` as a Vitest TIMEOUT rather than the intended
+  // AssertionError, which is exactly the "measures the HOST" failure mode
+  // this whole round exists to remove — just relocated onto the mutated path
+  // instead of the correct one. Measured directly: at `DUPLICATES = 10_000`
+  // the mutated run completes in ~8.5 s (a real AssertionError, count 10000
+  // vs. expected 1), a comfortable margin under the 15 s budget; the correct
+  // path stays well under a second either way, since it does no per-duplicate
+  // read at all.
   it('reads each file once however many duplicate imports name the same owned dependency', async () => {
+    // See the RP-245 round 3 note above: large enough that a per-duplicate
+    // read regression is unmistakable, small enough that even that
+    // regression's real, serialized I/O finishes with margin inside the CI
+    // budget (`ci.yml`, `--testTimeout=15000`).
+    const DUPLICATES = 10_000;
+
     // `.claude/settings.json` wires this hook first among the ones under
-    // `.claude/hooks/` — verified directly against the template's own text
-    // order and `hookFilesReferencedIn`'s Set-of-first-occurrences contract,
-    // not asserted here as a second, driftable copy of that order.
+    // `.claude/hooks/` — verified below, against the installed rig's own
+    // settings text, through the same `hookFilesReferencedIn` Set-of-
+    // first-occurrences contract production reads hook wiring order with, so
+    // a settings.json reorder fails this assertion loudly instead of
+    // silently making the walk seed (and pop-and-skip) a different file.
     const firstWalkedHook = '.claude/hooks/guard-secret-file.mjs';
     const hookInput = '.claude/hooks/lib/hook-input.mjs';
 
@@ -753,9 +785,9 @@ describe('planUninstall — wiring files', () => {
 
     // The baseline: a fresh, separate rig whose hook names the same
     // dependency exactly once — never the SAME directory as the
-    // 400,000-duplicate case, and built first, so neither run's file-system
-    // state (cache warmth, directory size) can be blamed for a difference
-    // the other run's fixture caused.
+    // `DUPLICATES`-duplicate case, and built first, so neither run's
+    // file-system state (cache warmth, directory size) can be blamed for a
+    // difference the other run's fixture caused.
     const baselineRepo = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-baseline-'));
     let baselineReads: string[];
     try {
@@ -791,9 +823,20 @@ describe('planUninstall — wiring files', () => {
 
     await installRig();
     const original = await read(SETTINGS);
+
+    // The fixture's premise: `firstWalkedHook` really is the first hook this
+    // settings.json wires — the same order production reads hook wiring in
+    // (`hookFilesReferencedIn`'s Set-of-first-occurrences contract). If a
+    // settings.json reorder ever changed which hook the walk seeds first,
+    // this fails loudly here instead of the fixture silently exercising 0
+    // pop-and-skips against a different file — the exact RP-245 round 2
+    // mistake, this time caught rather than found by instrumenting the walk
+    // by hand.
+    expect([...hookFilesReferencedIn(original)][0]).toBe(firstWalkedHook);
+
     const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
     await write(SETTINGS, edited);
-    await write(firstWalkedHook, "import { x } from './lib/hook-input.mjs';\n".repeat(400_000));
+    await write(firstWalkedHook, "import { x } from './lib/hook-input.mjs';\n".repeat(DUPLICATES));
 
     const reads: string[] = [];
     const plan = await planUninstall(repo, { readFile: countingReadFile(reads) });
@@ -821,10 +864,10 @@ describe('planUninstall — wiring files', () => {
     }
     // The independent oracle: not "did every per-path count stay at 1" (the
     // loop above already answers that) but "is the TOTAL read count for
-    // 400,000 duplicate matches identical to one match" — a mutation that
-    // added a read per duplicate on a never-before-seen path each time would
-    // pass the per-path check above and still be caught here.
-    expect(reads.length, 'total reads for 400,000 duplicates vs. a single match').toBe(
+    // `DUPLICATES` duplicate matches identical to one match" — a mutation
+    // that added a read per duplicate on a never-before-seen path each time
+    // would pass the per-path check above and still be caught here.
+    expect(reads.length, `total reads for ${DUPLICATES} duplicates vs. a single match`).toBe(
       baselineReads.length,
     );
   });
@@ -865,7 +908,16 @@ describe('planUninstall — wiring files', () => {
       let plan: UninstallPlan | undefined;
       try {
         plan = await planUninstall(repo);
-      } catch {
+      } catch (err) {
+        // A bare catch here would also accept a rejection this fixture never
+        // intended to trigger — e.g. the manifest read itself failing for an
+        // unrelated reason — and call that a pass. Pin the one rejection
+        // master's own behaviour actually produces: a raw Node fs error
+        // reading the seeder itself (never wrapped in `UninstallError`),
+        // EACCES, naming the seeder's own absolute path.
+        const fsError = err as NodeJS.ErrnoException;
+        expect(fsError.code).toBe('EACCES');
+        expect(fsError.path).toBe(abs(guardSecretFile));
         plan = undefined; // rejecting the whole plan also satisfies this test
       }
       if (plan !== undefined) {
