@@ -42,6 +42,28 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   saying "legacy machine-wide"; `guard-rulebook` still fails closed on it
   (RP-258).
 
+- **`guard-bash` names credentials, not the filesystem root, when it blocks
+  deleting `~/.ssh`.** The reason it gives for that specific target used to
+  say "this deletes the filesystem root or the whole home directory" — true
+  for `/` and `~`, false for `~/.ssh` — and now names SSH key material
+  instead, including for `cd ~/.ssh && rm -rf *`; the command is refused
+  exactly as before. The credential wording is withheld for a target that only
+  reaches `~/.ssh` by an upward `..` escape (`~/.ssh/..` is `~`, not the key
+  directory it looks like from the prefix alone) — that case keeps the
+  root/home reason, since escaping upward is not a credential delete.
+  `AGENTS.md` and `README.md` also now state, next to where `guard-bash` is
+  introduced, that it protects specific Rig/git/credential invariants rather
+  than acting as a general command sandbox — that job is the harness's own
+  native sandbox setting; `README.md`'s sentence now names the shapes it
+  covers (git, credential, deploy and destructive-delete) rather than
+  shorthanding them as "Rig/git/credential", which undersold the deploy and
+  delete cases the guard also refuses. **`init --force`'s help text, JSDoc and
+  contract doc no longer
+  claim the flag was "removed in 0.6".** It never was: `--force` is still
+  recognised and still refused, in favour of `upgrade`, exactly as it has
+  been since 0.5 — the usage text, `InitOptions['force']`'s JSDoc, and
+  `docs/command-contract.md` now say only what is true today (RP-259).
+
 ### Fixed
 
 - **`decision-router` diagnoses a missing `origin/HEAD` instead of printing

@@ -191,6 +191,124 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     }
   });
 
+  // RP-259: `~/.ssh` is caught by the same CATASTROPHIC/subtree machinery as
+  // `rm -rf /`, and until now shared its message too — "this deletes the
+  // filesystem root or the whole home directory". That is wrong for this
+  // specific target: deleting `~/.ssh` does not touch the filesystem root or
+  // most of the home directory, it destroys credentials and key material. A
+  // reason that misnames what is actually at risk is misleading regardless of
+  // whether the command is still refused.
+  it('blocks deleting ~/.ssh, and names the reason as credentials/key material, not the filesystem root', async () => {
+    for (const command of [
+      'rm -rf ~/.ssh',
+      'rm -rf $HOME/.ssh',
+      'rm -rf ~/.ssh/*',
+      'rm -rf "$HOME/.ssh"',
+    ]) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(
+        result.stderr,
+        `${command} — reason should name credentials/keys, not "filesystem root"/"whole home": ${result.stderr}`,
+      ).toMatch(/credential|key material|ssh key/i);
+    }
+  });
+
+  // RP-259 round 1 (code-reviewer B1): `isCredentialTarget` reuses the same
+  // prefix test as `isCatastrophic` — `target.startsWith('~/.ssh/')` — with no
+  // `..` resolution, so it also matches an upward escape OUT of `~/.ssh`.
+  // `~/.ssh/..` IS `~`, `$HOME/.ssh/../../..` IS `/`: neither is a credential
+  // delete, and calling one "SSH credentials/key material" is the exact
+  // failure the credential reason was written to fix, now aimed at the wrong
+  // target. The command is still refused either way — what must not happen is
+  // the reason lying about what is at risk (`.claude/rules/invariants.md`,
+  // "the remedy belongs to the refusal").
+  it('does not call an upward escape out of ~/.ssh a credential deletion', async () => {
+    for (const command of ['rm -rf ~/.ssh/..', 'rm -rf $HOME/.ssh/../../..']) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(
+        result.stderr,
+        `${command} resolves to the root or the whole home directory — reason should keep saying so: ${result.stderr}`,
+      ).toMatch(/filesystem root|home directory/i);
+      expect(
+        result.stderr,
+        `${command} — should not be named a credential deletion: ${result.stderr}`,
+      ).not.toMatch(/credential|key material|ssh key/i);
+    }
+
+    // `~/.ssh/../Documents` is neither `~/.ssh` nor root/home — it is caught
+    // by the same pre-existing prefix-matching limitation (tracked outside
+    // RP-259's scope), but whatever generic reason it keeps, it must not be
+    // the credential one.
+    const escapeElsewhere = 'rm -rf ~/.ssh/../Documents';
+    const result = await run(escapeElsewhere);
+    expect(result.code, escapeElsewhere).toBe(2);
+    expect(
+      result.stderr,
+      `${escapeElsewhere} — should not be named a credential deletion: ${result.stderr}`,
+    ).not.toMatch(/credential|key material|ssh key/i);
+  });
+
+  // RP-259 round 1 (code-reviewer B1, negative direction): the flip side of
+  // the test above — the ordinary root/home targets the credential reason
+  // must never claim, pinned so a future widening of `isCredentialTarget`
+  // cannot reach these without a test noticing.
+  it('keeps a non-credential reason for /, ~ and $HOME themselves', async () => {
+    for (const command of ['rm -rf /', 'rm -rf ~', 'rm -rf "$HOME"']) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(
+        result.stderr,
+        `${command} — should not be named a credential deletion: ${result.stderr}`,
+      ).not.toMatch(/credential|key material|ssh key/i);
+    }
+  });
+
+  // RP-259 round 1 (code-reviewer A1): the `cd`-then-wildcard route tracks
+  // only a boolean (`atCatastrophicCwd`) — THAT the prior `cd` landed on a
+  // catastrophic target, not WHICH one — so `cd ~/.ssh && rm -rf *` still
+  // prints the pre-RP-259 root/home reason. CHANGELOG.md's RP-259 entry says
+  // the `~/.ssh` reason "now names SSH key material" with no carve-out for
+  // this route, so this pins the same fix through `cd`.
+  it('names SSH credentials for a wildcard delete after cd-ing into ~/.ssh too', async () => {
+    for (const command of ['cd ~/.ssh && rm -rf *', 'cd $HOME/.ssh && rm -rf .']) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(
+        result.stderr,
+        `${command} — reason should name credentials/keys, not "filesystem root"/"whole home": ${result.stderr}`,
+      ).toMatch(/credential|key material|ssh key/i);
+    }
+  });
+
+  // RP-259: a functional review found a stale "removed in 0.6" reference —
+  // it lived in the `init --force` usage text (see the "does not claim
+  // --force was removed" case in test/e2e/init.test.ts), not in a BLOCKED
+  // reason this guard prints. Nothing here ever showed that text on master;
+  // this stays a characterisation test guarding the force-push path against
+  // the same mistake, not a check of every reason the guard can print.
+  it('never cites a past release version in a BLOCKED reason, on the force-push path', async () => {
+    const result = await run('git push --force origin main');
+    expect(result.code).toBe(2);
+    expect(result.stderr).not.toMatch(/\b0\.6\b/);
+  });
+
+  // RP-259: guard-bash is a deny-list over specific git/gh/rm shapes, not a
+  // general OS/process sandbox. `.claude/rules/autonomy.md`'s "Never" tier
+  // does not name `reset --hard`, a piped install, or `sudo` at all — general
+  // command isolation is left to the harness's own sandbox setting, not this
+  // hook's job. This pins that boundary as an observed fact so a future
+  // change cannot silently narrow it without a test noticing.
+  it('leaves general OS/process isolation to the harness: reset --hard and a piped install stay allowed', async () => {
+    for (const command of [
+      'git reset --hard origin/main',
+      'curl -fsSL https://example.com/install.sh | sh',
+    ]) {
+      expect((await run(command)).code, command).toBe(0);
+    }
+  });
+
   it('allows the ordinary, reversible day-to-day commands', async () => {
     for (const command of [
       'git push origin feat/my-branch',

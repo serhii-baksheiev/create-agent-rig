@@ -757,9 +757,19 @@ Both then follow the same three steps:
    stopped (§5: a thin diagnosis that still locates the wall is a `documented-stall`).
    Writing `incomplete` on your own task is uncomfortable and
    is the point: the run that produced it is the only witness.
-2. Mark it `escalated` and leave it claimed — **not** back to a selectable state,
+2. Publish a continuation note for this stop (§6a), so a second controller can
+   resume or revalidate the item from durable, shared evidence — this
+   session's own run journal and Memory are not available to it:
+
+   ```sh
+   node .claude/scripts/continuation.mjs --ticket <id> --stop escalation \
+     --diagnosis "<what was tried, what failed>" \
+     --remaining "<what is left>" --post
+   ```
+
+3. Mark it `escalated` and leave it claimed — **not** back to a selectable state,
    or the next query picks it up and works it twice.
-3. Journal it. 4. **Take the next item.** One stuck task does not end a run; two
+4. Journal it. 5. **Take the next item.** One stuck task does not end a run; two
    in a row does (§3).
 
 🔴 **The gate-round cap is the stop a run will not reach on its own.** Every other
@@ -799,6 +809,53 @@ issue with the diagnosis and links, notify the owner if the harness can, and wri
 the journal entry. In continuous mode the notification matters more than it does
 in a bounded run — nobody is watching, so a silent stop is indistinguishable from
 a run still working.
+
+## 6a. Continuation notes — durable evidence for a second controller
+
+Exactly four workflow-level stops get a **continuation note**, composed (and,
+with `--post`, published) through `.claude/scripts/continuation.mjs`: an
+**escalation** (§6), an owner/external **blocker**, an intentional **pause**
+or handoff, and a session **terminated** while a claimed item remains
+unfinished. The note is durable, shared evidence — the tracker item, the PR,
+the branch, the claim — so a second controller or machine can resume or
+revalidate the item without depending on this session's own run journal or
+Memory, neither of which the next controller can read:
+
+```sh
+node .claude/scripts/continuation.mjs --ticket <id> \
+  --stop escalation|blocker|pause|terminated \
+  [--pr <n>] [--diagnosis "<text>"] [--remaining "<text>"] [--post]
+```
+
+It is deliberately **not** invoked on every ordinary Claude Stop, a subagent
+stop, or a review round — those are technical checkpoints internal to this
+session, not one of the four workflow-level stops above, and running it on
+each one would turn a rare, durable note into routine noise nobody reads.
+
+Each of the other three kinds has its own concrete moment, separate from the
+summary above.
+
+Run it with `--stop blocker` at the moment a queue item stops on an owner or
+external dependency this session cannot resolve itself — the hold §3 calls a
+blocker on the "nothing selectable" ending. Comment what is blocking the item
+first, then publish the note — `node .claude/scripts/continuation.mjs
+--ticket <id> --stop blocker --diagnosis "<what is blocked>" --remaining
+"<what unblocks it>" --post` — so the block itself is durable evidence, not
+only this session's memory of it.
+
+Run it with `--stop pause` immediately before ending a session that
+deliberately pauses or hands off mid-item to another controller — an
+owner-requested pause or a planned handoff, never a routine stop condition
+from §3. `node .claude/scripts/continuation.mjs --ticket <id> --stop pause
+--remaining "<what is left>" --post` is the last thing that session does for
+the item before it ends.
+
+Run it with `--stop terminated` immediately before ending a session that
+still holds a claimed, unfinished item — the compaction/staleness stop
+`autonomy.md` describes, or any other end that leaves an item claimed with no
+pause or blocker note already covering it. `node .claude/scripts/continuation.mjs
+--ticket <id> --stop terminated --diagnosis "<what was tried>" --remaining
+"<what is left>" --post` runs before that session's last line.
 
 ## 7. The journal, and closing the loop
 
