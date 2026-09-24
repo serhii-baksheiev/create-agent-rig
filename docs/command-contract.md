@@ -343,28 +343,61 @@ fields:
 - `detail` — what was observed.
 - `fix` — what a human should do about it.
 
-`id` has a closed set of seven fixed values at 1.0. A single id may be emitted
-from more than one branch of `packages/cli/src/commands/doctor.ts` — one per
-outcome of the same check — so what identifies a check is the id, never the
-call site:
+`id` has a closed set of eight fixed values as of the RP-229 minor bump. A
+single id may be emitted from more than one branch of
+`packages/cli/src/commands/doctor.ts` — one per outcome of the same check —
+so what identifies a check is the id, never the call site:
 
 | `id`              | what it checks                                                                                                                                                                                                                               |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `rig-manifest`    | Whether `.claude/.rig-manifest.json` exists and parses — absent is a warning, unreadable or corrupt is a failure.                                                                                                                            |
 | `rig-owned-files` | Whether every manifest-recorded owned path still matches its recorded bytes, distinguishing absence, content drift, and line-ending-only drift from a pristine install; an owned path that cannot be read at all is the one failing outcome. |
+| `rig-version`     | Whether the CLI's own version and the version recorded in the manifest can be compared, and if so, which one is ahead — see "`rig-version` (RP-229)" below.                                                                                  |
 | `guards`          | Whether the installed hook wiring and the installed guard bytes match this package's own, verified by running allowed/denied fixtures against the installed guards in a disposable directory.                                                |
 | `workflow`        | For the optional workflow layer, whether the installed workflow scripts — including the frozen revalidation and claim-record mechanisms — still match the installed bytes; `not-selected` when the manifest does not record that layer.      |
 | `custom-memory`   | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                             |
 | `integrations`    | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                        |
 | `spec-kit`        | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                       |
 
-This is the closed set at 1.0: like every other closed value domain this
-contract names, adding an eighth fixed id is a minor bump, and removing or
-renaming one of the seven above needs a major one (`## Deprecation policy and
-ledger`). It excludes the per-integration and per-harness records the same
-run also emits — `id: '<integration>:<harness>'` (e.g.
-`figma-mcp:claude-code`) or `id: '<integration>:harness-selection'` — whose
-ids are built from whatever the caller declared, not fixed here.
+This is the closed set as of the RP-229 minor bump: like every other closed
+value domain this contract names, adding a ninth fixed id is a minor bump, and
+removing or renaming one of the eight above needs a major one (`##
+Deprecation policy and ledger`). It excludes the per-integration and
+per-harness records the same run also emits — `id: '<integration>:<harness>'`
+(e.g. `figma-mcp:claude-code`) or `id: '<integration>:harness-selection'` —
+whose ids are built from whatever the caller declared, not fixed here.
+
+### `rig-version` (RP-229)
+
+`rig-version` compares the CLI's own version with the version recorded in
+`.claude/.rig-manifest.json`, so a developer running a mutating command
+(`setup`, `upgrade`) against a repository whose manifest was written by a
+newer rig finds out before acting on stale assumptions. Both versions must
+match strict `major.minor.patch` (no prerelease or build metadata) for the
+comparison to be meaningful; the check is only emitted when the manifest
+itself parses (`rig-manifest` passed) — an absent or unreadable manifest
+emits no `rig-version` record at all. Its four reasons:
+
+- `cli-older-than-repository` — the manifest's version is newer than this
+  CLI's own; `warn`. An older CLI cannot install what a newer CLI already
+  wrote, so the `fix` names the exact recorded version to update to and holds
+  off both `setup` and `upgrade` until then.
+- `versions-match` — the two versions are identical; `ok`.
+- `repository-older-than-cli` — the manifest's version is older than this
+  CLI's own; `ok`, not a warning. This is ordinary, PR-reviewed `upgrade`
+  territory, not a mismatch to flag.
+- `version-uncomparable` — either version fails the strict
+  `major.minor.patch` shape (a prerelease tag, or manifest bytes `parseManifest`
+  still accepts as a string but not as a version); `warn`, without guessing a
+  direction. The recorded value may itself be the unparseable one, so the
+  `fix` cannot suggest updating to it — it instead names `setup` and
+  `upgrade` as the operations to hold off on until the two versions are
+  compared by hand.
+
+By team convention, a repository's recorded rig version moves only through an
+ordinary, reviewed pull request that runs `upgrade` — there is no distributed
+upgrade manager reconciling checkouts on its own, and `doctor` only warns; it
+never mutates the manifest or the installation to resolve a mismatch itself.
 
 The status set is closed: ok, warn, fail.
 

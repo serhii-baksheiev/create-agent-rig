@@ -15,11 +15,53 @@ import {
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
+import { packageVersion } from '../lib/version.js';
 
 type Status = 'pass' | 'warn' | 'fail';
-type Check = { id: string; status: Status; reason: string };
+type Check = {
+  id: string;
+  status: Status;
+  reason: string;
+  /**
+   * Raw CLI and manifest-recorded versions, carried from `rigChecks` only for
+   * `id: 'rig-version'` — used to build the human-facing `detail`/`fix` text
+   * below and stripped before the record reaches the report (RP-229).
+   */
+  rigVersion?: { cli: string; repository: string };
+};
 export type DoctorOptions = { cwd: string; args: string[]; env?: NodeJS.ProcessEnv };
 export type DoctorResult = { exitCode: number; stdout: string; stderr: string };
+
+const STRICT_SEMVER = /^\d+\.\d+\.\d+$/;
+
+/** Strict `major.minor.patch` parse — `null` for anything else (prerelease, garbage). */
+function strictSemver(raw: string): [number, number, number] | null {
+  if (!STRICT_SEMVER.test(raw)) return null;
+  const [major, minor, patch] = raw.split('.').map(Number);
+  return [major!, minor!, patch!];
+}
+
+/** `-1` when `a` < `b`, `0` when equal, `1` when `a` > `b`. */
+function compareSemver(a: [number, number, number], b: [number, number, number]): number {
+  for (let i = 0; i < 3; i += 1) {
+    if (a[i]! !== b[i]!) return a[i]! < b[i]! ? -1 : 1;
+  }
+  return 0;
+}
+
+/**
+ * The `rig-version` fix text differs by reason (RP-229): `cli-older-than-repository`
+ * names the exact recorded version to update to, while `version-uncomparable`
+ * cannot — the recorded value may itself be the garbage that broke the
+ * comparison — so it sends the developer to compare by hand instead. Both
+ * name `setup` and `upgrade` as the operations to hold off on.
+ */
+function rigVersionFix(reason: string, versions: { cli: string; repository: string }): string {
+  if (reason === 'cli-older-than-repository') {
+    return `Update create-agent-rig to at least ${versions.repository} before running setup or upgrade in this repository.`;
+  }
+  return "Compare the CLI version with the version recorded in this repository's manifest by hand before running setup or upgrade.";
+}
 
 function text(bytes: Buffer): string | undefined {
   try {
@@ -38,6 +80,34 @@ async function rigChecks(root: string, codexHash?: string): Promise<Check[]> {
   if (manifest === null || Object.keys(manifest.files).length > 4096)
     return [{ id: 'rig-manifest', status: 'fail', reason: 'unreadable-manifest' }];
   const checks: Check[] = [{ id: 'rig-manifest', status: 'pass', reason: 'valid' }];
+  const manifestVersion = strictSemver(manifest.version);
+  // `packageVersion()` reads and parses this package's own `package.json` —
+  // if that read or parse throws, the rig-version check degrades to
+  // `version-uncomparable` rather than failing the whole doctor run.
+  let cliRaw: string | undefined;
+  try {
+    cliRaw = await packageVersion();
+  } catch {
+    cliRaw = undefined;
+  }
+  const cliVersion = cliRaw === undefined ? null : strictSemver(cliRaw);
+  const rigVersion = { cli: cliRaw ?? '', repository: manifest.version };
+  if (manifestVersion === null || cliVersion === null) {
+    checks.push({ id: 'rig-version', status: 'warn', reason: 'version-uncomparable', rigVersion });
+  } else {
+    const cmp = compareSemver(manifestVersion, cliVersion);
+    checks.push({
+      id: 'rig-version',
+      status: cmp > 0 ? 'warn' : 'pass',
+      reason:
+        cmp > 0
+          ? 'cli-older-than-repository'
+          : cmp < 0
+            ? 'repository-older-than-cli'
+            : 'versions-match',
+      rigVersion,
+    });
+  }
   let contentDrift = false;
   let lineDrift = false;
   let absent = false;
@@ -194,23 +264,27 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const report = {
     schemaVersion: 1,
     status: status === 'pass' ? 'ok' : status,
-    checks: checks.map((check) => ({
+    checks: checks.map(({ rigVersion, ...check }) => ({
       ...check,
       status: check.status === 'pass' ? 'ok' : check.status,
       detail:
         check.reason === 'workflow-verified'
           ? 'Workflow and frozen revalidation scripts match this package; the RP-26 decision is not observed.'
-          : check.reason.replaceAll('-', ' '),
+          : check.id === 'rig-version' && rigVersion
+            ? `${check.reason.replaceAll('-', ' ')} (cli ${rigVersion.cli}, repository ${rigVersion.repository})`
+            : check.reason.replaceAll('-', ' '),
       fix:
         check.status === 'pass'
           ? ''
-          : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
-            ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
-            : check.id === 'custom-memory'
-              ? 'Check the machine-scoped Memory installation and its compatible version.'
-              : check.id === 'spec-kit'
-                ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
-                : 'Review create-agent-rig setup list and the intended provider wiring.',
+          : check.id === 'rig-version'
+            ? rigVersionFix(check.reason, rigVersion ?? { cli: '', repository: '' })
+            : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
+              ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
+              : check.id === 'custom-memory'
+                ? 'Check the machine-scoped Memory installation and its compatible version.'
+                : check.id === 'spec-kit'
+                  ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
+                  : 'Review create-agent-rig setup list and the intended provider wiring.',
     })),
     integrations,
     memory: { ...memory, status: memory.status === 'pass' ? 'ok' : memory.status },
