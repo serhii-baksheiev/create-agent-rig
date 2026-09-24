@@ -811,24 +811,30 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
 // and point at the pin that already proves it for the mutating-call retry
 // rule (`queue-jira.test.ts` › "does not retry %s").
 describe('the claim() headers scope "never throws" to a write that has already landed', () => {
-  it('jira.mjs says claim() throws only if the write itself fails, and points at the retry pin', async () => {
+  it('jira.mjs says claim() throws before its write or when the write itself fails, and points at the retry pin', async () => {
     const source = await readFile(path.join(queueDir, 'jira.mjs'), 'utf8');
     expect(
       source,
       'jira.mjs does not scope the never-throws claim to "the write itself fails"',
-    ).toMatch(/throws only if the write itself fails/i);
+    ).toMatch(/throws before its write[\s\S]{0,160}?or when the write itself fails outright/i);
+    expect(source, 'the header still claims claim() throws only when the write fails').not.toMatch(
+      /throws only if the write itself fails/i,
+    );
     expect(
       source,
       'jira.mjs does not point at the queue-jira.test.ts pin for a write that fails outright',
     ).toMatch(/does not retry %s/);
   });
 
-  it('github-issues.mjs says claim() throws only if the write itself fails', async () => {
+  it('github-issues.mjs says claim() throws before its write or when the write itself fails', async () => {
     const source = await readFile(path.join(queueDir, 'github-issues.mjs'), 'utf8');
     expect(
       source,
       'github-issues.mjs does not scope the never-throws claim to "the write itself fails"',
-    ).toMatch(/throws only if the write itself fails/i);
+    ).toMatch(/throws before its write[\s\S]{0,160}?or when the write itself fails outright/i);
+    expect(source, 'the header still claims claim() throws only when the write fails').not.toMatch(
+      /throws only if the write itself fails/i,
+    );
   });
 });
 

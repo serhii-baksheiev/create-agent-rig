@@ -611,8 +611,9 @@ const rebaseline = async (ticket, env) => {
  * a looped one included — writes its own changelog history, and that this is
  * untested against a live tracker", so the assumption cannot silently vanish.
  *
- * claim() throws only if the write itself fails outright — every path returns
- * once the write has landed, never merely because verification could not
+ * claim() throws before its write (a failed pre-read, or no in-progress
+ * transition offered) or when the write itself fails outright — every path
+ * returns once the write has landed, never merely because verification could not
  * confirm the outcome — exactly as every other mutating call in this adapter,
  * `test/template/queue-jira.test.ts` (absent in a generated rig) › "does not
  * retry %s" pins. `reason` is one of `claim-stale` (refused before
