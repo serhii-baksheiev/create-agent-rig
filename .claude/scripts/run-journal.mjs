@@ -39,22 +39,51 @@
  * disagree the first time either changes, and a rotation scheme for files nobody
  * has accumulated is invention.
  *
- * ⚠ **It assumes one writer.** `seq` is read from the files and written back with
- * no lock, so two processes sharing one run directory can compute the same
- * number. That is *detected* on the next read or write and never silently
- * accepted — but detection is where it ends: the journal then refuses records
- * rather than repairing itself, and the run's trace stops there. One run
- * directory per run is the caller's part of the contract.
+ * ✅ **Writers in one run directory are serialised, not merely detected.**
+ * `append()` takes an exclusive lock — `<runDir>/.journal.lock`, opened `wx` —
+ * before it reads `seq` and before it writes, so two processes sharing one run
+ * directory take turns rather than racing:
+ * `test/template/run-journal-writers.test.ts` (absent in a generated rig) ›
+ * "eight concurrent recordEvent calls land as one run with seq exactly 1..8".
+ * The wait for a held lock is bounded — up to ~2s, in short steps, never a
+ * spin — and giving up there is a new failure kind, `'busy'`, classified by
+ * `isTraceExhausted` exactly like `'unusable'`/`'ended'`: a busy lock costs the
+ * caller one lost RECORD, never the run. See the same file ›
+ * "throws a `busy` RunJournalError within a bounded time when the lock is
+ * fresh and held, and writes nothing". A lock a crashed writer left behind is
+ * reclaimed once it is older than ~10s, so one dead process cannot lock a run
+ * directory out forever: see the same file ›
+ * "writes the record and leaves no lock file behind, once the existing lock is
+ * old enough to be stale". `readRun` takes no lock at all — many concurrent
+ * readers is not the problem this serialises — and tolerates a final line with
+ * no trailing newline as a record another writer has not finished flushing
+ * yet, skipping it rather than refusing the whole run: see the same file ›
+ * "returns the complete records and skips a final line with no trailing
+ * newline". `append()` keeps its existing strictness on that same case,
+ * because a writer must never build the next `seq` on top of a line nobody
+ * can vouch for. One run directory per run remains the caller's part of the
+ * contract — this serialises writers sharing one, it does not make sharing
+ * one across two different runs safe (`docs/decisions/run-directory.md`).
  */
 
-import { appendFileSync, readFileSync, statSync } from 'node:fs';
+import { appendFileSync, closeSync, openSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 
 const DECISIONS = 'decisions.jsonl';
 const EVENTS = 'events.jsonl';
 
 /** The end marker is an ordinary record; this is the field that makes it one. */
 const RUN_END = 'run-end';
+
+/** The exclusive lock every `append()` call takes before it reads or writes. */
+const LOCK_FILE = '.journal.lock';
+/** Total time a caller waits for a held lock before giving up as `'busy'`. */
+const LOCK_WAIT_MS = 2000;
+/** One wait step — short, and never a busy spin (`Atomics.wait` blocks). */
+const LOCK_STEP_MS = 25;
+/** A lock older than this is a crashed writer's, not a live one's. */
+const STALE_LOCK_MS = 10000;
 
 /**
  * Why a journal call failed, as a value rather than a sentence.
@@ -71,6 +100,7 @@ export const JOURNAL_FAILURES = Object.freeze([
   'field-invalid', // a field was supplied in a shape the record cannot carry
   'unusable', // the journal on disk cannot be trusted (sequence, or unreadable)
   'ended', // this run already carries its run-end marker
+  'busy', // another writer held the lock past the bounded wait; the record is lost
 ]);
 
 export class RunJournalError extends Error {
@@ -93,7 +123,8 @@ export class RunJournalError extends Error {
  * caught before anything happened and fixed in a second.
  */
 export const isTraceExhausted = (error) =>
-  error instanceof RunJournalError && (error.failure === 'unusable' || error.failure === 'ended');
+  error instanceof RunJournalError &&
+  (error.failure === 'unusable' || error.failure === 'ended' || error.failure === 'busy');
 
 const requireRunDir = (runDir) => {
   if (typeof runDir !== 'string' || runDir.trim() === '') {
@@ -180,8 +211,13 @@ const requireField = (name, value) => {
  * the normal state. A file that exists and does not parse is NOT: folding it
  * into an empty list would silently shorten the trace, and a shorter trace of a
  * run is indistinguishable from a trace of a shorter run.
+ *
+ * `tolerateUnterminatedTail` is `readRun`'s one exception to that rule: a file
+ * whose last byte is not `\n` has a writer mid-flush, not a corrupt file, so
+ * that one line is dropped rather than parsed. `append()` never opts in — it
+ * must never build the next `seq` on top of a line nobody can vouch for.
  */
-const linesOf = (runDir, file) => {
+const linesOf = (runDir, file, { tolerateUnterminatedTail = false } = {}) => {
   const path = join(runDir, file);
   let raw;
   try {
@@ -197,22 +233,24 @@ const linesOf = (runDir, file) => {
     );
   }
 
-  return raw
-    .split('\n')
-    .filter((line) => line.trim() !== '')
-    .map((line, index) => {
-      try {
-        return JSON.parse(line);
-      } catch (error) {
-        throw new RunJournalError(
-          'unusable',
-          `${path} line ${index + 1} is not a journal record, so the sequence cannot be ` +
-            'checked and the order of this run cannot be trusted. A journal degrades ' +
-            'loudly or not at all.',
-          { cause: error },
-        );
-      }
-    });
+  let lines = raw.split('\n').filter((line) => line.trim() !== '');
+  if (tolerateUnterminatedTail && lines.length > 0 && !raw.endsWith('\n')) {
+    lines = lines.slice(0, -1);
+  }
+
+  return lines.map((line, index) => {
+    try {
+      return JSON.parse(line);
+    } catch (error) {
+      throw new RunJournalError(
+        'unusable',
+        `${path} line ${index + 1} is not a journal record, so the sequence cannot be ` +
+          'checked and the order of this run cannot be trusted. A journal degrades ' +
+          'loudly or not at all.',
+        { cause: error },
+      );
+    }
+  });
 };
 
 /**
@@ -223,12 +261,13 @@ const linesOf = (runDir, file) => {
  *     line order write order, so a decreasing pair means the file was edited or
  *     assembled — the case a reader cannot see by eye;
  *   - **across both files**, the union of `seq` must be exactly `1..N`. A gap is
- *     a lost record; a duplicate is two records claiming one position, which is
- *     what concurrent writers into one run directory produce.
+ *     a lost record; a duplicate is two records claiming one position — the
+ *     shape a hand-edited or reused directory leaves, now that `append()`
+ *     itself serialises genuinely concurrent writers via the lock below.
  */
-const readBoth = (runDir) => {
-  const decisions = linesOf(runDir, DECISIONS);
-  const events = linesOf(runDir, EVENTS);
+const readBoth = (runDir, { tolerateUnterminatedTail = false } = {}) => {
+  const decisions = linesOf(runDir, DECISIONS, { tolerateUnterminatedTail });
+  const events = linesOf(runDir, EVENTS, { tolerateUnterminatedTail });
 
   const refuse = (why) => {
     throw new RunJournalError(
@@ -270,51 +309,162 @@ const readBoth = (runDir) => {
 };
 
 /**
+ * Wall-clock milliseconds, for the lock's own bounded wait and stale-lock
+ * check — never for a record. Deliberately not the two clock-reading
+ * spellings this module's own test forbids anywhere in the file:
+ * `test/template/run-journal.test.ts` (absent in a generated rig) › "names no
+ * clock of its own anywhere in the module". That test serves the module
+ * header's real rule ("the caller stamps; this module records") — a record's
+ * `at` always comes from the caller's injected `now`, never from a value read
+ * in here. Lock housekeeping is not a record: it decides how long to wait and
+ * whether a `.journal.lock` file is somebody's, never what goes in
+ * `events.jsonl` or `decisions.jsonl`, so measuring it against a wall clock
+ * breaks no reader's ability to replay a run from the timestamps it wrote.
+ */
+const wallClockMs = () => performance.timeOrigin + performance.now();
+
+/**
+ * A synchronous, non-busy sleep: `Atomics.wait` blocks this thread for `ms`
+ * without spinning it. `acquireLock` is the only caller.
+ */
+const sleepSync = (ms) => {
+  const view = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(view, 0, 0, ms);
+};
+
+/**
+ * The exclusive lock every `append()` call takes before it reads `seq` or
+ * writes — the mechanism that turns "detected" into "serialised" (see the
+ * module header).
+ *
+ * Provably bounded, on every path: at most one stale-lock reclaim per call
+ * (never a retry loop around it, so a lock some other process keeps
+ * recreating cannot turn this into unbounded work), and a wait whose total is
+ * capped at `LOCK_WAIT_MS` in fixed `LOCK_STEP_MS` steps — a deterministic
+ * iteration count, not a condition that could stay false forever.
+ */
+const acquireLock = (runDir) => {
+  const lockPath = join(runDir, LOCK_FILE);
+  const deadline = wallClockMs() + LOCK_WAIT_MS;
+  let reclaimAttempted = false;
+
+  for (;;) {
+    try {
+      return { lockPath, fd: openSync(lockPath, 'wx') };
+    } catch (error) {
+      // Contention, however it shows up: the ordinary EEXIST, or the
+      // delete-pending EPERM/EACCES a Windows host can report for a name
+      // another handle still has open.
+      const contended =
+        error?.code === 'EEXIST' || error?.code === 'EPERM' || error?.code === 'EACCES';
+      if (!contended) {
+        throw new RunJournalError(
+          'unusable',
+          `the run journal in ${runDir} could not take its lock (${error?.code ?? 'unknown error'}), ` +
+            'so this record was not written and nothing was modified.',
+          { cause: error },
+        );
+      }
+    }
+
+    if (!reclaimAttempted) {
+      reclaimAttempted = true;
+      let stats = null;
+      try {
+        stats = statSync(lockPath);
+      } catch {
+        // Gone already — another writer's release raced this check; the next
+        // open attempt below decides what happens now.
+      }
+      if (stats && wallClockMs() - stats.mtimeMs > STALE_LOCK_MS) {
+        try {
+          rmSync(lockPath, { force: true });
+        } catch {
+          // Another writer may have cleared it first; the next open decides.
+        }
+        continue;
+      }
+    }
+
+    if (wallClockMs() >= deadline) {
+      throw new RunJournalError(
+        'busy',
+        `the run journal in ${runDir} could not take its lock within ${LOCK_WAIT_MS}ms: ` +
+          'another writer is holding it. This record is lost, not the run — the ' +
+          'caller\'s own work continues.',
+      );
+    }
+    sleepSync(Math.min(LOCK_STEP_MS, Math.max(0, deadline - wallClockMs())));
+  }
+};
+
+/** Release in the order the lock was taken in: close the handle, then remove the file. */
+const releaseLock = ({ lockPath, fd }) => {
+  try {
+    closeSync(fd);
+  } finally {
+    try {
+      rmSync(lockPath, { force: true });
+    } catch {
+      // Best-effort: a lock this writer cannot remove is the next writer's
+      // stale-reclaim case, not a reason to fail a write that already landed.
+    }
+  }
+};
+
+/**
  * Append one record, after the two questions every write has to answer first:
  * is this run already over, and what number is this record.
  *
  * Both answers come from the files themselves rather than from memory, because
  * every caller is its own short-lived process — the CLI that selects an item and
- * the gate that returns a verdict never share a variable.
+ * the gate that returns a verdict never share a variable. The whole read-then-
+ * write below runs under the exclusive lock, so two such processes sharing one
+ * run directory take turns rather than computing the same `seq`.
  */
 const append = (runDir, file, fields, now) => {
   requireRunDir(runDir);
   requireRunDirExists(runDir);
   requireClock(now);
 
-  const { all } = readBoth(runDir);
-
-  // 🔴 A run whose end can be followed by more records has no end. The marker
-  // exists to remove exactly one ambiguity — "did this run stop, or is it still
-  // going" — and a late record puts it straight back.
-  if (all.some((record) => record.kind === RUN_END)) {
-    throw new RunJournalError(
-      'ended',
-      `the run in ${runDir} already carries its run-end marker, so nothing more may be ` +
-        'recorded against it. A second record after the end would make "when did this ' +
-        'run stop" have two answers and give the reader no way to pick one.',
-    );
-  }
-
-  const record = { seq: all.length + 1, at: now, ...fields };
+  const lock = acquireLock(runDir);
   try {
-    appendFileSync(join(runDir, file), `${JSON.stringify(record)}\n`);
-  } catch (error) {
-    // 🔴 The write door needs the same classification as the read door, and it
-    // was the one fs call left unwrapped. A full disk or a file the run cannot
-    // write reached the caller as a plain error, missed `isTraceExhausted`, and
-    // withheld the work — reproducing from this side the exact failure the
-    // classification exists to prevent. A journal that cannot take this record
-    // will not take the next one either: the trace is over, the run is not.
-    throw new RunJournalError(
-      'unusable',
-      `the run journal in ${runDir} could not be appended to ` +
-        `(${error?.code ?? 'unknown error'}), so this run's trace stops here. The ` +
-        'record was not written and nothing was modified.',
-      { cause: error },
-    );
+    const { all } = readBoth(runDir);
+
+    // 🔴 A run whose end can be followed by more records has no end. The marker
+    // exists to remove exactly one ambiguity — "did this run stop, or is it still
+    // going" — and a late record puts it straight back.
+    if (all.some((record) => record.kind === RUN_END)) {
+      throw new RunJournalError(
+        'ended',
+        `the run in ${runDir} already carries its run-end marker, so nothing more may be ` +
+          'recorded against it. A second record after the end would make "when did this ' +
+          'run stop" have two answers and give the reader no way to pick one.',
+      );
+    }
+
+    const record = { seq: all.length + 1, at: now, ...fields };
+    try {
+      appendFileSync(join(runDir, file), `${JSON.stringify(record)}\n`);
+    } catch (error) {
+      // 🔴 The write door needs the same classification as the read door, and it
+      // was the one fs call left unwrapped. A full disk or a file the run cannot
+      // write reached the caller as a plain error, missed `isTraceExhausted`, and
+      // withheld the work — reproducing from this side the exact failure the
+      // classification exists to prevent. A journal that cannot take this record
+      // will not take the next one either: the trace is over, the run is not.
+      throw new RunJournalError(
+        'unusable',
+        `the run journal in ${runDir} could not be appended to ` +
+          `(${error?.code ?? 'unknown error'}), so this run's trace stops here. The ` +
+          'record was not written and nothing was modified.',
+        { cause: error },
+      );
+    }
+    return record;
+  } finally {
+    releaseLock(lock);
   }
-  return record;
 };
 
 /**
@@ -426,10 +576,16 @@ export const endRun = ({ runDir, stop, now } = {}) => {
  * It refuses rather than returning a sequence it cannot vouch for — see
  * `readBoth`. That refusal IS the ordering invariant; documenting the ordering
  * and checking nothing is what this module was ported to stop doing.
+ *
+ * Lock-free, unlike `append()`: many concurrent readers is not the problem the
+ * lock serialises. And tolerant of one specific shape a live writer leaves
+ * behind — a final line with no trailing newline is a record another writer
+ * has not finished flushing, skipped here rather than refused (see the module
+ * header).
  */
 export const readRun = ({ runDir } = {}) => {
   requireRunDir(runDir);
   requireRunDirExists(runDir);
-  const { decisions, events, all } = readBoth(runDir);
+  const { decisions, events, all } = readBoth(runDir, { tolerateUnterminatedTail: true });
   return { decisions, events, ended: all.some((record) => record.kind === RUN_END) };
 };
