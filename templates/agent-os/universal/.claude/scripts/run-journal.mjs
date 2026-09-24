@@ -147,12 +147,16 @@ const LOCK_FILE = '.journal.lock';
  * writer that creates this (`wx`) may judge and remove a stale main lock.
  */
 const RECLAIM_FILE = '.journal.lock.reclaim';
-/** Total time a caller waits for a held lock before giving up as `'busy'`. */
+/**
+ * The NOMINAL time a caller waits for a held lock before giving up as
+ * `'busy'` — the bound itself is the attempt count below; how long one
+ * `Atomics.wait` step really sleeps is the host's (macOS overshoots it).
+ */
 const LOCK_WAIT_MS = 2000;
 /** One wait step — short, and never a busy spin (`Atomics.wait` blocks). */
 const LOCK_STEP_MS = 25;
 /** The bounded number of open attempts `acquireLock` makes — never a clock-read deadline. */
-const LOCK_MAX_ATTEMPTS = Math.ceil(LOCK_WAIT_MS / LOCK_STEP_MS);
+export const LOCK_MAX_ATTEMPTS = Math.ceil(LOCK_WAIT_MS / LOCK_STEP_MS);
 /** A lock older than this is a crashed writer's, not a live one's. */
 const STALE_LOCK_MS = 10000;
 
@@ -518,12 +522,14 @@ const acquireLock = (runDir) => {
     }
   }
 
-  throw new RunJournalError(
+  const busy = new RunJournalError(
     'busy',
-    `the run journal in ${runDir} could not take its lock within ~${LOCK_WAIT_MS}ms: ` +
-      'another writer is holding it. This record is lost, not the run — the ' +
-      "caller's own work continues.",
+    `the run journal in ${runDir} could not take its lock in ${LOCK_MAX_ATTEMPTS} attempts ` +
+      `(about ${LOCK_WAIT_MS}ms nominal): another writer is holding it. This record is ` +
+      "lost, not the run — the caller's own work continues.",
   );
+  busy.attempts = LOCK_MAX_ATTEMPTS;
+  throw busy;
 };
 
 /**

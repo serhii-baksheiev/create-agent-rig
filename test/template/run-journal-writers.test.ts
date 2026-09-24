@@ -53,6 +53,7 @@ interface Journal {
   recordEvent(input: Record<string, unknown>): JournalRecord | Promise<JournalRecord>;
   readRun(input: Record<string, unknown>): RunView | Promise<RunView>;
   JOURNAL_FAILURES: readonly string[];
+  LOCK_MAX_ATTEMPTS: number;
   isTraceExhausted(error: unknown): boolean;
 }
 
@@ -310,15 +311,19 @@ describe('a lock nobody releases fails the write, not the run', () => {
     // shape of a second writer genuinely overlapping a live one.
     await writeFile(lockPath, '');
 
-    const startedAt = Date.now();
     const error = await refusalFrom(() => recordEventOrThrowIfNoLock(runDir, T0));
-    const elapsedMs = Date.now() - startedAt;
 
     // Bounded, not merely "eventually": a wait that never gives up would
     // convert one stuck writer into a hung caller, which is the failure this
-    // kind exists to avoid turning into.
-    expect(elapsedMs).toBeLessThan(4_000);
+    // kind exists to avoid turning into. The bound is a COUNT of open attempts,
+    // pinned here from the design's own literals (2 s nominal / 25 ms steps),
+    // not a wall-clock reading: a first version asserted elapsed < 4 s and the
+    // hosted macOS runner measured 4850 ms, because one Atomics.wait step there
+    // sleeps longer than asked. What the host's timer does is not the property.
     expect(error.failure).toBe('busy');
+    const { LOCK_MAX_ATTEMPTS } = await load();
+    expect(LOCK_MAX_ATTEMPTS).toBe(Math.ceil(2_000 / 25));
+    expect((error as { attempts?: unknown }).attempts).toBe(LOCK_MAX_ATTEMPTS);
 
     const { isTraceExhausted } = await load();
     // Same "record lost, work continues" semantics as `unusable`/`ended` — a
@@ -326,7 +331,9 @@ describe('a lock nobody releases fails the write, not the run', () => {
     expect(isTraceExhausted(error)).toBe(true);
 
     expect(await linesIn(runDir, 'events.jsonl')).toEqual([]);
-  }, 6_000);
+    // The case budget only backstops a hang; macOS spent ~4.9 s in the 80
+    // steps, so the default unit budget, not a tighter per-case one, applies.
+  });
 
   it('lists `busy` in the exported failure vocabulary', async () => {
     const { JOURNAL_FAILURES } = await load();
