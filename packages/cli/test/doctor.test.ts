@@ -7,6 +7,7 @@ import { runDoctor } from '../src/commands/doctor.js';
 import { initProject } from '../src/commands/init.js';
 import { runIntegrationsCommand } from '../src/commands/integrations.js';
 import { readManifest, writeManifest } from '../src/lib/manifest.js';
+import type { ProviderProcessResult } from '../src/integrations/spawn.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 // Same walk `version.test.ts` uses from `test/` to the repo root — an
@@ -76,11 +77,27 @@ afterEach(async () => {
   await removeFixture(home);
 });
 
+// RP-261: every case in this file that runs through `doctor()` was paying for
+// `inspectGuards`'s real fixture batch (a PowerShell job-wrapper launch plus a
+// node process and 10 hook processes on Windows) even though none of these
+// cases are about guard behavior — that coverage lives in
+// doctor-guards.test.ts. A stub answering `guardRunner` the way the always
+// answers here is the fix `DoctorOptions` needs: `runDoctor` threads it
+// straight to `inspectGuards`'s existing `runner` option instead of always
+// launching the real batch.
+const passingGuardRunner = async (): Promise<ProviderProcessResult> => ({
+  status: 'ok',
+  exitCode: 0,
+  stdout: '',
+  stderr: '',
+});
+
 async function doctor(args = ['--json']) {
   return runDoctor({
     cwd: repo,
     args,
     env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+    guardRunner: passingGuardRunner,
   });
 }
 
@@ -123,6 +140,69 @@ describe('doctor detail/fix text names no internal tracker id (RP-239 A4)', () =
         /\b(RP|AR)-\d+\b/.test(check.detail ?? '') || /\b(RP|AR)-\d+\b/.test(check.fix ?? ''),
     );
     expect(offenders, JSON.stringify(offenders)).toEqual([]);
+  });
+});
+
+// RP-261 (master red on hosted Windows): `inspectGuards` already accepts an
+// optional `runner` (doctor-guards.ts) that replaces its real fixture-batch
+// launch, but `runDoctor`'s own options had no way to reach it — every
+// `doctor()` case in this file paid for the real batch regardless of what it
+// was actually testing. These two tests are the independent oracle for the
+// wiring itself: the guard-runner is a plain stub that records how many times
+// it was called and returns a result this test alone controls, so a pass here
+// can only mean the stub's answer reached the report — never that the real
+// batch happened to agree with it.
+describe('doctor threads an injected guard-batch runner through the guards check (RP-261)', () => {
+  it('calls the injected guardRunner and reports its success, never launching the real fixture batch', async () => {
+    await initProject(repo, {});
+    let calls = 0;
+    const guardRunner = async (): Promise<ProviderProcessResult> => {
+      calls += 1;
+      return { status: 'ok', exitCode: 0, stdout: '', stderr: '' };
+    };
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+      guardRunner,
+    });
+    const body = report(result.stdout);
+
+    // Independent oracle: the stub, not the real batch, must have run.
+    expect(calls).toBeGreaterThan(0);
+    expect(body.checks).toContainEqual(
+      expect.objectContaining({ id: 'guards', status: 'ok', reason: 'guards-verified' }),
+    );
+  });
+
+  it("reflects a failing injected guardRunner's answer in the guards check, not the real fixture batch's own", async () => {
+    await initProject(repo, {});
+    // A clean `initProject` fixture always makes the REAL fixture batch pass —
+    // so a 'fail' here can only come from this stub's answer reaching the
+    // report, never from the real batch happening to fail too.
+    const guardRunner = async (): Promise<ProviderProcessResult> => ({
+      status: 'failed',
+      exitCode: 1,
+      stdout: '',
+      stderr: '',
+    });
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+      guardRunner,
+    });
+    const body = report(result.stdout);
+
+    expect(body.checks).toContainEqual(
+      expect.objectContaining({
+        id: 'guards',
+        status: 'fail',
+        reason: 'guard-fixture-batch-failed',
+      }),
+    );
   });
 });
 
