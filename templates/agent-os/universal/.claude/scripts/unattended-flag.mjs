@@ -4,8 +4,15 @@
 // All upstream test pointers in this script name the generator suite, absent in a generated rig.
 //
 //   node .claude/scripts/unattended-flag.mjs on --root <checkout> --item AR-51 --run-dir <dir> --allow <prefix> [<prefix>…]
+//   node .claude/scripts/unattended-flag.mjs verify --root <checkout> --item AR-51
 //   node .claude/scripts/unattended-flag.mjs off --root <checkout>
 //   node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>
+//
+// `--root` is mandatory for `on` and `verify` (RP-258) — an unrooted `on`
+// wrote a flag `readUnattended` could not tell apart from stale legacy
+// machine-wide state, and an unrooted `verify` then read that same ambiguity
+// back as armed; both now refuse before doing anything else. `off` keeps its
+// own unscoped fallback (see its branch below).
 //
 // It is a FILE, not an environment variable: a `PreToolUse` hook is spawned by
 // the harness with the harness's own environment, never with a variable the
@@ -377,7 +384,8 @@ export const readUnattended = (env = process.env) => {
     if (path) {
       return unreadable(
         path,
-        'legacy machine-wide unattended flag cannot authorize a scoped checkout; migrate or remove it explicitly',
+        'the armed unattended flag is an unscoped legacy record that carries no checkout root, so it ' +
+          'cannot authorize this checkout; re-arm it with `on --root <checkout> --item <id>` or remove it',
       );
     }
   }
@@ -542,15 +550,30 @@ if (invokedDirectly()) {
     return index === -1 ? null : (rest[index + 1] ?? null);
   };
   const root = valueOf('--root');
-  const cliEnv = root && !root.startsWith('--')
-    ? { ...process.env, CLAUDE_PROJECT_DIR: root }
-    : process.env;
+  const hasRoot = root !== null && !root.startsWith('--');
+  const cliEnv = hasRoot ? { ...process.env, CLAUDE_PROJECT_DIR: root } : process.env;
+  // RP-258: `on` and `verify` both scope the flag to a checkout — an unrooted
+  // `on` writes a flag `readUnattended` cannot tell apart from stale legacy
+  // machine-wide state, and an unrooted `verify` reads that same ambiguity
+  // back as armed. `--root` is required for both, checked before either does
+  // anything else (before `on` writes, before `verify` looks anything up).
+  // `off` is unaffected: it already falls back to unscoped cleanup on
+  // purpose (see its own branch below).
+  const requireRoot = (subcommand) => {
+    if (hasRoot) return;
+    process.stderr.write(
+      `unattended-flag ${subcommand}: --root <checkout> is required — an unrooted flag cannot be ` +
+        'scoped to the checkout it authorizes, and an unscoped read cannot tell a scoped flag from a stale legacy one\n',
+    );
+    process.exit(1);
+  };
   if (word === 'on') {
     const item = valueOf('--item');
     if (!item || item.startsWith('--')) {
       process.stderr.write('unattended-flag on: --item <id> is required — the flag names the item whose paths are allowed\n');
       process.exit(1);
     }
+    requireRoot('on');
     const allowIndex = rest.indexOf('--allow');
     const allow =
       allowIndex === -1
@@ -627,6 +650,7 @@ if (invokedDirectly()) {
       );
       process.exit(1);
     }
+    requireRoot('verify');
     const state = readUnattended(cliEnv);
     // ⚠ `unreadable` carries `on: true` — it means "a flag is THERE and cannot be
     // trusted", which is what `off` needs in order to refuse to clear it blindly.

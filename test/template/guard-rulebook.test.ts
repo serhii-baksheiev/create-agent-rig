@@ -259,6 +259,26 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
     expect(result.stderr).toMatch(/legacy|migrat|unreadable/i);
   });
 
+  // RP-258 — functional review 2026-09-24: this exact scenario (an
+  // unscoped/mis-scoped flag) was reported to the operator as "legacy
+  // machine-wide unattended flag cannot authorize a scoped checkout" even
+  // when the flag was written moments earlier by this same tool, just
+  // without `--root`. The refusal itself was correct (fail closed); the
+  // story it told was not. This pins that the wording names the actual
+  // root-scope problem instead, while the block above pins that the refusal
+  // itself never weakens.
+  it('names the actual root-scope problem instead of the "legacy machine-wide" story, while still failing closed (RP-258)', async () => {
+    await mkdir(path.join(home, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(home, '.claude', FLAG_NAME),
+      JSON.stringify({ item: 'OLD-A', runDir: '/runs/old-a', allow: ['.claude/skills/'] }),
+    );
+    const result = await run(edit(`${root}/.claude/skills/loop/SKILL.md`));
+    expect(result.code, result.stderr).toBe(2); // still fails closed — never weakened
+    expect(result.stderr).not.toMatch(/legacy machine-wide/i);
+    expect(result.stderr).toMatch(/root/i);
+  });
+
   it('finds the checkout-scoped flag from cwd when the harness omits CLAUDE_PROJECT_DIR', async () => {
     const { unattendedFlags, writeUnattended } = await import(
       pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href

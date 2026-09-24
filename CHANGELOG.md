@@ -26,6 +26,17 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   `fix` now names the specific affected paths, bounded, while `reason` and
   `detail` never do (RP-239 A2).
 
+### Changed
+
+- **`unattended-flag.mjs on` and `verify` now require `--root <checkout>`.**
+  Without it, `on` wrote a flag `readUnattended` could not tell apart from
+  stale legacy machine-wide state, and `verify` could then read that same
+  ambiguity back as armed — both now refuse before doing anything else,
+  naming the missing `--root`. The shared refusal `readUnattended` returns
+  for an unscoped or mis-scoped flag now names the actual root-scope problem
+  instead of only saying "legacy machine-wide"; `guard-rulebook` still fails
+  closed on it (RP-258).
+
 ### Fixed
 
 - **`decision-router` diagnoses a missing `origin/HEAD` instead of printing

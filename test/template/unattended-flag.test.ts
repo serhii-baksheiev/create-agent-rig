@@ -281,7 +281,14 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     });
     clearUnattended(env());
     expect(readUnattended(env())).toEqual({ on: false });
-    const result = await runCli(['on', '--item', 'AR-51', '--allow', '.'], home);
+    // RP-258: `--root` is mandatory now, so a widening-refusal case still has
+    // to supply one to reach the widening check at all.
+    const wideningCheckout = path.join(home, 'widening-cli-checkout');
+    await mkdir(wideningCheckout, { recursive: true });
+    const result = await runCli(
+      ['on', '--root', wideningCheckout, '--item', 'AR-51', '--allow', '.'],
+      home,
+    );
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(/rulebook/);
     expect(readUnattended(env())).toEqual({ on: false });
@@ -652,12 +659,22 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
     );
 
     it('the CLI refuses `on --allow .Claude/` exactly as it refuses `on --allow .claude/`, and writes no flag', async () => {
-      const miscased = await runCli(['on', '--item', 'RP-215', '--allow', '.Claude/'], home);
+      // RP-258: `--root` is mandatory now — supply one so this stays a test
+      // of the widening refusal, not of the (separately tested) root refusal.
+      const miscasedCheckout = path.join(home, 'miscased-cli-checkout');
+      await mkdir(miscasedCheckout, { recursive: true });
+      const miscased = await runCli(
+        ['on', '--root', miscasedCheckout, '--item', 'RP-215', '--allow', '.Claude/'],
+        home,
+      );
       expect(miscased.code).toBe(1);
       expect(miscased.stderr).toMatch(/rulebook/);
       expect(existsSync(flagPath())).toBe(false);
 
-      const canonical = await runCli(['on', '--item', 'RP-215', '--allow', '.claude/'], home);
+      const canonical = await runCli(
+        ['on', '--root', miscasedCheckout, '--item', 'RP-215', '--allow', '.claude/'],
+        home,
+      );
       expect(canonical.code).toBe(1);
       expect(canonical.stderr).toMatch(/rulebook/);
       expect(existsSync(flagPath())).toBe(false);
@@ -912,27 +929,65 @@ describe('the CLI the loop skill calls', () => {
     }
   });
 
-  it('`on --item … --run-dir … --allow …` writes the flag and prints its path', async () => {
-    const result = await runCli(
-      [
-        'on',
-        '--item',
-        'AR-51',
-        '--run-dir',
-        '/runs/1',
-        '--allow',
-        '.claude/scripts/queue/',
-        '.claude/skills/loop/',
-      ],
-      home,
-    );
-    expect(result.code, result.stderr).toBe(0);
-    expect(result.stdout).toContain(flagPath());
-    expect(JSON.parse(await readFile(flagPath(), 'utf8'))).toEqual({
-      item: 'AR-51',
-      runDir: '/runs/1',
-      allow: ['.claude/scripts/queue/', '.claude/skills/loop/'],
-    });
+  it('`on --root … --item … --run-dir … --allow …` writes the scoped flag and prints its path', async () => {
+    // RP-258: `--root` is mandatory now — the happy path supplies it and
+    // reads back the checkout-scoped path, not the unscoped legacy one.
+    //
+    // 🔴 Precondition, not a cleanup, same as "scopes on/off to --root" above:
+    // a SCOPED write mirrors into the real password-database home too (the
+    // same two-home rule the kill switch uses), so this removes its exact
+    // candidate paths in `finally` rather than leaving them for a
+    // pattern-based sweep that would race another test process.
+    const { unattendedFlags } = await load();
+    const checkout = path.join(home, 'on-happy-path-checkout');
+    await mkdir(checkout, { recursive: true });
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    try {
+      const result = await runCli(
+        [
+          'on',
+          '--root',
+          checkout,
+          '--item',
+          'AR-51',
+          '--run-dir',
+          '/runs/1',
+          '--allow',
+          '.claude/scripts/queue/',
+          '.claude/skills/loop/',
+        ],
+        home,
+      );
+      expect(result.code, result.stderr).toBe(0);
+      // Scoped writes mirror into both homes with the password-database home
+      // FIRST (`writeUnattended`'s own doc comment) — the path the CLI
+      // prints is that first-written one, i.e. the last candidate here.
+      const candidates = unattendedFlags(scopedEnv);
+      const printedPath = candidates[candidates.length - 1]!;
+      expect(result.stdout).toContain(printedPath);
+      expect(JSON.parse(await readFile(printedPath, 'utf8'))).toEqual({
+        item: 'AR-51',
+        runDir: '/runs/1',
+        allow: ['.claude/scripts/queue/', '.claude/skills/loop/'],
+      });
+    } finally {
+      await Promise.all(
+        unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
+      );
+    }
+  });
+
+  it('`on` without --root exits 1, names the missing --root, and writes nothing (RP-258)', async () => {
+    // Evidence (functional review 2026-09-24): `on --item X` without `--root`
+    // wrote a flag — safe on its own, but `verify` then read it back as
+    // armed while `guard-rulebook` (always scoped by the harness) treated
+    // the very same file as unreadable legacy machine-wide state. Refusing
+    // here, before anything is written, is what makes that contradiction
+    // unreachable.
+    const result = await runCli(['on', '--item', 'RP-258', '--run-dir', '/r'], home);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/--root/);
+    expect(existsSync(flagPath())).toBe(false);
   });
 
   it('`off` removes the flag', async () => {
@@ -986,7 +1041,13 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
   // concatenated string literals is not found, so the citation reads as dead
   // even while the test passes. Measured: it reported exactly that.
   it('refuses when no flag is armed, naming the item and the unguarded rulebook', async () => {
-    const result = await runCli(['verify', '--item', 'AR-103'], home);
+    // RP-258: `--root` is mandatory now (for `verify` too) — supply a
+    // checkout with no flag armed at all, so this stays a test of the
+    // "nothing armed" refusal rather than the (separately tested) missing
+    // `--root` refusal.
+    const checkout = path.join(home, 'verify-none-armed-checkout');
+    await mkdir(checkout, { recursive: true });
+    const result = await runCli(['verify', '--root', checkout, '--item', 'AR-103'], home);
     expect(result.code).not.toBe(0);
     // Not just "a file is missing" — the reader needs the CONSEQUENCE, or
     // this refusal reads exactly like every other "no such file" message
@@ -999,24 +1060,84 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
   });
 
   it('refuses when the armed flag names a different item, naming both', async () => {
-    await arm(JSON.stringify({ item: 'AR-OTHER', runDir: '/runs/other', allow: [] }));
-    const result = await runCli(['verify', '--item', 'AR-103'], home);
+    // RP-258: armed through the CLI, scoped to a real `--root`, so this
+    // exercises the "different item, correctly scoped" case rather than the
+    // unscoped legacy fallback (covered separately below). A scoped `on`
+    // mirrors into the real password-database home too, same as every other
+    // scoped-write case in this file — removed in `finally`.
+    const checkout = path.join(home, 'verify-item-mismatch-checkout');
+    await mkdir(checkout, { recursive: true });
+    const { unattendedFlags } = await load();
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    try {
+      const onResult = await runCli(
+        ['on', '--root', checkout, '--item', 'AR-OTHER', '--run-dir', '/runs/other'],
+        home,
+      );
+      expect(onResult.code, onResult.stderr).toBe(0);
+      const result = await runCli(['verify', '--root', checkout, '--item', 'AR-103'], home);
+      expect(result.code).not.toBe(0);
+      expect(result.stderr).toMatch(/AR-103/);
+      expect(result.stderr).toMatch(/AR-OTHER/);
+    } finally {
+      await Promise.all(
+        unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
+      );
+    }
+  });
+
+  it('`verify` without --root cannot report armed even when an unscoped flag on disk matches the item (RP-258 evidence)', async () => {
+    // Evidence (functional review 2026-09-24): `verify --item X` without
+    // `--root` read back an unscoped flag written by the equally-rootless
+    // `on` and reported it armed — while `guard-rulebook`, always scoped by
+    // the harness, would have refused the very same file as unreadable.
+    await arm(JSON.stringify({ item: 'RP-258', runDir: '/runs/1', allow: [] }));
+    const result = await runCli(['verify', '--item', 'RP-258'], home);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/--root/);
+  });
+
+  it('verify reports a mis-scoped (unscoped) flag as not armed, naming the root-scope problem, not "legacy machine-wide" (RP-258)', async () => {
+    await arm(JSON.stringify({ item: 'RP-258', runDir: '/runs/1', allow: [] }));
+    const checkout = path.join(home, 'verify-mis-scoped-checkout');
+    await mkdir(checkout, { recursive: true });
+    const result = await runCli(['verify', '--root', checkout, '--item', 'RP-258'], home);
     expect(result.code).not.toBe(0);
-    expect(result.stderr).toMatch(/AR-103/);
-    expect(result.stderr).toMatch(/AR-OTHER/);
+    expect(result.stderr).not.toMatch(/legacy machine-wide/i);
+    expect(result.stderr).toMatch(/root/i);
   });
 
   // The passing direction, so the check above cannot be satisfied by a
   // `verify` that simply always exits nonzero.
   it('exits 0 when a flag armed with a narrow allow-list matches the item asked about', async () => {
-    const onResult = await runCli(
-      ['on', '--item', 'AR-103', '--run-dir', '/runs/1', '--allow', '.claude/skills/loop/'],
-      home,
-    );
-    expect(onResult.code, onResult.stderr).toBe(0);
+    const checkout = path.join(home, 'verify-success-checkout');
+    await mkdir(checkout, { recursive: true });
+    const { unattendedFlags } = await load();
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    try {
+      const onResult = await runCli(
+        [
+          'on',
+          '--root',
+          checkout,
+          '--item',
+          'AR-103',
+          '--run-dir',
+          '/runs/1',
+          '--allow',
+          '.claude/skills/loop/',
+        ],
+        home,
+      );
+      expect(onResult.code, onResult.stderr).toBe(0);
 
-    const result = await runCli(['verify', '--item', 'AR-103'], home);
-    expect(result.code, result.stderr).toBe(0);
+      const result = await runCli(['verify', '--root', checkout, '--item', 'AR-103'], home);
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      await Promise.all(
+        unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
+      );
+    }
   });
 
   // Acceptance item 4: no guard behaviour changes. A widening `--allow`
@@ -1024,10 +1145,42 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
   // case near line 264 above, restated here only to spell out that `verify`
   // must not be the thing that makes that refusal write a flag after all.
   it('does not change `on`: a widening --allow still exits 1 and still writes no flag', async () => {
-    const result = await runCli(['on', '--item', 'AR-103', '--allow', '.'], home);
+    // RP-258: `--root` is mandatory now — supply one so this stays a test of
+    // the widening refusal, not of the (separately tested) missing-root one.
+    const checkout = path.join(home, 'on-widening-checkout');
+    await mkdir(checkout, { recursive: true });
+    const result = await runCli(
+      ['on', '--root', checkout, '--item', 'AR-103', '--allow', '.'],
+      home,
+    );
     expect(result.code).toBe(1);
     expect(result.stderr).toMatch(/rulebook/);
     expect(existsSync(flagPath())).toBe(false);
+  });
+
+  it('`verify` without --root exits 1 and names the missing --root, even with a scoped flag armed for cwd (RP-258)', async () => {
+    // The mandatory-`--root` refusal must fire before any lookup, not only
+    // when nothing is armed anywhere — otherwise a caller relying on cwd
+    // fallback could still slip past it by accident.
+    const checkout = path.join(home, 'verify-missing-root-checkout');
+    await mkdir(checkout, { recursive: true });
+    const { unattendedFlags } = await load();
+    const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
+    try {
+      const onResult = await runCli(
+        ['on', '--root', checkout, '--item', 'RP-258', '--run-dir', '/runs/1'],
+        home,
+      );
+      expect(onResult.code, onResult.stderr).toBe(0);
+
+      const result = await runCli(['verify', '--item', 'RP-258'], home);
+      expect(result.code).toBe(1);
+      expect(result.stderr).toMatch(/--root/);
+    } finally {
+      await Promise.all(
+        unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
+      );
+    }
   });
 });
 
