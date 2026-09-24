@@ -136,7 +136,8 @@ afterEach(async () => {
  * RP-263 finding, restated by code-reviewer round 2 advisory: every SCOPED
  * write (`writeUnattended`/`on` with a `CLAUDE_PROJECT_DIR`/`--root`) mirrors
  * into the REAL password-database home too — `writeUnattended`'s own doc
- * comment, "the same two-home rule the kill switch uses" — and that home is
+ * comment: "Scoped records are mirrored into both trusted homes, with the
+ * password-database home first" — and that home is
  * not the per-test temp `home` the outer `afterEach` above removes. Most
  * scoped-write tests in this file already remove their exact candidate paths
  * in their own `finally`; this is the net the ones caught leaking (~100
@@ -1499,7 +1500,7 @@ describe('on/verify: a blank, nonexistent, or non-checkout-root --root authorize
    * code-reviewer round 2 (c79ff39), BLOCKER 1 — `requireRoot`'s own final
    * refusal, "git cannot confirm a checkout" (`toplevel === null`,
    * `unattended-flag.mjs:644`), had no test at all: a blank `--root` refuses
-   * earlier (line 563), a nonexistent one refuses at the realpath step (its
+   * earlier (`requireRoot`'s `!hasRoot` branch), a nonexistent one refuses at the realpath step (its
    * own test asserts "does not exist", not this message), and a checkout
    * subdirectory (above) reaches the NEXT check instead (`toplevel !==
    * realRoot`, non-null). Flipping `if (toplevel === null)` to accept keeps
