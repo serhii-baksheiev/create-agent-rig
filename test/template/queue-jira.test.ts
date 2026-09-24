@@ -636,19 +636,41 @@ describe('hardening beyond the endpoint (AR-54)', () => {
           statusText: 'Service Unavailable',
           headers: { 'Retry-After': '0.001' },
         };
+        // RP-220: `claim` now re-reads status/updated immediately before the
+        // transition mutation. For the transition-POST case that pre-read must
+        // succeed (matching the ticket's own snapshot) so the ambiguous 503
+        // this test cares about is the one on the MUTATION itself, not on a
+        // read that never gets that far.
+        const claimSnapshot = '2026-01-01T00:00:00.000Z';
         scriptFetch(
           operation === 'issue update PUT'
             ? [{ status: 204 }, transient, { status: 204 }]
-            : [
-                transient,
-                operation === 'issue-create POST'
-                  ? { status: 200, json: { key: 'AR-99' } }
-                  : { status: 204 },
-              ],
+            : operation === 'transition POST'
+              ? [
+                  {
+                    status: 200,
+                    json: {
+                      fields: {
+                        status: { statusCategory: { key: 'new' } },
+                        updated: claimSnapshot,
+                      },
+                    },
+                  },
+                  transient,
+                ]
+              : [
+                  transient,
+                  operation === 'issue-create POST'
+                    ? { status: 200, json: { key: 'AR-99' } }
+                    : { status: 204 },
+                ],
         );
 
         const adapter = await load('jira.mjs');
-        const ticket = { id: 'ABC-13' };
+        const ticket =
+          operation === 'transition POST'
+            ? { id: 'ABC-13', updatedAt: claimSnapshot }
+            : { id: 'ABC-13' };
         const mutation =
           operation === 'comment POST'
             ? adapter.comment(ticket, 'a note', { env: CREDENTIALS })

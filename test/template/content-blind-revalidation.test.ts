@@ -197,16 +197,71 @@ const before = (p: Project, point: 'BEFORE_PR' | 'BEFORE_CLOSE') =>
 
 const claimThroughJiraAdapter = async (p: Project) => {
   const adapterUrl = pathToFileURL(path.join(scriptsDir, 'queue', 'jira.mjs')).href;
+  const callsPath = path.join(
+    await mkdtemp(path.join(tmpdir(), 'rp220-jira-calls-')),
+    'calls.json',
+  );
+  // RP-220: `claim` now re-reads status/updated before mutating and reads back
+  // after — so the stub has to behave like a tiny stateful Jira rather than
+  // answer every call identically. `T1` is the snapshot this helper's callers
+  // already select against (the default `jiraIssue()`'s `updated`); `T2` is
+  // what the transition leaves behind, matching the fixtures those callers set
+  // afterwards via `p.setIssue(jiraIssue({ updated: T2, ... }))`.
+  //
+  // RP-220 round 2 (B3): the `env` this script hands `claim` carries no
+  // `RIG_RUN_DIR`, so once `rebaseline` is gated the same way as every other
+  // write in this adapter — force-free, `RIG_RUN_DIR`-only — the post-verify
+  // read-back for `?fields=updated` alone must never fire. Round 1 shipped
+  // `rebaseline(ticket, env, { force: true })`, which fires that GET
+  // regardless; the comment here used to assert the call "is never made"
+  // while the production code made it anyway (r1-code-reviewer.md's B3
+  // finding). Asserted below rather than left as prose, so the claim cannot
+  // go stale silently again. Red until the implementer removes `force`.
   const script = `
-    globalThis.fetch = async () => ({
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => ({}),
-    });
+    const fs = await import('node:fs/promises');
+    const calls = [];
+    let transitioned = false;
+    globalThis.fetch = async (input, init = {}) => {
+      const u = new URL(String(input));
+      const method = String(init.method || 'GET');
+      calls.push({ pathname: u.pathname, search: u.search, method });
+      const reply = (json, status = 200) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: 'OK',
+        json: async () => json,
+      });
+      if (method === 'POST' && /\\/transitions$/.test(u.pathname)) {
+        transitioned = true;
+        return reply({}, 204);
+      }
+      if (method === 'GET' && /\\/changelog$/.test(u.pathname)) {
+        const maxResults = Number(u.searchParams.get('maxResults') || '0');
+        const total = transitioned ? 1 : 0;
+        const values = transitioned ? [{ created: ${JSON.stringify(T2)}, items: [{ field: 'status' }] }] : [];
+        return reply({ total, startAt: 0, maxResults, values });
+      }
+      if (method === 'GET' && /\\/issue\\/[^/]+$/.test(u.pathname)) {
+        const fields = String(u.searchParams.get('fields') || '');
+        const body = {};
+        if (fields.includes('status')) {
+          body.status = {
+            name: transitioned ? 'In Progress' : 'To Do',
+            statusCategory: { key: transitioned ? 'indeterminate' : 'new' },
+          };
+        }
+        if (fields.includes('updated')) body.updated = transitioned ? ${JSON.stringify(T2)} : ${JSON.stringify(T1)};
+        return reply({ fields: body });
+      }
+      return reply({});
+    };
     const { claim } = await import(${JSON.stringify(adapterUrl)});
     await claim(
-      { id: 'RP-50', title: 'Replace marker authority with content-blind claims' },
+      {
+        id: 'RP-50',
+        title: 'Replace marker authority with content-blind claims',
+        updatedAt: ${JSON.stringify(T1)},
+      },
       {
         transitionId: '31',
         env: {
@@ -216,6 +271,7 @@ const claimThroughJiraAdapter = async (p: Project) => {
         },
       },
     );
+    await fs.writeFile(${JSON.stringify(callsPath)}, JSON.stringify(calls));
   `;
   const result = await run(
     process.execPath,
@@ -224,6 +280,19 @@ const claimThroughJiraAdapter = async (p: Project) => {
     p.env,
   );
   expect(result.code, result.out).toBe(0);
+  const calls = JSON.parse(await readFile(callsPath, 'utf8')) as Array<{
+    pathname: string;
+    search: string;
+    method: string;
+  }>;
+  const rebaselineOnlyCalls = calls.filter(
+    (c) =>
+      c.method === 'GET' && /\/issue\/[^/]+$/.test(c.pathname) && c.search === '?fields=updated',
+  );
+  expect(
+    rebaselineOnlyCalls,
+    `a rebaseline GET for ?fields=updated alone fired with no RIG_RUN_DIR configured: ${JSON.stringify(calls)}`,
+  ).toHaveLength(0);
   await git(['add', '.rig/claims/RP-50.json'], p.root);
   await git(['commit', '-q', '--allow-empty', '-m', 'record Rig claim transition'], p.root);
 };
@@ -470,7 +539,48 @@ describe('workflow state participates in the checkpoint-aware scope fingerprint'
     expect(selection.code, selection.out).toBe(0);
     if (!(await trackClaim(p))) return;
     const ticket = jsonOf(selection).ticket;
-    const stub = await stubCommand('gh', 'return {};');
+    // RP-220: `claim` now pre-reads before mutating and reads back after — the
+    // fake has to answer the specific calls that protocol makes rather than
+    // one blanket `{}` for every invocation, and the snapshot fields have to
+    // agree with `ticket.updatedAt` or the pre-read refuses as claim-stale
+    // before a single label is ever added.
+    const snapshot = ticket.updatedAt;
+    const stub = await stubCommand(
+      'gh',
+      `
+      if (args[0] === 'issue' && args[1] === 'view') {
+        const jsonIdx = args.indexOf('--json');
+        const fields = String(args[jsonIdx + 1] || '').split(',');
+        const isPreRead = fields.includes('state');
+        const out = {};
+        for (const f of fields) {
+          if (f === 'state') out.state = 'OPEN';
+          if (f === 'labels') out.labels = isPreRead ? [] : [{ name: 'in-progress' }];
+          if (f === 'updatedAt') out.updatedAt = ${JSON.stringify(snapshot)};
+        }
+        return { stdout: JSON.stringify(out) + '\\n' };
+      }
+      if (args[0] === 'issue' && args[1] === 'edit') {
+        return { stdout: '' };
+      }
+      if (args[0] === 'api' && args[1] === 'user') {
+        return { stdout: 'gh-fake-login\\n' };
+      }
+      if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
+        return {
+          stdout: JSON.stringify([
+            {
+              event: 'labeled',
+              label: { name: 'in-progress' },
+              actor: { login: 'gh-fake-login' },
+              created_at: ${JSON.stringify(T2)},
+            },
+          ]) + '\\n',
+        };
+      }
+      return { stdout: '{}' };
+    `,
+    );
 
     try {
       const github = await import(
