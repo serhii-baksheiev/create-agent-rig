@@ -6,8 +6,8 @@ generator decides to grow its review behaviour, names tracker keys, and no
 shipped rulebook cites it. **Edit it in place.**
 
 Status: accepted for 1.1 (RP-241, epic RP-219). The companion rule — upstream
-findings are evidence, never the verdict — is RP-240 and lives in the `pr-ship`
-skill, because that is where a session meets such findings.
+findings are evidence, never the verdict — is a separate item, RP-240, meant
+for the `pr-ship` skill, because that is where a session meets such findings.
 
 ## Decision
 
@@ -16,7 +16,8 @@ Before Rig's review behaviour is expanded in 1.x:
 1. revalidate what Claude Code offers natively and through its official plugins;
 2. revalidate what Codex offers natively;
 3. name the exact Rig-specific governance delta the change would add;
-4. prefer upstream evidence over cloning generic review behaviour into Rig;
+4. prefer upstream evidence and integration over cloning generic review
+   behaviour into Rig;
 5. keep the one cross-harness Rig verdict contract.
 
 For 1.1 that means **no change to the review subsystem**: `code-reviewer`,
@@ -29,7 +30,7 @@ orchestration from upstream without a measured need.
 
 - **Claude Code 2.1.281** ships a built-in `/security-review` command. The
   official plugin marketplace (`anthropics/claude-plugins-official`) offers
-  `code-review` and `pr-review-toolkit`. Either is a Claude Code plugin: a
+  `code-review` and `pr-review-toolkit`. All three are Claude Code only: a
   contributor driving the same repository from Codex gets nothing from it.
 - **Codex 0.156.1** ships `codex review` (`--base`, `--commit`, `--uncommitted`).
   Its help lists no structured-output option: the result is prose for a person.
@@ -55,8 +56,10 @@ well and add nothing to the part only Rig does.
   blockers, and upstream catches them no worse on both harnesses;
 - keeping duplicate generic review logic becomes a measured cost.
 
-A thinner, governance-only Rig reviewer is considered only after one of these,
-and only if Claude/Codex parity survives it.
+The triggers reopen this record. They do not, on their own, open the question of
+a thinner, governance-only Rig reviewer: that is reconsidered only when pilot
+evidence shows generic blockers dominate **and** equivalent upstream review is
+available on both harnesses.
 
 ## Non-goals
 
