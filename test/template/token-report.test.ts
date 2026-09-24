@@ -368,7 +368,7 @@ describe('token-report.mjs is read-only', () => {
 });
 
 describe('token-report.mjs money line', () => {
-  it('reads "usage measured; monetary cost unavailable" when any dispatch anywhere carries usage', async () => {
+  it('reads "usage measured; monetary cost unavailable" when any displayed dispatch group carries usage', async () => {
     const runsDir = await runsRoot();
     const runA = await mkrun(runsDir, 'run-a');
     journal.recordDecision({
@@ -466,6 +466,103 @@ describe('token-report.mjs money line', () => {
     const lines = result.stdout.trimEnd().split('\n');
     expect(lines[lines.length - 1]).toBe('usage measured; monetary cost unavailable');
   });
+
+  it('a dispatch with usage: {} (no numeric field) does not flip the money line to "usage measured" and is not counted as withUsage', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-EMPTY',
+      now: T1,
+    });
+    // r1: no usage object at all.
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    // r2: a usage object present but carrying no numeric field — this must
+    // read the same as "not measured", not as "measured, all zero".
+    dispatchStart(runA, T4, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r2' });
+    dispatchEnd(runA, T5, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r2',
+      usage: {},
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    const group = data.dispatchGroups[0]!;
+    expect(group.dispatches).toEqual({ ended: 2, noEndObserved: 0 });
+    expect(group.usage.claude).toBeNull();
+    expect(data.money.line).toBe('usage unavailable; monetary cost unavailable');
+  });
+});
+
+describe('token-report.mjs never leaks a raw DEL/C1 control byte from journal-supplied text', () => {
+  // A hostile journal record — a reviewer gate name, a verdict, and a usage
+  // evidenceSource — can carry any string a dispatch or a reviewer subagent
+  // chooses to write. The text render's own `safe()` strips C0/C1 from the
+  // fields it explicitly names, but two spots interpolate a JSON.stringify'd
+  // journal value without going through `safe()` first: the per-group
+  // `usage` line (`JSON.stringify(group.usage.claude)` /
+  // `JSON.stringify(group.usage.codex)`), and each occurrence's
+  // `outcome=${JSON.stringify(occurrence.outcome)}`. JSON.stringify escapes
+  // C0 controls (below U+0020, e.g. ESC/\u001b) but leaves DEL (\u007f) and
+  // the C1 range (\u0080-\u009f, including CSI \u009b) as raw bytes — so a
+  // hostile gate name, verdict, or evidenceSource can still plant a raw
+  // terminal escape in the operator's shell through those two spots.
+  const hostileJournal = async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-HOSTILE',
+      now: T1,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'reviewer-fan-out',
+      verdict: 'launched',
+      reviewers: ['code-review\u009ber'],
+      headSha: HEAD,
+      now: T2,
+    });
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'code-review\u009ber',
+      verdict: 'SH\u007fIP\u001b',
+      headSha: HEAD,
+      now: T3,
+    });
+    dispatchStart(runA, T4, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T5, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: claudeUsage({ evidenceSource: 'transcript\u009b' }),
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T6 });
+    return runsDir;
+  };
+
+  it('the text render (default mode) contains no character in the C0(<space)/DEL/C1 control range from a hostile gate name, verdict, or usage evidenceSource', async () => {
+    const runsDir = await hostileJournal();
+
+    const result = await cli(['--runs', runsDir, '--since', SINCE]);
+    expect(result.code, result.out).toBe(0);
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this assertion
+    expect(result.stdout).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+  });
+
+  it('--json output contains no raw DEL/C1 byte either — JSON.stringify does not escape \\u007f-\\u009f on its own — and still parses as JSON', async () => {
+    const runsDir = await hostileJournal();
+
+    const result = await cli(['--runs', runsDir, '--since', SINCE, '--json']);
+    expect(result.code, result.out).toBe(0);
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this assertion
+    expect(result.stdout).not.toMatch(/[\x7f-\x9f]/);
+    expect(() => JSON.parse(result.stdout)).not.toThrow();
+  });
 });
 
 describe('token-report.mjs dispatch grouping: run -> controller/harness -> ticket -> agentType -> model/effort', () => {
@@ -529,6 +626,90 @@ describe('token-report.mjs dispatch grouping: run -> controller/harness -> ticke
     expect(group.modelSource).toBe('unknown');
     expect(group.effort).toBe('unknown');
     expect(group.effortSource).toBe('unknown');
+  });
+
+  it('a dispatch-start whose agentType is an array carrying a terminal escape is not trusted as a string: it renders as unknown, and the text output carries no control character', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-ARRAY',
+      now: T1,
+    });
+    // agentType, harness and controller each accept any JSON type from the
+    // journal today (line 326-328 use `??`, not a string check) — an array
+    // is neither guessed away nor validated, so it reaches the render as-is.
+    dispatchStart(runA, T2, {
+      harness: ['claude', '\u001b]0;PWNED\u0007'],
+      controller: ['ctrl', '\u001b]0;PWNED\u0007'],
+      agentType: ['code-reviewer', '\u001b]0;PWNED\u0007'],
+      agentRef: 'r1',
+    });
+    dispatchEnd(runA, T3, { agentRef: 'r1' });
+
+    const jsonResult = await cli(['--runs', runsDir, '--since', SINCE, '--json']);
+    expect(jsonResult.code, jsonResult.out).toBe(0);
+    const data = JSON.parse(jsonResult.stdout) as Report;
+    const group = data.dispatchGroups[0]!;
+    expect(group.harness).toBe('unknown');
+    expect(group.controller).toBe('unknown');
+    expect(group.agentType).toBe('unknown');
+
+    const textResult = await cli(['--runs', runsDir, '--since', SINCE]);
+    expect(textResult.code, textResult.out).toBe(0);
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this assertion
+    expect(textResult.stdout).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+  });
+
+  it('a dispatch-start whose controller has a non-callable toString does not crash the report: it exits 0, a healthy run next to it is still reported, and the field reads unknown', async () => {
+    const runsDir = await runsRoot();
+    const runHealthy = await mkrun(runsDir, 'run-healthy');
+    journal.recordDecision({
+      runDir: runHealthy,
+      gate: 'item-selection',
+      verdict: 'taken RP-HEALTHY',
+      now: T1,
+    });
+    dispatchStart(runHealthy, T2, {
+      harness: 'claude',
+      controller: 'ctrl-ok',
+      agentType: 'code-reviewer',
+      agentRef: 'h1',
+    });
+    dispatchEnd(runHealthy, T3, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'h1' });
+
+    const runHostile = await mkrun(runsDir, 'run-hostile');
+    journal.recordDecision({
+      runDir: runHostile,
+      gate: 'item-selection',
+      verdict: 'taken RP-HOSTILE',
+      now: T1,
+    });
+    // Array.prototype.join (the dispatch-group key, line 339) calls ToString
+    // on this value; an object whose own `toString` is not callable and whose
+    // inherited `valueOf` returns a non-primitive throws TypeError there —
+    // today nothing catches it, so the whole CLI run aborts.
+    dispatchStart(runHostile, T2, {
+      harness: 'claude',
+      controller: { toString: 1 },
+      agentType: 'code-reviewer',
+      agentRef: 'x1',
+    });
+    dispatchEnd(runHostile, T3, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'x1' });
+
+    const result = await cli(['--runs', runsDir, '--since', SINCE, '--json']);
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout, result.out).not.toBe('');
+    const data = JSON.parse(result.stdout) as Report;
+
+    const healthyGroup = data.dispatchGroups.find((g) => g.run === 'run-healthy');
+    expect(healthyGroup, JSON.stringify(data.dispatchGroups)).toBeDefined();
+    expect(healthyGroup!.controller).toBe('ctrl-ok');
+
+    const hostileGroup = data.dispatchGroups.find((g) => g.run === 'run-hostile');
+    expect(hostileGroup, JSON.stringify(data.dispatchGroups)).toBeDefined();
+    expect(hostileGroup!.controller).toBe('unknown');
   });
 
   it('a Claude dispatch and a Codex dispatch under the same ticket and agent role render as two separate groups, never summed', async () => {

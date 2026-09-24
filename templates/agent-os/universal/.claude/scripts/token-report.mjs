@@ -53,7 +53,17 @@
  * the selection named". `controller`/`harness`/`agentType` are `'unknown'`
  * when the start record carries no such field, never guessed —
  * test/template/token-report.test.ts (absent in a generated rig) › "reports
- * unknown (never guessed) for every field a dispatch record omits".
+ * unknown (never guessed) for every field a dispatch record omits". Each of
+ * the three is trusted only as a non-empty string, else `'unknown'` — never
+ * coerced — so a non-string value (an array, or an object with a
+ * non-callable `toString`) neither leaks a raw value into the group key nor
+ * crashes the report — test/template/token-report.test.ts (absent in a
+ * generated rig) › "a dispatch-start whose agentType is an array carrying a
+ * terminal escape is not trusted as a string: it renders as unknown, and the
+ * text output carries no control character", and test/template/token-report.test.ts
+ * (absent in a generated rig) › "a dispatch-start whose controller has a
+ * non-callable toString does not crash the report: it exits 0, a healthy run
+ * next to it is still reported, and the field reads unknown".
  * `model`/`effort` are the start's own `declaredModel`/`declaredEffort` when
  * present (`modelSource`/`effortSource`: `'declared'`), else
  * `'unknown'`/`'unknown'` — this script never infers a model from anywhere
@@ -81,12 +91,17 @@
  * noisier than the plain `ended`/`noEndObserved` pair already is —
  * test/template/token-report.test.ts (absent in a generated rig) › "each
  * group reports how many of its dispatches carried usage, so partial
- * coverage is visible".
+ * coverage is visible". A `usage` object present on a `dispatch-end` but
+ * carrying no finite numeric field (e.g. `{}`) is not usage: it does not
+ * count toward `withUsage`, does not flip the money line, and its slot
+ * stays `null` — test/template/token-report.test.ts (absent in a generated
+ * rig) › "a dispatch with usage: {} (no numeric field) does not flip the
+ * money line to "usage measured" and is not counted as withUsage".
  *
  * TICKET ATTRIBUTION — which ticket a record (a dispatch-start, here) belongs
  * to is the latest `item-selection` decision whose verdict matches
  * `/^taken (.+)$/` at a smaller seq than the record's own; a
- * `"stopped" selection is invisible to attribution: dispatches after it
+ * "stopped" selection is invisible to attribution: dispatches after it
  * still belong to the last taken ticket — test/template/token-report.test.ts
  * (absent in a generated rig) › "a "stopped" selection is invisible to
  * attribution: dispatches after it still belong to the last taken ticket".
@@ -148,8 +163,8 @@
  * DISPLAYED `dispatchGroups[].usage.claude`/`.codex` slot is non-null, else
  * `'usage unavailable; monetary cost unavailable'` —
  * test/template/token-report.test.ts (absent in a generated rig) › "reads
- * "usage measured; monetary cost unavailable" when any dispatch anywhere
- * carries usage", and test/template/token-report.test.ts (absent in a
+ * "usage measured; monetary cost unavailable" when any displayed dispatch
+ * group carries usage", and test/template/token-report.test.ts (absent in a
  * generated rig) › "reads "usage unavailable; monetary cost unavailable"
  * when no dispatch anywhere carries usage". A dispatch whose harness this
  * script does not recognise never reaches a displayed slot, so it cannot
@@ -189,11 +204,21 @@
  *     filter pass per selection window, and one scan of `takenSelections`
  *     per dispatch. Fine at the journal sizes this rig produces; not bounded
  *     against an adversarially large journal.
- *   - The text render strips C0/C1 control characters from every raw
- *     journal-derived string it interpolates (run id, controller, harness,
- *     agentType, model, effort, ticket, and a skip reason), so a hostile
- *     journal cannot plant a terminal escape in the operator's shell; `--json`
- *     output goes through `JSON.stringify`, which already escapes them.
+ *   - The text render sanitizes the whole rendered document once, after every
+ *     line (including the `JSON.stringify`-built `usage`/`outcome`
+ *     fragments) is assembled — stripping C0 controls except `\n`/`\t`, DEL
+ *     (U+007F) and the C1 range (U+0080-U+009F, including CSI U+009B) — so a
+ *     hostile journal cannot plant a terminal escape in the operator's shell
+ *     — test/template/token-report.test.ts (absent in a generated rig) › "the
+ *     text render (default mode) contains no character in the
+ *     C0(<space)/DEL/C1 control range from a hostile gate name, verdict, or
+ *     usage evidenceSource". `--json` output goes through `JSON.stringify`,
+ *     which escapes C0 on its own but leaves DEL/C1 raw; this script rewrites
+ *     exactly that leftover range as `\u00XX` escapes, so the document still
+ *     parses to the same values — test/template/token-report.test.ts (absent
+ *     in a generated rig) › "--json output contains no raw DEL/C1 byte either
+ *     — JSON.stringify does not escape \u007f-\u009f on its own — and still
+ *     parses as JSON".
  */
 
 import { realpathSync } from 'node:fs';
@@ -227,6 +252,21 @@ const sharedEvidenceSource = (rawList) => {
   }
   return first;
 };
+
+/** A dispatch's declared field (`controller`/`harness`/`agentType`) is
+ * trusted only as a non-empty string, else `'unknown'` — never guessed, and
+ * never coerced (a non-string value, e.g. an array or an object with a
+ * non-callable `toString`, would otherwise reach `Array.prototype.join` in
+ * the group key and either leak raw terminal escapes or throw). */
+const stringOrUnknown = (value) =>
+  typeof value === 'string' && value.trim() !== '' ? value : 'unknown';
+
+/** Whether a raw usage object carries at least one finite numeric counter —
+ * an object with no such field (e.g. `{}`) is not usage: it must not count
+ * toward `withUsage`, must not flip the money line, and its slot stays
+ * `null`. */
+const hasFiniteNumericField = (value) =>
+  value !== null && typeof value === 'object' && Object.values(value).some(Number.isFinite);
 
 const claudeUsageOf = (rawList) => {
   if (rawList.length === 0) return null;
@@ -323,9 +363,9 @@ export const tokenReportOf = ({ runs, since }) => {
 
     for (const pair of pairs) {
       const start = pair.start;
-      const controller = start.data?.controller ?? 'unknown';
-      const harness = start.data?.harness ?? 'unknown';
-      const agentType = start.data?.agentType ?? 'unknown';
+      const controller = stringOrUnknown(start.data?.controller);
+      const harness = stringOrUnknown(start.data?.harness);
+      const agentType = stringOrUnknown(start.data?.agentType);
       const ticket = attributionAt(start.seq);
       const declaredModel = start.data?.declaredModel;
       const hasModel = typeof declaredModel === 'string' && declaredModel.trim() !== '';
@@ -363,7 +403,7 @@ export const tokenReportOf = ({ runs, since }) => {
 
       if (pair.end) {
         const usageRaw = pair.end.data?.usage;
-        if (usageRaw && typeof usageRaw === 'object') {
+        if (hasFiniteNumericField(usageRaw)) {
           const raws = groupUsageRaw.get(key);
           raws.withUsage += 1;
           if (harness === 'claude') raws.claude.push(usageRaw);
@@ -499,18 +539,20 @@ export const tokenReportOf = ({ runs, since }) => {
   };
 };
 
-/** Strips C0/C1 control characters from a raw journal-derived string before
- * it reaches the operator's terminal in the text render — see the header's
- * LIMITS. `--json` output is unaffected: JSON.stringify already escapes
- * them. */
+/** Strips C0 (except `\n`/`\t`), DEL and C1 control characters from a whole
+ * piece of text before it reaches the operator's terminal — see the header's
+ * LIMITS. Applied once, to the fully rendered text, rather than per
+ * interpolated field: that also covers a `JSON.stringify`-built fragment
+ * (`usage`, `outcome`), which a per-field pass over the named scalars alone
+ * would miss. */
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
-const safe = (value) => (typeof value === 'string' ? value.replace(/[\x00-\x1F\x7F-\x9F]/g, '') : value);
+const stripControlChars = (text) => text.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, '');
 
 /** The short human text render — ends with the money line, always. */
 export const render = (report) => {
   const lines = [`token usage since ${report.since}`];
   lines.push(`runs: ${report.runs.read} read, ${report.runs.skipped.length} skipped`);
-  for (const { run, why } of report.runs.skipped) lines.push(`  skipped ${safe(run)} — ${safe(why)}`);
+  for (const { run, why } of report.runs.skipped) lines.push(`  skipped ${run} — ${why}`);
 
   lines.push(`dispatch groups: ${report.dispatchGroups.length}`);
   for (const group of report.dispatchGroups) {
@@ -521,24 +563,22 @@ export const render = (report) => {
     const withUsage =
       group.dispatches.withUsage === undefined ? '' : ` withUsage=${group.dispatches.withUsage}`;
     lines.push(
-      `  ${safe(group.run)} ${safe(group.controller)}/${safe(group.harness)} ${safe(group.ticket)} ${safe(group.agentType)} ` +
-        `model=${safe(group.model)}(${group.modelSource}) effort=${safe(group.effort)}(${group.effortSource}) ` +
+      `  ${group.run} ${group.controller}/${group.harness} ${group.ticket} ${group.agentType} ` +
+        `model=${group.model}(${group.modelSource}) effort=${group.effort}(${group.effortSource}) ` +
         `ended=${group.dispatches.ended} noEndObserved=${group.dispatches.noEndObserved}${withUsage} ${usage}`,
     );
   }
 
   lines.push(`tickets: ${report.tickets.length}`);
   for (const ticket of report.tickets) {
-    lines.push(
-      `  ${safe(ticket.ticket)} attempts=${ticket.attempts} occurrences=${ticket.occurrences.length}`,
-    );
+    lines.push(`  ${ticket.ticket} attempts=${ticket.attempts} occurrences=${ticket.occurrences.length}`);
     for (const occurrence of ticket.occurrences) {
       const dispatches =
         occurrence.dispatches === 'unavailable'
           ? 'unavailable'
           : `ended=${occurrence.dispatches.ended} noEndObserved=${occurrence.dispatches.noEndObserved}`;
       lines.push(
-        `    run=${safe(occurrence.run)} seq=${occurrence.seq ?? 'n/a'} gateRounds=${occurrence.gateRounds} ` +
+        `    run=${occurrence.run} seq=${occurrence.seq ?? 'n/a'} gateRounds=${occurrence.gateRounds} ` +
           `outcome=${occurrence.outcome ? JSON.stringify(occurrence.outcome) : 'null'} ` +
           `wallTimeMs=${occurrence.wallTimeMs ?? 'null'} dispatches=${dispatches}`,
       );
@@ -546,8 +586,16 @@ export const render = (report) => {
   }
 
   lines.push(report.money.line);
-  return `${lines.join('\n')}\n`;
+  return stripControlChars(`${lines.join('\n')}\n`);
 };
+
+/** `JSON.stringify` escapes C0 (below U+0020) on its own but leaves DEL
+ * (U+007F) and the C1 range (U+0080-U+009F, including CSI U+009B) as raw
+ * bytes — see the header's LIMITS. Rewriting exactly that range as `\u00XX`
+ * keeps the document valid JSON, parsing to the same values, with no raw
+ * high-control byte reaching the operator's terminal. */
+const escapeHighControlChars = (jsonText) =>
+  jsonText.replace(/[\x7F-\x9F]/g, (ch) => `\\u${ch.codePointAt(0).toString(16).padStart(4, '0')}`);
 
 const parseArgs = (argv) => {
   const args = { since: null, runs: null, json: false, bad: null };
@@ -595,5 +643,7 @@ if (invokedDirectly()) {
     refuse(error.message);
   }
   const report = tokenReportOf({ runs, since: new Date(args.since).toISOString() });
-  process.stdout.write(args.json ? `${JSON.stringify(report, null, 2)}\n` : render(report));
+  process.stdout.write(
+    args.json ? `${escapeHighControlChars(JSON.stringify(report, null, 2))}\n` : render(report),
+  );
 }
