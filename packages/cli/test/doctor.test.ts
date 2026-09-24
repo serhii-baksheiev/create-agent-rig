@@ -81,8 +81,8 @@ afterEach(async () => {
 // `inspectGuards`'s real fixture batch (a PowerShell job-wrapper launch plus a
 // node process and 10 hook processes on Windows) even though none of these
 // cases are about guard behavior — that coverage lives in
-// doctor-guards.test.ts. A stub answering `guardRunner` the way the always
-// answers here is the fix `DoctorOptions` needs: `runDoctor` threads it
+// doctor-guards.test.ts. A stub that answers `guardRunner` the way a passing
+// run always does is the fix `DoctorOptions` needs: `runDoctor` threads it
 // straight to `inspectGuards`'s existing `runner` option instead of always
 // launching the real batch.
 const passingGuardRunner = async (): Promise<ProviderProcessResult> => ({
@@ -153,7 +153,7 @@ describe('doctor detail/fix text names no internal tracker id (RP-239 A4)', () =
 // can only mean the stub's answer reached the report — never that the real
 // batch happened to agree with it.
 describe('doctor threads an injected guard-batch runner through the guards check (RP-261)', () => {
-  it('calls the injected guardRunner and reports its success, never launching the real fixture batch', async () => {
+  it('calls the injected guardRunner exactly once and reports its success, never launching the real fixture batch', async () => {
     await initProject(repo, {});
     let calls = 0;
     const guardRunner = async (): Promise<ProviderProcessResult> => {
@@ -169,8 +169,10 @@ describe('doctor threads an injected guard-batch runner through the guards check
     });
     const body = report(result.stdout);
 
-    // Independent oracle: the stub, not the real batch, must have run.
-    expect(calls).toBeGreaterThan(0);
+    // Independent oracle: the stub, not the real batch, must have run — and
+    // exactly once (`inspectGuards` issues one batch call per `runDoctor`
+    // invocation), never falling back to a second, real launch.
+    expect(calls).toBe(1);
     expect(body.checks).toContainEqual(
       expect.objectContaining({ id: 'guards', status: 'ok', reason: 'guards-verified' }),
     );
@@ -206,6 +208,27 @@ describe('doctor threads an injected guard-batch runner through the guards check
   });
 });
 
+// A static guard against regression: every `runDoctor(` call in this file
+// must thread a `guardRunner`, or a future case can silently reintroduce the
+// real fixture-batch launch (a PowerShell job-wrapper plus a node process and
+// 10 hook processes) this file exists to avoid.
+describe('every runDoctor( call in this file threads a guardRunner (RP-261 static guard)', () => {
+  it('has no runDoctor( call site missing guardRunner in its own object literal', async () => {
+    const source = await readFile(fileURLToPath(import.meta.url), 'utf8');
+    // Bounded and simple on purpose: this is a regression pin, not a
+    // general TS parser — a `runDoctor(` call site in this file is always a
+    // short object literal closed by `});` within a few hundred characters.
+    const CALL_SITE = /runDoctor\(\{[\s\S]{0,800}?\}\);/g;
+    const callSites = source.match(CALL_SITE) ?? [];
+    // Fixture sanity: this file is known to call runDoctor( directly more
+    // than once — an empty or single-match list would make the assertion
+    // below vacuous.
+    expect(callSites.length).toBeGreaterThan(3);
+    const missingGuardRunner = callSites.filter((site) => !site.includes('guardRunner'));
+    expect(missingGuardRunner).toEqual([]);
+  });
+});
+
 describe('aggregated doctor (RP-21)', () => {
   it('distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets', async () => {
     await initProject(repo, {});
@@ -222,6 +245,7 @@ describe('aggregated doctor (RP-21)', () => {
       cwd: repo,
       args: ['--json'],
       env: { HOME: home, APPDATA: home, PATH: '' },
+      guardRunner: passingGuardRunner,
     });
     const body = JSON.parse(result.stdout);
     expect(body.status).toBe('warn');
@@ -352,6 +376,7 @@ describe('aggregated doctor (RP-21)', () => {
       cwd: repo,
       args: ['--json'],
       env: { HOME: home, APPDATA: home, PATH: home },
+      guardRunner: passingGuardRunner,
     });
     const body = report(result.stdout);
 
@@ -674,6 +699,7 @@ describe('aggregated doctor (RP-21)', () => {
           cwd: uncomparableRepo,
           args: ['--json'],
           env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+          guardRunner: passingGuardRunner,
         });
         const uncomparableFix = report(uncomparableResult.stdout).checks.find(
           (c) => c.id === 'rig-version',
@@ -697,6 +723,7 @@ describe('aggregated doctor (RP-21)', () => {
         cwd: repo,
         args: [],
         env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+        guardRunner: passingGuardRunner,
       });
 
       expect(result.exitCode, result.stderr).toBe(0);
