@@ -367,8 +367,18 @@ describe('the search endpoint it calls', () => {
     expect(Array.isArray(fields), `fields was ${JSON.stringify(fields)}`).toBe(true);
     // `description` is the one whose absence is silent: the triage dedupe reads
     // the fingerprint out of it, and without it every stop files a fresh issue.
+    // `assignee` (RP-221) is the one whose absence is silent the same way: a
+    // live search that dropped it would map every issue as unassigned, and
+    // selection would take work a human already assigned to someone else.
     expect(fields as string[]).toEqual(
-      expect.arrayContaining(['summary', 'status', 'labels', 'issuelinks', 'description']),
+      expect.arrayContaining([
+        'summary',
+        'status',
+        'labels',
+        'issuelinks',
+        'description',
+        'assignee',
+      ]),
     );
   });
 

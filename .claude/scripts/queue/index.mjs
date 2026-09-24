@@ -766,6 +766,20 @@ if (invokedDirectly()) {
     process.exit(0);
   }
 
+  // RP-221: this run's own tracker identity — the tracker account the
+  // credentials belong to, never anything about the harness or machine
+  // running the loop — resolved here for `selectNext` below. This CLI never
+  // calls `adapter.claim()` at all (the loop skill's take-up step calls it
+  // separately, from its own process); round 2 gave `claim()` the same
+  // resolution as a fallback for when its own `currentActor` option is
+  // omitted, so nothing here needs to thread this value into a claim call
+  // that does not exist on this path. `plan-md` exports no `currentActor`
+  // (it has no tracker account to ask), so this stays `null` there and every
+  // item is unaffected, exactly as before. Never logged, never journalled,
+  // never written to stdout: only `selectNext` ever sees it.
+  const currentActor =
+    typeof adapter.currentActor === 'function' ? await adapter.currentActor() : null;
+
   const result = selectNext(tickets, {
     // The state file wins: it is what a close actually recorded. A tier left in
     // the config is a hand-written hint at best, and it is the composed file, so
@@ -789,6 +803,7 @@ if (invokedDirectly()) {
     // This checkout's name, for the owner marker (AR-132). Absent means the
     // checkout cannot confirm a match, and an owned item is held.
     owner: config.options?.owner ?? null,
+    currentActor,
   });
   // The skipped records travel with the count: without them "nothing left" and
   // "everything left is held back" both print as an empty queue, and only one of
