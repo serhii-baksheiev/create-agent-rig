@@ -1482,6 +1482,9 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       // AR-144: takeable work waiting on a human rewrite, or on a human un-park.
       're-scope',
       'deferred',
+      // RP-221: assigned to someone else in the tracker — a human reassigns or
+      // unassigns it; held so the stop line can name that act.
+      'assigned',
     ]);
     expect(Object.isFrozen(HOLDING_CAUSES)).toBe(true);
 
@@ -1549,6 +1552,7 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
     owner: /another repository.*(moves it|re-marks it)/i,
     'in-progress': /another session|the other session|finishes|releases/i,
     spacing: /normal item|interleave/i,
+    assigned: /reassigns or unassigns it/i,
     // 🔴 This was ONE entry — `trigger: /declare|declares/i` — and it is exactly
     // why three revisions of this clause each fixed one sub-case and left the
     // other wrong: one loose word matched a line that named either remedy, so a

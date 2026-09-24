@@ -153,6 +153,10 @@ export const toTicket = (issue) => {
     // The lifecycle and the scheduling flag (AR-144): `lifecycleOf` above the seam
     // owns the semantics; this adapter only hands it the labels.
     ...lifecycleOf(labels),
+    // RP-221: the opaque `accountId` only — never `displayName` or
+    // `emailAddress`, neither of which belongs on a shape this loop logs,
+    // journals or prints. `null` when the issue carries no assignee.
+    assignee: fields.assignee?.accountId ?? null,
   };
 };
 
@@ -391,6 +395,8 @@ const FIELDS = [
   'issuelinks',
   'description',
   'comment',
+  // RP-221: the tracker's own assignee, read as the opaque accountId only.
+  'assignee',
 ];
 
 // --- the adapter contract ------------------------------------------------------
@@ -536,6 +542,28 @@ export const find = async (id, { issues = null, env = process.env } = {}) => {
   }
 };
 
+/**
+ * RP-221 — this run's own tracker identity, as the opaque `accountId` only.
+ * Never `displayName` or `emailAddress`: those never leave `/rest/api/3/myself`,
+ * so a credential swap cannot leak a human's name into a journal, a claim
+ * record or stdout through this path.
+ *
+ * Never throws — missing credentials, a network failure, a non-2xx response,
+ * all resolve to `null`, exactly like `ownerOfLabels` resolving to "no owner"
+ * on absence: a checkout that cannot identify itself cannot confirm a match,
+ * and the caller (`selectionOf`, `claim`) already reads `null` as "fail closed
+ * on an assigned item", never as "assume unassigned".
+ */
+export const currentActor = async ({ env = process.env } = {}) => {
+  try {
+    const me = await request('/rest/api/3/myself', { env, retryTransient: false });
+    const id = me?.accountId;
+    return typeof id === 'string' && id !== '' ? { id } : null;
+  } catch {
+    return null;
+  }
+};
+
 export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) => !b.resolved);
 
 /**
@@ -617,7 +645,8 @@ const rebaseline = async (ticket, env) => {
  * confirm the outcome — exactly as every other mutating call in this adapter,
  * `test/template/queue-jira.test.ts` (absent in a generated rig) › "does not
  * retry %s" pins. `reason` is one of `claim-stale` (refused before
- * mutating — the item is no longer to do, or moved since selection),
+ * mutating — the item is no longer to do, moved since selection, or
+ * reassigned to another actor — RP-221),
  * `claim-contended` (mutated, but the read-back could not attribute the sole
  * resulting history to this call) or `claim-unverifiable` (no selection
  * snapshot, refused with no request; or a request failed and the outcome could
@@ -667,7 +696,7 @@ const verifyJiraClaim = async (ticket, snapshotMs, env) => {
 
 export const claim = async (
   ticket,
-  { transitionId = null, env = process.env, projectRoot = process.cwd() } = {},
+  { transitionId = null, env = process.env, projectRoot = process.cwd(), currentActor = null } = {},
 ) => {
   if (!ticket?.updatedAt) {
     return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no selection snapshot' };
@@ -675,8 +704,9 @@ export const claim = async (
   const snapshotMs = instantOf(ticket.updatedAt);
 
   // Pre-read: a failing read throws as any read does today — nothing has
-  // been written yet.
-  const pre = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
+  // been written yet. RP-221: `assignee` travels in the same read, so the
+  // reassignment gate below costs no extra request.
+  const pre = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated,assignee`, { env });
   const preFields = pre?.fields ?? {};
   const preCategory = statusCategory(preFields);
   if (preCategory !== 'new') {
@@ -694,6 +724,21 @@ export const claim = async (
       claimed: false,
       reason: 'claim-stale',
       detail: `updated moved from ${ticket.updatedAt} (selection) to ${preUpdated} before the claim`,
+    };
+  }
+  // RP-221: a human reassignment between selection and claim wins, without a
+  // mutating request. Unassigned is fine; assigned to the current actor is
+  // fine; assigned to anyone else — or assigned at all while the actor is
+  // unknown — refuses, fail closed, exactly as an unknown owner does above
+  // the seam. The detail never repeats the tracker's identity, only that one
+  // moved.
+  const preAssignee = preFields.assignee?.accountId ?? null;
+  if (preAssignee !== null && (!currentActor || preAssignee !== currentActor.id)) {
+    return {
+      ok: false,
+      claimed: false,
+      reason: 'claim-stale',
+      detail: 'reassigned to another actor since selection',
     };
   }
 

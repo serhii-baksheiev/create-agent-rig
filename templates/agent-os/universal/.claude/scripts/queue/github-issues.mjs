@@ -39,6 +39,12 @@ const PRIORITY = /^(?:priority[:-]|p)(\d+)$/i;
 const labelNames = (issue) =>
   (issue?.labels ?? []).map((label) => (typeof label === 'string' ? label : (label?.name ?? '')));
 
+/** The assignee logins GitHub carries on an issue, as `assignees: [{ login }]`. */
+const assigneeLogins = (issue) =>
+  (issue?.assignees ?? [])
+    .map((assignee) => (typeof assignee === 'string' ? assignee : (assignee?.login ?? '')))
+    .filter((login) => login !== '');
+
 /** The blocker ids this issue's body links to — several per line is fine. */
 export const blockerIdsOf = (issue) => {
   const ids = [];
@@ -59,6 +65,7 @@ export const toTicket = (issue, states = {}) => {
   const labels = labelNames(issue);
   const priorityLabel = labels.map((label) => PRIORITY.exec(label)).find(Boolean);
   const comments = Array.isArray(issue.comments) ? issue.comments : [];
+  const assignees = assigneeLogins(issue);
 
   return {
     id: String(issue.number),
@@ -109,6 +116,10 @@ export const toTicket = (issue, states = {}) => {
     owner: ownerOfLabels(labels),
     // The lifecycle and the scheduling flag (AR-144), read above the seam.
     ...lifecycleOf(labels),
+    // RP-221: GitHub allows several assignees; `null` when there are none, so
+    // an empty `assignees: []` reads as unassigned rather than as a mismatch
+    // nothing can ever satisfy.
+    assignee: assignees.length > 0 ? assignees : null,
   };
 };
 
@@ -142,7 +153,7 @@ const ghText = (args) =>
 
 const ghJson = (args) => JSON.parse(ghText(args));
 
-const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments';
+const FIELDS = 'number,title,body,state,labels,url,createdAt,updatedAt,comments,assignees';
 
 /**
  * A `--state` (or triage) window that came back exactly at its cap: older
@@ -204,6 +215,22 @@ export const listEligible = ({ limit = 100, issues = null } = {}) => {
   });
 };
 
+/**
+ * RP-221 — this run's own tracker identity: the caller's GitHub login.
+ * Never throws — a missing `gh` auth, a network failure, anything `gh api
+ * user` cannot answer resolves to `null`, and the caller (`selectionOf`,
+ * `claim`) already reads `null` as "fail closed on an assigned item", never
+ * as "assume unassigned".
+ */
+export const currentActor = async () => {
+  try {
+    const login = String(ghText(['api', 'user', '--jq', '.login'])).trim();
+    return login !== '' ? { id: login } : null;
+  } catch {
+    return null;
+  }
+};
+
 export const resolveBlockers = (ticket) => (ticket.blockedBy ?? []).filter((b) => !b.resolved);
 
 /** `To Do → In Progress` before the first file is edited, not when the PR opens. */
@@ -235,8 +262,8 @@ const rebaseline = (ticket) => {
  * or when the write itself fails outright, never merely because verification
  * could not confirm the outcome, because a thrown write is retried by the
  * caller and lands twice. `reason` is `claim-stale` (refused before
- * mutating — the issue is closed, already labelled in progress, or moved
- * since selection),
+ * mutating — the issue is closed, already labelled in progress, moved since
+ * selection, or reassigned to another actor — RP-221),
  * `claim-contended` (mutated, but the read-back could not attribute the label
  * to this call) or `claim-unverifiable` (no selection snapshot, refused with
  * no request; a request failed; or the events page came back full enough that
@@ -299,7 +326,7 @@ const verifyGithubClaim = (ticket, snapshotMs) => {
   };
 };
 
-export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
+export const claim = (ticket, { projectRoot = process.cwd(), currentActor = null } = {}) => {
   if (!ticket?.updatedAt) {
     return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no selection snapshot' };
   }
@@ -330,6 +357,22 @@ export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
       claimed: false,
       reason: 'claim-stale',
       detail: `updatedAt moved from ${ticket.updatedAt} (selection) to ${pre?.updatedAt} before the claim`,
+    };
+  }
+  // RP-221: a human reassignment between selection and claim wins, without a
+  // mutating request — the same gate as `jira.mjs`'s `claim`. Unassigned or
+  // assigned to the current actor proceeds; assigned to anyone else, or
+  // assigned at all while the actor is unknown, refuses fail closed. A
+  // second read, deliberately separate from the pre-read above: folding
+  // `assignees` into that call's `--json` list would change the exact field
+  // string every other caller of this pre-read compares against.
+  const preAssignees = assigneeLogins(ghJson(['issue', 'view', ticket.id, '--json', 'assignees']));
+  if (preAssignees.length > 0 && (!currentActor || !preAssignees.includes(currentActor.id))) {
+    return {
+      ok: false,
+      claimed: false,
+      reason: 'claim-stale',
+      detail: 'reassigned to another actor since selection',
     };
   }
 
