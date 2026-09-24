@@ -530,3 +530,156 @@ describe("the createProject test's own git children (RP-248)", () => {
     assertNamedBoundsBelowCaseBudget(source, { win32: budget, other: budget });
   });
 });
+
+// RP-255. On a hosted windows-e2e stall window, `currentActor()`
+// (templates/agent-os/universal/.claude/scripts/queue/github-issues.mjs) and
+// `checkLastDeploy()` (templates/agent-os/universal/.claude/scripts/preflight.mjs)
+// both shell out to the real `gh` binary through `execFileSync` with no
+// `timeout` option — measured at ~5 s steady and, on a loaded runner, stalling
+// past this project's own 15 s testTimeout in 4 of 11 runs (`currentActor`),
+// and once past a bare 30 s in `checkLastDeploy` before RP-221 gave
+// `queue/index.mjs next` its own call into `currentActor`. Both call sites are
+// production code, not a test's own child, so they get the same treatment
+// RP-212/RP-248 gave the test-side spawns above: every `execFileSync` call in
+// either module carries its OWN named bound, declared once as an exported
+// constant using the same `_BOUND_MS` / `_CHILD_TIMEOUT_MS` convention, never a
+// bare literal — strictly below this project's testTimeout, so a hung `gh`
+// fails the child closed instead of taking the whole vitest case down with it.
+//
+// Deliberately structural, not a stub-`gh`-and-wait behavioural test: a
+// behavioural case would have to either guess a wait comfortably below the
+// bound — unsound, since the bound is only checked structurally here, not
+// re-derived — or sit close to the file's own 15 s case budget, which is
+// exactly the load-sensitive shape this whole file exists to avoid
+// reintroducing on a 7 GB, already-contended runner.
+const PRODUCTION_GH_CHILD_BOUND_DECLARATION =
+  /^export const ([A-Z][A-Z0-9_]*(?:_BOUND_MS|_CHILD_TIMEOUT_MS)) = (\d[\d_]*);$/m;
+
+function productionGhChildBound(source: string, label: string): { name: string; value: number } {
+  const declared = source.match(PRODUCTION_GH_CHILD_BOUND_DECLARATION);
+  expect(
+    declared,
+    `${label} declares its own exported named gh-child bound (an ` +
+      '`export const NAME_BOUND_MS = <number>;` / `..._CHILD_TIMEOUT_MS`)',
+  ).not.toBeNull();
+  return {
+    name: declared?.[1] ?? '',
+    value: Number((declared?.[2] ?? '').replaceAll('_', '')),
+  };
+}
+
+function assertEveryExecFileSyncCallCarriesTheBound(source: string, boundName: string): void {
+  const code = source.replace(/\/\/[^\n]*/g, '');
+  const calls = extractCallArgs(code, 'execFileSync');
+  expect(calls.length, 'execFileSync call sites in the file').toBeGreaterThan(0);
+  const namedTimeout = new RegExp(`\\btimeout\\s*:\\s*${boundName}\\b`);
+  for (const args of calls) {
+    expect(
+      args,
+      `execFileSync(${args.trim().slice(0, 60)}) must set timeout: ${boundName}, never a bare literal or no timeout at all`,
+    ).toMatch(namedTimeout);
+  }
+}
+
+async function readGithubIssuesAdapterSource(): Promise<string> {
+  return readFile(
+    path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'scripts',
+      'queue',
+      'github-issues.mjs',
+    ),
+    'utf8',
+  );
+}
+
+async function readPreflightSource(): Promise<string> {
+  return readFile(
+    path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'scripts',
+      'preflight.mjs',
+    ),
+    'utf8',
+  );
+}
+
+describe('the gh child processes in github-issues.mjs and preflight.mjs carry a bounded timeout (RP-255)', () => {
+  it("github-issues.mjs's gh child (currentActor, and every other execFileSync('gh', …) call) is bounded below this project's test timeout", async () => {
+    const source = await readGithubIssuesAdapterSource();
+    const bound = productionGhChildBound(source, 'github-issues.mjs');
+    expect(templateProject?.test.testTimeout).toBeDefined();
+    expect(
+      bound.value,
+      `${bound.name} must be strictly below this project's testTimeout`,
+    ).toBeLessThan(templateProject?.test.testTimeout ?? 15_000);
+    expect(bound.value).toBeGreaterThan(0);
+    assertEveryExecFileSyncCallCarriesTheBound(source, bound.name);
+  });
+
+  it("preflight.mjs's gh child (checkLastDeploy's `gh run list`) is bounded below this project's test timeout", async () => {
+    const source = await readPreflightSource();
+    const bound = productionGhChildBound(source, 'preflight.mjs');
+    expect(templateProject?.test.testTimeout).toBeDefined();
+    expect(
+      bound.value,
+      `${bound.name} must be strictly below this project's testTimeout`,
+    ).toBeLessThan(templateProject?.test.testTimeout ?? 15_000);
+    expect(bound.value).toBeGreaterThan(0);
+    assertEveryExecFileSyncCallCarriesTheBound(source, bound.name);
+  });
+});
+
+// RP-255 (required, in the same shape as RP-212/RP-248): content-blind-revalidation.test.ts
+// spawns every fixture selection and revalidation through its own shared
+// `run()` helper (`execFile`, no `timeout` option today), which is exactly the
+// child that reached the real, unstubbed `gh` before the `stubCommand('gh', …)`
+// fix above. Giving that helper its own named bound below this project's
+// testTimeout means a genuinely hung child fails with "this child timed out",
+// not vitest's generic 15 s case timeout with no indication which of the
+// file's many spawns stalled.
+async function readContentBlindRevalidationTestSource(): Promise<string> {
+  return readFile(
+    path.join(repoRoot, 'test', 'template', 'content-blind-revalidation.test.ts'),
+    'utf8',
+  );
+}
+
+const CONTENT_BLIND_RUN_HELPER_TIMEOUT =
+  /execFile\(\s*file\s*,\s*args\s*,\s*\{\s*cwd\s*,\s*env\s*,\s*timeout\s*:\s*([A-Z][A-Z0-9_]*(?:_BOUND_MS|_CHILD_TIMEOUT_MS))\s*\}/;
+
+describe("content-blind-revalidation.test.ts's own run() helper bounds its child (RP-255)", () => {
+  it("gives the shared run() helper its own named bound below this project's test timeout", async () => {
+    const source = await readContentBlindRevalidationTestSource();
+    const code = source.replace(/\/\/[^\n]*/g, '');
+    const declared = code.match(CONTENT_BLIND_RUN_HELPER_TIMEOUT);
+    expect(
+      declared,
+      "run()'s execFile call must set timeout: <NAMED_BOUND> directly in its options object, " +
+        'next to `cwd` and `env`',
+    ).not.toBeNull();
+
+    const boundName = declared?.[1] ?? '';
+    const boundDeclaration = new RegExp(`^const ${boundName} = (\\d[\\d_]*);$`, 'm');
+    const boundMatch = code.match(boundDeclaration);
+    expect(
+      boundMatch,
+      `${boundName} must be declared once as a bare numeric literal ("const ${boundName} = <number>;")`,
+    ).not.toBeNull();
+    const boundValue = Number((boundMatch?.[1] ?? '').replaceAll('_', ''));
+    expect(templateProject?.test.testTimeout).toBeDefined();
+    expect(
+      boundValue,
+      `${boundName} must be strictly below this project's testTimeout`,
+    ).toBeLessThan(templateProject?.test.testTimeout ?? 15_000);
+    expect(boundValue).toBeGreaterThan(0);
+  });
+});
