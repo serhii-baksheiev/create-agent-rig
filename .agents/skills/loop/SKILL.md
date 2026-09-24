@@ -1034,6 +1034,22 @@ three poisons the only channel by which this project learns.
   `test/template/duplicate-work.test.ts` (absent in a generated rig)
   › "exit 2, verdict duplicate-work — another branch on origin carries the id"
   and › "exit 3, verdict unverifiable — gh is missing/failing on a GitHub origin, never reported as clean".
+
+  A claim answering `claimed: false` did NOT take the item:
+  the guarantee is per adapter, not one sentence for all three. The Jira adapter
+  re-reads the item before its write and verifies the write after it, so no two
+  controllers are ever both verified from one snapshot. The GitHub adapter does
+  the same, but only across distinct accounts — under the SAME account a
+  documented limit lets two controllers both read back as verified, because
+  re-adding a label GitHub already considers present writes no event to tell
+  them apart (a stated, tested limit, never a claim of exclusivity). A `plan-md`
+  claim verifies nothing at all: it writes nothing, and its call returns the
+  instruction it always returned. Every adapter that can verify refuses rather
+  than report a success it cannot prove. Journal it and select again; `reason`
+  says why. Pinned in `test/template/queue-claim-verified.test.ts` (absent in a generated rig)
+  › "refuses as claim-stale when the item moved to In Progress after selection, with no mutation"
+  and › "the documented same-account limit: two same-account controllers can both come back
+  claimed:true (not a claim of exclusivity)".
 - **Closing:** first ask whether the item is still the item you took up — a
   late comment or a status somebody else moved is not published as `Done`
   underneath it:
