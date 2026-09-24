@@ -104,7 +104,7 @@
 //     slices it to 7 characters, so an embedded line terminator inside it
 //     cannot forge a second `head: ` line either — see › "collapses an
 //     embedded newline in verdict.headSha before slicing it, so it cannot
-//     forge a second head: line".
+//     forge a second head: line — code-reviewer r3 B2".
 //
 // `--post` resolves the configured queue adapter exactly the way
 // `queue/index.mjs` and `preflight.mjs` already do (`loadConfig` +
@@ -243,12 +243,13 @@
 //   for instance) — over-scrubbing diagnosis/remaining text is the accepted
 //   trade for never under-scrubbing it. It runs ONLY on these two fields,
 //   never on a structured one, because a structured field's caller
-//   constructs the value rather than typing it under pressure. Linear: the
-//   field is split once on hard delimiters (a native `String.split`, not a
-//   nested quantifier), and each resulting segment is walked once, token by
-//   token, by a two-group match (`\s*` then `\S+` — two disjoint character
-//   classes, so no ambiguity for the engine to backtrack over) that always
-//   advances by at least one character. See
+//   constructs the value rather than typing it under pressure. Bounded, not
+//   linear: the field is split once on hard delimiters (a native
+//   `String.split`), and each segment is walked token by token by a
+//   two-group match (`\s*` then `\S+`); a run of trailing whitespace makes
+//   that match retry from every position in it, so the worst case is
+//   quadratic in the segment's length — which RAW_FIELD_CAP has already cut
+//   to 2000 characters before this pass runs. See
 //   `test/template/continuation.test.ts` (absent in a generated rig), the
 //   `describe('RP-224 round 4 — …')` block, for every shape above by name
 //   next to the assertion that proves it — including › "scrubs a mixed-slash
@@ -406,9 +407,9 @@ const isFreeTextPathToken = (token) => {
  * One hard-delimiter-free segment of a free-text field: find the FIRST
  * whitespace-delimited token that triggers `isFreeTextPathToken`, and if one
  * exists, replace everything from that token's own start to the end of the
- * segment with `[path]`. Linear: one forward token scan (`\s*` then `\S+` —
- * two disjoint classes, so the engine never backtracks between them), always
- * advancing by at least one character per match.
+ * segment with `[path]`. One forward token scan (`\s*` then `\S+`); trailing
+ * whitespace makes it quadratic in the segment's length, which the raw field
+ * cap bounds (see the module header).
  */
 const scrubFreeTextSegment = (segment) => {
   const tokenPattern = /(\s*)(\S+)/g;
