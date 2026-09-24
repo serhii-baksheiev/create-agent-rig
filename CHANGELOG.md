@@ -28,6 +28,20 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ### Changed
 
+- **`unattended-flag.mjs on` and `verify` now require `--root <checkout>`, and
+  confirm it is that checkout's own git toplevel.** Without a root at all,
+  `on` wrote a flag `readUnattended` could not tell apart from stale
+  unscoped state, and `verify` could then read that same ambiguity back as
+  armed — both now refuse before doing anything else, naming the missing
+  `--root`. A blank `--root`, one that does not exist, or one that names a
+  subdirectory rather than the checkout's own toplevel is refused the same
+  way, before any flag write or lookup — any of those still scoped a flag to
+  a spelling `guard-rulebook` (always scoped by the real checkout toplevel)
+  could never see. The shared refusal `readUnattended` returns for an
+  unscoped flag now names the actual root-scope problem instead of only
+  saying "legacy machine-wide"; `guard-rulebook` still fails closed on it
+  (RP-258).
+
 - **`guard-bash` names credentials, not the filesystem root, when it blocks
   deleting `~/.ssh`.** The reason it gives for that specific target used to
   say "this deletes the filesystem root or the whole home directory" — true
