@@ -289,8 +289,8 @@ never by refilling the queue. The same gate runs again at claim time (§9):
 an item reassigned to someone else between selection and claim() refuses as
 `claim-stale`, before any mutating request. Pinned in the generator's
 `test/template/queue-assignee.test.ts` — absent in a generated rig — ›
-"holds an item assigned to another actor, naming the cause and both
-identities".
+"holds an item assigned to another actor, naming the cause and the
+tracker's assignee".
 
 🔴 **An item's lifecycle is a label a human wrote, and the loop infers none of
 it**. Four words, read by `lifecycleOf` in `core.mjs` so every adapter
@@ -1066,15 +1066,24 @@ three poisons the only channel by which this project learns.
   and › "the documented same-account limit: two same-account controllers can both come back
   claimed:true (not a claim of exclusivity)".
 
-  🔴 **The same reassignment gate runs again at claim time, on the same
-  pre-read.** Selection already checked the tracker's assignee; a human can
-  still reassign the item in the window between selection and claim(), and
-  the Jira and GitHub adapters both re-check it there, before any mutating
-  request — refusing as `claim-stale` rather than taking an item a human just
-  moved. Pass the same `currentActor` resolved for selection; never resolve
-  it twice in one run. Pinned in `test/template/queue-assignee.test.ts`
-  (absent in a generated rig) › "refuses as claim-stale, with zero transition
-  POSTs, when the pre-read shows it now assigned to another actor".
+  🔴 **The same reassignment gate runs again at claim time, before any
+  mutating request.** Selection already checked the tracker's assignee; a
+  human can still reassign the item in the window between selection and
+  claim(), and both adapters re-check it there — the Jira adapter folds the
+  recheck into the SAME pre-read that already reads status and `updated`,
+  while the GitHub adapter reads assignees on a SECOND, deliberately separate
+  call. Call `claim()` the way the take-up step above does, with no
+  `currentActor` key at all: an OMITTED option resolves this run's own
+  tracker identity itself, through the same `currentActor()` function
+  selection already called — passing one resolved earlier would just be a
+  second resolution of the same fact, which is exactly what leaving the key
+  out avoids. An EXPLICIT `currentActor: null` is a different thing
+  entirely — "known unknown" — and still refuses fail closed on an assigned
+  item. Pinned in `test/template/queue-assignee.test.ts` (absent in a
+  generated rig) › "refuses as claim-stale, with zero transition POSTs, when
+  the pre-read shows it now assigned to another actor" and › "refuses as
+  claim-stale, with zero label-edit calls, when the pre-read shows it now
+  assigned to another login".
 - **Closing:** first ask whether the item is still the item you took up — a
   late comment or a status somebody else moved is not published as `Done`
   underneath it:

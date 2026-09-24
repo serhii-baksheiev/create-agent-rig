@@ -766,13 +766,17 @@ if (invokedDirectly()) {
     process.exit(0);
   }
 
-  // RP-221: this run's own tracker identity, resolved ONCE per invocation and
-  // reused for both selection and claim — a second resolution mid-run could
-  // read a different identity than the one selection already reasoned about.
-  // `plan-md` exports no `currentActor` (it has no tracker account to ask), so
-  // this stays `null` there and every item is unaffected, exactly as before.
-  // Never logged, never journalled, never written to stdout: only `selectNext`
-  // and `claim` ever see it.
+  // RP-221: this run's own tracker identity — the tracker account the
+  // credentials belong to, never anything about the harness or machine
+  // running the loop — resolved here for `selectNext` below. This CLI never
+  // calls `adapter.claim()` at all (the loop skill's take-up step calls it
+  // separately, from its own process); round 2 gave `claim()` the same
+  // resolution as a fallback for when its own `currentActor` option is
+  // omitted, so nothing here needs to thread this value into a claim call
+  // that does not exist on this path. `plan-md` exports no `currentActor`
+  // (it has no tracker account to ask), so this stays `null` there and every
+  // item is unaffected, exactly as before. Never logged, never journalled,
+  // never written to stdout: only `selectNext` ever sees it.
   const currentActor =
     typeof adapter.currentActor === 'function' ? await adapter.currentActor() : null;
 

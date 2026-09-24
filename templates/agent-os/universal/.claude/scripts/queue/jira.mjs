@@ -43,6 +43,27 @@ const BLOCKS = /^blocks$/i;
 
 const statusCategory = (fields) => String(fields?.status?.statusCategory?.key ?? '').toLowerCase();
 
+/**
+ * RP-221 round 2 — an assignee object PRESENT but with no readable
+ * `accountId` (a deactivated account past GDPR anonymisation still leaves
+ * the field present) is never folded onto the same `null` an ABSENT
+ * assignee produces. `null` means "unassigned"; this sentinel means
+ * "assigned, but to someone this adapter cannot identify" — a control
+ * character no real `accountId` ever contains, so it can never equal a
+ * resolved actor's id and always reads as a mismatch (`invariants.md`: a
+ * field present in a shape the guard does not accept is the refusal case,
+ * not the fail-open one).
+ */
+const UNREADABLE_ASSIGNEE = '\u0000rp221-unreadable-jira-assignee';
+
+/** `fields.assignee` → the opaque accountId, the sentinel, or `null`. */
+const assigneeIdOf = (assignee) => {
+  if (!assignee) return null;
+  return typeof assignee.accountId === 'string' && assignee.accountId !== ''
+    ? assignee.accountId
+    : UNREADABLE_ASSIGNEE;
+};
+
 /** Jira timestamps use +0000 rather than Z; normalise so string compare sorts right. */
 const toIso = (created) => {
   if (!created) return null;
@@ -155,8 +176,10 @@ export const toTicket = (issue) => {
     ...lifecycleOf(labels),
     // RP-221: the opaque `accountId` only — never `displayName` or
     // `emailAddress`, neither of which belongs on a shape this loop logs,
-    // journals or prints. `null` when the issue carries no assignee.
-    assignee: fields.assignee?.accountId ?? null,
+    // journals or prints. `null` when the issue carries no assignee at all;
+    // an assignee object present but unreadable maps to `UNREADABLE_ASSIGNEE`
+    // (round 2), never to `null` — see `assigneeIdOf` above.
+    assignee: assigneeIdOf(fields.assignee),
   };
 };
 
@@ -556,7 +579,11 @@ export const find = async (id, { issues = null, env = process.env } = {}) => {
  */
 export const currentActor = async ({ env = process.env } = {}) => {
   try {
-    const me = await request('/rest/api/3/myself', { env, retryTransient: false });
+    // No `retryTransient: false` override — `/myself` is a GET like any other
+    // read, so it gets the adapter's normal transient retry (`request`'s own
+    // default, `retryTransient = method === 'GET'`) rather than a bespoke
+    // no-retry rule nothing here asked for.
+    const me = await request('/rest/api/3/myself', { env });
     const id = me?.accountId;
     return typeof id === 'string' && id !== '' ? { id } : null;
   } catch {
@@ -645,8 +672,10 @@ const rebaseline = async (ticket, env) => {
  * confirm the outcome — exactly as every other mutating call in this adapter,
  * `test/template/queue-jira.test.ts` (absent in a generated rig) › "does not
  * retry %s" pins. `reason` is one of `claim-stale` (refused before
- * mutating — the item is no longer to do, moved since selection, or
- * reassigned to another actor — RP-221),
+ * mutating — the item is no longer to do, moved since selection, reassigned
+ * to another actor since selection, or assigned while this run's own tracker
+ * identity could not be resolved — RP-221 round 2 tells the last two apart in
+ * `detail`, never by repeating an id),
  * `claim-contended` (mutated, but the read-back could not attribute the sole
  * resulting history to this call) or `claim-unverifiable` (no selection
  * snapshot, refused with no request; or a request failed and the outcome could
@@ -654,7 +683,10 @@ const rebaseline = async (ticket, env) => {
  * `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
  * every case under "jira claim() is verified and stale-selection safe
  * (RP-220)", including › "the Done criterion: two controllers racing from one
- * unchanged snapshot".
+ * unchanged snapshot"; the two assignee-gate details are pinned in
+ * `test/template/queue-assignee.test.ts` (absent in a generated rig) › every
+ * case under "jira claim() refusal detail tells a genuine mismatch apart from
+ * an unresolved actor (RP-221 round 2)".
  */
 const CHANGELOG_TAIL = 20;
 
@@ -696,7 +728,19 @@ const verifyJiraClaim = async (ticket, snapshotMs, env) => {
 
 export const claim = async (
   ticket,
-  { transitionId = null, env = process.env, projectRoot = process.cwd(), currentActor = null } = {},
+  {
+    transitionId = null,
+    env = process.env,
+    projectRoot = process.cwd(),
+    // RP-221 round 2: an OMITTED option (the key absent, so this destructures
+    // to `undefined`) resolves this run's own tracker identity through the
+    // same `currentActor()` selection already calls — the documented take-up
+    // shape, `adapter.claim(ticket, { projectRoot })`, must not be read as
+    // "actor unknown" merely because the caller did not repeat a resolution
+    // selection already made. An EXPLICIT `currentActor: null` stays "known
+    // unknown" and still fails closed below on an assigned item.
+    currentActor: currentActorOption,
+  } = {},
 ) => {
   if (!ticket?.updatedAt) {
     return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no selection snapshot' };
@@ -730,16 +774,28 @@ export const claim = async (
   // mutating request. Unassigned is fine; assigned to the current actor is
   // fine; assigned to anyone else — or assigned at all while the actor is
   // unknown — refuses, fail closed, exactly as an unknown owner does above
-  // the seam. The detail never repeats the tracker's identity, only that one
-  // moved.
-  const preAssignee = preFields.assignee?.accountId ?? null;
-  if (preAssignee !== null && (!currentActor || preAssignee !== currentActor.id)) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-stale',
-      detail: 'reassigned to another actor since selection',
-    };
+  // the seam. `assigneeIdOf` maps a present-but-unreadable assignee onto the
+  // sentinel above, never onto `null`, so it is never mistaken for
+  // unassigned here either.
+  const preAssignee = assigneeIdOf(preFields.assignee);
+  if (preAssignee !== null) {
+    // Resolved only now the item is actually assigned — an unassigned item
+    // never needs this run's own identity, and never pays for the request.
+    const actor = currentActorOption === undefined ? await currentActor({ env }) : currentActorOption;
+    if (!actor || preAssignee !== actor.id) {
+      return {
+        ok: false,
+        claimed: false,
+        reason: 'claim-stale',
+        // RP-221 round 2: two distinct causes, told apart without repeating
+        // the tracker's identity or an email. A KNOWN actor that does not
+        // match is a genuine reassignment; no actor at all is this run
+        // failing to confirm anything — not the same claim.
+        detail: actor
+          ? 'assigned to another actor since selection'
+          : "this run's tracker identity could not be resolved, and the item is assigned — a match cannot be confirmed",
+      };
+    }
   }
 
   if (!transitionId) {
