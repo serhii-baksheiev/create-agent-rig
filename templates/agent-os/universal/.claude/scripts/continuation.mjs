@@ -23,11 +23,16 @@
 // read-only preview.
 //
 // It NEVER records: a transcript, a prompt, source code, or a credential.
-// EVERY string field this composes — `ticket`, `branch`, `pr`, the verdict's
-// gate names and blocker rule names, `diagnosis`, `remaining` — goes through
-// the same three passes, in this order, before anything is printed or
-// posted:
+// EVERY string field this composes — `ticket`, `branch`, `pr`, `headSha`,
+// `gateRounds`, the verdict's gate names, blocker rule names and verdict
+// words, `diagnosis`, `remaining` — goes through the same four steps, in
+// this order, before anything is printed or posted:
 //
+//   - the raw value is cut to 2000 characters (`RAW_FIELD_CAP`), with an
+//     explicit `[truncated]` marker rather than a silent cut — BEFORE any of
+//     the three passes below ever see it, so none of them is ever handed
+//     more than 2000 characters of untrusted input, however large the field
+//     the caller supplied actually is;
 //   - an embedded newline is collapsed to `⏎`, so a forged `\nhead: …` line
 //     inside free text cannot be read as a second field by a reader who only
 //     greps for `^head: `;
@@ -36,15 +41,12 @@
 //     already refuses commits over (`lib/secrets.mjs`), becomes `[redacted]`.
 //
 // `diagnosis` and `remaining` additionally each get their own 500-character
-// cap after that (an explicit `[truncated]` marker, never a silent cut); no
-// other field is capped on its own — the whole note's 2000-character cap
-// (below) is what bounds a long `branch` or similar instead.
-//
-// Every field this composes is bounded, so one long field cannot make the note
-// itself unpostable: `diagnosis` and `remaining` are each capped at 500
-// characters, and the WHOLE note is capped at 2000 characters as a backstop
-// for a field this module does not cap per-field (`branch`, for instance) —
-// see `test/template/continuation.test.ts` (absent in a generated rig) ›
+// cap after all four steps above (the same explicit `[truncated]` marker,
+// never a silent cut); no other field is capped a second time on its own —
+// the whole note's 2000-character cap (below) is the backstop for a field
+// (`branch`, for instance) whose 2000-character raw cap alone can still leave
+// the note over budget once every field is joined into one string — see
+// `test/template/continuation.test.ts` (absent in a generated rig) ›
 // "caps diagnosis and remaining at 500 characters, with an explicit
 // [truncated] marker" and › "caps the whole note, even when no single field
 // is over its own cap".
@@ -64,10 +66,22 @@
 //     `RIG_RUN_DIR`'s run journal (`run-journal.mjs`) ONLY when that variable
 //     is declared: the last `reviewer-fan-out` decision this run recorded,
 //     and the latest verdict journalled under each reviewer name IT
-//     launched, after it. An undeclared, missing, or unusable run directory,
-//     or one that never recorded a fan-out, reports `{ headSha: null,
-//     reviewers: [] }` — silently, like every other optional trace in this
-//     rig, never a throw.
+//     launched, after it. Once that round has produced at least one decision
+//     of its own, a launched reviewer that never journalled a verdict is
+//     still reported, as `{ gate, verdict: null, blockers: [] }` —
+//     `renderVerdict` prints that entry as `<gate> no-verdict` — so a second
+//     reader cannot mistake "launched and never answered" for "never
+//     launched at all". A round with NO decisions of its own yet (the
+//     fan-out is still the newest thing in the journal) reports
+//     `reviewers: []`, the same as no fan-out at all, rather than seeding a
+//     roster nothing has happened against — see
+//     `test/template/continuation.test.ts` (absent in a generated rig) ›
+//     "reports a launched reviewer that never journalled a verdict, instead
+//     of silently omitting it" and › "does not report a verdict from an
+//     older round once a newer fan-out has run". An undeclared, missing, or
+//     unusable run directory, or one that never recorded a fan-out, reports
+//     `{ headSha: null, reviewers: [] }` — silently, like every other
+//     optional trace in this rig, never a throw.
 //
 // `--post` resolves the configured queue adapter exactly the way
 // `queue/index.mjs` and `preflight.mjs` already do (`loadConfig` +
@@ -84,28 +98,78 @@
 //
 // --- Limits -----------------------------------------------------------
 //
+// - Every field is cut to 2000 raw characters (`RAW_FIELD_CAP`) before any
+//   scrub or redaction pass below ever runs — see the paragraph above. This
+//   is what makes every pass provably bounded on its own: none of them is
+//   ever handed more than 2000 characters, whatever the field's real length.
 // - The path scrub recognises an absolute path by SHAPE, not by a fixed
-//   prefix list, and nothing outside these four shapes:
-//     - a tilde-prefixed home path (`~/…`), consumed to the next whitespace;
-//     - a drive-letter path (`C:\…` or `C:/…`), consumed to the next `"` or
-//       to the end of the field — so embedded spaces (`C:\Users\Some Name\…`)
-//       stay part of the match, and a drive letter is only recognised when it
-//       is not itself preceded by a letter or digit (so the `s:` inside
-//       `https://…` is never mistaken for one);
+//   prefix list, over six patterns, tried in this order, each one replacing
+//   its match with `[path]` before the next pattern runs:
+//     - a `file:` URI (`file:///…`, one or more slashes) — the shape a Node
+//       ESM stack frame carries, POSIX or Windows-drive form alike —
+//       consumed to the next hard delimiter or the end of the field;
 //     - a `\\host\share\…` UNC path (any host, `\\wsl$\…` and
-//       `\\wsl.localhost\…` included), consumed to the next whitespace,
-//       together with one immediately preceding `label:` token when the text
-//       reads `label: \\host\share\…` — otherwise a line that names the host
-//       twice (once as a plain word, once inside the path) leaves the first
-//       copy behind;
-//     - a slash-rooted POSIX path of two or more segments, consumed to the
-//       next whitespace, and only when it is not itself preceded by `:`, a
-//       word character, or another `/` — which is what keeps a URL
-//       (`https://example.invalid/a/b`) intact rather than being read as a
-//       POSIX path starting mid-string.
-//   A RELATIVE path (`src/file.ts`, `../sibling/x.ts`), a single-segment
-//   absolute path (`/etc` alone, with nothing after it), and any shape this
-//   list does not name pass through unscrubbed.
+//       `\\wsl.localhost\…` included), consumed to the next hard delimiter or
+//       the end of the field, together with one immediately preceding
+//       `label:` token when the text reads `label: \\host\share\…` —
+//       otherwise a line that names the host twice (once as a plain word,
+//       once inside the path) leaves the first copy behind. That label token
+//       is bounded explicitly — `[^\s:]{1,64}:[ \t]{1,8}`, at most 72
+//       characters tried per starting position — so a long colon-less run
+//       cannot turn this optional group into a re-scan of the rest of the
+//       field;
+//     - a drive-letter path (`C:\…` or `C:/…`), consumed to the next hard
+//       delimiter or the end of the field — so an embedded space
+//       (`C:\Users\Some Name\…`) stays part of the match, and a drive letter
+//       is only recognised when it is not itself preceded by a letter or
+//       digit (so the `s:` inside `https://…` is never mistaken for one);
+//     - a tilde-prefixed home path (`~/…`), consumed to the next whitespace
+//       — the one shape here that still stops at whitespace, because nothing
+//       about it has ever needed the wider match the other five carry;
+//     - a forward-slash UNC path (`//host/…`, no backslash at all — the
+//       shape a quoted or URL-typed string forces), consumed to the next hard
+//       delimiter or the end of the field, and only when it is not itself
+//       preceded by `:` or a word character — which is what keeps
+//       `https://host/a/b`'s own `://` intact;
+//     - a slash-rooted POSIX path of two or more segments, consumed (from the
+//       second segment on) to the next hard delimiter or the end of the
+//       field, and only when it is not itself preceded by a word character or
+//       another `/` — a colon IS allowed immediately before it, so
+//       `label:/home/x` scrubs — which is what keeps a URL
+//       (`https://example.invalid/a/b`) intact: `/a/b` is preceded by a word
+//       character, and `//host` cannot itself start a match because its
+//       first `/` has nothing but a second `/` after it, never the
+//       non-slash character the pattern requires.
+//   A "hard delimiter" is one of `"`, `'`, `` ` ``, `|`, `<`, `>`, or `⏎` (the
+//   marker `collapseNewlines` already produced by the time this runs, since
+//   that pass always runs first). Consuming through everything else —
+//   INCLUDING whitespace — is deliberate: a real path may legitimately
+//   contain a space, and leaving trailing prose unscrubbed cost this module
+//   two rounds of leaks; over-scrubbing a little trailing text is the safe
+//   direction, never the other one. A RELATIVE path (`src/file.ts`,
+//   `../sibling/x.ts`), a single-segment absolute POSIX path (`/etc` alone,
+//   with nothing after it), and any shape this list does not name pass
+//   through unscrubbed. See `test/template/continuation.test.ts` (absent in a
+//   generated rig), the
+//   `describe('path scrubbing by SHAPE, not a fixed prefix list')` block, for
+//   every case above by name next to the assertion that proves it — including
+//   › "leaves a URL with a port number untouched, so localhost:3000 is never
+//   mistaken for a drive letter", › "scrubs a Node ESM stack-frame file://
+//   URI (POSIX form)", › "scrubs a Node ESM stack-frame file:// URI (Windows
+//   drive-letter form)", › "scrubs a forward-slash UNC path
+//   (//wsl.localhost/...), not only the backslash form", › "scrubs a
+//   forward-slash UNC path to a generic server share", › "scrubs a POSIX
+//   path that sits directly after a colon with no separating space", › "does
+//   not leave the tail of a space-containing POSIX path behind after the
+//   scrubbed prefix", and › "does not leave the tail of a space-containing
+//   UNC path behind after the scrubbed prefix".
+// - None of the six patterns nests one unbounded quantifier inside another,
+//   so none of them can backtrack catastrophically on adversarial input, and
+//   the 2000-character raw cap above means none of them is ever asked to try
+//   — see `test/template/continuation.test.ts` (absent in a generated rig) ›
+//   "completes well under a generous bound even on the exact shape that
+//   backtracks quadratically today" and › "never lets a secret buried past
+//   the first few thousand characters of an oversized field reach the note".
 // - Credential redaction reuses `SECRET_VALUE_PATTERNS` from
 //   `lib/secrets.mjs` verbatim, so it inherits that module's own stated
 //   limits (a text scan, not an entropy analyser; an all-letters secret is
@@ -118,7 +182,9 @@
 //   verdict journalled after the LAST `reviewer-fan-out` decision, and only
 //   for the reviewer names that fan-out actually launched. An
 //   `item-selection` or `review-routing:*` record, and any verdict from a
-//   round before the latest fan-out, are never reported.
+//   round before the latest fan-out, are never reported. See "Evidence is
+//   gathered…" above for the seeded-`no-verdict` behaviour and its one
+//   exception.
 // - Gate rounds are read for the branch `git` reports right now; a detached
 //   checkout (`HEAD` literal) is refused by `gate-rounds.mjs`'s own
 //   `requireBranch`, which this module reports as an unknown count rather
@@ -148,42 +214,77 @@ const FIELD_CAP = 500;
 const FIELD_TRUNCATION_MARKER = '[truncated]';
 const NOTE_CAP = 2000;
 const NOTE_TRUNCATION_SUFFIX = '\n[truncated]';
+// Every string field is cut to this many raw characters BEFORE
+// collapseNewlines/scrubPaths/redactSecrets ever see it (`composeTextField`
+// below) — the same marker as the 500-character diagnosis/remaining cap,
+// because both do the same thing: mark the cut, never drop it silently.
+const RAW_FIELD_CAP = 2000;
 
 const FAN_OUT_GATE = 'reviewer-fan-out';
 
-// Every character class below is a single bounded repetition — no nested or
-// overlapping quantifiers — so each pass is a linear scan of the field, never
-// catastrophic-backtracking-prone (`invariants.md`: "no clock, randomness or
-// I/O" is not the concern here, but the bounded-work rule for anything that
-// runs on untrusted input is the same one).
+// Six SHAPE-based path patterns, applied in this order (see the module
+// header's "Limits" section for what each one recognises and where it stops).
+// Every pattern below is a single bounded forward scan of the field it is
+// given: one fixed character class repeated once (`[^delimiters]*` or
+// `[^\s]+`), never a quantifier nested inside another. The one exception —
+// UNC_PATH's optional `label:` prefix — is bounded explicitly instead
+// (`{1,64}` and `{1,8}`), so it can try and fail at most 72 characters per
+// starting position rather than re-scanning an unbounded run looking for a
+// colon that never comes. Combined with the RAW_FIELD_CAP cut above, no
+// pattern here is ever asked to scan more than 2000 characters, and none of
+// them is quadratic even without that cap.
 //
-// `~/…`, to the next whitespace.
+// A "hard delimiter" — `"`, `'`, `` ` ``, `|`, `<`, `>`, `⏎` — is what ends a
+// match mid-field; everything else, including a literal space, is consumed
+// as part of the path. `⏎` is safe to use as a delimiter because
+// `collapseNewlines` always runs before `scrubPaths` (see `composeTextField`
+// below), so an actual newline can never reach these patterns as `\n`.
+
+// `file:` URI — a Node ESM stack-frame shape (`file:///home/x`,
+// `file:///C:/Users/x`), not preceded by a word character (so a word ending
+// in "…file:" is not mistaken for the scheme).
+const FILE_URI = /(?<!\w)file:\/+[^"'`|<>⏎]*/g;
+// `\\host\share\…`, with the bounded optional `label:` prefix described
+// above, to the next hard delimiter or the end of the field.
+const UNC_PATH = /(?:[^\s:]{1,64}:[ \t]{1,8})?\\\\[^\s\\]+\\[^"'`|<>⏎]*/g;
+// A drive letter not itself preceded by a letter/digit (so `http`**s**`:` is
+// never read as one), to the next hard delimiter or the end of the field.
+const DRIVE_PATH = /(?<![A-Za-z0-9])[A-Za-z]:[\\/][^"'`|<>⏎]*/g;
+// `~/…`, to the next whitespace — the one pattern that still stops there.
 const TILDE_HOME = /~\/[^\s]+/g;
-// A drive letter not itself preceded by a letter/digit (so `http` **s** `:`
-// is never read as a drive letter), to the next `"`, `|`, or the end of the
-// field — `|` is not a legal Windows path character, so excluding it (rather
-// than whitespace, which a real path may legitimately carry) is what lets an
-// embedded space survive while a ` | `-joined next field does not.
-const DRIVE_PATH = /(?<![A-Za-z0-9])[A-Za-z]:[\\/][^"|\r\n]*/g;
-// `\\host\share\…`, to the next whitespace — together with a single,
-// immediately preceding `label:` token when one directly precedes it (a
-// colon-terminated run of non-whitespace, then the whitespace that separates
-// it from the path), so a line reading `host: \\host\share\…` does not leave
-// the label's own copy of the hostname behind.
-const UNC_PATH = /(?:[^\s:]+:\s+)?\\\\[^\s\\]+\\[^\s]*/g;
-// A slash-rooted POSIX path of >= 2 segments, not preceded by `:`, a word
-// character, or another `/` — the guard that keeps a URL's path intact.
-const POSIX_PATH = /(?<![:\w/])\/[^\s/]+(?:\/[^\s/]+)+/g;
+// `//host/…` with no backslash at all, not itself preceded by `:` or a word
+// character (so `https://host/…` is left alone), to the next hard delimiter
+// or the end of the field.
+const FORWARD_SLASH_UNC = /(?<![:\w])\/\/[^\s/]+\/[^"'`|<>⏎]*/g;
+// A slash-rooted POSIX path of >= 2 segments, not preceded by a word
+// character or another `/` (colon IS allowed, so `label:/home/x` scrubs);
+// consumed, from the second segment on, to the next hard delimiter or the
+// end of the field.
+const POSIX_PATH = /(?<![\w/])\/[^\s"'`|<>⏎/]+\/[^"'`|<>⏎]*/g;
 
 const scrubPaths = (text) =>
   text
+    .replace(FILE_URI, PATH_MARKER)
     .replace(UNC_PATH, PATH_MARKER)
     .replace(DRIVE_PATH, PATH_MARKER)
     .replace(TILDE_HOME, PATH_MARKER)
+    .replace(FORWARD_SLASH_UNC, PATH_MARKER)
     .replace(POSIX_PATH, PATH_MARKER);
 
 /** Collapse an embedded newline so free text cannot forge a second `key: value` line. */
 const collapseNewlines = (text) => text.replace(/\r\n|\r|\n/g, NEWLINE_MARKER);
+
+/**
+ * Cut a field to `RAW_FIELD_CAP` characters BEFORE `collapseNewlines` /
+ * `scrubPaths` / `redactSecrets` ever see it. This is what keeps every regex
+ * pass above provably bounded regardless of how large the caller's own field
+ * is — see the module header's "Limits" section.
+ */
+const capRawField = (value) => {
+  if (value.length <= RAW_FIELD_CAP) return value;
+  const keep = RAW_FIELD_CAP - FIELD_TRUNCATION_MARKER.length;
+  return `${value.slice(0, keep)}${FIELD_TRUNCATION_MARKER}`;
+};
 
 /**
  * Redact every credential shape `lib/secrets.mjs` names, reusing its own
@@ -222,12 +323,15 @@ const truncateField = (value) => {
 };
 
 /**
- * Collapse newlines, scrub paths, then redact secrets — every string field
- * this note composes goes through this, not only `diagnosis`/`remaining`.
- * `undefined`/`null` render `unknown` rather than being guessed or omitted.
+ * Cap the raw value, collapse newlines, scrub paths, then redact secrets —
+ * every string field this note composes goes through this, not only
+ * `diagnosis`/`remaining`. `undefined`/`null` render `unknown` rather than
+ * being guessed or omitted.
  */
-const composeTextField = (value) =>
-  value === undefined || value === null ? 'unknown' : redactSecrets(scrubPaths(collapseNewlines(String(value))));
+const composeTextField = (value) => {
+  if (value === undefined || value === null) return 'unknown';
+  return redactSecrets(scrubPaths(collapseNewlines(capRawField(String(value)))));
+};
 
 /** `composeTextField`, plus the per-field 500-character cap `diagnosis`/`remaining` carry. */
 const composeCappedTextField = (value) =>
@@ -247,12 +351,18 @@ const renderBlockerRules = (blockers) =>
     ? blockers.filter((rule) => typeof rule === 'string' && rule.trim() !== '').map(composeTextField)
     : [];
 
+/** A reviewer's verdict word: `no-verdict` for null/undefined (launched, never answered), composed like every other field otherwise. */
+const renderVerdictWord = (word) =>
+  word === null || word === undefined ? 'no-verdict' : composeTextField(word);
+
 /**
  * Renders either verdict shape `composeNote` accepts:
  *
  *   - a single verdict: `{ gate, verdict, headSha, blockers }`
  *   - a review round: `{ headSha, reviewers: [{ gate, verdict, blockers }, …] }`
- *     — the shape `readRunEvidence` returns.
+ *     — the shape `readRunEvidence` returns. A reviewer entry whose
+ *     `verdict` is `null` (launched, never journalled one) renders as
+ *     `<gate> no-verdict`.
  *
  * `unknown` when there is nothing to report: no verdict at all, a single
  * verdict missing its `gate`/`verdict`, or a review round with no reviewers.
@@ -265,7 +375,7 @@ const renderVerdict = (verdict) => {
     const shortSha = shortShaOf(verdict.headSha);
     const parts = verdict.reviewers.map((reviewer) => {
       const gate = composeTextField(reviewer?.gate);
-      const answer = reviewer?.verdict ?? 'unknown';
+      const answer = renderVerdictWord(reviewer?.verdict);
       const blockers = renderBlockerRules(reviewer?.blockers);
       const suffix = blockers.length > 0 ? ` (${blockers.join(', ')})` : '';
       return `${gate} ${answer}${suffix}`;
@@ -276,9 +386,10 @@ const renderVerdict = (verdict) => {
   if (!verdict.gate || !verdict.verdict) return 'unknown';
   const shortSha = shortShaOf(verdict.headSha);
   const gate = composeTextField(verdict.gate);
+  const answer = composeTextField(verdict.verdict);
   const blockers = renderBlockerRules(verdict.blockers);
   const suffix = blockers.length > 0 ? ` — blockers: ${blockers.join(', ')}` : '';
-  return `${gate} ${verdict.verdict} @ ${shortSha}${suffix}`;
+  return `${gate} ${answer} @ ${shortSha}${suffix}`;
 };
 
 /**
@@ -310,8 +421,8 @@ export const composeNote = ({
     `stop: ${stop}`,
     `branch: ${composeTextField(branch)}`,
     `pr: ${composeTextField(pr)}`,
-    `head: ${headSha ?? 'unknown'}`,
-    `gate-rounds-this-checkout: ${gateRounds ?? 'unknown'}`,
+    `head: ${composeTextField(headSha)}`,
+    `gate-rounds-this-checkout: ${composeTextField(gateRounds)}`,
     `latest-verdict: ${renderVerdict(verdict)}`,
     `diagnosis: ${composeCappedTextField(diagnosis)}`,
     `remaining: ${composeCappedTextField(remaining)}`,
@@ -325,6 +436,16 @@ export const composeNote = ({
  * `reviewer-fan-out` decision, and the latest verdict journalled under each
  * reviewer name IT launched, after it — never `item-selection`,
  * `review-routing:*`, or a verdict from a round before the latest fan-out.
+ *
+ * Once the round has produced at least one decision of its own, every
+ * launched reviewer name is reported even when it never journalled a
+ * verdict — `{ gate, verdict: null, blockers: [] }` — so a silent non-answer
+ * is not indistinguishable from a reviewer that was never launched at all. A
+ * round with NO decisions yet (the fan-out is still the newest entry in the
+ * journal) reports `reviewers: []` instead, the same as no fan-out at all —
+ * that case has produced no evidence to seed a roster against, exactly like
+ * an undeclared run.
+ *
  * `runDir` absent, non-existent, unreadable, or carrying no fan-out at all
  * are all read the same way: there is no evidence, not an error.
  */
@@ -343,13 +464,24 @@ export const readRunEvidence = (runDir) => {
     if (!fanOut) return { headSha: null, reviewers: [] };
 
     const launched = Array.isArray(fanOut.reviewers)
-      ? new Set(fanOut.reviewers.filter((name) => typeof name === 'string'))
-      : new Set();
+      ? fanOut.reviewers.filter((name) => typeof name === 'string')
+      : [];
+    const launchedSet = new Set(launched);
+    const afterFanOut = decisions.slice(fanOutIndex + 1);
 
     const latestByReviewer = new Map();
-    for (let index = fanOutIndex + 1; index < decisions.length; index += 1) {
-      const decision = decisions[index];
-      if (!launched.has(decision.gate)) continue;
+    // Seed every launched reviewer as "not yet answered" only once the round
+    // has produced at least one decision of its own (see the doc comment
+    // above) — insertion order below is launched order, and a real verdict
+    // later in the loop overwrites the seeded entry in place rather than
+    // moving it.
+    if (afterFanOut.length > 0) {
+      for (const name of launched) {
+        latestByReviewer.set(name, { gate: name, verdict: null, blockers: [] });
+      }
+    }
+    for (const decision of afterFanOut) {
+      if (!launchedSet.has(decision.gate)) continue;
       latestByReviewer.set(decision.gate, {
         gate: decision.gate,
         verdict: decision.verdict ?? null,

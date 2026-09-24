@@ -414,6 +414,87 @@ describe('composeNote — the shared shape', () => {
     expect(remainingLine).toBe('remaining: two left⏎head: deadbeef');
   });
 
+  // RP-224 round 2 — reviewers (advisory, now fixed): `head`, `gateRounds`
+  // and a reviewer's verdict WORD were the three values `composeNote` wrote
+  // to the note without running them through `collapseNewlines`/`scrubPaths`/
+  // `redactSecrets` at all — so a forged `\nhead: …` inside any one of them
+  // rendered as a literal second `head:` line, exactly the forgery the
+  // diagnosis/remaining tests above already guard against for those two
+  // fields. `headSha` and `gateRounds` are ordinarily produced by this
+  // module's own CLI (`git rev-parse`, `gateRoundsFor`), and a reviewer's
+  // verdict word is ordinarily one of a small fixed vocabulary — but
+  // `composeNote` is a public function that accepts whatever its caller
+  // hands it, and nothing about its shape refuses a hostile string today.
+
+  it('collapses an embedded newline in headSha so it cannot forge a second head: line', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      headSha: 'deadbeef\nhead: forged',
+    });
+    const headLines = note.split('\n').filter((l) => l.startsWith('head: '));
+    expect(headLines).toHaveLength(1);
+    expect(headLines[0]).toBe('head: deadbeef⏎head: forged');
+  });
+
+  it('collapses an embedded newline in gateRounds so it cannot forge a second head: line', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      gateRounds: '2\nhead: forged',
+    });
+    const headLines = note.split('\n').filter((l) => l.startsWith('head: '));
+    expect(headLines).toEqual(['head: unknown']);
+    const gateRoundsLine = note
+      .split('\n')
+      .find((l) => l.startsWith('gate-rounds-this-checkout: ')) as string;
+    expect(gateRoundsLine).toBe('gate-rounds-this-checkout: 2⏎head: forged');
+  });
+
+  it('collapses an embedded newline in a single verdict word so it cannot forge a second head: line', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      verdict: {
+        gate: 'pr-ship',
+        verdict: 'HOLD\nhead: forged',
+        headSha: 'e0e93a8123456789abcdef0123456789abcdef01',
+        blockers: [],
+      },
+    });
+    const headLines = note.split('\n').filter((l) => l.startsWith('head: '));
+    expect(headLines).toEqual(['head: unknown']);
+    const line = note.split('\n').find((l) => l.startsWith('latest-verdict: ')) as string;
+    expect(line).toBe('latest-verdict: pr-ship HOLD⏎head: forged @ e0e93a8');
+  });
+
+  it('collapses an embedded newline in a reviewer verdict word so it cannot forge a second head: line', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      verdict: {
+        headSha: 'e0e93a8123456789abcdef0123456789abcdef01',
+        reviewers: [{ gate: 'code-reviewer', verdict: 'HOLD\nhead: forged', blockers: [] }],
+      },
+    });
+    const headLines = note.split('\n').filter((l) => l.startsWith('head: '));
+    expect(headLines).toEqual(['head: unknown']);
+    const line = note.split('\n').find((l) => l.startsWith('latest-verdict: ')) as string;
+    expect(line).toBe('latest-verdict: code-reviewer HOLD⏎head: forged @ e0e93a8');
+  });
+
   // RP-224 round 2 — code-reviewer r1 blocker (checklist item 6,
   // continuation.mjs:218): "last decision of any kind, not the latest
   // checked verdict". `readRunEvidence` is redesigned below to report the
@@ -551,6 +632,194 @@ describe('composeNote — the shared shape', () => {
       const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
       expect(line).toBe('diagnosis: see https://example.invalid/a/b for details');
     });
+
+    it('leaves a URL with a port number untouched, so localhost:3000 is never mistaken for a drive letter', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'see http://localhost:3000/api/x for details',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe('diagnosis: see http://localhost:3000/api/x for details');
+    });
+
+    // RP-224 round 2 — security-scanner r1 blocker: "five-prefix allow-list
+    // misses wsl.localhost, generic UNC, ~/ and drive paths with spaces" —
+    // and, on a second pass, four more shapes the SHAPE-based rewrite above
+    // still does not cover: a `file://` stack-frame URI (both POSIX and
+    // Windows), a forward-slash UNC path (no backslash at all — the form
+    // `\\wsl.localhost\...` never takes when the path is quoted or typed
+    // inside a URL-shaped string), a POSIX path sitting directly after a
+    // colon with no separating space, and — for both the drive-letter and
+    // UNC space-containing forms already covered above — the exact CLAIM
+    // that the design makes about them ("consumed to the next whitespace")
+    // is checked against a NAME that itself contains a space, not only
+    // against the marker's presence.
+    it('scrubs a Node ESM stack-frame file:// URI (POSIX form)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'at file:///home/alice/proj/x.mjs:10:5',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('scrubs a Node ESM stack-frame file:// URI (Windows drive-letter form)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'at file:///C:/Users/alice/x.mjs:10:5',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('scrubs a forward-slash UNC path (//wsl.localhost/...), not only the backslash form', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'checkout at //wsl.localhost/Ubuntu/home/alice/x done',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('scrubs a forward-slash UNC path to a generic server share', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'checkout at //server/share/alice/x done',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('scrubs a POSIX path that sits directly after a colon with no separating space', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'moved to label:/home/alice/x already',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('does not leave the tail of a space-containing POSIX path behind after the scrubbed prefix', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'failed at /mnt/c/Users/First Last/proj/x',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/First/);
+      expect(line).not.toMatch(/Last/);
+      expect(line).toContain('[path]');
+    });
+
+    it('does not leave the tail of a space-containing UNC path behind after the scrubbed prefix', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'failed at \\\\server\\share\\First Last\\x',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/First/);
+      expect(line).not.toMatch(/Last/);
+      expect(line).toContain('[path]');
+    });
+  });
+
+  // RP-224 round 2 — security-scanner r1 blocker (checklist item 4,
+  // continuation.mjs:173): "the optional `label:` prefix backtracks
+  // quadratically" — `UNC_PATH`'s `(?:[^\s:]+:\s+)?` group has to try, and
+  // fail to find a colon, from every position of a long colon-less run
+  // before giving up; measured directly against UNC_PATH alone (not through
+  // composeNote), 'x'.repeat(40_000) took ~1.9s on this host — close to the
+  // reviewers' own reported 1.7s at 40k — and 'x'.repeat(150_000) took
+  // ~21.1s. The module header's claim that each pass is "a linear scan" is
+  // false for this one, and the per-field/whole-note caps do not help: both
+  // are applied AFTER scrubPaths runs over the full, uncapped field.
+  describe('bounding an oversized field BEFORE any scrub pass', () => {
+    // A secret this deep inside an oversized field already cannot reach the
+    // final note today — the existing 500/2000-character caps happen to cut
+    // it off first — so this pins the SAFE outcome (never leaked, note
+    // still capped) rather than a regression. What it also proves, by its
+    // own 5s bound, is that composeNote does not get there quickly: on this
+    // host, composeNote({ diagnosis: <220,000-char field of this shape> })
+    // measured ~50.7s to even return (see the wall-clock test right below
+    // for the same number, asserted directly). Five seconds is comfortably
+    // short of that, so a session reading a red run here does not have to
+    // wait out the whole thing to see why it failed.
+    it(
+      'never lets a secret buried past the first few thousand characters of an oversized field reach the note',
+      { timeout: 5_000 },
+      async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const before = 'x'.repeat(5000);
+        const filler = 'x'.repeat(220000 - 5000 - GITHUB_PAT.length);
+        const diagnosis = `${before}${GITHUB_PAT}${filler}`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        expect(note).not.toContain(GITHUB_PAT);
+        expect(note.length).toBeLessThanOrEqual(2000);
+      },
+    );
+
+    // The one wall-clock assertion in this file (see the module header's own
+    // "Prefer a deterministic oracle" note in the task this suite pins):
+    // composeNote on the exact shape that backtracks quadratically today
+    // must complete in well under a generous 2000ms bound. Measured directly
+    // on this host, today's implementation instead took: UNC_PATH alone on
+    // 'x'.repeat(40_000) ~1.9s, 'x'.repeat(150_000) ~21.1s, 'x'.repeat(220_000)
+    // ~38.4-44.2s; through the FULL composeNote (diagnosis: 'x'.repeat(220_000))
+    // ~50.7s — over 25x the 2000ms bound asserted below, clearing the "at
+    // least 20x" mark this suite was asked to hit with room to spare.
+    it(
+      'completes well under a generous bound even on the exact shape that backtracks quadratically today',
+      { timeout: 90_000 },
+      async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = 'x'.repeat(220000);
+        const start = process.hrtime.bigint();
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+        expect(note.length).toBeGreaterThan(0);
+        expect(elapsedMs).toBeLessThan(2000);
+      },
+    );
   });
 });
 
@@ -725,6 +994,82 @@ describe('readRunEvidence — the latest REVIEW ROUND, not the last decision of 
     const { readRunEvidence } = await load('continuation.mjs');
     const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-empty-'));
     expect(readRunEvidence(runDir)).toEqual({ headSha: null, reviewers: [] });
+  });
+
+  // RP-224 round 2 — reviewers (advisory, now fixed): a reviewer the latest
+  // fan-out LAUNCHED but that never journalled a verdict — still running,
+  // crashed, or simply not reached yet — is silently absent from
+  // `reviewers` today, exactly as if it had never been launched at all. A
+  // second controller reading the note cannot tell "this reviewer shipped
+  // clean" apart from "this reviewer never answered" when both render the
+  // same nothing.
+  it('reports a launched reviewer that never journalled a verdict, instead of silently omitting it', async () => {
+    const { readRunEvidence } = await load('continuation.mjs');
+    const { recordDecision } = await load('run-journal.mjs');
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-'));
+    let t = 0;
+    const now = () => new Date(2026, 0, 1, 0, 0, (t += 1)).toISOString();
+
+    recordDecision({
+      runDir,
+      gate: 'reviewer-fan-out',
+      verdict: 'launched',
+      reviewers: ['code-reviewer', 'security-scanner'],
+      headSha: HEAD_NEW,
+      now: now(),
+    });
+    recordDecision({
+      runDir,
+      gate: 'code-reviewer',
+      verdict: 'HOLD',
+      blockers: [{ rule: 'workflow.md#tests', note: 'missing a test' }],
+      headSha: HEAD_NEW,
+      now: now(),
+    });
+    // security-scanner was launched by the same fan-out and never answers.
+
+    expect(readRunEvidence(runDir)).toEqual({
+      headSha: HEAD_NEW,
+      reviewers: [
+        { gate: 'code-reviewer', verdict: 'HOLD', blockers: ['workflow.md#tests'] },
+        { gate: 'security-scanner', verdict: null, blockers: [] },
+      ],
+    });
+  });
+
+  it('renders a launched reviewer with no verdict yet as "<gate> no-verdict" in latest-verdict', async () => {
+    const { readRunEvidence, composeNote } = (await load('continuation.mjs')) as {
+      readRunEvidence: (runDir: string) => unknown;
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const { recordDecision } = await load('run-journal.mjs');
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-'));
+    let t = 0;
+    const now = () => new Date(2026, 0, 1, 0, 0, (t += 1)).toISOString();
+
+    recordDecision({
+      runDir,
+      gate: 'reviewer-fan-out',
+      verdict: 'launched',
+      reviewers: ['code-reviewer', 'security-scanner'],
+      headSha: HEAD_NEW,
+      now: now(),
+    });
+    recordDecision({
+      runDir,
+      gate: 'code-reviewer',
+      verdict: 'HOLD',
+      blockers: [{ rule: 'workflow.md#tests', note: 'missing a test' }],
+      headSha: HEAD_NEW,
+      now: now(),
+    });
+
+    const verdict = readRunEvidence(runDir);
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', verdict });
+    const line = note.split('\n').find((l) => l.startsWith('latest-verdict: '));
+    expect(line).toBe(
+      `latest-verdict: code-reviewer HOLD (workflow.md#tests), security-scanner no-verdict @ ${HEAD_NEW.slice(0, 7)}`,
+    );
   });
 });
 
