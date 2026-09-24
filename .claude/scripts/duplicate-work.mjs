@@ -90,13 +90,17 @@
 //   `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
 //   "exit 3, verdict unverifiable — gh is missing/failing on a GitHub
 //   origin, never reported as clean".
-// - Only the remote named `origin` is ever read, for either source — a
-//   fork workflow that pushes to a differently-named remote, or renames
-//   `origin` to something else, is invisible to this check.
-// - `gh` decides its own base repository by its own remote-priority rules
-//   when a checkout carries more than one GitHub remote — this script does
-//   not second-guess that choice; which remote `gh` actually queried in
-//   that case is an untested design limit.
+// - The `branch` source reads only the remote named `origin` — a fork
+//   workflow that pushes to a differently-named remote, or renames `origin`,
+//   is invisible to it.
+// - The `pr` source reads whichever GitHub repository `gh` selects among ALL
+//   configured remotes, by gh's own remote-priority rules — not necessarily
+//   `origin`: with a non-GitHub `origin` and a GitHub `upstream`, it reads
+//   `upstream`'s PRs (measured with gh 2.45; untested here). It is
+//   `not-applicable` only when gh finds no known GitHub host among any remote.
+//   A GitHub Enterprise host gh is not logged in to gets that same answer from
+//   gh, so its PRs are read as `not-applicable` rather than `unavailable`,
+//   and fork PRs there go unseen (measured; untested here).
 // - On a non-GitHub tracker rig, telling "not applicable" apart from "gh
 //   could not be reached" still needs `gh` installed and runnable: it is
 //   `gh`'s own refusal message that reports "not a GitHub remote" now (see
@@ -193,7 +197,7 @@ export const matchesTicket = (id, text) => {
  * any source left `unavailable` makes the result `unverifiable` — a source
  * that could not be read might have hidden a real duplicate. A source that is
  * `not-applicable` never does that: there is nothing there to hide (no
- * `origin` at all, or an `origin` that is not GitHub), so a checkout with
+ * `origin` at all, or no remote gh knows as GitHub), so a checkout with
  * every source `not-applicable` — or a mix of `not-applicable` and `read` —
  * is `clean`, never `unverifiable`.
  */
@@ -332,8 +336,8 @@ const remoteBranches = (cwd, origin) => {
  * reading only the first page. A `gh` failure is read from what it reports:
  * `gh` missing entirely (a spawn error, no stderr to read) is `unavailable`;
  * `gh` failing with stderr saying it found no known GitHub host among the
- * configured remotes is `not-applicable` — gh's own answer that this origin
- * is not one it can query; any other `gh` failure, or a JSON body that is
+ * configured remotes is `not-applicable` — gh's own answer that no remote
+ * of this checkout is one it can query; any other `gh` failure, or a JSON body that is
  * not an array, is `unavailable` — never "no PR".
  */
 const openPrs = (ticket, cwd, origin) => {
