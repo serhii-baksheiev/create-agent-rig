@@ -78,9 +78,17 @@ decision. Pinned in `subagent-routing-hooks.test.ts` (absent in a generated rig)
 › "blocks a call-site model on a project agent that pins one, and says to re-dispatch without it"
 and › "warns when %s is set, and never blocks the session".
 
-Neither hook is wired for Codex, which has no dispatch hook and no Claude
-environment: `subagent-routing.test.ts` (absent in a generated rig) ›
-"keeps both routing hooks out of the Codex projection, which has no Agent tool and no Claude environment".
+Neither hook is wired for Codex, which has no Agent tool and no Claude
+environment for either to read: `subagent-routing.test.ts` (absent in a
+generated rig) › "keeps both routing hooks out of the Codex projection, which
+has no Agent tool and no Claude environment". This is unrelated to
+`record-dispatch.mjs` (RP-225 slice 2), the observe-only `SubagentStart`/
+`SubagentStop` hook that IS projected for Codex — that one reads the
+lifecycle events both harnesses fire, not the Agent tool's call-site `model`
+or Claude Code's own environment. `record-dispatch.mjs` ships, and its
+`SubagentStart`/`SubagentStop` wiring installs, only with the opt-in
+workflow layer (`init --layer workflow`) — a Core-only rig gets neither the
+file nor the wiring.
 
 ## What this does not do
 
