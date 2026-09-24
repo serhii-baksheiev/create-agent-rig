@@ -25,6 +25,7 @@
 //     triage:    boolean,                        // a proposal — never selectable
 //     trigger:   'auto' | 'human' | null,        // null means unconditional
 //     body:      string | null,                  // the item's text — see below
+//     assignee:  null | string | string[],       // RP-221 — human ownership authority
 //     raw:       string | undefined,             // adapter-private; not read here
 //   }
 //
@@ -108,6 +109,11 @@ export const SKIP_CAUSES = Object.freeze([
   're-scope',
   'deferred',
   'obsolete',
+  // RP-221: the tracker's own assignee is human ownership authority. An item
+  // assigned to someone other than the current actor — or assigned at all
+  // while the current actor is unknown — is held, never taken; see
+  // `assigneeMismatchOf` below.
+  'assigned',
 ]);
 
 /**
@@ -158,6 +164,12 @@ export const HOLDING_CAUSES = Object.freeze([
   // "held" would tell the owner to wait for something that only they can do.
   're-scope',
   'deferred',
+  // RP-221: an item assigned to someone other than the current actor (or
+  // assigned while the actor is unknown) is real, takeable work waiting on a
+  // human — the tracker's assignee is the ownership authority, and only a
+  // human reassigning or unassigning it frees it. Never cleared by waiting or
+  // by refilling the queue.
+  'assigned',
 ]);
 
 /**
@@ -248,6 +260,40 @@ const ownerMismatchOf = (ticket, owner) => {
 };
 
 /**
+ * `ticket.assignee` as a list of opaque ids/logins, never fewer than the
+ * source data carries and never more. `null`/`undefined` and `''` are
+ * unassigned; a single string (jira's `accountId`) becomes a one-element
+ * list; an array (github's several assignees) is filtered to its non-empty
+ * strings, so `[]` — the tracker's own spelling of "nobody" — reads as
+ * unassigned rather than as a mismatch nothing can ever satisfy.
+ */
+const normalizedAssignees = (assignee) => {
+  if (Array.isArray(assignee)) return assignee.filter((one) => typeof one === 'string' && one !== '');
+  return typeof assignee === 'string' && assignee !== '' ? [assignee] : [];
+};
+
+/**
+ * RP-221 — the tracker's assignee is human ownership authority, not a hint.
+ * `null` when the item is unassigned (regardless of whether the current actor
+ * is known) or assigned to the current actor; a message otherwise.
+ *
+ * **Fails closed on an unknown actor**, exactly as `ownerMismatchOf` does for
+ * `owner`: an assigned item with `currentActor: null` cannot be confirmed as
+ * "assigned to me", and "could not look" must never resolve to "it is fine".
+ * The message never repeats the current actor's own id — only the tracker's
+ * assignee(s), which is what a human reading the stop line needs to act on.
+ */
+const assigneeMismatchOf = (ticket, currentActor) => {
+  const assignees = normalizedAssignees(ticket.assignee);
+  if (assignees.length === 0) return null;
+  const actorId = currentActor && typeof currentActor.id === 'string' ? currentActor.id : null;
+  if (actorId !== null && assignees.includes(actorId)) return null;
+  return actorId === null
+    ? `assigned to ${assignees.join(', ')}, and this run could not confirm the current actor — a match cannot be confirmed`
+    : `assigned to ${assignees.join(', ')}, and this run is a different actor`;
+};
+
+/**
  * Is this item takeable, and if not, why not?
  *
  * The filters run in order and every rejection carries a reason: an unexplained
@@ -255,7 +301,10 @@ const ownerMismatchOf = (ticket, owner) => {
  * `cause` tag, so the stop line can say what is holding the queue back without
  * reading the prose back.
  */
-export const selectionOf = (ticket, { triggersFired = null, owner = null } = {}) => {
+export const selectionOf = (
+  ticket,
+  { triggersFired = null, owner = null, currentActor = null } = {},
+) => {
   const reasons = [];
   const causes = [];
   const labels = ticket.labels ?? [];
@@ -310,6 +359,20 @@ export const selectionOf = (ticket, { triggersFired = null, owner = null } = {})
   // adapter's `owner` field; a checkout names itself in `options.owner`.
   const foreign = ownerMismatchOf(ticket, owner);
   if (foreign) reject('owner', `${foreign} — moving or re-marking it is a human act`);
+
+  // RP-221: the tracker's assignee is human ownership authority, read the same
+  // way for every adapter. Unassigned is eligible regardless of whether the
+  // current actor is known; assigned to the current actor is eligible;
+  // assigned to anyone else — or assigned at all while the actor is unknown —
+  // is held, never taken.
+  const assigned = assigneeMismatchOf(ticket, currentActor);
+  if (assigned) {
+    reject(
+      'assigned',
+      `${assigned} — the tracker's assignee decides human ownership; a human ` +
+        'reassigns or unassigns it to free it for this run',
+    );
+  }
 
   // AR-144: the lifecycle vocabulary, read from the adapter's `lifecycle` and
   // `parked` fields (`lifecycleOf`). `keep-core` never rejects — it is a
@@ -743,13 +806,13 @@ export const gateRoundVerdict = (rounds, max = DEFAULT_MAX_GATE_ROUNDS) => {
  */
 export const selectNext = (
   tickets,
-  { lastCompletedTier = null, triggersFired = null, owner = null } = {},
+  { lastCompletedTier = null, triggersFired = null, owner = null, currentActor = null } = {},
 ) => {
   const skipped = [];
   const candidates = [];
 
   for (const ticket of tickets) {
-    const selection = selectionOf(ticket, { triggersFired, owner });
+    const selection = selectionOf(ticket, { triggersFired, owner, currentActor });
     if (!selection.eligible) {
       skipped.push({
         id: ticket.id,
@@ -961,6 +1024,20 @@ const lifecycleNote = (held) =>
     : '');
 
 /**
+ * The assignee remedy (RP-221), present only when the pile carries the tag: an
+ * item assigned to someone other than the current actor — or assigned at all
+ * while the actor is unknown — is freed only by a human reassigning or
+ * unassigning it in the tracker; never by waiting, and never by refilling
+ * this queue.
+ */
+const assignedNote = (held) =>
+  held.includes('assigned')
+    ? " An item held as assigned belongs to someone else per the tracker's own " +
+      'assignee field: a human reassigns or unassigns it; nothing this run does ' +
+      'frees it.'
+    : '';
+
+/**
  * Should the whole run stop? Checked in severity order, because a regression must
  * not be reported as an empty queue.
  *
@@ -1049,7 +1126,7 @@ export const stopConditionOf = ({
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
-          `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held)} Otherwise the action is to ` +
+          `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held) + assignedNote(held)} Otherwise the action is to ` +
           'interleave or to wait, never to refill and never to invent work.',
       };
     }
