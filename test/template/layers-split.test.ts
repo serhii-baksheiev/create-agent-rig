@@ -62,6 +62,10 @@ const EXPECTED_WORKFLOW = new Set([
   // RP-222: the pre-claim/pre-PR duplicate-work check the loop and pr-ship
   // skills run before taking up or shipping a ticket
   '.claude/scripts/duplicate-work.mjs',
+  // RP-224: the bounded continuation note composed/posted on a workflow-level
+  // stop (escalation/blocker/pause/terminated), so a second controller can
+  // resume from durable, shared evidence alone
+  '.claude/scripts/continuation.mjs',
   // the unattended run's own preflight, and the deploy verdict it reads
   '.claude/scripts/preflight.mjs',
   '.claude/scripts/run-state.mjs',
