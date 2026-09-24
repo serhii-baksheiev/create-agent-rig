@@ -328,6 +328,11 @@ describe('guard-rulebook: an unattended run edits the rulebook only where its it
     '.codex/hooks.json',
     '.claude/.rig-manifest.json',
     'CLAUDE.md',
+    // RP-256 slice 1: the nested Rig shim a CLAUDE.md-coexistence install
+    // (`init.test.ts`, `packages/cli`) writes at `.claude/CLAUDE.md` decides
+    // which rulebook Claude Code reads exactly as root CLAUDE.md does, so an
+    // unattended run must not be able to rewrite it either.
+    '.claude/CLAUDE.md',
     'AGENTS.md',
     // RP-61: the revalidation detection contract preflight.mjs and
     // claim-records.mjs both read — rewriting it silently changes what a

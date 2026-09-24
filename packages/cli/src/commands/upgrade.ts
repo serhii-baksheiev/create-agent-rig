@@ -1,6 +1,14 @@
-import { access, lstat, mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { access, lstat, mkdir, open, readFile, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { initInstallSet, initManifest, layerOnlyPaths, projectNameFor } from './init.js';
+import {
+  initInstallSet,
+  initManifest,
+  layerOnlyPaths,
+  NESTED_CLAUDE,
+  projectNameFor,
+} from './init.js';
+import type { ClaudeMdPlacement } from './init.js';
 import { isReadableRulebook } from '../lib/elevated-paths.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
@@ -310,6 +318,80 @@ async function readIfPresent(repoDir: string, rel: string): Promise<PresentFile>
 }
 
 /**
+ * The most bytes {@link nestedClaudeShimOnDisk} reads to find one line — the
+ * shim's real first line is a few dozen characters, so this leaves generous
+ * room without ever reading an unbounded amount of a file this function does
+ * not even intend to write through.
+ */
+const MAX_SHIM_PROBE_BYTES = 4096;
+
+/**
+ * Whether `.claude/CLAUDE.md` on disk is recognisably THIS rig's nested
+ * CLAUDE.md shim — code-review round 1 advisory A3 (PR #324), the one signal
+ * a bootstrapped (no manifest) upgrade has for a nested rig. Read by first
+ * line rather than full-content equality: the file is substituted per
+ * project (`__PROJECT_NAME__`), so only the one line that never varies with
+ * the project — the `@../AGENTS.md` import, always the nested shim's very
+ * first line, never the root shim's `@AGENTS.md` — is safe to compare
+ * exactly. A same-named file that merely happens to sit there and does not
+ * start with that exact line is left as the user's own, unrecognised.
+ *
+ * code-reviewer round 2 advisory N1 (PR #324): this only ever CLASSIFIES the
+ * path — it never writes through it — so it must not go through
+ * {@link readIfPresent} / {@link writableOnDisk}, which THROWS `UpgradeError`
+ * for anything a write must refuse through, including a symlink. A user who
+ * happens to keep `.claude/CLAUDE.md` as a symlink (to a dotfiles repo, say)
+ * and then loses the manifest must not have a bootstrapped upgrade refuse
+ * outright over a file it was never going to write in the first place.
+ * `lstat`s the path itself: anything non-regular (a symlink, a directory,
+ * anything else) is simply "not the nested shim", falling through to
+ * whatever `root` placement would have decided. Unlike
+ * {@link readKeptRootClaudeMd} in `init.ts`, which vouches for a whole
+ * file's content and so must refuse anything over its cap, this only ever
+ * compares one line — so it never rejects on the file's total size. It
+ * reads at most {@link MAX_SHIM_PROBE_BYTES} bytes, takes the first line of
+ * whatever that read returned, and compares that line alone; a shim with
+ * project-specific content after its first line, however large, is still
+ * recognised.
+ */
+async function nestedClaudeShimOnDisk(repoDir: string): Promise<boolean> {
+  const dest = onDisk(repoDir, NESTED_CLAUDE);
+  let entry: Awaited<ReturnType<typeof lstat>>;
+  try {
+    entry = await lstat(dest);
+  } catch {
+    return false;
+  }
+  if (!entry.isFile()) return false;
+  const flags =
+    constants.O_RDONLY |
+    (process.platform === 'win32' ? 0 : constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let handle: Awaited<ReturnType<typeof open>>;
+  try {
+    handle = await open(dest, flags);
+  } catch {
+    return false;
+  }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile()) return false;
+    const bytes = Buffer.alloc(MAX_SHIM_PROBE_BYTES);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, null);
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    const firstLine = bytes.subarray(0, offset).toString('utf8').split(/\r?\n/, 1)[0];
+    return firstLine === '@../AGENTS.md';
+  } catch {
+    return false;
+  } finally {
+    await handle.close().catch(() => undefined);
+  }
+}
+
+/**
  * The bytes THIS release would render for AGENTS.md, for THIS project,
  * right now — the ONE implementation `upgrade` (deciding the rescue file's
  * status) and `uninstall` (recognising a byte-identical rescue file as
@@ -505,12 +587,32 @@ export async function planUpgrade(
   //   before it was not enough.
   const inference = manifest === null ? await detectLayersOnDisk(repoDir) : null;
   const layers: Layer[] = manifest?.layers ?? inference!.layers;
+  // RP-256 slice 1, refined by code-review round 1 advisory A3 (PR #324):
+  // placement is a MANIFEST question first — a nested rig's manifest already
+  // carries `.claude/CLAUDE.md` under `files`, and that is the one fact this
+  // reads when a manifest exists. Only when there is NO manifest at all
+  // (`bootstrapped`) does this fall through to the filesystem: without that
+  // fallback, a bootstrapped upgrade on a nested rig used to plan root
+  // `CLAUDE.md` as though it were this rig's own shim — the user's own file,
+  // never `@AGENTS.md` — and told the user to replace it, which would have
+  // destroyed it. The nested shim recognises itself the same way `init`
+  // writes it: `.claude/CLAUDE.md` on disk, first line exactly
+  // `@../AGENTS.md` (never the root shim's `@AGENTS.md`, and never a
+  // same-named file that merely happens to sit there). A repo with neither a
+  // manifest nor a recognisable nested shim still falls back to `root`,
+  // exactly the pre-256 behaviour.
+  const claudePlacement: ClaudeMdPlacement =
+    manifest?.files[NESTED_CLAUDE] !== undefined
+      ? 'nested'
+      : manifest === null && (await nestedClaudeShimOnDisk(repoDir))
+        ? 'nested'
+        : 'root';
   // A path an OLDER manifest still names but this rig's OWN recorded layers
   // no longer cover (a manifest hand-edited to drop a layer, or one from a
   // release that shipped a layer this one renamed) falls out of `files`
   // below exactly like a path RP-177 retired outright: never written, never
   // deleted, simply no longer this plan's to manage.
-  const files = await initInstallSet(repoDir, project, layers);
+  const files = await initInstallSet(repoDir, project, layers, claudePlacement);
   // Blocker A's second half, and round 5's correction to it: even an
   // ADOPTED bootstrapped opt-in layer must never manufacture a file it did
   // not find, but "does not create it" is not the same thing as "forgets it
@@ -593,7 +695,15 @@ export async function planUpgrade(
             // AGENTS.md's absence load NO rulebook at all, not merely an old
             // one.
             (file.rel === 'AGENTS.md'
-              ? ' — CLAUDE.md imports it (`@AGENTS.md`), so no rulebook loads until it is back'
+              ? claudePlacement === 'nested'
+                ? // code-review round 1 advisory A4 (PR #324): on a `nested`
+                  // rig the file that actually imports AGENTS.md is
+                  // `.claude/CLAUDE.md`, using `@../AGENTS.md` (one directory
+                  // up from where it sits) — root CLAUDE.md is the user's own,
+                  // unrelated file on this placement and never imports
+                  // anything of this rig's.
+                  ' — .claude/CLAUDE.md imports it (`@../AGENTS.md`), so no rulebook loads until it is back'
+                : ' — CLAUDE.md imports it (`@AGENTS.md`), so no rulebook loads until it is back'
               : ''),
         });
         nextFiles[file.rel] = recorded;

@@ -29,6 +29,7 @@ import { AGENTS_MD_RESCUE, applyUpgrade, planUpgrade } from '../src/commands/upg
 import type { UninstallAction, UninstallPlan } from '../src/commands/uninstall.js';
 import { hookFilesReferencedIn } from '../src/lib/init-settings.js';
 import { MANIFEST_REL, readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
+import { agentOsUniversalDir } from '../src/templates.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 import {
   modeBitsDeny,
@@ -2233,6 +2234,92 @@ describe('planUninstall — the CLAUDE.md/AGENTS.md pair disclosure (round 4, bl
       "this is the rig's own AGENTS.md — removing it leaves CLAUDE.md, which exists and is yours (untracked by this rig), as the only rulebook copy",
     );
     expect(agents?.note).not.toMatch(/is already gone/);
+  });
+});
+
+// RP-256 slice 1: on a nested rig (see `init.test.ts`), root CLAUDE.md was
+// never the rig's file — it is the user's, recorded only in `kept` — and
+// `.claude/CLAUDE.md` is the rig-owned shim. The CLAUDE.md/AGENTS.md pair
+// disclosure above exists because removing one half of that PAIR can leave
+// the rulebook unreadable; that reasoning does not apply to a nested rig's
+// root CLAUDE.md at all, because it was never the rig's copy of the
+// rulebook to begin with — AGENTS.md's only rig-owned sibling is the nested
+// shim, not root CLAUDE.md.
+describe('planUninstall — a nested rig preserves the kept CLAUDE.md, without a false pair note (RP-256 slice 1)', () => {
+  const NESTED_CLAUDE = '.claude/CLAUDE.md';
+
+  /**
+   * Same construction as `upgrade.test.ts`'s nested-rig fixture — and, since
+   * code-review round 1 advisory A7 (PR #324), the SAME bytes: the release's
+   * own nested template (`@../AGENTS.md`), not the root shim's `@AGENTS.md`.
+   * The two are different files in `templates/agent-os/universal`; reading
+   * the already-installed root `CLAUDE.md` here (as this fixture used to)
+   * puts the wrong import syntax at `.claude/CLAUDE.md` and would let a
+   * regression in which template a nested install actually uses pass
+   * unnoticed by every test built on this helper.
+   */
+  const installNestedRig = async (userClaudeContent = '# host rules\n'): Promise<string> => {
+    await installRig();
+    const shimBytes = await readFile(path.join(agentOsUniversalDir(), NESTED_CLAUDE), 'utf8');
+    await write(NESTED_CLAUDE, shimBytes);
+    await write('CLAUDE.md', userClaudeContent);
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    delete manifest.files['CLAUDE.md'];
+    manifest.files[NESTED_CLAUDE] = sha256(shimBytes);
+    manifest.kept = { ...manifest.kept, 'CLAUDE.md': sha256(userClaudeContent) };
+    await writeManifest(repo, manifest);
+    return shimBytes;
+  };
+
+  it('removes AGENTS.md and the nested shim, and preserves the user CLAUDE.md byte-identical', async () => {
+    const userBytes = '# host rules\n';
+    await installNestedRig(userBytes);
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, 'AGENTS.md')?.verdict).toBe('remove');
+    expect(actionFor(plan, NESTED_CLAUDE)?.verdict).toBe('remove');
+    expect(actionFor(plan, 'CLAUDE.md')?.verdict).toBe('preserved');
+
+    await applyUninstall(repo, plan);
+    expect(await read('CLAUDE.md')).toBe(userBytes);
+    await expect(readFile(abs('AGENTS.md'))).rejects.toThrow();
+    await expect(readFile(abs(NESTED_CLAUDE))).rejects.toThrow();
+  });
+
+  it('emits no "only rulebook copy" pair note for the kept user CLAUDE.md when AGENTS.md is removed', async () => {
+    await installNestedRig();
+
+    const plan = await planUninstall(repo);
+    const agents = actionFor(plan, 'AGENTS.md');
+    expect(agents?.verdict).toBe('remove');
+    expect(agents?.note).toBeUndefined();
+  });
+});
+
+// code-reviewer round 1 advisory A2 (PR #324): `kept` records evidence that
+// init SAW a file and left it — once that file is gone, nothing should still
+// vouch for it. `uninstall`'s `kept` loop reports EVERY key in
+// `manifest.kept` as `preserved`, unconditionally (`uninstall.ts`, the loop
+// right after the per-file walk) — so a stale `kept['CLAUDE.md']` entry left
+// behind by a deleted root CLAUDE.md (see `init.test.ts`'s "a nested rig
+// whose user deletes their root CLAUDE.md") surfaces here as a claim that a
+// file which does not exist is being "preserved". This exercises the real
+// `initProject` (not the hand-built `installNestedRig` fixture above) across
+// both installs, because the fix belongs to `init`'s bookkeeping, not to this
+// loop: once `init` stops carrying the stale entry forward, there is nothing
+// left here for `uninstall` to report.
+describe('planUninstall — a nested rig whose user deletes their root CLAUDE.md (RP-256 slice 1, code-review A2)', () => {
+  it('does not report the deleted CLAUDE.md as preserved once a second init has dropped the stale kept entry', async () => {
+    const userBytes = '# host rules\n';
+    await write('CLAUDE.md', userBytes);
+    await installRig();
+    await rm(abs('CLAUDE.md'));
+    await installRig(); // second init: drops the stale kept['CLAUDE.md'] entry
+
+    const plan = await planUninstall(repo);
+
+    expect(actionFor(plan, 'CLAUDE.md')).toBeUndefined();
   });
 });
 

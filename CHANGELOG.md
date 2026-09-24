@@ -18,6 +18,14 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ### Added
 
+- **`init` installs beside a pre-existing root `CLAUDE.md` instead of
+  refusing outright.** A repo that already has its own `CLAUDE.md` keeps it
+  byte-identical; the Rig shim installs nested at `.claude/CLAUDE.md`
+  instead, importing the rulebook as `@../AGENTS.md`. Both files are loaded
+  (measured — see `docs/decisions/agents-md-canonical.md`, "CLAUDE.md
+  coexistence — measured"). A pre-existing `AGENTS.md` is still refused
+  (RP-256 slice 1).
+
 - **`doctor`'s `rig-owned-files` check reports per-reason counts.** The JSON
   record gains an additive
   `counts: { absent, contentDrift, lineDrift, unreadable }` field, so a caller

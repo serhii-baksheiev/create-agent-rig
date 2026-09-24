@@ -140,13 +140,49 @@ describe('create-agent-rig init (into an existing repo)', () => {
     expect(await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8')).toBe('{}');
   });
 
-  it('refuses to clobber an existing CLAUDE.md, as a message not a trace', async () => {
+  // RP-256 slice 1: a bare pre-existing CLAUDE.md is no longer refused (see
+  // "installs beside a user CLAUDE.md" below). What remains refused is the
+  // nested slot already being occupied by a `.claude/CLAUDE.md` this rig
+  // never wrote — and the message must name THAT file, not just "CLAUDE.md"
+  // in general, or an operator reading it would look at the wrong path.
+  it('refuses when the nested slot is already occupied by an unrecorded .claude/CLAUDE.md, as a message not a trace', async () => {
     await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules');
+    await mkdir(path.join(repo, '.claude'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'CLAUDE.md'), '# something already here');
     const result = await runInit([]);
     expect(result.code).toBe(1);
-    expect(result.stderr).toMatch(/CLAUDE\.md/);
+    expect(result.stderr).toMatch(/\.claude[/\\]CLAUDE\.md/);
     expect(result.stderr).not.toMatch(/at .*init\.js/);
     expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules');
+    expect(await readFile(path.join(repo, '.claude', 'CLAUDE.md'), 'utf8')).toBe(
+      '# something already here',
+    );
+  });
+
+  it('installs beside a user CLAUDE.md in a real git repo, leaving it byte-identical', async () => {
+    await exec('git', ['init', '-q'], { cwd: repo, env: gitEnv() });
+    await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules\n');
+
+    const result = await runInit([]);
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules\n');
+    const shim = await readFile(path.join(repo, '.claude', 'CLAUDE.md'), 'utf8');
+    expect(shim.split(/\r?\n/, 1)[0]).toBe('@../AGENTS.md');
+    await expect(readFile(path.join(repo, 'AGENTS.md'), 'utf8')).resolves.toBeTruthy();
+  });
+
+  // code-reviewer round 1 advisory A5 (PR #324): `init`'s own `--help` usage
+  // still says "Refuses to clobber CLAUDE.md or AGENTS.md" — true before this
+  // slice, false now that a pre-existing CLAUDE.md is kept and the shim goes
+  // to `.claude/CLAUDE.md` instead. AGENTS.md is still refused outright, and
+  // the usage text must keep saying so.
+  it('--help says a pre-existing CLAUDE.md is kept nested, not that init refuses to clobber it, and still refuses AGENTS.md', async () => {
+    const result = await runInit(['--help']);
+    const text = `${result.stdout}${result.stderr}`;
+    expect(text).not.toMatch(/Refuses to clobber CLAUDE\.md or AGENTS\.md/);
+    expect(text).toMatch(/\.claude\/CLAUDE\.md/);
+    expect(text).toMatch(/AGENTS\.md/);
   });
 });
 
