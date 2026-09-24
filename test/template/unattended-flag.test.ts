@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -131,6 +131,74 @@ afterEach(async () => {
   process.env.HOME = originalHome;
   await removeFixture(home);
 });
+
+/**
+ * RP-263 finding, restated by code-reviewer round 2 advisory: every SCOPED
+ * write (`writeUnattended`/`on` with a `CLAUDE_PROJECT_DIR`/`--root`) mirrors
+ * into the REAL password-database home too — `writeUnattended`'s own doc
+ * comment, "the same two-home rule the kill switch uses" — and that home is
+ * not the per-test temp `home` the outer `afterEach` above removes. Most
+ * scoped-write tests in this file already remove their exact candidate paths
+ * in their own `finally`; this is the net the ones caught leaking (~100
+ * `*-loop-UNATTENDED` files already sitting in the WSL `~/.claude` before this
+ * PR) did not have.
+ *
+ * First cut was a whole-directory snapshot diff (before/after each test).
+ * REJECTED after functional review (PR #328): sibling test FILES run in
+ * parallel vitest workers sharing this same OS user's HOME, and arm/clear
+ * their own scoped flags — which also mirror into the real home — inside
+ * this test's own before/after window. A diff of the WHOLE directory listing
+ * cannot tell "a sibling file's own, correctly-cleaned-up flag caught
+ * mid-flight" apart from "this test's own leak"; code-reviewer reproduced
+ * 5/8 failures of exactly that shape, both on this shared WSL box and inside
+ * one CI run.
+ *
+ * So the check below is narrowed to the ONE flag a given canonical checkout
+ * could itself have caused to exist — its own scoped name — and is called
+ * explicitly, per test, after that test's own cleanup, rather than as a
+ * blanket `afterEach`. The name is derived independently of production:
+ * never by calling `unattendedFlags`/`checkoutId` (`invariants.md`, "the
+ * independent-oracle invariant" — a check built from the same computation it
+ * verifies cannot catch that computation under- or over-matching), but by
+ * hand-copying the scheme `unattended-flag.mjs`'s own header states:
+ * `<basename>-<sha256(realpath).slice(0,16)>-loop-UNATTENDED`. The two homes
+ * a scoped write can reach are the two this file already establishes without
+ * calling `homesOf` either: the test's own `HOME` (`home` below) and every
+ * `realHomes` entry.
+ */
+const scopedFlagName = (canonicalRoot: string): string => {
+  const hash = createHash('sha256').update(canonicalRoot).digest('hex').slice(0, 16);
+  return FLAG_NAME.replace('-loop-UNATTENDED', `-${hash}-loop-UNATTENDED`);
+};
+
+/**
+ * `canonicalRoot` must be `realpathSync.native(root)`, captured BEFORE the
+ * checkout directory is removed — nothing resolves once it is gone, and the
+ * string itself is all this needs from then on. Call this AFTER a test's own
+ * cleanup, to prove that cleanup (or the refusal that made a write
+ * unnecessary) left nothing behind at the one location this specific
+ * checkout's own write could reach. Only ENOENT reads as "gone"; any other
+ * read error (permissions, …) is rethrown rather than swallowed as absent.
+ */
+const assertNoScopedFlagLeaked = async (
+  canonicalRoot: string,
+  homesToCheck: readonly string[],
+): Promise<void> => {
+  const name = scopedFlagName(canonicalRoot);
+  for (const candidateHome of homesToCheck) {
+    const candidate = path.join(candidateHome, '.claude', name);
+    try {
+      await stat(candidate);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    throw new Error(
+      `this test left a scoped unattended flag behind (RP-263, checked independently ` +
+        `of production's own unattendedFlags): ${candidate}`,
+    );
+  }
+};
 
 describe('unattendedFlags: the same two-home rule as the kill switch', () => {
   it('names a -loop-UNATTENDED file under .claude in the env-derived home', async () => {
@@ -786,6 +854,10 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
     const checkoutB = path.join(home, 'checkout-b');
     await mkdir(checkoutA, { recursive: true });
     await mkdir(checkoutB, { recursive: true });
+    // Captured now, while the directories still exist — used only after
+    // cleanup, to verify it independently of the production candidates below.
+    const canonicalA = realpathSync.native(checkoutA);
+    const canonicalB = realpathSync.native(checkoutB);
     const envA = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA };
     const envB = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB };
 
@@ -803,6 +875,8 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
       const candidates = [...new Set([...unattendedFlags(envA), ...unattendedFlags(envB)])];
       await Promise.all(candidates.map((candidate) => rm(candidate, { force: true })));
     }
+    await assertNoScopedFlagLeaked(canonicalA, [home, ...realHomes]);
+    await assertNoScopedFlagLeaked(canonicalB, [home, ...realHomes]);
   });
 
   it('writes the first candidate, creating <home>/.claude/, and returns the path', async () => {
@@ -932,6 +1006,8 @@ describe('the CLI the loop skill calls', () => {
     await mkdir(checkoutB, { recursive: true });
     execFileSync('git', ['init', '-q', checkoutA], { env: withoutGitLocation() });
     execFileSync('git', ['init', '-q', checkoutB], { env: withoutGitLocation() });
+    const canonicalA = realpathSync.native(checkoutA);
+    const canonicalB = realpathSync.native(checkoutB);
 
     const envA = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutA };
     const envB = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkoutB };
@@ -948,6 +1024,9 @@ describe('the CLI the loop skill calls', () => {
       const candidates = [...new Set([...unattendedFlags(envA), ...unattendedFlags(envB)])];
       await Promise.all(candidates.map((candidate) => rm(candidate, { force: true })));
     }
+    // checkoutA was `off`'d inside the test above; checkoutB only by `finally`.
+    await assertNoScopedFlagLeaked(canonicalA, [home, ...realHomes]);
+    await assertNoScopedFlagLeaked(canonicalB, [home, ...realHomes]);
   });
 
   it('`on --root … --item … --run-dir … --allow …` writes the scoped flag and prints its path', async (ctx) => {
@@ -1020,6 +1099,7 @@ describe('the CLI the loop skill calls', () => {
         unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
       );
     }
+    await assertNoScopedFlagLeaked(realpathSync.native(checkout), [home, ...realHomes]);
   });
 
   it('`on` without --root exits 1, names the missing --root, and writes nothing (RP-258)', async () => {
@@ -1119,6 +1199,7 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
     const checkout = path.join(home, 'verify-item-mismatch-checkout');
     await mkdir(checkout, { recursive: true });
     execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
+    const canonicalCheckout = realpathSync.native(checkout);
     const { unattendedFlags } = await load();
     const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     try {
@@ -1136,6 +1217,7 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
         unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
       );
     }
+    await assertNoScopedFlagLeaked(canonicalCheckout, [home, ...realHomes]);
   });
 
   it('`verify` without --root cannot report armed even when an unscoped flag on disk matches the item (RP-258 evidence)', async () => {
@@ -1167,6 +1249,7 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
     const checkout = path.join(home, 'verify-success-checkout');
     await mkdir(checkout, { recursive: true });
     execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
+    const canonicalCheckout = realpathSync.native(checkout);
     const { unattendedFlags } = await load();
     const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     try {
@@ -1193,6 +1276,7 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
         unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
       );
     }
+    await assertNoScopedFlagLeaked(canonicalCheckout, [home, ...realHomes]);
   });
 
   // Acceptance item 4: no guard behaviour changes. A widening `--allow`
@@ -1236,6 +1320,7 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
     const checkout = path.join(home, 'verify-missing-root-checkout');
     await mkdir(checkout, { recursive: true });
     execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
+    const canonicalCheckout = realpathSync.native(checkout);
     const { unattendedFlags } = await load();
     const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: checkout };
     try {
@@ -1255,6 +1340,7 @@ describe('verify: RP-103 — the read-back the loop calls immediately after armi
         unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
       );
     }
+    await assertNoScopedFlagLeaked(canonicalCheckout, [home, ...realHomes]);
   });
 });
 
@@ -1332,16 +1418,34 @@ describe('on/verify: a blank, nonexistent, or non-checkout-root --root authorize
   it('`on --root <subdirectory of a git checkout> --item …` refuses, names the checkout-root problem, and writes nothing', async (ctx) => {
     skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const checkout = await mkdtemp(path.join(tmpdir(), 'rp258-subroot-on-'));
+    // code-reviewer round 2 advisory: this test asserts the refusal writes
+    // nothing, but had no cleanup of its own — if the refusal ever regressed
+    // to an accept, the scoped write mirrors into the REAL password-database
+    // home (same two-home rule as every other scoped write in this file) and
+    // nothing here would remove it. Defensive, matching every other scoped
+    // case's own `finally`.
+    const { unattendedFlags } = await load();
     try {
       execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
       const subdir = path.join(checkout, 'nested', 'deeper');
       await mkdir(subdir, { recursive: true });
-
-      const result = await runCli(['on', '--root', subdir, '--item', 'RP-258'], home);
-      expect(result.code).toBe(1);
-      expect(result.stderr).toContain(subdir);
-      expect(result.stderr).toMatch(/checkout root|toplevel/i);
-      expect(existsSync(path.join(home, '.claude'))).toBe(false);
+      const canonicalSubdir = realpathSync.native(subdir);
+      const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: subdir };
+      try {
+        const result = await runCli(['on', '--root', subdir, '--item', 'RP-258'], home);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain(subdir);
+        expect(result.stderr).toMatch(/checkout root|toplevel/i);
+        expect(existsSync(path.join(home, '.claude'))).toBe(false);
+      } finally {
+        await Promise.all(
+          unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
+        );
+      }
+      // Independent check (not production's own `unattendedFlags`): if the
+      // refusal above ever regressed to an accept, this is what would catch
+      // it even if the `finally` cleanup above also silently regressed.
+      await assertNoScopedFlagLeaked(canonicalSubdir, [home, ...realHomes]);
     } finally {
       await removeFixture(checkout);
     }
@@ -1350,10 +1454,18 @@ describe('on/verify: a blank, nonexistent, or non-checkout-root --root authorize
   it('`verify --root <subdirectory of a git checkout> --item …` refuses, naming the checkout-root problem rather than "no usable flag"', async (ctx) => {
     skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
     const checkout = await mkdtemp(path.join(tmpdir(), 'rp258-subroot-verify-'));
+    // code-reviewer round 2 advisory: `verify` itself never writes, but this
+    // test also arms the OUTER checkout with `on` — cleaned via `off --root
+    // checkout` below — and defensively covers a subdir-scoped candidate too,
+    // for the same reason as the `on` subdirectory test above.
+    const { unattendedFlags } = await load();
     try {
       execFileSync('git', ['init', '-q', checkout], { env: withoutGitLocation() });
       const subdir = path.join(checkout, 'nested', 'deeper');
       await mkdir(subdir, { recursive: true });
+      const canonicalCheckout = realpathSync.native(checkout);
+      const canonicalSubdir = realpathSync.native(subdir);
+      const scopedSubdirEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: subdir };
 
       // Armed for the REAL checkout root first — so a `verify` that merely
       // fell through to "nothing found" for the subdirectory's own
@@ -1369,10 +1481,90 @@ describe('on/verify: a blank, nonexistent, or non-checkout-root --root authorize
         expect(result.stderr).not.toMatch(/no usable unattended flag/i);
       } finally {
         await runCli(['off', '--root', checkout], home);
+        await Promise.all(
+          unattendedFlags(scopedSubdirEnv).map((candidate) => rm(candidate, { force: true })),
+        );
       }
+      // Independent check: the OUTER checkout's own armed flag was cleaned by
+      // `off` above (verified independently too); the subdir never writes
+      // under correct behaviour, `verify` never writes at all.
+      await assertNoScopedFlagLeaked(canonicalCheckout, [home, ...realHomes]);
+      await assertNoScopedFlagLeaked(canonicalSubdir, [home, ...realHomes]);
     } finally {
       await removeFixture(checkout);
     }
+  });
+
+  /**
+   * code-reviewer round 2 (c79ff39), BLOCKER 1 — `requireRoot`'s own final
+   * refusal, "git cannot confirm a checkout" (`toplevel === null`,
+   * `unattended-flag.mjs:644`), had no test at all: a blank `--root` refuses
+   * earlier (line 563), a nonexistent one refuses at the realpath step (its
+   * own test asserts "does not exist", not this message), and a checkout
+   * subdirectory (above) reaches the NEXT check instead (`toplevel !==
+   * realRoot`, non-null). Flipping `if (toplevel === null)` to accept keeps
+   * every existing case green while arming a flag scoped to a directory
+   * `guard-rulebook` — always scoped by the real checkout toplevel — can
+   * never see: the exact "wrong root" shape the round-1 security advisory
+   * brought into scope.
+   *
+   * `GIT_CEILING_DIRECTORIES`, set to the candidate's own parent, is what
+   * makes "git finds no repository here" true regardless of the host: an
+   * ordinary existing-but-non-git directory already answers this way only
+   * because nothing above `os.tmpdir()` happens to be a git checkout on the
+   * machine running the suite — an accident of the environment, not a
+   * property this test may rely on. The ceiling makes git's own upward search
+   * stop at `home` on every host. `withoutGitLocation` (`git-env.mjs`) strips
+   * only repository-LOCATION variables (`GIT_DIR`, `GIT_WORK_TREE`, …);
+   * `GIT_CEILING_DIRECTORIES` bounds git's own directory search and is not on
+   * that list, so it reaches the child unchanged.
+   */
+  describe('a --root git cannot confirm as any checkout at all (code-reviewer round 2 BLOCKER 1)', () => {
+    it('`on --root <existing non-git directory>` refuses, names the confirmation failure, and writes nothing', async (ctx) => {
+      skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
+      const nonGitDir = path.join(home, 'not-a-git-checkout');
+      await mkdir(nonGitDir, { recursive: true });
+      const canonicalNonGitDir = realpathSync.native(nonGitDir);
+      const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: nonGitDir };
+      const { unattendedFlags } = await load();
+      try {
+        const result = await runCli(['on', '--root', nonGitDir, '--item', 'RP-258'], home, {
+          GIT_CEILING_DIRECTORIES: home,
+        });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain(nonGitDir);
+        expect(result.stderr).toMatch(/could not be confirmed as a git checkout root/i);
+        expect(existsSync(path.join(home, '.claude'))).toBe(false);
+      } finally {
+        await Promise.all(
+          unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
+        );
+      }
+      await assertNoScopedFlagLeaked(canonicalNonGitDir, [home, ...realHomes]);
+    });
+
+    it('`verify --root <existing non-git directory>` refuses the same way, not as "no usable flag"', async (ctx) => {
+      skipUnless(ctx, needsGit(repoRoot).ok, needsGit(repoRoot).reason);
+      const nonGitDir = path.join(home, 'verify-not-a-git-checkout');
+      await mkdir(nonGitDir, { recursive: true });
+      const canonicalNonGitDir = realpathSync.native(nonGitDir);
+      const scopedEnv = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: nonGitDir };
+      const { unattendedFlags } = await load();
+      try {
+        const result = await runCli(['verify', '--root', nonGitDir, '--item', 'RP-258'], home, {
+          GIT_CEILING_DIRECTORIES: home,
+        });
+        expect(result.code).toBe(1);
+        expect(result.stderr).toContain(nonGitDir);
+        expect(result.stderr).toMatch(/could not be confirmed as a git checkout root/i);
+        expect(result.stderr).not.toMatch(/no usable unattended flag/i);
+      } finally {
+        await Promise.all(
+          unattendedFlags(scopedEnv).map((candidate) => rm(candidate, { force: true })),
+        );
+      }
+      await assertNoScopedFlagLeaked(canonicalNonGitDir, [home, ...realHomes]);
+    });
   });
 });
 

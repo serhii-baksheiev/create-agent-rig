@@ -369,6 +369,17 @@ describe('every authored git spawn passes an explicit environment', () => {
     // RP-222: spawns both `git` (via `withoutGitLocation()`) and `gh` to check
     // for duplicate ticket work before a claim or a PR.
     'templates/agent-os/universal/.claude/scripts/duplicate-work.mjs',
+    // RP-258 round 2, code-reviewer BLOCKER 2: `requireRoot`'s
+    // `gitCheckoutToplevel` spawns `git rev-parse --show-toplevel` to confirm
+    // `--root` before `on`/`verify` do anything else — the child that decides
+    // which checkout a governance flag is scoped to. Both copies, template and
+    // synced, carry the same call site.
+    'templates/agent-os/universal/.claude/scripts/unattended-flag.mjs',
+    '.claude/scripts/unattended-flag.mjs',
+    // The fixtures that changed from `mkdir` to a real `git init` checkout so
+    // `--root` resolves to a genuine toplevel (RP-258 round 2).
+    'test/template/unattended-flag.test.ts',
+    'test/template/concurrent-sessions.test.ts',
   ];
 
   it.each(files)('%s', async (rel) => {
