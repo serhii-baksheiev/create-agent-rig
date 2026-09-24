@@ -18,9 +18,11 @@ import { basename, dirname, join } from 'node:path';
 import {
   asOfOf,
   citedPathsOf,
+  DEFAULT_STALE_IN_PROGRESS_DAYS,
   hygieneOf,
   overtakenOf,
   selectNext,
+  staleInProgressOf,
   stopConditionOf,
 } from './core.mjs';
 import { changedSinceOf, headShaOf } from './as-of.mjs';
@@ -698,6 +700,24 @@ if (invokedDirectly()) {
   }
 
   if (args.command === 'hygiene') {
+    // RP-223: `options.staleInProgressDays` follows the same validate-before-use
+    // convention as `options.maxGateRounds` (`gateRoundVerdict`, above) — a bad
+    // value is refused loudly, naming the key, rather than silently defaulted.
+    const staleInProgressDaysOption = config.options?.staleInProgressDays;
+    if (
+      staleInProgressDaysOption !== undefined &&
+      (typeof staleInProgressDaysOption !== 'number' ||
+        !Number.isFinite(staleInProgressDaysOption) ||
+        staleInProgressDaysOption <= 0)
+    ) {
+      process.stderr.write(
+        `options.staleInProgressDays must be a positive finite number, got ` +
+          `${JSON.stringify(staleInProgressDaysOption)}.\n`,
+      );
+      process.exit(1);
+    }
+    const staleInProgressDays = staleInProgressDaysOption ?? DEFAULT_STALE_IN_PROGRESS_DAYS;
+
     // The proposals on file are checked too (AR-116): a proposal names the commit
     // it was measured against, and one whose cited paths moved since is reported
     // as possibly overtaken. Git runs here, once per distinct `asOf`, against the
@@ -725,7 +745,13 @@ if (invokedDirectly()) {
       })
       .filter(Boolean);
     const owner = config.options?.owner ?? null;
+    // `Date.now()` at the edge only — `staleInProgressOf` itself takes `now` as
+    // a parameter and never reads the clock (`.claude/rules/node-ts.md`).
+    const now = Date.now();
     const findings = [
+      ...tickets
+        .map((ticket) => staleInProgressOf(ticket, { now, days: staleInProgressDays }))
+        .filter(Boolean),
       ...tickets.map((ticket) => hygieneOf(ticket, { owner })).filter(Boolean),
       ...overtaken,
     ];
