@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 // Detect duplicate ticket branches and PRs before parallel work.
-// (.claude/runs/20260924-070359-rp-222/brief.md, "Detect duplicate ticket
-// branches and PRs before parallel work" — RP-222.)
 //
 // Two independent controllers can pick up the same ticket id at the same
 // time, and nothing in this rig registers a claim anywhere both would see —
@@ -14,28 +12,44 @@
 // It reads two bounded, native sources — never a branch registry this rig
 // would have to keep in sync:
 //
-//   1. remote branches — `git ls-remote --heads origin` (one call, at most
-//      5,000 refs read);
+//   1. remote branches — `git ls-remote --heads origin` (one call, capped at
+//      MAX_REFS refs read, fail-closed past the cap — see Limits);
 //   2. open PRs — `gh pr list --state open --search "<id>" --json
-//      number,title,headRefName,url --limit 100`, filtered CLIENT-SIDE by the
-//      same token rule. GitHub's `--search` is fuzzy; the filter, not the
-//      search, is the authority — see the "gh's fuzzy search" test below.
+//      number,title,headRefName,url,isCrossRepository --limit 101`, filtered
+//      CLIENT-SIDE by the same token rule. GitHub's `--search` is fuzzy; the
+//      filter, not the search, is the authority —
+//      `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
+//      "exit 0 — gh's fuzzy search returns a PR whose title/head do not carry
+//      the exact token, filtered out client-side".
 //
-// Matching is a token match bounded by non-alphanumerics, never fuzzy title
-// matching: `matchesTicket('RP-220', text)` looks for `RP-220` in `text` at a
-// word boundary, case-insensitively. A bare issue number (`220`, no letter
-// prefix) is matched far more narrowly — only `#220` in a title, or a
-// `<type>/220-` branch token — because a loose number is common English text,
-// not a ticket reference.
+// Each source reports one of THREE statuses, not two:
+//   read           — consulted; its list is trusted evidence
+//   unavailable    — applicable but could not be read (gh missing, a cap
+//                    hit, an unreachable remote) — never read as "no match"
+//   not-applicable — nothing to check: no `origin` remote at all (both
+//                    sources), or an `origin` that does not name GitHub (the
+//                    `pr` source only — the check never asks `gh` at all then)
 //
-// The current checkout's own branch, and any PR whose `headRefName` is that
-// branch, are excluded: that is this controller's own work, not a duplicate.
+// Matching is a token match bounded by non-alphanumerics — `_` counts as a
+// boundary too, which a plain `\b` does not (it treats `_` as a word
+// character) — never fuzzy title matching: `matchesTicket('RP-220', text)`
+// looks for `RP-220` in `text` at that boundary, case-insensitively. A bare
+// issue number (`220`, no letter prefix) is matched far more narrowly — only
+// `#220` in a title, or a `<type>/220-` branch token — because a loose number
+// is common English text, not a ticket reference.
+//
+// The current checkout's own branch, and any open, SAME-REPOSITORY PR whose
+// `headRefName` is that branch, are excluded: that is this controller's own
+// work, not a duplicate. A fork PR naming the same branch is NOT excluded —
+// `headRefName` alone does not prove the PR belongs to this repository.
 //
 // Exit codes:
-//   0  clean          — every source was read; nothing else carries the id
+//   0  clean          — every APPLICABLE source was read and nothing else
+//                        carries the id (all sources may be not-applicable)
 //   2  duplicate-work — another branch or PR carries the id (see stdout for
-//                        which one, and the field that matched)
-//   3  unverifiable   — a source could not be read (gh missing, no `origin`,
+//                        which one, and the field that matched) — a match
+//                        outranks an unavailable other source
+//   3  unverifiable   — an applicable source could not be read (gh missing,
 //                        a cap hit); the caller MUST treat this as not-clean
 //   1  usage refusal  — no/invalid --ticket, or an unknown flag
 //
@@ -43,40 +57,51 @@
 //   { ticket, verdict, matches: [{ source, ref, field, url? }],
 //     sources: [{ name, status }] }
 //
-// When `RIG_RUN_DIR` is declared, one event (`kind: 'duplicate-work'`, `data`
-// the object above) is appended to this run's journal — silently, like every
-// other optional trace in this rig, so an undeclared run writes nothing.
+// The verdict is always printed before the run journal is touched, so a
+// journal failure downstream can only ever add a stderr warning — it never
+// withholds or changes the exit code the caller already computed (see the
+// journal-failure note in Limits). When `RIG_RUN_DIR` is declared, one event
+// (`kind: 'duplicate-work'`, `data` the object above) is appended to this
+// run's journal — silently, like every other optional trace in this rig, so
+// an undeclared run writes nothing.
 //
 // --- Limits -----------------------------------------------------------
 //
-// - GitHub search is fuzzy and the client-side token filter is the
-//   authority, not `gh`'s own ranking — `test/template/duplicate-work.test.ts`
-//   (absent in a generated rig) › "exit 0 — gh's fuzzy search returns a PR
-//   whose title/head do not carry the exact token, filtered out client-side".
+// - A cap hit fails CLOSED, never a silent slice: more than MAX_REFS branch
+//   refs, or a PR listing that still fills `--limit 101`, reports that
+//   source `unavailable` rather than reading (and matching against) only the
+//   first page — `test/template/duplicate-work.test.ts` (absent in a
+//   generated rig) › "exit 3, verdict unverifiable — branch source hits the
+//   ref cap and fails closed, never a silent slice" and › "exit 3 — 101 open
+//   PRs is the cap: pr source unavailable, never a silent read of the first
+//   100".
 // - A bare issue number matches only `#<n>` in a title or a `<type>/<n>-`
 //   branch token, never a loose number in prose —
 //   `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
 //   "matchesTicket — a token match bounded by non-alphanumerics, never
 //   fuzzy" (the bare-issue-number cases).
-// - `gh` missing, unauthenticated, or the repo having no GitHub remote all
-//   read the same way: the `pr` source is `unavailable`, never read as "no
-//   PR" — `test/template/duplicate-work.test.ts` (absent in a generated rig)
-//   › "exit 3, verdict unverifiable — gh is missing/failing, never reported
-//   as clean".
-// - No `origin` remote makes the `branch` source `unavailable` the same way
-//   — `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
-//   "exit 3 — no origin remote at all".
+// - `gh` missing, unauthenticated, or failing on a GitHub `origin` all read
+//   the same way: the `pr` source is `unavailable`, never read as "no PR" —
+//   `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
+//   "exit 3, verdict unverifiable — gh is missing/failing on a GitHub
+//   origin, never reported as clean".
+// - A journal write failure never hides an already-computed verdict — the
+//   verdict is printed first, and only a stderr warning follows a failed
+//   write — `test/template/duplicate-work.test.ts` (absent in a generated
+//   rig) › "a journal write failure still prints the verdict, and the exit
+//   code is the verdict's — never the usage-refusal 1".
 // - Own-work exclusion is exact-string: the checkout's current branch name,
-//   and a PR's `headRefName` equal to it. A rename, a fork working the same
-//   ticket under a differently-spelled branch, or a detached HEAD is not
-//   recognised as "own" — untested design limit.
-// - `git ls-remote --heads origin` is capped at 5,000 refs read; a remote
-//   with more is truncated silently past that point — untested design
-//   limit, and a branch registry was explicitly ruled out by the brief as
-//   the alternative.
+//   and a same-repository PR's `headRefName` equal to it. A rename, a fork
+//   working the same ticket under a differently-spelled branch, or a
+//   detached HEAD (`git rev-parse --abbrev-ref HEAD` answers the literal
+//   string `HEAD`, which matches no real branch name) is not recognised as
+//   "own" — pinned, not just documented: `test/template/duplicate-work.test.ts`
+//   (absent in a generated rig) › "detached HEAD — own-work exclusion
+//   misses, so the checkout's own branch is (mis)reported as a duplicate
+//   (pinned current behaviour)".
 // - A same-id branch under a naming convention `matchesTicket` does not
-//   recognise (no word-bounded occurrence of the id anywhere in the ref) is
-//   not seen — untested design limit; the brief rules out fuzzy title
+//   recognise (no boundary-bounded occurrence of the id anywhere in the ref)
+//   is not seen — untested design limit; the brief rules out fuzzy title
 //   matching for exactly this trade-off.
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
@@ -91,21 +116,26 @@ const ID_SHAPE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const BARE_NUMBER_SHAPE = /^\d+$/;
 const MAX_REFS = 5000;
 const MAX_PRS = 100;
-const PR_FIELDS = 'number,title,headRefName,url';
+const PR_REQUEST_LIMIT = MAX_PRS + 1;
+const MAX_BUFFER = 16 * 1024 * 1024;
+const PR_FIELDS = 'number,title,headRefName,url,isCrossRepository';
+const GITHUB_ORIGIN = /github\.com/i;
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /**
  * A token match bounded by non-alphanumerics, never fuzzy.
  *
- * An id shaped like `RP-220` (a letter, then `-`, then digits) is matched at
- * a word boundary, case-insensitively — `\bRP-220\b` finds it in
- * `rp-220-verified-claims` and refuses `rp-2200`/`rp-22`/`xrp-220`, because a
- * word boundary sits only where an alphanumeric run starts or ends.
+ * An id shaped like `RP-220` (a letter, then `-`, then digits) is matched
+ * against a boundary built from a negative lookaround on `[A-Za-z0-9]` rather
+ * than `\b`: `\b` treats `_` as a word character, so `rp-220_fix` would fail a
+ * plain `\bRP-220\b` match even though no reasonable reading takes `220_fix`
+ * as one token with `220` — `_` is itself a boundary here, matching
+ * `feat/rp-220_fix`.
  *
  * A bare issue number (`220`, no letter prefix) is loose English text far too
- * often for a plain `\b` match to be safe — `there were 220 of them` would
- * match. So it is matched only as `#220` (a title reference) or as a
+ * often for the same kind of match to be safe — `there were 220 of them`
+ * would match. So it is matched only as `#220` (a title reference) or as a
  * `<type>/220-` branch token (`fix/220-my-work`), never as a number sitting
  * on its own.
  */
@@ -118,7 +148,8 @@ export const matchesTicket = (id, text) => {
     return issueRef.test(value) || branchToken.test(value);
   }
   if (ID_SHAPE.test(id)) {
-    return new RegExp(`\\b${escapeRegExp(id)}\\b`, 'i').test(value);
+    const bounded = new RegExp(`(?<![A-Za-z0-9])${escapeRegExp(id)}(?![A-Za-z0-9])`, 'i');
+    return bounded.test(value);
   }
   return false;
 };
@@ -126,14 +157,18 @@ export const matchesTicket = (id, text) => {
 /**
  * The verdict and evidence, from what the two sources answered.
  *
- * `branches`/`prs` are `{ status: 'read' | 'unavailable', refs/items }` —
- * `status` decides whether the source's own list is trusted at all, so an
- * `unavailable` source contributes no matches even if it carries stale data.
+ * `branches`/`prs` are `{ status: 'read' | 'unavailable' | 'not-applicable',
+ * refs/items }` — `status` decides whether the source's own list is trusted
+ * at all, so only a `read` source contributes matches.
  *
- * A match found from an `unavailable` source could never occur (its list is
- * never consulted), so `duplicate-work` always outranks `unverifiable`: any
- * match found from a source that WAS read is real evidence, regardless of
- * whether the other source could be read.
+ * Precedence: a match found from a source that WAS read always wins
+ * (`duplicate-work`), regardless of the other source's status. Failing that,
+ * any source left `unavailable` makes the result `unverifiable` — a source
+ * that could not be read might have hidden a real duplicate. A source that is
+ * `not-applicable` never does that: there is nothing there to hide (no
+ * `origin` at all, or an `origin` that is not GitHub), so a checkout with
+ * every source `not-applicable` — or a mix of `not-applicable` and `read` —
+ * is `clean`, never `unverifiable`.
  */
 export const classify = ({
   ticket,
@@ -152,7 +187,8 @@ export const classify = ({
 
   if (prs.status === 'read') {
     for (const pr of prs.items ?? []) {
-      if (pr.headRefName === ownBranch) continue;
+      const isOwnPr = pr.headRefName === ownBranch && pr.isCrossRepository !== true;
+      if (isOwnPr) continue;
       if (matchesTicket(ticket, pr.title)) {
         matches.push({ source: 'pr', ref: pr.headRefName, field: 'title', url: pr.url });
       } else if (matchesTicket(ticket, pr.headRefName)) {
@@ -169,7 +205,7 @@ export const classify = ({
   const verdict =
     matches.length > 0
       ? 'duplicate-work'
-      : sources.some((source) => source.status !== 'read')
+      : sources.some((source) => source.status === 'unavailable')
         ? 'unverifiable'
         : 'clean';
 
@@ -180,7 +216,9 @@ const EXIT_CODES = Object.freeze({ clean: 0, 'duplicate-work': 2, unverifiable: 
 
 // --- Acquisition -----------------------------------------------------------
 
-/** The checkout's own current branch, or `null` when it cannot be told. */
+/** The checkout's own current branch, or `null` when it cannot be told
+ *  (including a detached HEAD, which answers the literal string `HEAD` — see
+ *  the Limits note on why that is not recognised as "own" either). */
 const currentBranch = (cwd) => {
   try {
     return execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
@@ -194,6 +232,23 @@ const currentBranch = (cwd) => {
   }
 };
 
+/** The configured `origin` remote's URL, or `null` when there is none —
+ *  the applicability signal for both sources (round2.md item 2). */
+const originUrl = (cwd) => {
+  try {
+    return execFileSync('git', ['remote', 'get-url', 'origin'], {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: withoutGitLocation(),
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
+const isGitHubOrigin = (url) => typeof url === 'string' && GITHUB_ORIGIN.test(url);
+
 /** `refs/heads/<name>` lines from `git ls-remote --heads` → bare branch names. */
 const parseHeads = (raw) =>
   raw
@@ -203,30 +258,42 @@ const parseHeads = (raw) =>
     .map((ref) => ref.slice('refs/heads/'.length));
 
 /**
- * `{ status, refs }` for the `branch` source: one `git ls-remote` call,
- * capped at `MAX_REFS`. A missing `origin`, an unreachable remote, or any
- * other git failure reports `unavailable` — never an empty, "clean" list.
+ * `{ status, refs }` for the `branch` source: `not-applicable` with no
+ * `origin` at all; otherwise one `git ls-remote` call, capped at `MAX_REFS`
+ * — more refs than that, or any other git failure (unreachable remote, a
+ * buffer overflow past `MAX_BUFFER`), reports `unavailable`, never a
+ * truncated `read`.
  */
-const remoteBranches = (cwd) => {
+const remoteBranches = (cwd, origin) => {
+  if (origin === null) return { status: 'not-applicable', refs: [] };
   try {
     const raw = execFileSync('git', ['ls-remote', '--heads', 'origin'], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: withoutGitLocation(),
+      maxBuffer: MAX_BUFFER,
     });
-    return { status: 'read', refs: parseHeads(raw).slice(0, MAX_REFS) };
+    const refs = parseHeads(raw);
+    if (refs.length > MAX_REFS) return { status: 'unavailable', refs: [] };
+    return { status: 'read', refs };
   } catch {
     return { status: 'unavailable', refs: [] };
   }
 };
 
 /**
- * `{ status, items }` for the `pr` source: one `gh pr list` call. `gh`
- * missing, unauthenticated, offline, or answering with something other than
- * a JSON array all report `unavailable` — never "no PR".
+ * `{ status, items }` for the `pr` source: `not-applicable` with no `origin`
+ * or a non-GitHub `origin` — `gh` is never even asked in either case.
+ * Otherwise one `gh pr list` call, asked for `MAX_PRS + 1` rows: getting that
+ * many back means there may be more than `MAX_PRS` open PRs matching the
+ * search, so the source reports `unavailable` (cap) rather than reading only
+ * the first page. `gh` missing, unauthenticated, offline, or answering with
+ * something other than a JSON array all report `unavailable` too — never
+ * "no PR".
  */
-const openPrs = (ticket, cwd) => {
+const openPrs = (ticket, cwd, origin) => {
+  if (origin === null || !isGitHubOrigin(origin)) return { status: 'not-applicable', items: [] };
   try {
     const raw = execFileSync(
       'gh',
@@ -240,19 +307,27 @@ const openPrs = (ticket, cwd) => {
         '--json',
         PR_FIELDS,
         '--limit',
-        String(MAX_PRS),
+        String(PR_REQUEST_LIMIT),
       ],
-      { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: withoutGitLocation(),
+        maxBuffer: MAX_BUFFER,
+      },
     );
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return { status: 'unavailable', items: [] };
+    if (parsed.length > MAX_PRS) return { status: 'unavailable', items: [] };
     return {
       status: 'read',
-      items: parsed.slice(0, MAX_PRS).map((row) => ({
+      items: parsed.map((row) => ({
         number: row?.number,
         title: typeof row?.title === 'string' ? row.title : '',
         headRefName: typeof row?.headRefName === 'string' ? row.headRefName : '',
         url: typeof row?.url === 'string' ? row.url : undefined,
+        isCrossRepository: row?.isCrossRepository === true,
       })),
     };
   } catch {
@@ -300,7 +375,8 @@ const renderText = (result) => {
   ];
   for (const match of result.matches) {
     lines.push(
-      `- ${match.source}: ${match.ref} (matched ${match.field}${match.url ? `, ${match.url}` : ''})`,
+      `- ${match.source}: ${JSON.stringify(match.ref)} (matched ${match.field}` +
+        `${match.url ? `, ${JSON.stringify(match.url)}` : ''})`,
     );
   }
   if (result.verdict === 'duplicate-work') {
@@ -313,7 +389,8 @@ const renderText = (result) => {
   } else if (result.verdict === 'unverifiable') {
     lines.push(
       '',
-      'Not every source could be read, so this is not a clean result — treat it as NOT clean.',
+      'Not every applicable source could be read, so this is not a clean result — treat it ' +
+        'as NOT clean.',
     );
   }
   return `${lines.join('\n')}\n`;
@@ -347,10 +424,16 @@ if (invokedDirectly()) {
 
   const cwd = process.cwd();
   const ownBranch = currentBranch(cwd);
-  const branches = remoteBranches(cwd);
-  const prs = openPrs(parsed.ticket, cwd);
+  const origin = originUrl(cwd);
+  const branches = remoteBranches(cwd, origin);
+  const prs = openPrs(parsed.ticket, cwd, origin);
   const result = classify({ ticket: parsed.ticket, ownBranch, branches, prs });
   const exitCode = EXIT_CODES[result.verdict];
+
+  // Printed BEFORE the journal write below, deliberately: round2.md item 3 —
+  // exit 1 must never hide a verdict that was already computed, so a journal
+  // failure past this point can only ever add a stderr warning.
+  process.stdout.write(parsed.json ? `${JSON.stringify(result)}\n` : renderText(result));
 
   // Written only when the run declared `RIG_RUN_DIR` — undeclared means
   // nothing is written, silently, like every other optional trace in this
@@ -363,18 +446,13 @@ if (invokedDirectly()) {
       journal.recordEvent({ runDir, kind: 'duplicate-work', data: result, now: new Date().toISOString() });
     } catch (error) {
       const exhausted = journal?.isTraceExhausted;
-      if (typeof exhausted === 'function' && exhausted(error)) {
-        process.stderr.write(
-          `run journal: ${error.message}\n  the duplicate-work check above still stands; ` +
-            'only its trace was not recorded.\n',
-        );
-      } else {
-        process.stderr.write(`run journal: ${error?.message ?? error}\n`);
-        process.exit(1);
-      }
+      const traceOnly = typeof exhausted === 'function' && exhausted(error);
+      const note = traceOnly
+        ? 'the duplicate-work check above still stands; only its trace was not recorded.'
+        : 'the verdict above still stands; only its journal entry was not written.';
+      process.stderr.write(`run journal: ${error?.message ?? error}\n  ${note}\n`);
     }
   }
 
-  process.stdout.write(parsed.json ? `${JSON.stringify(result)}\n` : renderText(result));
   process.exit(exitCode);
 }

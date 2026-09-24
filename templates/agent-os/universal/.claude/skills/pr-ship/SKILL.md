@@ -51,11 +51,13 @@ blockers.
    removes is the honest failure mode, a run that keeps re-reviewing because no
    check ever went red; it does not stop a session that skips it.
 
-1. **Duplicate work, before anything else.** Run
-   `node .claude/scripts/duplicate-work.mjs --ticket <item-id>`. Exit 2 (another
-   branch or open PR already carries this id) or 3 (a source could not be
-   checked) is a `HOLD` with one blocker naming `rule: duplicate-work` — do not
-   open or continue the PR; re-read the item and the other branch/PR first.
+1. **Duplicate work, before anything else.** For a ticketed branch (an id from
+   a stable tracker key), run
+   `node .claude/scripts/duplicate-work.mjs --ticket <item-id>` and read its exit
+   code. **Anything but 0 is a `HOLD`**, with one blocker naming
+   `rule: duplicate-work` — do not open or continue the PR; re-read the item and
+   the other branch/PR first. An **owner-directed branch has no ticket id** —
+   skip the check for it, and say so in the PR body rather than guessing one.
    Pinned in `test/template/duplicate-work.test.ts` (absent in a generated rig)
    › "exit 2, source pr — an open PR from another branch carries the id in its title".
 
