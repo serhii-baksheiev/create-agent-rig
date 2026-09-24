@@ -565,8 +565,16 @@ const recordMarker = (ticket, updatedAt, env) => {
   }
 };
 
-const rebaseline = async (ticket, env) => {
-  if (!env?.RIG_RUN_DIR) return;
+/**
+ * `force: true` is the one difference from every other call site: a verified
+ * claim (below) confirms the write it just made even when no run directory is
+ * configured to receive the marker — `recordMarker` (the actual write) still
+ * only fires when `RIG_RUN_DIR` is set. Every other caller (`comment`,
+ * `escalate`, `close`) keeps the original all-or-nothing gate: no run
+ * directory, no request at all.
+ */
+const rebaseline = async (ticket, env, { force = false } = {}) => {
+  if (!force && !env?.RIG_RUN_DIR) return;
   let updatedAt;
   try {
     const after = await request(`/rest/api/3/issue/${ticket.id}?fields=updated`, { env });
@@ -574,17 +582,107 @@ const rebaseline = async (ticket, env) => {
   } catch (error) {
     process.stderr.write(
       `${ticket.id}: the write landed, but its marker was NOT re-recorded in ` +
-        `${env.RIG_RUN_DIR} — ${error.message}\n`,
+        `${env?.RIG_RUN_DIR ?? '(no run directory configured)'} — ${error.message}\n`,
     );
     return;
   }
-  recordMarker(ticket, updatedAt, env);
+  if (env?.RIG_RUN_DIR) recordMarker(ticket, updatedAt, env);
+};
+
+/**
+ * RP-220 — verified, stale-safe claim.
+ *
+ * Measured live against a Jira RP-board issue (RP-249, 2026-09-24): the
+ * global `21 → In Progress` transition is offered even when the issue is
+ * already In Progress, and POSTing it — including that looped case — always
+ * appends one changelog history and moves `updated` to that history's
+ * `created`. That is what makes the read-back below a sound race detector: two
+ * claims racing from the same selection snapshot always leave two histories
+ * after it, and whichever controller reads back after both writes have landed
+ * sees two and refuses — so at most one of them is ever told `claimed: true`.
+ *
+ * Every path here returns; none throws once the transition POST has been
+ * attempted, because a thrown write is retried by the caller and lands twice.
+ * `reason` is one of `claim-stale` (refused before mutating — no selection
+ * snapshot, or the item moved since selection), `claim-contended` (mutated,
+ * but the read-back could not attribute the sole resulting history to this
+ * call) or `claim-unverifiable` (a request failed and the outcome could not
+ * be read at all). Pinned in the generator's
+ * `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
+ * every case under "jira claim() is verified and stale-selection safe
+ * (RP-220)", including › "the Done criterion: two controllers racing from one
+ * unchanged snapshot".
+ */
+const CHANGELOG_TAIL = 20;
+
+const instantOf = (iso) => new Date(iso).getTime();
+
+/**
+ * Read back after the transition POST and decide whether THIS call was the
+ * sole claimant. Never throws: every failure here resolves to
+ * `claim-unverifiable` in the caller, because the write has already landed.
+ */
+const verifyJiraClaim = async (ticket, snapshotMs, env) => {
+  const after = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
+  const fields = after?.fields ?? {};
+  const category = statusCategory(fields);
+  const head = await request(`/rest/api/3/issue/${ticket.id}/changelog?startAt=0&maxResults=1`, {
+    env,
+  });
+  const total = Number(head?.total ?? 0);
+  const startAt = Math.max(0, total - CHANGELOG_TAIL);
+  const tail = await request(
+    `/rest/api/3/issue/${ticket.id}/changelog?startAt=${startAt}&maxResults=${CHANGELOG_TAIL}`,
+    { env },
+  );
+  const histories = Array.isArray(tail?.values) ? tail.values : [];
+  const sinceSnapshot = histories.filter((entry) => instantOf(toIso(entry.created)) > snapshotMs);
+  const soleStatusChange =
+    sinceSnapshot.length === 1 &&
+    Array.isArray(sinceSnapshot[0].items) &&
+    sinceSnapshot[0].items.some((item) => item.field === 'status');
+  if (category === 'indeterminate' && soleStatusChange) return { ok: true };
+  return {
+    ok: false,
+    reason: 'claim-contended',
+    detail:
+      `${sinceSnapshot.length} change(s) landed since the selection snapshot; ` +
+      `status now reads ${fields.status?.name ?? category}`,
+  };
 };
 
 export const claim = async (
   ticket,
   { transitionId = null, env = process.env, projectRoot = process.cwd() } = {},
 ) => {
+  if (!ticket?.updatedAt) {
+    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no selection snapshot' };
+  }
+  const snapshotMs = instantOf(ticket.updatedAt);
+
+  // Pre-read: a failing read throws as any read does today — nothing has
+  // been written yet.
+  const pre = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
+  const preFields = pre?.fields ?? {};
+  const preCategory = statusCategory(preFields);
+  if (preCategory !== 'new') {
+    return {
+      ok: false,
+      claimed: false,
+      reason: 'claim-stale',
+      detail: `status is already ${preFields.status?.name ?? preCategory} (category ${preCategory})`,
+    };
+  }
+  const preUpdated = toIso(preFields.updated);
+  if (instantOf(preUpdated) !== snapshotMs) {
+    return {
+      ok: false,
+      claimed: false,
+      reason: 'claim-stale',
+      detail: `updated moved from ${ticket.updatedAt} (selection) to ${preUpdated} before the claim`,
+    };
+  }
+
   if (!transitionId) {
     const available = await request(`/rest/api/3/issue/${ticket.id}/transitions`, { env });
     const target = available.transitions.find(
@@ -598,11 +696,28 @@ export const claim = async (
     }
     transitionId = target.id;
   }
+  // The mutation itself: never retried on an ambiguous response, exactly as
+  // every other mutating call in this adapter — a 5xx here may have already
+  // applied the transition, and replaying it would apply it twice.
   await request(`/rest/api/3/issue/${ticket.id}/transitions`, {
     method: 'POST',
     body: { transition: { id: transitionId } },
     env,
   });
+
+  // Past this point nothing throws: the write has landed, and a rejection
+  // here would be retried by the caller onto an item already transitioned.
+  let verified;
+  try {
+    verified = await verifyJiraClaim(ticket, snapshotMs, env);
+  } catch (error) {
+    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: error.message };
+  }
+  if (!verified.ok) {
+    // Not rolled back: another controller may hold the item now.
+    return { ok: false, claimed: false, reason: verified.reason, detail: verified.detail };
+  }
+
   let workflowClaimRecorded = false;
   try {
     workflowClaimRecorded =
@@ -613,8 +728,8 @@ export const claim = async (
         `${error.message}\n`,
     );
   }
-  await rebaseline(ticket, env);
-  return { ok: true, workflowClaimRecorded };
+  await rebaseline(ticket, env, { force: true });
+  return { ok: true, claimed: true, workflowClaimRecorded };
 };
 
 export const comment = async (ticket, body, { env = process.env } = {}) => {

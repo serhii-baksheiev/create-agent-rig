@@ -227,8 +227,116 @@ const rebaseline = (ticket) => {
   }
 };
 
+/**
+ * RP-220 — verified, stale-safe claim.
+ *
+ * The same contract as `jira.mjs`'s `claim`: every path returns; none throws
+ * once `--add-label` has been sent, because a thrown write is retried by the
+ * caller and lands twice. `reason` is `claim-stale` (refused before mutating),
+ * `claim-contended` (mutated, but the read-back could not attribute the label
+ * to this call) or `claim-unverifiable` (a request failed, or the events page
+ * came back full enough that truncation cannot be ruled out).
+ *
+ * 🔴 Stated limit, measured live (throwaway issue #306, 2026-09-24): re-adding
+ * a label GitHub already considers present writes NO `labeled` event. Two
+ * controllers acting under the SAME GitHub account inside the same
+ * pre-read→write window are therefore indistinguishable here — whichever one
+ * adds the label first writes the one event, and the other's own `gh issue
+ * edit` finds it already present and writes nothing, so the read-back below
+ * cannot tell which of the two calls actually happened first. Distinct
+ * accounts ARE separated, because the sole surviving event's `actor.login`
+ * either matches the caller's own login or it does not. Pinned in the
+ * generator's `test/template/queue-claim-verified.test.ts` (absent in a
+ * generated rig) › "refuses as claim-contended when the only in-progress
+ * labelled event after the snapshot is by another login" and › "states, in
+ * its own header, the same-account limit this fake just exercised".
+ */
+const MAX_EVENTS_PAGE = 100;
+
+/**
+ * Read back after `--add-label`. Never throws: every failure resolves to
+ * `claim-unverifiable` in the caller, because the write has already landed.
+ */
+const verifyGithubClaim = (ticket, snapshotMs) => {
+  const after = ghJson(['issue', 'view', ticket.id, '--json', 'labels']);
+  if (!labelNames(after).includes('in-progress')) {
+    return {
+      ok: false,
+      reason: 'claim-contended',
+      detail: 'the in-progress label is not present immediately after the edit',
+    };
+  }
+  const login = String(ghText(['api', 'user', '--jq', '.login'])).trim();
+  const events = ghJson(['api', `repos/{owner}/{repo}/issues/${ticket.id}/events?per_page=${MAX_EVENTS_PAGE}`]);
+  const list = Array.isArray(events) ? events : [];
+  if (list.length === MAX_EVENTS_PAGE) {
+    return {
+      ok: false,
+      reason: 'claim-unverifiable',
+      detail: `the events page came back full (${MAX_EVENTS_PAGE}) — it may be truncated`,
+    };
+  }
+  const labelEvents = list.filter(
+    (event) =>
+      event?.event === 'labeled' &&
+      String(event?.label?.name) === 'in-progress' &&
+      new Date(event?.created_at).getTime() > snapshotMs,
+  );
+  if (labelEvents.length === 1 && String(labelEvents[0]?.actor?.login) === login) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    reason: 'claim-contended',
+    detail:
+      `${labelEvents.length} in-progress labelled event(s) after selection ` +
+      `(expected exactly one, by ${login})`,
+  };
+};
+
 export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
+  if (!ticket?.updatedAt) {
+    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no selection snapshot' };
+  }
+  const snapshotMs = new Date(ticket.updatedAt).getTime();
+
+  // Pre-read: a failing read throws as any read does today — nothing has
+  // been written yet.
+  const pre = ghJson(['issue', 'view', ticket.id, '--json', 'state,labels,updatedAt']);
+  if (String(pre?.state ?? '').toUpperCase() === 'CLOSED' || labelNames(pre).includes('in-progress')) {
+    return {
+      ok: false,
+      claimed: false,
+      reason: 'claim-stale',
+      detail: `the issue is already ${String(pre?.state ?? '').toLowerCase()} or in-progress`,
+    };
+  }
+  if (new Date(pre?.updatedAt).getTime() !== snapshotMs) {
+    return {
+      ok: false,
+      claimed: false,
+      reason: 'claim-stale',
+      detail: `updatedAt moved from ${ticket.updatedAt} (selection) to ${pre?.updatedAt} before the claim`,
+    };
+  }
+
+  // The mutation itself — never retried, exactly as every other write here.
   ghText(['issue', 'edit', ticket.id, '--add-label', 'in-progress']);
+
+  // Past this point nothing throws: the label has already landed, and a
+  // rejection here would be retried by the caller onto an item already
+  // labelled.
+  let verified;
+  try {
+    verified = verifyGithubClaim(ticket, snapshotMs);
+  } catch (error) {
+    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: error.message };
+  }
+  if (!verified.ok) {
+    // Not rolled back: another controller may hold the item now.
+    return { ok: false, claimed: false, reason: verified.reason, detail: verified.detail };
+  }
+
   let workflowClaimRecorded = false;
   try {
     workflowClaimRecorded =
@@ -240,7 +348,7 @@ export const claim = (ticket, { projectRoot = process.cwd() } = {}) => {
     );
   }
   rebaseline(ticket);
-  return { ok: true, workflowClaimRecorded };
+  return { ok: true, claimed: true, workflowClaimRecorded };
 };
 
 /**
