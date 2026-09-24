@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,15 +14,19 @@ import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
 // list --search`), never a branch registry this rig would have to keep in sync.
 //
 // This file is written against `.claude/scripts/duplicate-work.mjs` and its two
-// wiring points (`layers.json`, the loop/pr-ship skills). This round folds in a
-// gate's required fixes on top of the first pass: fail-closed caps on both
-// sources, a third `not-applicable` source status (a rig with no `origin`, or
-// an `origin` that does not name GitHub, is not stuck waiting on a source that
-// can never answer), exit 1 never hiding a verdict that was already computed,
-// and a handful of matching/exclusion corrections (`_` as a boundary
-// character, cross-repository PRs, a detached HEAD). At the time this file was
-// written, none of those required fixes exist in the script yet — that is the
-// point of this pass.
+// wiring points (`layers.json`, the loop/pr-ship skills). Round 1 shipped the
+// script; round 2 added fail-closed caps on both sources, a third
+// `not-applicable` source status, exit 1 never hiding an already-computed
+// verdict, and a handful of matching/exclusion corrections (`_` as a boundary
+// character, cross-repository PRs, a detached HEAD) — all of which the earlier
+// tests below still pin. This round (3) replaces round 2's own applicability
+// design — a regex read against the `origin` URL's text — with the tracker
+// tools' own answers instead: `git remote get-url origin`'s exit code tells
+// branch applicability (only "No such remote" means "no origin"; every other
+// git failure fails closed as `unavailable`), and what `gh` itself reports
+// tells PR applicability, never the URL's spelling. At the time this file was
+// written, that replacement does not exist in the script yet — that is the
+// point of the tests this pass adds.
 //
 // The independent oracle (`invariants.md`): every scenario's expected verdict
 // comes from what the fixture itself set up — which branches were pushed to a
@@ -175,8 +179,9 @@ const ghListing = (prs: Array<Record<string, unknown>>): Promise<StubHandle> =>
  * A `gh` stub that answers `pr list` ONLY when invoked with exactly
  * `--limit <expectedLimit>`, refusing (a distinguishable non-zero exit, not a
  * parse failure) otherwise. This is the fixture-level assertion that the cap
- * fix asks `gh` for one row past the page size it treats as "read" —
- * round2.md item 1: "ask `gh` for `--limit 101`".
+ * fix asks `gh` for one row past the page size it treats as "read" — see
+ * "exit 3 — 101 open PRs is the cap: pr source unavailable, never a silent
+ * read of the first 100" below.
  */
 const ghListingWithLimit = (
   expectedLimit: number,
@@ -204,6 +209,41 @@ const ghListingWithLimit = (
 const ghFailing = (): Promise<StubHandle> =>
   stubCommand('gh', "process.stderr.write('gh: command not found\\n'); return { exitCode: 127 };");
 
+/**
+ * A `gh` that always fails with a caller-chosen stderr message and exit code,
+ * regardless of the subcommand it was invoked with — used to pin PR
+ * applicability's two message-shaped branches below (the specific "not a
+ * known GitHub host" / "no git remotes found" text means `not-applicable`;
+ * anything else means `unavailable`) without committing this file to which
+ * exact `gh` subcommand the script ends up calling.
+ */
+const ghSayingFailure = (stderr: string, exitCode = 1): Promise<StubHandle> =>
+  stubCommand(
+    'gh',
+    `process.stderr.write(${JSON.stringify(`${stderr}\n`)}); return { exitCode: ${exitCode} };`,
+  );
+
+/**
+ * A directory on PATH that has a real, working `git` and nothing else — in
+ * particular no `gh`, even where the two normally live side by side (e.g.
+ * both in `/usr/bin`, which ruling `gh` out by directory alone cannot do).
+ * Built by copying the `git` binary this test process itself resolves out to
+ * its own directory: measured here (not assumed) to still run correctly with
+ * a single-entry `PATH`, because git locates its own core programs from a
+ * path compiled into the binary, not from where it sits on `PATH`.
+ */
+const gitOnlyPath = async (root: string): Promise<string> => {
+  const gitName = process.platform === 'win32' ? 'git.exe' : 'git';
+  const dirs = (process.env['PATH'] ?? '').split(path.delimiter).filter(Boolean);
+  const sourceDir = dirs.find((dir) => existsSync(path.join(dir, gitName)));
+  if (!sourceDir) throw new Error('gitOnlyPath: no directory on PATH has a git executable');
+  const bin = await mkdtemp(path.join(root, 'gitonly-'));
+  const dest = path.join(bin, gitName);
+  await copyFile(path.join(sourceDir, gitName), dest);
+  if (process.platform !== 'win32') await chmod(dest, 0o755);
+  return bin;
+};
+
 describe('matchesTicket — a token match bounded by non-alphanumerics, never fuzzy', () => {
   it.each([
     ['RP-220', 'feat/rp-220-verified-claims', true],
@@ -217,7 +257,6 @@ describe('matchesTicket — a token match bounded by non-alphanumerics, never fu
     // naive `\b`-based regex treats `_` as a word character (`\w` includes
     // it), so `rp-220_fix` would fail a plain `\bRP-220\b` match even though
     // no reasonable reading takes `220_fix` as one token with `220`.
-    // round2.md, "cheap hardening": "`_` is a boundary too".
     ['RP-220', 'feat/rp-220_fix', true],
   ])('matchesTicket(%j, %j) -> %p', async (id, text, expected) => {
     const { matchesTicket } = await load('duplicate-work.mjs');
@@ -326,12 +365,15 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
     }
   });
 
-  it('reports the shape { ticket, verdict, matches, sources } — a non-GitHub origin makes pr not-applicable', async () => {
+  it('reports the shape { ticket, verdict, matches, sources } — a non-GitHub-looking origin still consults gh (round 3: no URL heuristic)', async () => {
     // This checkout's `origin` is a local bare-repo PATH, not a URL naming
-    // `github.com` — round2.md item 2: "PR source: origin is not a GitHub
-    // remote ... -> not-applicable". `gh` is stubbed to answer (it must never
-    // be consulted here), so a `pr: read` in the old shape would mean the
-    // applicability check never ran at all.
+    // `github.com` at all. An earlier design read that URL text alone as
+    // proof the PR source could never apply; this suite now retires that
+    // heuristic entirely — applicability is decided by what `gh` itself
+    // answers, never by the origin's spelling (see "origin does not name
+    // github.com but gh answers with a matching PR" below for the case where
+    // that answer is a real match). Here `gh` answers normally with an empty
+    // PR list, so the source is `read`, not `not-applicable`.
     const gh = await ghListing([]);
     try {
       const parsed = await runCliJson(checkout, 'RP-9012', hermeticEnv());
@@ -341,7 +383,7 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
       expect(parsed.sources).toEqual(
         expect.arrayContaining([
           expect.objectContaining({ name: 'branch', status: 'read' }),
-          expect.objectContaining({ name: 'pr', status: 'not-applicable' }),
+          expect.objectContaining({ name: 'pr', status: 'read' }),
         ]),
       );
     } finally {
@@ -376,15 +418,18 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
     }
   });
 
-  it('exit 3, verdict unverifiable — no origin remote at all makes BOTH sources not-applicable (round2 gate decision)', async () => {
+  it('exit 0, verdict clean — no origin remote at all makes BOTH sources not-applicable', async () => {
     // Deliberate contract change: round 1 shipped "no origin -> exit 3", which
     // code-reviewer's r1 HOLD (checklist item 4) showed makes the default
     // PLAN.md rig — the common case, no `origin` remote at all — unable to
     // ever claim anything, since the check always reports unverifiable. A rig
     // with no `origin` has nothing to compare against for either source
     // (nothing is shared, so no other controller can have pushed a branch or
-    // opened a PR against it), so round2.md item 2 replaces the old
-    // expectation: no origin is `clean`, with both sources `not-applicable`.
+    // opened a PR against it), so this suite's own expectation was changed:
+    // no origin is `clean`, with both sources `not-applicable`. `git remote
+    // get-url origin` here answers exit 2 ("No such remote") — the ONLY git
+    // failure that means "no origin"; every other git failure is a different,
+    // `unavailable` case (see "a non-repo cwd" below).
     const noRemote = await mkdtemp(path.join(root, 'no-origin-'));
     await git(['init', '-q', '-b', 'master'], noRemote);
     await writeFile(path.join(noRemote, 'x.txt'), 'x\n');
@@ -409,10 +454,132 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
     }
   });
 
+  it('exit 3, verdict unverifiable — a non-repo cwd fails with git\'s fatal exit 128, never folded into "no origin"', async () => {
+    // Measured directly (gh 2.45, git, this test's own environment):
+    // `git remote get-url origin` outside any repository — or against a
+    // corrupt config — answers "fatal: not a git repository ..." at exit
+    // 128, a different failure from "No such remote 'origin'" at exit 2.
+    // Only the exit-2 case means "no origin"; every OTHER git failure,
+    // including this one, must report the branch source `unavailable`,
+    // never quietly become the same clean "no origin" path the previous
+    // test pins.
+    const nonRepo = await mkdtemp(path.join(tmpdir(), 'duplicate-work-non-repo-'));
+    const gh = await ghFailing();
+    try {
+      const parsed = await runCliJson(nonRepo, 'RP-9035', hermeticEnv());
+      const branchSource = parsed.sources.find((s) => s.name === 'branch');
+      expect(branchSource, JSON.stringify(parsed)).toBeDefined();
+      expect(branchSource!.status).toBe('unavailable');
+      expect(parsed.verdict, JSON.stringify(parsed)).toBe('unverifiable');
+
+      const text = await runCli(nonRepo, ['--ticket', 'RP-9035'], hermeticEnv());
+      expect(text.code, text.out).toBe(3);
+    } finally {
+      gh.restore();
+    }
+  });
+
+  it('exit 0, verdict clean — gh answers "not a known GitHub host", so the PR source is not-applicable (decided by gh, not URL text)', async () => {
+    // The rule this pins: a `gh` failure whose stderr contains "none of the
+    // git remotes configured for this repository point to a known GitHub
+    // host" (or "no git remotes found") means the PR source is
+    // `not-applicable` — gh's own answer, never a `/github\.com/` read of
+    // the origin URL. This checkout's origin is a plain local path, exactly
+    // the shape `gh` itself would refuse this way.
+    const gh = await ghSayingFailure(
+      'none of the git remotes configured for this repository point to a known GitHub host',
+    );
+    try {
+      const parsed = await runCliJson(checkout, 'RP-9031', hermeticEnv());
+      const prSource = parsed.sources.find((s) => s.name === 'pr');
+      expect(prSource, JSON.stringify(parsed)).toBeDefined();
+      expect(prSource!.status).toBe('not-applicable');
+      expect(parsed.verdict, JSON.stringify(parsed)).toBe('clean');
+
+      const text = await runCli(checkout, ['--ticket', 'RP-9031'], hermeticEnv());
+      expect(text.code, text.out).toBe(0);
+    } finally {
+      gh.restore();
+    }
+  });
+
+  it('exit 3, verdict unverifiable — any OTHER gh failure means the PR source is unavailable, never not-applicable', async () => {
+    // A `gh` failure whose message is NOT one of the two known-host/
+    // no-remotes shapes above must fall to `unavailable`, never be misread
+    // as "not a GitHub remote".
+    const gh = await ghSayingFailure('error connecting to api.github.com: authentication required');
+    try {
+      const parsed = await runCliJson(checkout, 'RP-9032', hermeticEnv());
+      const prSource = parsed.sources.find((s) => s.name === 'pr');
+      expect(prSource, JSON.stringify(parsed)).toBeDefined();
+      expect(prSource!.status).toBe('unavailable');
+      expect(parsed.verdict, JSON.stringify(parsed)).toBe('unverifiable');
+
+      const text = await runCli(checkout, ['--ticket', 'RP-9032'], hermeticEnv());
+      expect(text.code, text.out).toBe(3);
+    } finally {
+      gh.restore();
+    }
+  });
+
+  it('exit 3, verdict unverifiable — gh missing from PATH entirely (a spawn error, not a message) still reports pr unavailable', async () => {
+    // `gh` missing (spawn ENOENT) must fail closed as `unavailable` too —
+    // there is no stderr message to read at all here, which is exactly the
+    // case a naive "default to not-applicable unless the known-host message
+    // matches" implementation would get wrong.
+    // The origin names a scheme (`bogus://`) the test never actually
+    // contacts — git refuses it LOCALLY and immediately, same trick as the
+    // "GitHub-looking origin" fixture below — so this is fast and offline.
+    const noGhRoot = await mkdtemp(path.join(tmpdir(), 'duplicate-work-no-gh-'));
+    await git(['init', '-q', '-b', 'master'], noGhRoot);
+    await git(['remote', 'add', 'origin', 'bogus://example.invalid/acme/widgets.git'], noGhRoot);
+    const bin = await gitOnlyPath(noGhRoot);
+    const env = hermeticEnv({ PATH: bin });
+
+    const parsed = await runCliJson(noGhRoot, 'RP-9033', env);
+    const prSource = parsed.sources.find((s) => s.name === 'pr');
+    expect(prSource, JSON.stringify(parsed)).toBeDefined();
+    expect(prSource!.status).toBe('unavailable');
+    expect(parsed.verdict, JSON.stringify(parsed)).toBe('unverifiable');
+
+    const text = await runCli(noGhRoot, ['--ticket', 'RP-9033'], env);
+    expect(text.code, text.out).toBe(3);
+  });
+
+  it("exit 2, verdict duplicate-work — origin does not name github.com but gh answers with a matching PR (gh's call, not the URL's spelling)", async () => {
+    // The alias/GHE case security-scanner's r2 HOLD named: this checkout's
+    // origin is a local path with no `github.com` in it anywhere, yet a real
+    // matching PR from `gh` must still be reported — applicability is gh's
+    // answer, never the origin URL's text.
+    const gh = await ghListing([
+      {
+        number: 42,
+        title: 'fix: something (RP-9034)',
+        headRefName: 'fix/elsewhere',
+        url: 'https://example.invalid/acme/widgets/pull/42',
+        isCrossRepository: false,
+      },
+    ]);
+    try {
+      const parsed = await runCliJson(checkout, 'RP-9034', hermeticEnv());
+      expect(parsed.verdict, JSON.stringify(parsed)).toBe('duplicate-work');
+      const prSource = parsed.sources.find((s) => s.name === 'pr');
+      expect(prSource?.status, JSON.stringify(parsed)).toBe('read');
+      const match = parsed.matches.find((m) => m.source === 'pr');
+      expect(match, JSON.stringify(parsed)).toBeDefined();
+
+      const text = await runCli(checkout, ['--ticket', 'RP-9034'], hermeticEnv());
+      expect(text.code, text.out).toBe(2);
+    } finally {
+      gh.restore();
+    }
+  });
+
   it('exit 3, verdict unverifiable — branch source hits the ref cap and fails closed, never a silent slice', async () => {
-    // A separate bare origin, over MAX_REFS (5000) real refs, written directly
-    // into `packed-refs` — offline and fast (round2.md, cheap hardening:
-    // "generating 5,001 refs in a bare repo is acceptable if fast enough").
+    // A separate bare origin, over MAX_REFS (5000) real refs, written
+    // directly into `packed-refs` — offline and fast (generating 5,001 refs
+    // directly into a bare repo's packed-refs file is acceptable, so long as
+    // it stays fast).
     // The old (round-1) behaviour sliced silently to the first 5,000 and
     // still reported `read` — security-scanner's r1 HOLD reproduced this as
     // "5,002 heads -> clean exit 0" with the duplicate past the cap. The fix
@@ -455,7 +622,8 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
     // a detached checkout, which equals no real branch name, so the exact-
     // string exclusion the script documents as a design limit does not
     // recognise this checkout's own pushed branch (OWN_BRANCH) as its own —
-    // round2.md, cheap hardening: "detached HEAD ... pin current behaviour".
+    // pinned here as current, documented behaviour, not a bug this suite
+    // treats as fixable.
     const detachedDir = await mkdtemp(path.join(root, 'detached-'));
     await git(['clone', '-q', origin, detachedDir], root);
     await git(['checkout', '-q', `origin/${OWN_BRANCH}`], detachedDir);
@@ -536,9 +704,9 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
   });
 
   it('writes the duplicate-work event on the DUPLICATE path too, not only when clean', async () => {
-    // Round 1's only journal test ran the clean path; round2.md's cheap
-    // hardening asks for the duplicate path explicitly, so a journal write
-    // that only fires before the verdict is known cannot silently drop the
+    // Round 1's only journal test ran the clean path; this suite also needs
+    // the duplicate path exercised explicitly, so a journal write that only
+    // fires before the verdict is known cannot silently drop the
     // interesting case.
     const runDir = await mkdtemp(path.join(tmpdir(), 'duplicate-work-run-dup-'));
     const gh = await ghListing([]);
@@ -564,9 +732,9 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
   });
 
   it("a journal write failure still prints the verdict, and the exit code is the verdict's — never the usage-refusal 1", async () => {
-    // round2.md item 3: "Exit 1 never hides a verdict. Print the verdict
+    // The rule this pins: exit 1 never hides a verdict. Print the verdict
     // (text or JSON) BEFORE journalling; a journal write failure is a stderr
-    // warning and the exit code stays the verdict's." Round 1's script wrote
+    // warning and the exit code stays the verdict's. Round 1's script wrote
     // the stderr warning and called `process.exit(1)` on any non-trace-
     // exhausted journal error, WITHOUT ever printing the verdict — so a
     // caller reading exit 1 could not tell "usage refusal" from "there may or
@@ -602,16 +770,17 @@ describe('duplicate-work CLI — real git evidence, a stubbed gh', () => {
 });
 
 describe('duplicate-work CLI — a GitHub-looking origin', () => {
-  // The PR source is only ever consulted when `origin` names GitHub
-  // (round2.md item 2), so every PR-focused scenario below needs an origin
-  // URL that reads as GitHub — without touching the real network, which a
-  // sandboxed or offline run cannot rely on. `bogus://github.com/...` names
-  // `github.com` exactly like a real GitHub remote would, and git refuses it
-  // LOCALLY and immediately ("git: 'remote-bogus' is not a git command" — no
-  // DNS, no TCP, no hang) the moment anything tries to actually reach it, so
-  // `git ls-remote --heads origin` (the branch source) fails fast too. These
-  // tests only assert on the `pr` source and the overall verdict/exit code,
-  // never on the `branch` source's status, for exactly that reason.
+  // Round 3 retires the URL-text heuristic — `gh` alone decides PR
+  // applicability now (see the "round 3: no URL heuristic" tests above), so
+  // this fixture's `bogus://github.com/...` origin is no longer what makes
+  // the PR source reachable. It earns its keep on a narrower, still-useful
+  // property instead: a `bogus://` scheme fails LOCALLY and immediately
+  // ("git: 'remote-bogus' is not a git command" — no DNS, no TCP, no hang)
+  // the moment anything tries to actually reach it, so `git ls-remote
+  // --heads origin` (the branch source) fails fast too, without touching the
+  // real network a sandboxed or offline run cannot rely on. These tests only
+  // assert on the `pr` source and the overall verdict/exit code, never on
+  // the `branch` source's status, for exactly that reason.
   let ghRoot: string;
   let ghCheckout: string;
   const GH_OWN_BRANCH = 'feat/rp-9020-github-fixture';
@@ -654,9 +823,9 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
   });
 
   it('exit 2 — a FORK PR with the same head branch name is NOT excluded (cross-repository)', async () => {
-    // round2.md, cheap hardening: own-PR exclusion also requires the PR not
-    // be cross-repository, "so a fork PR with the same branch name is not
-    // hidden". `headRefName` alone is not enough to prove "this is my PR" —
+    // Own-PR exclusion also requires the PR not be cross-repository, so a
+    // fork PR with the same branch name is not hidden. `headRefName` alone
+    // is not enough to prove "this is my PR" —
     // a fork can name its branch anything, including this checkout's own.
     const gh = await ghListing([
       {
@@ -745,8 +914,8 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
   });
 
   it('exit 3 — 101 open PRs is the cap: pr source unavailable, never a silent read of the first 100', async () => {
-    // round2.md item 1: "ask gh for --limit 101; 101 rows -> PR source
-    // unavailable (cap), never read." The stub only answers when asked with
+    // The rule this pins: ask gh for --limit 101; 101 rows -> PR source
+    // unavailable (cap), never read. The stub only answers when asked with
     // exactly `--limit 101`, so an implementation that still asks for 100
     // (round 1's behaviour) fails this for that reason alone.
     const prs = Array.from({ length: 101 }, (_, i) => ({
@@ -889,4 +1058,47 @@ describe('duplicate-work.mjs is wired into the workflow layer', () => {
       expect(section).toMatch(/skip/i);
     });
   });
+});
+
+describe('no shipped file or test cites a gitignored per-run artifact', () => {
+  // This ticket's own working notes — a brief, and one report per round —
+  // are gitignored and specific to one run: a citation to one of them, in a
+  // file that ships or in this suite itself, is a dead reference the moment
+  // that run's directory is gone. The reason for a rule belongs inline, or a
+  // pointer to a test name, never a pointer to an ephemeral run artifact.
+  // The exact names are spelled, split, only in the array below — spelling
+  // one whole out in this comment would make this describe-block's own
+  // "this test file" target fail the very check it defines.
+  const RUN_ARTIFACT_NAMES = ['brief' + '.md', 'round' + '2.md', 'round' + '3.md'];
+  // A citation to a SPECIFIC run's own subdirectory (its id is a
+  // date-plus-time stamp, e.g. `20260924-070359-rp-222`) — never the bare,
+  // permanent `.claude/runs/` convention the loop skill documents (e.g.
+  // `export RIG_RUN_DIR="$PWD/.claude/runs/$(date …)"`), which names the
+  // feature itself, not one run's artifact.
+  const RUN_DIR_CITATION = /\.claude\/runs\/\d{8}-\d{6}/;
+
+  const targets: Array<[string, () => Promise<string>]> = [
+    ['duplicate-work.mjs', () => readFile(scriptPath('duplicate-work.mjs'), 'utf8')],
+    ['the loop skill', () => readFile(skillPath('loop'), 'utf8')],
+    ['the pr-ship skill', () => readFile(skillPath('pr-ship'), 'utf8')],
+    [
+      'this test file, duplicate-work.test.ts',
+      () => readFile(fileURLToPath(import.meta.url), 'utf8'),
+    ],
+  ];
+
+  it.each(targets)('%s cites no gitignored run-note file by name', async (_label, read) => {
+    const content = await read();
+    for (const name of RUN_ARTIFACT_NAMES) {
+      expect(content, `unexpected "${name}" reference`).not.toContain(name);
+    }
+  });
+
+  it.each(targets)(
+    '%s cites no specific run directory under .claude/runs/',
+    async (_label, read) => {
+      const content = await read();
+      expect(content).not.toMatch(RUN_DIR_CITATION);
+    },
+  );
 });

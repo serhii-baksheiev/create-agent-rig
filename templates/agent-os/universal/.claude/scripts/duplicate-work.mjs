@@ -27,8 +27,12 @@
 //   unavailable    — applicable but could not be read (gh missing, a cap
 //                    hit, an unreachable remote) — never read as "no match"
 //   not-applicable — nothing to check: no `origin` remote at all (both
-//                    sources), or an `origin` that does not name GitHub (the
-//                    `pr` source only — the check never asks `gh` at all then)
+//                    sources — `git remote get-url origin` answering "No
+//                    such remote", never any other git failure), or (the
+//                    `pr` source only) `gh` itself reporting that none of
+//                    the configured remotes point to a known GitHub host —
+//                    decided by what `gh` answers, never by reading the
+//                    origin URL's text (see Limits)
 //
 // Matching is a token match bounded by non-alphanumerics — `_` counts as a
 // boundary too, which a plain `\b` does not (it treats `_` as a word
@@ -80,11 +84,25 @@
 //   `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
 //   "matchesTicket — a token match bounded by non-alphanumerics, never
 //   fuzzy" (the bare-issue-number cases).
-// - `gh` missing, unauthenticated, or failing on a GitHub `origin` all read
-//   the same way: the `pr` source is `unavailable`, never read as "no PR" —
+// - `gh` missing (a spawn error) or failing for any reason OTHER than "no
+//   known GitHub host among the configured remotes" reports the `pr` source
+//   `unavailable`, never read as "no PR" —
 //   `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
 //   "exit 3, verdict unverifiable — gh is missing/failing on a GitHub
 //   origin, never reported as clean".
+// - Only the remote named `origin` is ever read, for either source — a
+//   fork workflow that pushes to a differently-named remote, or renames
+//   `origin` to something else, is invisible to this check.
+// - `gh` decides its own base repository by its own remote-priority rules
+//   when a checkout carries more than one GitHub remote — this script does
+//   not second-guess that choice; which remote `gh` actually queried in
+//   that case is an untested design limit.
+// - On a non-GitHub tracker rig, telling "not applicable" apart from "gh
+//   could not be reached" still needs `gh` installed and runnable: it is
+//   `gh`'s own refusal message that reports "not a GitHub remote" now (see
+//   the module header), not a read of the origin URL's text, so a rig with
+//   no `gh` on PATH at all reports the `pr` source `unavailable` rather than
+//   `not-applicable`, even where no GitHub remote was ever going to apply.
 // - A journal write failure never hides an already-computed verdict — the
 //   verdict is printed first, and only a stderr warning follows a failed
 //   write — `test/template/duplicate-work.test.ts` (absent in a generated
@@ -101,8 +119,8 @@
 //   (pinned current behaviour)".
 // - A same-id branch under a naming convention `matchesTicket` does not
 //   recognise (no boundary-bounded occurrence of the id anywhere in the ref)
-//   is not seen — untested design limit; the brief rules out fuzzy title
-//   matching for exactly this trade-off.
+//   is not seen — an untested design limit: fuzzy title matching is
+//   deliberately ruled out above for exactly this trade-off.
 import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -119,7 +137,16 @@ const MAX_PRS = 100;
 const PR_REQUEST_LIMIT = MAX_PRS + 1;
 const MAX_BUFFER = 16 * 1024 * 1024;
 const PR_FIELDS = 'number,title,headRefName,url,isCrossRepository';
-const GITHUB_ORIGIN = /github\.com/i;
+// `git remote get-url origin`'s own exit code for "no such remote" — the
+// ONLY git failure either source reads as "no origin". See `originStatus`.
+const NO_ORIGIN_EXIT_CODE = 2;
+// `gh`'s own wording when it cannot even tell the origin is a GitHub remote
+// — read from gh's stderr, never from the origin URL's own text (round 3;
+// see `openPrs`).
+const GH_NOT_A_GITHUB_REMOTE = [
+  /none of the git remotes configured for this repository point to a known GitHub host/i,
+  /no git remotes found/i,
+];
 
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
@@ -232,22 +259,30 @@ const currentBranch = (cwd) => {
   }
 };
 
-/** The configured `origin` remote's URL, or `null` when there is none —
- *  the applicability signal for both sources (round2.md item 2). */
-const originUrl = (cwd) => {
+/**
+ * `git remote get-url origin`'s own answer, read for its EXIT CODE rather
+ * than the URL's text. `noOrigin: true` is git's own "No such remote
+ * 'origin'" (exit code `NO_ORIGIN_EXIT_CODE`) — the one git failure both
+ * sources read as "nothing to compare against". Any OTHER git failure (a
+ * non-repo cwd's fatal exit, a corrupt config, git itself missing) comes
+ * back as `ok: false, noOrigin: false`: a real failure, not an absence, so
+ * the branch source reports it `unavailable` rather than folding it into
+ * "no origin" — and the pr source still goes on to ask `gh`, since only the
+ * exit-code-2 case rules that out (see `openPrs`).
+ */
+const originStatus = (cwd) => {
   try {
-    return execFileSync('git', ['remote', 'get-url', 'origin'], {
+    const url = execFileSync('git', ['remote', 'get-url', 'origin'], {
       cwd,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       env: withoutGitLocation(),
     }).trim();
-  } catch {
-    return null;
+    return { ok: true, noOrigin: false, url };
+  } catch (error) {
+    return { ok: false, noOrigin: error?.status === NO_ORIGIN_EXIT_CODE };
   }
 };
-
-const isGitHubOrigin = (url) => typeof url === 'string' && GITHUB_ORIGIN.test(url);
 
 /** `refs/heads/<name>` lines from `git ls-remote --heads` → bare branch names. */
 const parseHeads = (raw) =>
@@ -259,13 +294,16 @@ const parseHeads = (raw) =>
 
 /**
  * `{ status, refs }` for the `branch` source: `not-applicable` with no
- * `origin` at all; otherwise one `git ls-remote` call, capped at `MAX_REFS`
- * — more refs than that, or any other git failure (unreachable remote, a
- * buffer overflow past `MAX_BUFFER`), reports `unavailable`, never a
- * truncated `read`.
+ * `origin` at all (`origin.noOrigin`); `unavailable` when `origin` itself
+ * could not be resolved for any OTHER reason (a non-repo cwd, a corrupt
+ * config); otherwise one `git ls-remote` call, capped at `MAX_REFS` — more
+ * refs than that, or any other git failure (unreachable remote, a buffer
+ * overflow past `MAX_BUFFER`), reports `unavailable`, never a truncated
+ * `read`.
  */
 const remoteBranches = (cwd, origin) => {
-  if (origin === null) return { status: 'not-applicable', refs: [] };
+  if (origin.noOrigin) return { status: 'not-applicable', refs: [] };
+  if (!origin.ok) return { status: 'unavailable', refs: [] };
   try {
     const raw = execFileSync('git', ['ls-remote', '--heads', 'origin'], {
       cwd,
@@ -284,16 +322,22 @@ const remoteBranches = (cwd, origin) => {
 
 /**
  * `{ status, items }` for the `pr` source: `not-applicable` with no `origin`
- * or a non-GitHub `origin` — `gh` is never even asked in either case.
- * Otherwise one `gh pr list` call, asked for `MAX_PRS + 1` rows: getting that
- * many back means there may be more than `MAX_PRS` open PRs matching the
- * search, so the source reports `unavailable` (cap) rather than reading only
- * the first page. `gh` missing, unauthenticated, offline, or answering with
- * something other than a JSON array all report `unavailable` too — never
- * "no PR".
+ * at all (`origin.noOrigin`) — `gh` is never even asked then. Otherwise,
+ * applicability is decided by what `gh` itself answers, never by the
+ * origin URL's spelling (round 3 retires that heuristic — a GHE alias or a
+ * non-`github.com` hostname mapped in `gh`'s own config is exactly the case
+ * it got wrong): one `gh pr list` call, asked for `MAX_PRS + 1` rows.
+ * Getting that many back means there may be more than `MAX_PRS` open PRs
+ * matching the search, so the source reports `unavailable` (cap) rather than
+ * reading only the first page. A `gh` failure is read from what it reports:
+ * `gh` missing entirely (a spawn error, no stderr to read) is `unavailable`;
+ * `gh` failing with stderr saying it found no known GitHub host among the
+ * configured remotes is `not-applicable` — gh's own answer that this origin
+ * is not one it can query; any other `gh` failure, or a JSON body that is
+ * not an array, is `unavailable` — never "no PR".
  */
 const openPrs = (ticket, cwd, origin) => {
-  if (origin === null || !isGitHubOrigin(origin)) return { status: 'not-applicable', items: [] };
+  if (origin.noOrigin) return { status: 'not-applicable', items: [] };
   try {
     const raw = execFileSync(
       'gh',
@@ -330,8 +374,10 @@ const openPrs = (ticket, cwd, origin) => {
         isCrossRepository: row?.isCrossRepository === true,
       })),
     };
-  } catch {
-    return { status: 'unavailable', items: [] };
+  } catch (error) {
+    const stderr = typeof error?.stderr === 'string' ? error.stderr : '';
+    const notAGitHubRemote = GH_NOT_A_GITHUB_REMOTE.some((pattern) => pattern.test(stderr));
+    return { status: notAGitHubRemote ? 'not-applicable' : 'unavailable', items: [] };
   }
 };
 
@@ -424,15 +470,15 @@ if (invokedDirectly()) {
 
   const cwd = process.cwd();
   const ownBranch = currentBranch(cwd);
-  const origin = originUrl(cwd);
+  const origin = originStatus(cwd);
   const branches = remoteBranches(cwd, origin);
   const prs = openPrs(parsed.ticket, cwd, origin);
   const result = classify({ ticket: parsed.ticket, ownBranch, branches, prs });
   const exitCode = EXIT_CODES[result.verdict];
 
-  // Printed BEFORE the journal write below, deliberately: round2.md item 3 —
-  // exit 1 must never hide a verdict that was already computed, so a journal
-  // failure past this point can only ever add a stderr warning.
+  // Printed BEFORE the journal write below, deliberately: exit 1 must never
+  // hide a verdict that was already computed, so a journal failure past this
+  // point can only ever add a stderr warning.
   process.stdout.write(parsed.json ? `${JSON.stringify(result)}\n` : renderText(result));
 
   // Written only when the run declared `RIG_RUN_DIR` — undeclared means

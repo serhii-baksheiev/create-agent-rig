@@ -1008,9 +1008,11 @@ three poisons the only channel by which this project learns.
   **Any exit other than 0 is not clean.** Only exit 0 clears the claim:
   - exit 2 (another branch or open PR already carries this id) — do not claim;
     re-read the item and the other branch/PR, then either take the item over
-    through the tracker or escalate it through the adapter so selection stops
-    offering it, and delete the uncommitted SELECT baseline `next` wrote for
-    this turn (it named an item you are not claiming);
+    through the tracker, or escalate it through the adapter so selection stops
+    offering it. On the escalate path only, also delete the uncommitted SELECT
+    baseline `next` wrote for this turn — it named an item you are not
+    claiming there; on the take-over path the baseline still names the item
+    you are about to claim, so it stays;
   - exit 1 or 3 (usage refusal, or a source could not be checked) — fix the
     cause first; do not claim on an exit the check itself calls not-clean.
 
