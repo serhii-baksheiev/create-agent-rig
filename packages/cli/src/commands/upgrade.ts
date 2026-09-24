@@ -684,7 +684,7 @@ export async function planUpgrade(
           ? keptReason(currentHash === kept ? 'unchanged' : 'edited')
           : recorded === undefined
             ? 'not a version this rig ever released — treated as yours'
-            : 'edited since it was installed';
+            : 'edited since it was installed — the rig no longer manages it; it is now yours';
       // PR #241 round 2, blocker 3: CLAUDE.md is the one file whose CONTENT
       // decides which rulebook Claude Code reads at all. A CLAUDE.md that is
       // not already the `@AGENTS.md` shim — this release's shim, an older
