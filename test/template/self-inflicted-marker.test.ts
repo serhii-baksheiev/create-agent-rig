@@ -62,24 +62,48 @@ describe('jira re-records the marker after each write of its own', () => {
   let realFetch: typeof globalThis.fetch;
   /** The marker the stub reports; a write moves it, as the tracker would. */
   let updated = '2026-08-25T10:00:00.000+0000';
+  /** RP-220: `claim`'s pre-read needs a status category to compare, and its
+   *  read-back needs a category that only moves once a transition actually
+   *  posts — so the fixture now tracks both, not just `updated`. */
+  let category = 'new';
+  let histories: Array<{ created: string; items: Array<{ field: string }> }> = [];
 
   beforeEach(() => {
     updated = '2026-08-25T10:00:00.000+0000';
+    category = 'new';
+    histories = [];
     realFetch = globalThis.fetch;
-    globalThis.fetch = ((input: string, init: { method?: string } = {}) => {
+    globalThis.fetch = ((input: string, init: { method?: string; body?: string } = {}) => {
       const url = String(input);
+      const u = new URL(url);
       const method = init.method ?? 'GET';
       if (method !== 'GET') updated = '2026-08-26T10:00:00.000+0000';
-      const body = url.endsWith('/transitions')
-        ? {
+      let body: unknown = {};
+      if (/\/transitions$/.test(u.pathname)) {
+        if (method === 'POST') {
+          // `claim` (no transitionId) picks whichever offered transition
+          // reads `indeterminate`; `close` in this file always passes '41'.
+          const sent = init.body
+            ? (JSON.parse(String(init.body)) as { transition?: { id?: string } })
+            : {};
+          category = sent.transition?.id === '41' ? 'done' : 'indeterminate';
+          histories.push({ created: updated, items: [{ field: 'status' }] });
+        } else {
+          body = {
             transitions: [
               { id: '31', to: { statusCategory: { key: 'indeterminate' } } },
               { id: '41', to: { statusCategory: { key: 'done' } } },
             ],
-          }
-        : url.includes('/issue/AR-1')
-          ? { key: 'AR-1', fields: { updated, status: { statusCategory: { key: 'done' } } } }
-          : {};
+          };
+        }
+      } else if (/\/changelog$/.test(u.pathname)) {
+        const maxResults = Number(u.searchParams.get('maxResults') ?? '0');
+        const startAt = Number(u.searchParams.get('startAt') ?? '0');
+        const values = maxResults === 1 ? histories.slice(0, 1) : histories.slice(startAt);
+        body = { total: histories.length, startAt, maxResults, values };
+      } else if (url.includes('/issue/AR-1')) {
+        body = { key: 'AR-1', fields: { updated, status: { statusCategory: { key: category } } } };
+      }
       return Promise.resolve({
         ok: true,
         status: 200,
@@ -92,7 +116,12 @@ describe('jira re-records the marker after each write of its own', () => {
     globalThis.fetch = realFetch;
   });
 
-  const ticket = { id: 'AR-1', title: 't' };
+  // RP-220: `claim` refuses with zero requests when the ticket carries no
+  // selection snapshot, so every op here needs one — `T2` is exactly the
+  // fixture's own pre-mutation `updated` above (2026-08-25T10:00:00.000+0000
+  // normalises to the same instant), which is what `claim`'s pre-read answers
+  // with before any op has written anything.
+  const ticket = { id: 'AR-1', title: 't', updatedAt: T2 };
 
   it.each(['claim', 'comment', 'close', 'escalate'])(
     '%s leaves the take-up at the marker the write produced',
@@ -140,13 +169,52 @@ describe('jira re-records the marker after each write of its own', () => {
 });
 
 describe('github-issues re-records the marker after each write of its own', () => {
+  // RP-220: `claim` refuses with zero requests when the ticket carries no
+  // selection snapshot, and pre-reads before it will mutate anything — so
+  // `ticket` now needs an `updatedAt`, and the fake below needs to answer
+  // the pre-read (open, unlabelled, at the snapshot), the read-back (labelled),
+  // the login lookup and the events page. `close`'s own `--json state` read
+  // is untouched (still CLOSED). `T1` is the snapshot; the final marker every
+  // op leaves is the same '2026-08-26T10:00:00Z' this fixture always reported.
+  const ticket = { id: '7', title: 't', updatedAt: T1 };
+
   const withStubGh = async <T>(body: () => Promise<T>): Promise<T> => {
-    // `issue view` answers the marker; `--json state` (close's read-back) gets
-    // both fields, which is what the adapter asks for.
     const stub = await stubCommand(
       'gh',
-      `if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"state":"CLOSED","updatedAt":"2026-08-26T10:00:00Z"}\\n' };
-       return {};`,
+      `
+      if (args[0] === 'issue' && args[1] === 'view') {
+        const jsonIdx = args.indexOf('--json');
+        const fields = String(args[jsonIdx + 1] || '').split(',');
+        // The pre-read is the only 'issue view' here that asks for more than
+        // one field at once (state,labels,updatedAt); every other call asks
+        // for exactly one field, so the field COUNT tells this fake which
+        // point of the RP-220 protocol it is answering.
+        const isPreRead = fields.length > 1;
+        const out = {};
+        for (const f of fields) {
+          if (f === 'state') out.state = isPreRead ? 'OPEN' : 'CLOSED';
+          if (f === 'labels') out.labels = isPreRead ? [] : [{ name: 'in-progress' }];
+          if (f === 'updatedAt') out.updatedAt = isPreRead ? ${JSON.stringify(ticket.updatedAt)} : '2026-08-26T10:00:00Z';
+        }
+        return { stdout: JSON.stringify(out) + '\\n' };
+      }
+      if (args[0] === 'api' && args[1] === 'user') {
+        return { stdout: 'gh-fake-login\\n' };
+      }
+      if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
+        return {
+          stdout: JSON.stringify([
+            {
+              event: 'labeled',
+              label: { name: 'in-progress' },
+              actor: { login: 'gh-fake-login' },
+              created_at: '2026-08-26T10:00:00Z',
+            },
+          ]) + '\\n',
+        };
+      }
+      return { stdout: '' };
+      `,
     );
     try {
       return await body();
@@ -165,7 +233,6 @@ describe('github-issues re-records the marker after each write of its own', () =
       else process.env['RIG_RUN_DIR'] = saved;
     }
   };
-  const ticket = { id: '7', title: 't' };
 
   it.each(['claim', 'comment', 'close', 'escalate'])(
     '%s leaves the take-up at the marker the write produced',
