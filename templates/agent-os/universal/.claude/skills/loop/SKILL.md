@@ -28,6 +28,14 @@ node .claude/scripts/queue/index.mjs next --json
 node .claude/scripts/queue/index.mjs hygiene   # stale labels, link anomalies, overtaken proposals
 ```
 
+`hygiene` also reports `stale-in-progress`: an in-progress item whose tracker
+`updated` timestamp exceeds `options.staleInProgressDays` (default 3 days) in
+`.claude/queue.json`. Advisory only — no automatic takeover, no automatic
+reassignment, no heartbeat, no background daemon; a human or controller
+decides through the tracker. Pinned in `test/template/queue-stale-in-progress.test.ts`
+(absent in a generated rig)
+› "flags an in-progress item whose updatedAt is older than the default 3-day threshold".
+
 - **`plan-md`** (default) — the Agent queue in `PLAN.md`. The only adapter that
   works in a freshly generated project. Its limit is real and stated in the
   adapter: a flat list carries **no dependency links**, so the blocker filter is
