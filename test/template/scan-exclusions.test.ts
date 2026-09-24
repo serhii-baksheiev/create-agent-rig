@@ -246,6 +246,7 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
       'platform-skips.test.ts',
       'release-evidence.test.ts',
       'run-journal.test.ts',
+      'token-report.test.ts',
     ]);
     expect([...new Set(rootedAtDotClaude)]).toEqual(['consistency.test.ts']);
     for (const [name, segments] of Object.entries(rootedUnderDotClaude)) {

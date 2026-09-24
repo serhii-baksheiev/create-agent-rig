@@ -55,6 +55,10 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/detect-missed-gate.mjs',
   '.claude/scripts/decision-router.mjs',
   '.claude/scripts/reconcile-external-prs.mjs',
+  // RP-228: the read-only token-economics report over the dispatch evidence
+  // RP-225 journals — meaningful only once the loop/pr-ship dispatch lifecycle
+  // exists to journal it
+  '.claude/scripts/token-report.mjs',
   // RP-222: the pre-claim/pre-PR duplicate-work check the loop and pr-ship
   // skills run before taking up or shipping a ticket
   '.claude/scripts/duplicate-work.mjs',
