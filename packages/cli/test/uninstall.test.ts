@@ -707,8 +707,27 @@ describe('planUninstall — wiring files', () => {
   // happened to land on a brand-new path each time (rather than re-reading
   // one it had already read) is still caught, by the second assertion, even
   // though the first would not see it.
+  //
+  // RP-245 round 2 (code-reviewer r1): the first cut of this fixture put the
+  // 400,000 duplicate imports in `guard-bash.mjs` — but `.claude/settings.json`
+  // wires `guard-secret-file.mjs` FIRST (`hookFilesReferencedIn` returns hook
+  // paths in the text order they first appear, and a `Set` preserves first-
+  // occurrence order), and that hook's own single, real import of
+  // `hook-input.mjs` already visits it before `guard-bash.mjs`'s turn in the
+  // walk even starts. So EVERY one of the 400,000 duplicates was dropped at
+  // PUSH time (`!visited.has(resolved)` false already) and never queued at
+  // all — 0 pop-and-skips, measured by instrumenting the walk directly. The
+  // duplicates now sit in `guard-secret-file.mjs` itself — the first hook the
+  // walk ever seeds, when `hook-input.mjs` is not yet visited — so all
+  // 400,000 matches are pushed within that one synchronous scan (`visited` is
+  // only ever updated when an entry is POPPED, never mid-scan) and then
+  // genuinely popped-and-skipped one at a time as the queue drains.
   it('reads each file once however many duplicate imports name the same owned dependency', async () => {
-    const guardBash = '.claude/hooks/guard-bash.mjs';
+    // `.claude/settings.json` wires this hook first among the ones under
+    // `.claude/hooks/` — verified directly against the template's own text
+    // order and `hookFilesReferencedIn`'s Set-of-first-occurrences contract,
+    // not asserted here as a second, driftable copy of that order.
+    const firstWalkedHook = '.claude/hooks/guard-secret-file.mjs';
     const hookInput = '.claude/hooks/lib/hook-input.mjs';
 
     // A counting `readFile` stub — a hand-written structural stub against
@@ -719,6 +738,12 @@ describe('planUninstall — wiring files', () => {
     // read in the order it happened, and delegates to the real
     // `node:fs/promises` `readFile` so `planUninstall`'s actual behaviour
     // (verdicts, errors) is completely unaffected by observing it.
+    //
+    // Limit: this oracle only sees a read that goes THROUGH the seam. A read
+    // performed via the module's own imported `readFile` instead of the
+    // `readFileFn` parameter is invisible to it — this test cannot catch
+    // that shape of regression by read COUNT alone; it is caught below by
+    // asserting which absolute paths were actually seen.
     const countingReadFile = (reads: string[]): ((absolutePath: string) => Promise<Buffer>) => {
       return async (absolutePath: string): Promise<Buffer> => {
         reads.push(absolutePath);
@@ -744,7 +769,7 @@ describe('planUninstall — wiring files', () => {
         baselineSettings.replace('"hooks"', '"myOwnKey": true, "hooks"'),
       );
       await writeFile(
-        path.join(baselineRepo, ...guardBash.split('/')),
+        path.join(baselineRepo, ...firstWalkedHook.split('/')),
         "import { x } from './lib/hook-input.mjs';\n",
       );
       baselineReads = [];
@@ -768,7 +793,7 @@ describe('planUninstall — wiring files', () => {
     const original = await read(SETTINGS);
     const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
     await write(SETTINGS, edited);
-    await write(guardBash, "import { x } from './lib/hook-input.mjs';\n".repeat(400_000));
+    await write(firstWalkedHook, "import { x } from './lib/hook-input.mjs';\n".repeat(400_000));
 
     const reads: string[] = [];
     const plan = await planUninstall(repo, { readFile: countingReadFile(reads) });
@@ -778,7 +803,15 @@ describe('planUninstall — wiring files', () => {
       'the readFile stub recorded no reads at all — is `options.readFile` ' +
         'actually threaded through planUninstall?',
     ).toBeGreaterThan(0);
-    expect(actionFor(plan, guardBash)?.verdict).toBe('preserved');
+    // Closes the gap the manifest-read-alone sanity above leaves open: a
+    // `protectHookAndDeps` (or `protectedHooksFor`) that stopped threading
+    // the seam and read through the module's own `readFile` instead would
+    // still satisfy `reads.length > 0` on the manifest read alone, with
+    // every walk read silently missing. Naming the exact paths the walk
+    // must have gone through the seam for closes it.
+    expect(reads).toContain(abs(firstWalkedHook));
+    expect(reads).toContain(abs(hookInput));
+    expect(actionFor(plan, firstWalkedHook)?.verdict).toBe('preserved');
     expect(actionFor(plan, hookInput)?.verdict).toBe('preserved');
 
     const countsByPath = new Map<string, number>();
@@ -794,6 +827,53 @@ describe('planUninstall — wiring files', () => {
     expect(reads.length, 'total reads for 400,000 duplicates vs. a single match').toBe(
       baselineReads.length,
     );
+  });
+
+  // RP-245 round 2, code-reviewer r1 blocker: moving this read off the
+  // module's own `readFile` and onto the seam parameter also changed what
+  // happens when the read itself fails. `guard-secret-file.mjs` is the only
+  // seeder of `.claude/scripts/lib/secrets.mjs` in the shipped tree (see the
+  // symlink variant of this exploit two tests up), and `chmod 000` is a
+  // DIFFERENT unreadable shape than a symlink: `regularFileStatus` reports
+  // `'ok'` for a chmod-000 regular file (neither `lstat` nor `realpath`
+  // consults permission bits), so this hits `protectHookAndDeps`'s
+  // `try { ... } catch { continue; }` around the read, not the `'unsafe'`
+  // superset sweep the symlink case exercises. That `catch` swallows the
+  // read failure and moves on without protecting anything this file would
+  // have named — so `secrets.mjs`, reachable only through the now-unreadable
+  // seeder, is never reached, never protected, and falls through to an
+  // ordinary hash comparison that reports `remove`. Pins master's own
+  // behaviour rather than inventing a new one: origin/master (f32dfc2 /
+  // e5ba87b, before this read moved) rejects the whole plan with EACCES,
+  // which also satisfies the assertion below, so the implementer may either
+  // restore the rejection or make the dependency's verdict something other
+  // than `remove` by some other means — this test only pins the one thing
+  // that must never happen either way.
+  it('never lets an owned dependency be removed when its only protecting seeder is unreadable', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    await installRig();
+    const SECRETS_LIB = '.claude/scripts/lib/secrets.mjs';
+    const guardSecretFile = '.claude/hooks/guard-secret-file.mjs';
+    await expectImports(guardSecretFile, SECRETS_LIB);
+
+    const original = await read(SETTINGS);
+    const edited = original.replace('"hooks"', '"myOwnKey": true, "hooks"');
+    await write(SETTINGS, edited);
+
+    await chmod(abs(guardSecretFile), 0o000);
+    try {
+      let plan: UninstallPlan | undefined;
+      try {
+        plan = await planUninstall(repo);
+      } catch {
+        plan = undefined; // rejecting the whole plan also satisfies this test
+      }
+      if (plan !== undefined) {
+        expect(actionFor(plan, SECRETS_LIB)?.verdict).not.toBe('remove');
+      }
+    } finally {
+      await chmod(abs(guardSecretFile), 0o644);
+    }
   });
 });
 

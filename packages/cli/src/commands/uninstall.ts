@@ -742,6 +742,7 @@ async function protectHookAndDeps(
   importedBy: Map<string, string>,
   unverified: Map<string, string>,
   readFileFn: (absolutePath: string) => Promise<Buffer>,
+  walkedBytes: Map<string, Buffer>,
 ): Promise<void> {
   // `[rel, parent]` — `parent` is the file whose import target resolved to
   // `rel`, or `undefined` for `seedRel` itself (a wiring file names it
@@ -787,12 +788,22 @@ async function protectHookAndDeps(
       }
       continue;
     }
-    let text: string;
+    let bytes: Buffer;
     try {
-      text = (await readFileFn(onDisk(repoDir, rel))).toString('utf8');
+      bytes = await readFileFn(onDisk(repoDir, rel));
     } catch {
       continue; // gone, or unreadable — nothing further to walk from here
     }
+    // Recorded only on a SUCCESSFUL read, keyed by `rel` — so the per-file
+    // loop in `planUninstall` below can reuse these exact bytes instead of
+    // reading `rel` a second time, while a path whose read failed here
+    // (caught above) is deliberately left out: the per-file loop must still
+    // attempt that read itself and let a real failure (EACCES) reject the
+    // whole plan, exactly as it always has for any other owned file — see
+    // `packages/cli/test/uninstall.test.ts` › "never lets an owned
+    // dependency be removed when its only protecting seeder is unreadable".
+    walkedBytes.set(rel, bytes);
+    const text = bytes.toString('utf8');
     const dir = path.posix.dirname(rel);
     for (const match of text.matchAll(RELATIVE_MJS_IMPORT)) {
       const resolved = path.posix.normalize(path.posix.join(dir, match[1]!));
@@ -876,12 +887,15 @@ async function protectedHooksFor(
   /** Why the wiring path named in `protectedHooks` is itself preserved, keyed by the WIRING path (not the protected hook). See {@link WiringPreservedKind}. */
   wiringKind: Map<string, WiringPreservedKind>;
   wiringBytes: Map<string, Buffer>;
+  /** Bytes `protectHookAndDeps` already read while walking a hook's imports, keyed by the hook's own `rel` — reused by `planUninstall`'s per-file loop so a hook this walk successfully read is never read a second time. */
+  walkedBytes: Map<string, Buffer>;
 }> {
   const protectedHooks = new Map<string, string>();
   const importedBy = new Map<string, string>();
   const unverified = new Map<string, string>();
   const wiringKind = new Map<string, WiringPreservedKind>();
   const wiringBytes = new Map<string, Buffer>();
+  const walkedBytes = new Map<string, Buffer>();
   const visited = new Set<string>();
   for (const wiringRel of WIRING_PATHS) {
     const tracking = trackingFor(wiringRel);
@@ -902,6 +916,7 @@ async function protectedHooksFor(
             importedBy,
             unverified,
             readFileFn,
+            walkedBytes,
           );
         }
       }
@@ -926,10 +941,11 @@ async function protectedHooksFor(
         importedBy,
         unverified,
         readFileFn,
+        walkedBytes,
       );
     }
   }
-  return { protectedHooks, importedBy, unverified, wiringKind, wiringBytes };
+  return { protectedHooks, importedBy, unverified, wiringKind, wiringBytes, walkedBytes };
 }
 
 export interface PlanUninstallOptions {
@@ -984,7 +1000,7 @@ export async function planUninstall(
       ? { tracked: false }
       : { tracked: true, alwaysPreserved: false, recordedHash };
   };
-  const { protectedHooks, importedBy, unverified, wiringKind, wiringBytes } =
+  const { protectedHooks, importedBy, unverified, wiringKind, wiringBytes, walkedBytes } =
     await protectedHooksFor(repoDir, ownedPaths, trackingFor, readFileFn);
 
   const actions: UninstallAction[] = [];
@@ -1036,15 +1052,27 @@ export async function planUninstall(
       continue;
     }
     // status === 'ok': every ancestor is a real directory and the path itself
-    // is a regular file — safe to read and to hash. A wiring file's bytes may
-    // already have been read by `protectedHooksFor` above; reuse them rather
-    // than reading the same file twice. Read only where the bytes are
-    // actually needed below — a `protectingWiring` verdict (just past this
-    // branch) never looks at `current` at all, and reading it anyway would
-    // be a second, wasted read of a file `protectHookAndDeps` already read
-    // once to walk its own imports.
+    // is a regular file — safe to read and to hash. Read for EVERY owned
+    // file here, protected hooks included, before any branch below decides
+    // what kind of file this is — matching master's read-then-branch order
+    // exactly, so a hook this release cannot read (EACCES) rejects the whole
+    // plan the same way an unreadable wiring file or unowned file would,
+    // rather than silently falling through to "preserved" without ever
+    // having been read (RP-245 round 2, code-reviewer r1: moving this read
+    // behind the `protectingWiring` branch let an unreadable protected hook's
+    // own dependency, reachable only through it, fall through to an ordinary
+    // hash comparison and report `remove`; see
+    // `packages/cli/test/uninstall.test.ts` › "never lets an owned
+    // dependency be removed when its only protecting seeder is unreadable").
+    // The bytes may already have been read once — by `protectedHooksFor`
+    // itself for a wiring file, or by `protectHookAndDeps`'s own walk for a
+    // hook it successfully traced — and reused here rather than read twice;
+    // only a path neither of those already read (including one whose read
+    // there failed and was caught) is actually read again, right here.
+    const current =
+      wiringBytes.get(rel) ?? walkedBytes.get(rel) ?? (await readFileFn(onDisk(repoDir, rel)));
+
     if (WIRING_PATHS.has(rel)) {
-      const current = wiringBytes.get(rel) ?? (await readFileFn(onDisk(repoDir, rel)));
       if (sha256(current) === recorded) {
         actions.push({ rel, verdict: 'remove', recordedHash: recorded });
       } else {
@@ -1080,7 +1108,6 @@ export async function planUninstall(
       continue;
     }
 
-    const current = wiringBytes.get(rel) ?? (await readFileFn(onDisk(repoDir, rel)));
     const currentHash = sha256(current);
     if (currentHash === recorded) {
       actions.push({ rel, verdict: 'remove', recordedHash: recorded });
