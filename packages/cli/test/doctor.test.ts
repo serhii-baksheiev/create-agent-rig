@@ -318,9 +318,10 @@ describe('aggregated doctor (RP-21)', () => {
   // upgrade) against a repository whose manifest was written by a newer rig
   // finds out before acting on stale assumptions, not after.
   describe('rig-version check (RP-229)', () => {
-    it('warns to update the CLI, and never to run upgrade, when the manifest records a newer version', async () => {
+    it("warns to update create-agent-rig first, naming both setup and upgrade as the operations to hold off on, and quoting the repository's recorded version, when the manifest records a newer version", async () => {
       await initProject(repo, {});
-      await withManifestVersion(repo, await newerThanCli());
+      const recordedVersion = await newerThanCli();
+      await withManifestVersion(repo, recordedVersion);
 
       const result = await doctor();
       const body = report(result.stdout);
@@ -330,11 +331,23 @@ describe('aggregated doctor (RP-21)', () => {
       expect(body.status).toBe('warn');
       const check = body.checks.find((c) => c.id === 'rig-version');
       expect(check).toMatchObject({ status: 'warn', reason: 'cli-older-than-repository' });
-      expect(check?.fix?.length ?? 0).toBeGreaterThan(0);
+      const fix = check?.fix ?? '';
+      const fixLower = fix.toLowerCase();
+      // Both mutating operations the item names are held off on, not just one.
+      expect(fixLower).toContain('setup');
+      expect(fixLower).toContain('upgrade');
+      expect(fixLower).toContain('create-agent-rig');
+      // The fix names the actual recorded version, not just "newer" in the
+      // abstract — read here from the fixture that wrote it, never from the
+      // production comparison the check itself performs.
+      expect(fix).toContain(recordedVersion);
       // The generic `rig-` fix text ("Review the installation with
       // create-agent-rig upgrade…") is exactly the wrong advice here: running
       // `upgrade` with an older CLI cannot install what a newer CLI wrote.
-      expect((check?.fix ?? '').toLowerCase()).not.toContain('upgrade');
+      // This is narrower than forbidding the word "upgrade" outright — the
+      // fix is expected to name `upgrade` as an operation to hold off on; it
+      // must never fall back to the generic instruction to run it.
+      expect(fix).not.toContain('Review the installation with create-agent-rig upgrade');
     });
 
     it('reports ok, matching versions, when the manifest version equals the CLI version', async () => {
@@ -388,6 +401,82 @@ describe('aggregated doctor (RP-21)', () => {
           reason: 'version-uncomparable',
         }),
       );
+    });
+
+    it.each([
+      ['a prerelease-shaped version', '1.0.1-rc.1'],
+      ['a non-semver garbage version parseManifest still accepts', 'not-a-version'],
+    ])(
+      'tells the developer to compare CLI and manifest versions by hand for %s, never to update to the recorded version itself',
+      async (_case, version) => {
+        await initProject(repo, {});
+        await withManifestVersion(repo, version);
+
+        const result = await doctor();
+        const body = report(result.stdout);
+
+        expect(result.exitCode, result.stderr).toBe(0);
+        const check = body.checks.find((c) => c.id === 'rig-version');
+        expect(check).toMatchObject({ status: 'warn', reason: 'version-uncomparable' });
+        const fix = check?.fix ?? '';
+        expect(fix.length).toBeGreaterThan(0);
+        const fixLower = fix.toLowerCase();
+        // The recorded version may itself be the garbage that made the
+        // comparison fail (`not-a-version`) — telling the developer to
+        // "update to" it, the cli-older fix's own move, would be nonsense
+        // here. The uncomparable fix instead sends them to compare by hand.
+        expect(fixLower).not.toContain("repository's recorded version");
+        expect(fixLower).toContain('compare');
+        expect(fixLower).toContain('setup');
+        expect(fixLower).toContain('upgrade');
+      },
+    );
+
+    it('gives version-uncomparable a fix distinct from the cli-older-than-repository one', async () => {
+      await initProject(repo, {});
+      await withManifestVersion(repo, await newerThanCli());
+      const olderResult = await doctor();
+      const olderFix = report(olderResult.stdout).checks.find((c) => c.id === 'rig-version')?.fix;
+
+      const uncomparableRepo = await mkdtemp(path.join(tmpdir(), 'caf-doctor-'));
+      try {
+        await initProject(uncomparableRepo, {});
+        await withManifestVersion(uncomparableRepo, 'not-a-version');
+        const uncomparableResult = await runDoctor({
+          cwd: uncomparableRepo,
+          args: ['--json'],
+          env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+        });
+        const uncomparableFix = report(uncomparableResult.stdout).checks.find(
+          (c) => c.id === 'rig-version',
+        )?.fix;
+
+        expect(olderFix).toBeTruthy();
+        expect(uncomparableFix).toBeTruthy();
+        expect(uncomparableFix).not.toBe(olderFix);
+      } finally {
+        await removeFixture(uncomparableRepo);
+      }
+    });
+
+    it("shows both the CLI version and the repository's recorded version on the human-readable rig-version line", async () => {
+      await initProject(repo, {});
+      const recordedVersion = await newerThanCli();
+      await withManifestVersion(repo, recordedVersion);
+      const { raw: cliRaw } = await cliVersion();
+
+      const result = await runDoctor({
+        cwd: repo,
+        args: [],
+        env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+      });
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      const lines = result.stdout.split('\n');
+      const rigVersionLine = lines.find((line) => line.includes(': rig-version: '));
+      expect(rigVersionLine).toBeDefined();
+      expect(rigVersionLine).toContain(cliRaw);
+      expect(rigVersionLine).toContain(recordedVersion);
     });
 
     it('emits no rig-version check when the manifest is absent', async () => {

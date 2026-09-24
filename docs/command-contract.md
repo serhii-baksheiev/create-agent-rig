@@ -379,8 +379,9 @@ itself parses (`rig-manifest` passed) — an absent or unreadable manifest
 emits no `rig-version` record at all. Its four reasons:
 
 - `cli-older-than-repository` — the manifest's version is newer than this
-  CLI's own; `warn`. This is the one outcome the `fix` steers away from
-  `upgrade`: an older CLI cannot install what a newer CLI already wrote.
+  CLI's own; `warn`. An older CLI cannot install what a newer CLI already
+  wrote, so the `fix` names the exact recorded version to update to and holds
+  off both `setup` and `upgrade` until then.
 - `versions-match` — the two versions are identical; `ok`.
 - `repository-older-than-cli` — the manifest's version is older than this
   CLI's own; `ok`, not a warning. This is ordinary, PR-reviewed `upgrade`
@@ -388,7 +389,10 @@ emits no `rig-version` record at all. Its four reasons:
 - `version-uncomparable` — either version fails the strict
   `major.minor.patch` shape (a prerelease tag, or manifest bytes `parseManifest`
   still accepts as a string but not as a version); `warn`, without guessing a
-  direction.
+  direction. The recorded value may itself be the unparseable one, so the
+  `fix` cannot suggest updating to it — it instead names `setup` and
+  `upgrade` as the operations to hold off on until the two versions are
+  compared by hand.
 
 By team convention, a repository's recorded rig version moves only through an
 ordinary, reviewed pull request that runs `upgrade` — there is no distributed
