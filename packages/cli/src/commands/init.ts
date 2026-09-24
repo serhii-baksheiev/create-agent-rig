@@ -129,7 +129,9 @@ const STATIC_EXTRAS = ['.codex/config.toml'] as const;
  * that already has its OWN root `CLAUDE.md` keeps it untouched, and the shim
  * installs instead at `.claude/CLAUDE.md`, importing the rulebook as
  * `@../AGENTS.md` (one directory up from where it now sits) rather than the
- * root shim's `@AGENTS.md`. Claude Code loads both files, so nothing is lost.
+ * root shim's `@AGENTS.md`. Both files are loaded by Claude Code — measured,
+ * not assumed: see `docs/decisions/agents-md-canonical.md`, "CLAUDE.md
+ * coexistence — measured (RP-256 slice 1)" — so nothing is lost.
  */
 export type ClaudeMdPlacement = 'root' | 'nested';
 
@@ -139,14 +141,20 @@ function mapsFor(placement: ClaudeMdPlacement): readonly [string, string] {
 }
 
 /**
- * Whether `p` is a REGULAR file — `lstat`, never `access`, and never
- * following a symlink through to whatever it points at. Placement is decided
- * from this, not from `exists` (which follows symlinks): a symlink sitting at
- * `CLAUDE.md` is not the user's own file to leave untouched.
+ * Whether `p` is something the user placed there and owns — a REGULAR file,
+ * or a SYMLINK to one (code-review round 1 blocker B1, PR #324): the link
+ * points at the user's own content exactly the way a regular file holds it,
+ * so it is not this rig's to write over either. `lstat`, never `access`,
+ * and never following a symlink through to decide EXISTENCE — only its
+ * *kind* is read here, never its target's content. A directory is neither:
+ * there is no content there to leave alone the way a file's or a link's
+ * content is, so it falls through to `false` and stays a `root`-placement
+ * refusal instead.
  */
-async function isRegularFile(p: string): Promise<boolean> {
+async function hasOwnRootClaudeMd(p: string): Promise<boolean> {
   try {
-    return (await lstat(p)).isFile();
+    const st = await lstat(p);
+    return st.isFile() || st.isSymbolicLink();
   } catch {
     return false;
   }
@@ -159,11 +167,12 @@ async function isRegularFile(p: string): Promise<boolean> {
  * - the manifest already records `.claude/CLAUDE.md` (a previous run already
  *   went nested) → stay `nested`, regardless of what root `CLAUDE.md` looks
  *   like today;
- * - no manifest entry for `CLAUDE.md` at all, and a regular file already
- *   sits at root `CLAUDE.md` → `nested`, so that file is never claimed as the
- *   rig's own;
- * - anything else (a clean repo, or a manifest that already recorded root
- *   `CLAUDE.md`) → `root`, unchanged from every earlier release.
+ * - no manifest entry for `CLAUDE.md` at all, and a regular file or a
+ *   symlink already sits at root `CLAUDE.md` → `nested`, so that file is
+ *   never claimed as the rig's own;
+ * - anything else (a clean repo, a directory sitting at `CLAUDE.md`, or a
+ *   manifest that already recorded root `CLAUDE.md`) → `root`, unchanged
+ *   from every earlier release.
  */
 async function claudeMdPlacementForInstall(
   repoDir: string,
@@ -171,7 +180,7 @@ async function claudeMdPlacementForInstall(
 ): Promise<ClaudeMdPlacement> {
   if (previous?.files[NESTED_CLAUDE] !== undefined) return 'nested';
   if (previous?.files[ROOT_CLAUDE] === undefined) {
-    if (await isRegularFile(path.join(repoDir, ROOT_CLAUDE))) return 'nested';
+    if (await hasOwnRootClaudeMd(path.join(repoDir, ROOT_CLAUDE))) return 'nested';
   }
   return 'root';
 }
@@ -374,6 +383,21 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   for (const map of mapsFor(placement)) {
     const dest = destinations.get(map);
     if (dest !== undefined && (await exists(dest))) {
+      // code-review round 1 advisory A8/blocker B1 (PR #324): a DIRECTORY at
+      // a map's path is not the user's file to leave in place the way a
+      // regular file or a symlink is (`hasOwnRootClaudeMd` above already
+      // keeps it out of `nested` placement for this reason) — there is no
+      // content to merge in by hand, byte for byte or through a link, so
+      // the generic "Merge the agent-os map in by hand" remedy below does
+      // not fit it. Checked before the hash comparison beneath: a directory
+      // can never match a previously recorded file hash, and calling
+      // `readFile` on one throws `EISDIR` rather than returning bytes to
+      // compare.
+      if ((await lstat(dest).catch(() => null))?.isDirectory()) {
+        throw new InitError(
+          `This repo already has a directory at ${map}. Refusing to write into it. Move or remove that directory, then run create-agent-rig init again.`,
+        );
+      }
       // A map this rig wrote and that still matches its manifest is safe to
       // skip on an idempotent re-run. An unrecorded or edited map remains the
       // user's guidance and is still refused.
@@ -425,14 +449,33 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     // RP-256 slice 1: on a `nested` placement, root CLAUDE.md is the user's
     // own file — never in `files`, so the loop above never touches it, and
     // it needs its own evidence entry under the manifest's `kept` (RP-182's
-    // meaning: seen and left, not owned). `undefined` when there is nothing
-    // there to record (or the placement is `root`, where this is simply not
-    // a question).
+    // meaning: seen and left, not owned). `null` when there is nothing there
+    // to record (or the placement is `root`, where this is simply not a
+    // question).
     const keptRootClaude =
-      placement === 'nested' ? await readRegularFile(path.join(repoDir, ROOT_CLAUDE)) : null;
+      placement === 'nested' ? await readKeptRootClaudeMd(path.join(repoDir, ROOT_CLAUDE)) : null;
     const extraKept =
       keptRootClaude !== null ? { [ROOT_CLAUDE]: sha256(keptRootClaude) } : undefined;
-    await recordInstall(repoDir, written, skipped, contents, layers, options.project, extraKept);
+    // code-review round 1 blocker B2/advisory A2 (PR #324): once `nested`,
+    // THIS run owns the truth about root CLAUDE.md's `kept` entry, present
+    // or absent. Root CLAUDE.md never reaches `written`/`skipped` on this
+    // placement (it is not in `files` at all), so the generic per-path
+    // loops in `recordInstall` can never clear a stale entry a prior nested
+    // install left behind once the user deletes their own file — this is
+    // the one path whose absence still has to be told apart from "never
+    // computed at all" (a `root` placement, where dropping it would erase a
+    // kept entry this run has no opinion on).
+    const dropKept = placement === 'nested' && keptRootClaude === null ? [ROOT_CLAUDE] : undefined;
+    await recordInstall(
+      repoDir,
+      written,
+      skipped,
+      contents,
+      layers,
+      options.project,
+      extraKept,
+      dropKept,
+    );
   }
 
   return { written, skipped, plannedCount };
@@ -448,6 +491,27 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
 async function readRegularFile(abs: string): Promise<Buffer | null> {
   try {
     if (!(await lstat(abs)).isFile()) return null;
+    return await readFile(abs);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The bytes to vouch for under `kept['CLAUDE.md']` on a `nested` placement —
+ * read by FOLLOWING a symlink (code-review round 1 blocker B1, PR #324): a
+ * symlink at root CLAUDE.md is the user's own file exactly like a regular
+ * file is, per {@link hasOwnRootClaudeMd}, so `kept` records the same thing
+ * for one that it records for the other — the sha256 of the content a
+ * reader opening the file would see, following the link to get there,
+ * never a marker meaning "nothing was found." A directory, a missing path,
+ * or a target this process cannot read all fall back to `null` — there is
+ * no content there to vouch for, same as {@link readRegularFile}.
+ */
+async function readKeptRootClaudeMd(abs: string): Promise<Buffer | null> {
+  try {
+    const st = await lstat(abs);
+    if (!st.isFile() && !st.isSymbolicLink()) return null;
     return await readFile(abs);
   } catch {
     return null;
@@ -510,6 +574,12 @@ async function recordInstall(
   // Merged in exactly like an ordinary `kept` entry once computed by the
   // caller (`initProject`), which already knows whether it applies.
   extraKept?: Record<string, string>,
+  // code-review round 1 blocker B2/advisory A2 (PR #324): keys this run
+  // OWNS the truth about — same population as `extraKept` above, the
+  // opposite finding (nothing there any more, so any entry a prior run left
+  // is stale) — and, exactly because they never reach `written`/`skipped`
+  // either, the loops below cannot discover that on their own.
+  dropKept?: readonly string[],
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
@@ -523,6 +593,7 @@ async function recordInstall(
     if (found === null) delete kept[rel];
     else kept[rel] = sha256(found);
   }
+  for (const rel of dropKept ?? []) delete kept[rel];
   const manifest: RigManifest = {
     version: await packageVersion(),
     kind: previous?.kind ?? 'init',

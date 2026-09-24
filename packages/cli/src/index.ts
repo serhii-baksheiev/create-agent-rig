@@ -64,8 +64,9 @@ Options
 
 Also: create-agent-rig init [--dry-run] [--layer workflow]
   Install the process layer (rules, gates, stop rules — no architecture
-  assumptions) into the CURRENT existing repo. Refuses to clobber CLAUDE.md
-  or AGENTS.md.
+  assumptions) into the CURRENT existing repo. A pre-existing CLAUDE.md is
+  kept, and the shim installs nested at .claude/CLAUDE.md instead; a
+  pre-existing AGENTS.md is still refused outright.
   --layer workflow also installs the experimental workflow layer: an
   autonomous, cooperative multi-session queue/loop/PR-lifecycle mechanism,
   never required by Lean Core. Without it, only the core layer is installed.

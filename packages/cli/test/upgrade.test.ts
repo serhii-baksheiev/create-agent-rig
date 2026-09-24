@@ -1612,6 +1612,53 @@ describe('planUpgrade — a nested rig, CLAUDE.md beside AGENTS.md (RP-256 slice
     // shim just because it is not on the fixed MAPS list.
     expect(manifest?.files[NESTED_CLAUDE]).toBeTruthy();
   });
+
+  // code-reviewer round 1 advisory A3 (PR #324): `claudePlacement` falls
+  // back to `root` whenever there is no MANIFEST to read `NESTED_CLAUDE`
+  // from — including a nested rig whose manifest was deleted or voided
+  // (the bootstrapped path). With no manifest, this is currently the ONLY
+  // signal `planUpgrade` looks at, even though the nested shim itself is
+  // sitting right there on disk with its own recognisable first line
+  // (`@../AGENTS.md`, never the root shim's `@AGENTS.md`). Falling back to
+  // `root` plans the user's own file as though it were this rig's copy of
+  // the map, and — because it is not the `@AGENTS.md` shim — tells the user
+  // to replace their own content with the shim, which would destroy it.
+  it('a bootstrapped upgrade (manifest deleted) recognises a nested rig from its own `.claude/CLAUDE.md` on disk, and never plans root CLAUDE.md at all', async () => {
+    const userBytes = '# host rules\n';
+    await installNestedRig(userBytes);
+    await rm(abs(MANIFEST_REL));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(plan.bootstrapped).toBe(true);
+    // never planned as the shim target, never told to "replace this file's
+    // content with `@AGENTS.md`" — root CLAUDE.md is simply not this rig's
+    // file once a nested rig is recognised, exactly as the manifest-present
+    // case above already pins.
+    expect(plan.actions.find((a) => a.rel === 'CLAUDE.md')).toBeUndefined();
+    // the nested shim itself is still tracked
+    expect(plan.actions.find((a) => a.rel === NESTED_CLAUDE)).toBeDefined();
+  });
+
+  // code-reviewer round 1 advisory A4 (PR #324): the reason a `deleted`
+  // AGENTS.md gives names its importer unconditionally as "CLAUDE.md" and
+  // its import as `` `@AGENTS.md` `` — correct on a `root` rig, but on a
+  // `nested` rig the file that actually imports AGENTS.md is
+  // `.claude/CLAUDE.md`, and the import it uses is `` `@../AGENTS.md` ``
+  // (one directory up from where the nested shim sits). The reason must
+  // name the file that is actually the rulebook's one remaining path back
+  // to AGENTS.md, not the user's own, unrelated root CLAUDE.md.
+  it("names `.claude/CLAUDE.md` (not root CLAUDE.md) as AGENTS.md's importer on a nested rig, with the nested import syntax", async () => {
+    await installNestedRig();
+    await rm(abs('AGENTS.md'));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(agentsAction?.verdict).toBe('deleted');
+    expect(agentsAction?.reason).toContain('.claude/CLAUDE.md imports it (`@../AGENTS.md`)');
+    expect(agentsAction?.reason).not.toContain('CLAUDE.md imports it (`@AGENTS.md`)');
+  });
 });
 
 // RP-180: the workflow layer (queue/loop/pr-ship/run-state/journal/

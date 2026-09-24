@@ -73,6 +73,26 @@ this record both have to survive a reader who takes them literally:
   at four hops — none of which this project's shim relies on beyond the one,
   first-line import.
 
+## CLAUDE.md coexistence — measured (RP-256 slice 1)
+
+RP-256 slice 1 adds a second CLAUDE.md placement: when a repo already has
+its own root `CLAUDE.md`, `init` leaves that file untouched and installs the
+shim at `.claude/CLAUDE.md` instead, importing the rulebook as
+`@../AGENTS.md`. That design rests on one fact the section above does not by
+itself establish: the documented behaviour is that a *same-named* file
+nested under `.claude/` is read **instead of** `AGENTS.md` — it says nothing
+about whether a root `CLAUDE.md` and a *different* file nested under
+`.claude/` (this project's own shim, not a same-named override) are BOTH
+loaded when both are present at once, which is exactly the case this slice
+creates.
+
+**Measured directly, not inferred from the docs above** (Claude Code
+2.1.281, 2026-09-24; Jira RP-256 comment 20628): a repository carrying a
+root `CLAUDE.md` and a `.claude/CLAUDE.md` = `@../AGENTS.md` at the same
+time — a probe session, tools disabled, with a distinct codeword planted in
+each file. The answer returned both codewords, confirming both files were
+loaded.
+
 ## The migration (RP-186)
 
 A rig installed before this change has a `CLAUDE.md`/`AGENTS.md` pair that is
@@ -168,7 +188,7 @@ same reason as above).
 | `AGENTS.md` deleted by the user, CLAUDE.md deleted too | Both `deleted`: stays deleted on both sides — there is nothing left to hold back | already absent |
 | The migration already finished (CLAUDE.md is already the shim), THEN AGENTS.md is deleted on a later run | AGENTS.md `deleted`: stays deleted. CLAUDE.md's own verdict is `unchanged` — the held-back coupling above only overrides a verdict that would otherwise become `update`, and an already-adopted shim's verdict never is, so it is left exactly as it is rather than resurrected, rewritten, or held back a second time | CLAUDE.md (the shim) removed like any other untouched file — WITH a `note`, measured verbatim: `this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which is already gone, as the only rulebook copy` — pinned by `packages/cli/test/uninstall.test.ts`'s test "discloses when the sibling is already gone (absent), not only when it is preserved as edited" (absent in a generated rig, same reason as above); AGENTS.md already absent. Upgrade side pinned by `packages/cli/test/upgrade.test.ts`'s test "AGENTS.md deleted after the migration already finished: the already-adopted shim is left exactly alone" (absent in a generated rig, same reason as above) |
 | A repo that had its own `AGENTS.md` before `init` | `init` **refuses outright** (`InitError`, non-zero exit) rather than installing over it or recording it as `kept`. Pinned by `packages/cli/test/init.test.ts`'s test "refuses to clobber an existing AGENTS.md, without looping into the upgrade refusal" — named by full path deliberately: `test/e2e/init.test.ts` (a different suite) shares the bare basename `init.test.ts`, and either mention is absent in a generated rig for the same reason as above regardless | N/A — `init` never installed here, so there is nothing for `uninstall` to have owned |
-| A repo that had its own root `CLAUDE.md` before `init` (RP-256 slice 1) | `init` **no longer refuses** — root `CLAUDE.md` is left byte-identical and recorded under the manifest's `kept`, and the shim installs instead at `.claude/CLAUDE.md`, importing the rulebook as `@../AGENTS.md` (resolved relative to that nested file, not the repo root). Claude Code loads both files, so nothing is lost. Pinned by `packages/cli/test/init.test.ts`'s describe block "initProject — CLAUDE.md coexistence (RP-256 slice 1)" (absent in a generated rig, same reason as above). The one case still refused is an UNRECORDED `.claude/CLAUDE.md` already occupying the nested slot — `init` does not guess whether it is safe to overwrite | `.claude/CLAUDE.md` is an ordinary rig-owned path (`update`/`unchanged`/`conflict` like any other file `upgrade` tracks — no shim/AGENTS.md coupling, since that coupling only ever keys on a literal `CLAUDE.md` action, which a nested rig never has); root `CLAUDE.md` stays `kept`, carried forward untouched by `upgrade`, and `uninstall` preserves it as user-owned, never claiming it as the rulebook's only copy |
+| A repo that had its own root `CLAUDE.md` before `init` (RP-256 slice 1) | `init` **no longer refuses** — root `CLAUDE.md` is left byte-identical and recorded under the manifest's `kept`, and the shim installs instead at `.claude/CLAUDE.md`, importing the rulebook as `@../AGENTS.md` (resolved relative to that nested file, not the repo root). Both files are loaded — measured, see "CLAUDE.md coexistence — measured (RP-256 slice 1)" above — so nothing is lost. Pinned by `packages/cli/test/init.test.ts`'s describe block "initProject — CLAUDE.md coexistence (RP-256 slice 1)" (absent in a generated rig, same reason as above). The one case still refused is an UNRECORDED `.claude/CLAUDE.md` already occupying the nested slot — `init` does not guess whether it is safe to overwrite | `.claude/CLAUDE.md` is an ordinary rig-owned path (`update`/`unchanged`/`conflict` like any other file `upgrade` tracks — no shim/AGENTS.md coupling, since that coupling only ever keys on a literal `CLAUDE.md` action, which a nested rig never has); root `CLAUDE.md` stays `kept`, carried forward untouched by `upgrade`, and `uninstall` preserves it as user-owned, never claiming it as the rulebook's only copy |
 
 The round-5 rule was re-derived and pinned as a 4×3 grid — AGENTS.md's axis
 split into `pristine` / `edited-with-block` / `edited-without-block` /

@@ -1889,13 +1889,14 @@ imports it, so both harnesses read the same rules from one source —
 When the target repo already has its own root `CLAUDE.md`, `init` leaves it
 untouched and installs the shim nested at `.claude/CLAUDE.md` instead
 (importing the rulebook as `@../AGENTS.md`, resolved relative to that
-nested file) — Claude Code loads both, so the project's own file and the
-rig's shim coexist rather than one refusing the other
-(`packages/cli/test/init.test.ts` › "installs the nested shim beside a
-user CLAUDE.md, leaving it byte-identical"). A pre-existing root
-`AGENTS.md` is still refused outright either way — there is no coexistence
-story for the canonical rulebook file itself, only for the shim that
-imports it.
+nested file) — both files are loaded (measured, see
+`docs/decisions/agents-md-canonical.md`, "CLAUDE.md coexistence —
+measured"), so the project's own file and the rig's shim coexist rather
+than one refusing the other (`packages/cli/test/init.test.ts` › "installs
+the nested shim beside a user CLAUDE.md, leaving it byte-identical").
+A pre-existing root `AGENTS.md` is still refused outright either way —
+there is no coexistence story for the canonical rulebook file itself, only
+for the shim that imports it.
 
 **Native plugins are unmanaged.** Rig has no plugin manager or marketplace,
 does not install, list or update a Claude Code or Codex plugin, and a

@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -249,6 +249,140 @@ describe('initProject — CLAUDE.md coexistence (RP-256 slice 1)', () => {
     );
     await expect(readFile(path.join(repo, 'AGENTS.md'))).rejects.toThrow();
     await expect(readManifest(repo)).resolves.toBeNull();
+  });
+});
+
+// code-reviewer round 1, blocker B1 (PR #324): a symlink sitting at root
+// `CLAUDE.md` is the user's own file — it points at their content, exactly
+// like a regular file would — so it must not block installation any more
+// than a regular file does. Nested placement never writes root `CLAUDE.md`
+// at all, so the link itself is never touched; what changes is that
+// `claudeMdPlacementForInstall` must recognise a symlink as "the user already
+// has a CLAUDE.md" the same way it recognises a regular file, instead of
+// falling through to `root` and having the later symlink-confinement check
+// refuse the write. The user's file is recorded under `kept` by the target's
+// bytes (read by following the link — plain content, exactly what a reader
+// opening the file would see) rather than left unrecorded, so `kept` means
+// the same thing for every root `CLAUDE.md` this slice leaves untouched.
+describe('initProject — a symlinked root CLAUDE.md (RP-256 slice 1, code-review B1)', () => {
+  it('installs nested beside a symlinked root CLAUDE.md, leaving the link untouched and recording the target bytes under kept', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      const target = path.join(outside, 'host.md');
+      const targetContent = '# host rules, reached through a symlink\n';
+      await writeFile(target, targetContent);
+      try {
+        await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const result = await initProject(repo, {});
+
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      expect(result.written).toContain('AGENTS.md');
+      expect(result.written).not.toContain('CLAUDE.md');
+      // the link itself survives, unreplaced and unfollowed-through-to-write
+      const linkStat = await lstat(path.join(repo, 'CLAUDE.md'));
+      expect(linkStat.isSymbolicLink()).toBe(true);
+      expect(await readFile(target, 'utf8')).toBe(targetContent);
+
+      const manifest = await readManifest(repo);
+      expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+      expect(manifest?.files['.claude/CLAUDE.md']).toBeTruthy();
+      expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(targetContent));
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('a dry run does not refuse a symlinked root CLAUDE.md either, and writes nothing', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      const target = path.join(outside, 'host.md');
+      await writeFile(target, '# host rules, reached through a symlink\n');
+      try {
+        await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const result = await initProject(repo, { dryRun: true });
+
+      expect(result.written).toEqual([]);
+      const linkStat = await lstat(path.join(repo, 'CLAUDE.md'));
+      expect(linkStat.isSymbolicLink()).toBe(true);
+      await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+      await expect(readManifest(repo)).resolves.toBeNull();
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+});
+
+// code-reviewer round 1 advisory A8, folded into this round's fix for B1: a
+// DIRECTORY at root `CLAUDE.md` is not the user's file to leave in place the
+// way a regular file or a symlink is — there is no content to import, byte
+// for byte or through a link — so it stays refused. What must change is the
+// message: the generic MAPS refusal ends with "Merge the agent-os map in by
+// hand", advice that assumes a text file whose content can be merged, and
+// does not fit a directory at all.
+describe('initProject — a directory at root CLAUDE.md (RP-256 slice 1, code-review B1/A8)', () => {
+  it('refuses a directory at CLAUDE.md with a message that fits a directory, not the generic "merge the map in by hand" advice, and writes nothing', async () => {
+    await mkdir(path.join(repo, 'CLAUDE.md'), { recursive: true });
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/CLAUDE\.md/);
+    expect(message.toLowerCase()).toContain('directory');
+    expect(message).not.toMatch(/Merge the agent-os map in by hand/);
+    await expect(readFile(path.join(repo, 'AGENTS.md'))).rejects.toThrow();
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+});
+
+// code-reviewer round 1, blocker B2 (PR #324): the one situation that reaches
+// `claudeMdPlacementForInstall`'s manifest-first branch (line 172) without the
+// filesystem rule on the next line also firing — a nested rig whose user
+// later deletes their OWN root `CLAUDE.md`, then runs `init` again. Nothing in
+// the existing suite builds that state; deleting the manifest-first branch
+// would leave this suite green and would make `init` write a second, root
+// `@AGENTS.md` shim next to the nested one. Folded in with it (code-review
+// advisory A2): `recordInstall` only ever drops a stale `kept` entry for a
+// path that reaches its `written`/`skipped` loops, and root `CLAUDE.md` on a
+// `nested` placement never does — it is not in `files` at all — so the
+// `kept['CLAUDE.md']` entry the first install wrote goes stale and is never
+// cleared once the file it vouches for is gone.
+describe('initProject — a nested rig whose user deletes their root CLAUDE.md (RP-256 slice 1, code-review B2/A2)', () => {
+  it('stays nested on re-run (manifest-first placement), and drops the stale kept CLAUDE.md entry now that the file is gone', async () => {
+    const userClaude = '# host rules — do not touch\n';
+    await writeFile(path.join(repo, 'CLAUDE.md'), userClaude);
+    await initProject(repo, {});
+    await rm(path.join(repo, 'CLAUDE.md'));
+
+    const second = await initProject(repo, {});
+
+    // B2: manifest-first placement — no root shim appears next to the nested one
+    expect(second.written).not.toContain('CLAUDE.md');
+    await expect(readFile(path.join(repo, 'CLAUDE.md'))).rejects.toThrow();
+    const manifest = await readManifest(repo);
+    expect(manifest?.files['.claude/CLAUDE.md']).toBeTruthy();
+    expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+
+    // A2: the file this entry vouched for is gone — the manifest must not
+    // keep claiming it saw and left something that is no longer there
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
   });
 });
 

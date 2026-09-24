@@ -171,6 +171,19 @@ describe('create-agent-rig init (into an existing repo)', () => {
     expect(shim.split(/\r?\n/, 1)[0]).toBe('@../AGENTS.md');
     await expect(readFile(path.join(repo, 'AGENTS.md'), 'utf8')).resolves.toBeTruthy();
   });
+
+  // code-reviewer round 1 advisory A5 (PR #324): `init`'s own `--help` usage
+  // still says "Refuses to clobber CLAUDE.md or AGENTS.md" — true before this
+  // slice, false now that a pre-existing CLAUDE.md is kept and the shim goes
+  // to `.claude/CLAUDE.md` instead. AGENTS.md is still refused outright, and
+  // the usage text must keep saying so.
+  it('--help says a pre-existing CLAUDE.md is kept nested, not that init refuses to clobber it, and still refuses AGENTS.md', async () => {
+    const result = await runInit(['--help']);
+    const text = `${result.stdout}${result.stderr}`;
+    expect(text).not.toMatch(/Refuses to clobber CLAUDE\.md or AGENTS\.md/);
+    expect(text).toMatch(/\.claude\/CLAUDE\.md/);
+    expect(text).toMatch(/AGENTS\.md/);
+  });
 });
 
 // RP-180 round 2: the owner's flag spelling is `--layer <name>`, not
