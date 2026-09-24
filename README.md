@@ -112,8 +112,9 @@ A guard is a check on each edit or command before it runs, not a sandbox. Each
 one states what it does not catch in its own header — `guard-secret-file`, for
 example, sees what an agent writes through its edit tools, not a file committed
 from disk. `guard-bash` in particular is not general command isolation or a
-sandbox: it refuses only the specific Rig/git/credential shapes it names.
-General OS/process isolation is the harness's own native sandbox setting
+sandbox: it refuses only the specific shapes it names — git, credential,
+deploy and destructive-delete cases. General OS/process isolation is the
+harness's own native sandbox setting
 (Claude Code / Codex sandboxing), not guard-bash's job.
 
 Two things are left for you, and the installed `AGENTS.md` says so: the

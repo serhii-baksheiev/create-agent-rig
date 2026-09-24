@@ -294,11 +294,30 @@ const isCatastrophic = (target) =>
  * destroyed is SSH key material, and a reason that misnames the risk is
  * misleading regardless of whether the command is still refused
  * (`.claude/rules/invariants.md`, "the remedy belongs to the refusal").
+ *
+ * Derived from `CATASTROPHIC_SUBTREES` rather than kept as a second literal
+ * list — the two describe the same two directories, and a list that can drift
+ * from the one it is a subset of eventually will.
  */
-const CREDENTIAL_TARGETS = new Set(['~/.ssh', '$HOME/.ssh', '~/.ssh/*', '$HOME/.ssh/*']);
+const CREDENTIAL_TARGETS = new Set([
+  ...CATASTROPHIC_SUBTREES,
+  ...CATASTROPHIC_SUBTREES.map((root) => `${root}/*`),
+]);
+/**
+ * A target with a literal `..` segment does not actually stay inside the
+ * credential subtree — `~/.ssh/..` IS `~`, `$HOME/.ssh/../../..` goes above
+ * `$HOME` entirely — but the same prefix test that makes `isCatastrophic`
+ * treat it as "reaches under `~/.ssh`" would otherwise call that upward
+ * escape a credential deletion, which is exactly the misnaming this reason
+ * exists to avoid. Gating on the literal segment is enough: the escape still
+ * falls through to `isCatastrophic`'s own prefix match (so it stays
+ * refused) — only the CREDENTIAL wording is withheld, in favour of the
+ * root/home one.
+ */
 const isCredentialTarget = (target) =>
-  CREDENTIAL_TARGETS.has(target) ||
-  CATASTROPHIC_SUBTREES.some((root) => target.startsWith(`${root}/`));
+  !target.split('/').includes('..') &&
+  (CREDENTIAL_TARGETS.has(target) ||
+    CATASTROPHIC_SUBTREES.some((root) => target.startsWith(`${root}/`)));
 
 /**
  * While the brake is on, the network clients are refused.
@@ -763,7 +782,14 @@ export const normalizeTarget = (token) => {
   return joined === '' ? (leading || path) : joined;
 };
 
-function checkRm({ args }, atCatastrophicCwd) {
+/**
+ * `catastrophicCwdTarget` is the NORMALISED target a prior `cd` in this
+ * command line landed on, or `null` — the target itself, not just whether one
+ * was catastrophic, so a wildcard delete after `cd ~/.ssh` can be told apart
+ * from one after `cd /`: same wildcard, same block, but only one of them is a
+ * credential delete.
+ */
+function checkRm({ args }, catastrophicCwdTarget) {
   for (const { value } of operandsOf(args)) {
     const target = normalizeTarget(value);
     if (isCatastrophic(target)) {
@@ -789,7 +815,15 @@ function checkRm({ args }, atCatastrophicCwd) {
       );
     }
     // `cd / && rm -rf *` is `rm -rf /*` with the target hidden in a prior segment.
-    if (atCatastrophicCwd && (target === '*' || target === '.' || target === './*')) {
+    if (catastrophicCwdTarget && (target === '*' || target === '.' || target === './*')) {
+      if (isCredentialTarget(catastrophicCwdTarget)) {
+        return (
+          'BLOCKED — an earlier segment changed directory into SSH credentials/key ' +
+          'material under ~/.ssh, so this wildcard delete destroys them. If a ' +
+          'specific key genuinely needs removing, name it precisely and confirm ' +
+          'with the human who owns that key first.'
+        );
+      }
       return (
         'BLOCKED — an earlier segment changed directory to the filesystem root or ' +
         'the home directory, so this wildcard delete is a root delete.'
@@ -806,7 +840,7 @@ export const inspect = (raw, brake, depth = 0) => {
   // Nested `eval`/`bash -c` beyond this is not drift, and following it forever is
   // unbounded work. The depth is a stated limit, not an accident.
   if (depth > 16) return null;
-  let atCatastrophicCwd = false;
+  let catastrophicCwdTarget = null;
 
   for (const segment of tokenize(raw)) {
     // The brake, before any per-command rule: while the flag is on, the
@@ -844,7 +878,7 @@ export const inspect = (raw, brake, depth = 0) => {
 
     if (command.name === 'cd') {
       const target = normalizeTarget(operandsOf(command.args)[0]?.value ?? '');
-      atCatastrophicCwd = CATASTROPHIC.has(target);
+      catastrophicCwdTarget = CATASTROPHIC.has(target) ? target : null;
       continue;
     }
 
@@ -854,7 +888,7 @@ export const inspect = (raw, brake, depth = 0) => {
         : command.name === 'gh'
           ? checkGh(command, brake)
           : command.name === 'rm'
-            ? checkRm(command, atCatastrophicCwd)
+            ? checkRm(command, catastrophicCwdTarget)
             : null;
     if (reason) return reason;
   }

@@ -206,8 +206,10 @@ describe('create-agent-rig init --layer (RP-180)', () => {
   it('does not claim --force was removed in a past release, while still saying it is refused', async () => {
     const result = await runInit(['--help']);
     const text = `${result.stdout}${result.stderr}`;
-    expect(text).toMatch(/--force/);
-    expect(text).toMatch(/refus/i);
+    // The `--force` LINE itself says "refused", not merely the help text
+    // somewhere else — `/refus/i` alone is already satisfied by an unrelated
+    // line ("Refuses to clobber CLAUDE.md") whatever the --force line says.
+    expect(text).toMatch(/--force[^\n]*refus/i);
     expect(text).not.toMatch(/removed in 0\.6/i);
   });
 
