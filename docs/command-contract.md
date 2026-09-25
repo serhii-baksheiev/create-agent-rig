@@ -1065,10 +1065,12 @@ found already in place and only ever vouched for the bytes of, never owned
 reason, but it does not by itself keep the manifest alive.** A `kept` path
 was never the rig's, so there is nothing the manifest still needs to own on
 its account; if a `kept` entry is the ONLY `preserved` action in the plan,
-the manifest is deleted and the run reports `uninstalled` all the same. This
-holds even when every removal that WAS planned succeeded: nothing was
-removed at all (e.g. every file preserved by a CRLF checkout) keeps the
-manifest exactly as a partial failure does. On an actual failure the run
+the manifest is deleted and the run reports `uninstalled` all the same.
+
+Outside that exception, the rig-owned-preserved rule holds even when every
+removal that WAS planned succeeded: nothing was removed at all (e.g. every
+file preserved by a CRLF checkout) keeps the manifest exactly as a partial
+failure does. On an actual failure the run
 stops where it is, keeps the manifest, and the payload carries `completed`
 (what finished), `remaining` (what a re-run still owes, including the path
 that failed) and `error`. `remaining` names the manifest itself too,

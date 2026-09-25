@@ -41,15 +41,15 @@ export interface UninstallAction {
    * True only for a `preserved` action born from a `manifest.kept` entry
    * (RP-260) — a path `init` found already in place and only ever vouched
    * for the bytes of, never owned. Structural, not read off `reason`: a
-   * `kept` path is always worded `'user-owned (kept by init)'`, but the
-   * reverse does not hold (nothing else uses that string, so string-matching
-   * would have worked too — this field exists so the ONE place, the `kept`
-   * loop below, is the only place that decides it, rather than every reader
-   * re-deriving it from prose). A `preserved` hook kept only because a
-   * `kept` wiring file still references it is NOT this — it is a rig-owned
-   * file, worded by {@link hookStillReferencedReason} instead, and must
-   * still count toward keeping the manifest. Absent (never `false`) on every
-   * other verdict and on every other `preserved` reason.
+   * `kept` path is always worded `'user-owned (kept by init)'`, and nothing
+   * else currently uses that string, so string-matching would happen to
+   * work too — but this field does not rely on that coincidence holding:
+   * the ONE place, the `kept` loop below, is the only place that decides
+   * it, rather than every reader re-deriving it from prose. A `preserved`
+   * hook kept only because a `kept` wiring file still references it is NOT
+   * this — it is a rig-owned file, worded by {@link hookStillReferencedReason}
+   * instead, and must still count toward keeping the manifest. Absent (never
+   * `false`) on every other verdict and on every other `preserved` reason.
    */
   kept?: true;
 }
@@ -1339,12 +1339,15 @@ async function manifestMismatchReason(
 /**
  * Removes the `remove`-verdict paths in `plan`, then the manifest — but only
  * once every one of them succeeded AND (outside `--detach`) nothing else in
- * the plan is `preserved`, nor turned out to have changed since planning. A
- * `preserved` action, or a path caught changed at apply time, means the rig
- * still owns bytes it did not remove; deleting the manifest anyway would
- * discard the only evidence naming what it still owns, blinding a later
- * `upgrade` — unless `options.detach` says to do exactly that on purpose,
- * leaving those paths for the user instead.
+ * the plan is `preserved` for a reason that still belongs to the rig, nor
+ * turned out to have changed since planning. Such a `preserved` action, or a
+ * path caught changed at apply time, means the rig still owns bytes it did
+ * not remove; deleting the manifest anyway would discard the only evidence
+ * naming what it still owns, blinding a later `upgrade` — unless
+ * `options.detach` says to do exactly that on purpose, leaving those paths
+ * for the user instead. A `kept` action (RP-260) is the one `preserved`
+ * reason excluded from this count: `init` never owned that path, only
+ * vouched for its bytes, so it does not by itself keep the manifest alive.
  *
  * Two kinds of "this is not the plan I made" are both re-checked here, never
  * trusted from `plan`, because the window between the plan being shown and
@@ -1479,10 +1482,16 @@ export async function applyUninstall(
       // reappears, rewired, in the confirmation-prompt window is exactly the
       // "changed since planning" shape this whole apply-time pass was built
       // to catch — and it is not caught here, because this pass is keyed off
-      // `toRemove`, which a `kept` path is never in. Narrow, and no worse
-      // than the pre-existing state (a hook this rig never removes anyway
-      // stays exactly as absent-or-present as it already was), but stated
-      // here rather than left implied.
+      // `toRemove`, which a `kept` path is never in. Narrow, and still no
+      // worse than the pre-existing state FOR THE HOOK ITSELF (it is removed
+      // exactly as it would have been had the plan been built with the
+      // wiring file still absent — this pass catching the rewire would only
+      // ever have changed that one file's fate). Since RP-260, though, it is
+      // no longer the whole story: when this `kept` path is the ONLY
+      // `preserved` action in the plan, nothing else keeps the manifest
+      // alive either, so the manifest is deleted here too — before RP-260 a
+      // `kept`-preserved action kept it regardless of this gap. Stated here
+      // rather than left implied.
       //
       // ⚠ A second, sibling gap, this one for an EDITED (not `kept`) wiring
       // file specifically (security-lens review, RP-181, cycle 8): if a
