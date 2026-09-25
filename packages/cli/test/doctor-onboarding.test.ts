@@ -243,6 +243,56 @@ describe('personal-tracker check (RP-230)', () => {
   });
 });
 
+// RP-230 round 2 (PR #335, code-reviewer + security-scanner blocker):
+// `TRACKER_REQUIRED_ENV[adapter]` is a plain-object index by a STRING an
+// operator's own `.claude/queue.json` controls. An `adapter` of
+// `__proto__`, `constructor`, `hasOwnProperty` or `toString` does not miss
+// the map — it hits an INHERITED `Object.prototype` member (a prototype
+// object, the `Object` constructor function, or a function), which is
+// neither `undefined` nor an array. `required.length === 0` then reads a
+// function's arity or `undefined`, not "no vars required", so the code
+// falls through to `required.filter(...)`, which throws
+// `TypeError: … .filter is not a function` — uncaught, so doctor never
+// finishes the run and prints no report at all for a config file the
+// developer merely mistyped or a malicious repo shipped.
+describe('personal-tracker check never throws on an adapter name that reaches Object.prototype (RP-230 round 2)', () => {
+  it.each(['__proto__', 'constructor', 'hasOwnProperty', 'toString'])(
+    'exits 0, emits no personal-tracker check, and still reports the other checks for adapter %j',
+    async (adapter) => {
+      await initProject(repo, { withWorkflow: true });
+      await writeQueueConfig({ adapter });
+
+      const result = await doctor();
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      const body = report(result.stdout);
+      expect(body.checks.find((c) => c.id === 'personal-tracker')).toBeUndefined();
+      // The rest of the report must still render — this is not a report
+      // that failed to produce ANY checks, only one that has nothing
+      // personal to say about a hostile adapter name.
+      expect(body.checks.find((c) => c.id === 'rig-manifest')).toBeTruthy();
+    },
+  );
+
+  it.each([
+    ['a number', 7],
+    ['an object', { nested: true }],
+  ])(
+    'exits 0, emits no personal-tracker check, and still reports the other checks for a non-string adapter (%s)',
+    async (_label, adapter) => {
+      await initProject(repo, { withWorkflow: true });
+      await writeQueueConfig({ adapter });
+
+      const result = await doctor();
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      const body = report(result.stdout);
+      expect(body.checks.find((c) => c.id === 'personal-tracker')).toBeUndefined();
+      expect(body.checks.find((c) => c.id === 'rig-manifest')).toBeTruthy();
+    },
+  );
+});
+
 describe('codex-hook-trust check (RP-230)', () => {
   it('is absent from the report when the repository has no Codex hook wiring at all', async () => {
     // No initProject: an empty repository has no .codex/hooks.json.

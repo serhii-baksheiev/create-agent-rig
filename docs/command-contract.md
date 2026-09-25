@@ -425,12 +425,36 @@ specific NAMES still missing. A credential VALUE never appears anywhere in
 the record, in either field, in `--json` or in the human-readable form; a
 NAME appears only in `fix` — `reason` and `detail` stay generic.
 
+The check is silently absent, by that same "nothing personal to check"
+path, for every input it cannot read as a live tracker adapter: a
+`queue.json` that is not valid JSON, a non-string `adapter` value, and an
+adapter name this repository's map has no entry for at all — including one
+that collides with an inherited `Object.prototype` member (`__proto__`,
+`constructor`, `hasOwnProperty`, `toString`, ...), which round 2 of this
+feature guards against explicitly
+(`packages/cli/test/doctor-onboarding.test.ts` › "personal-tracker check
+never throws on an adapter name that reaches Object.prototype (RP-230 round
+2)"). A `queue.json` over the 64 KiB `readBounded` bound is silently absent
+the same way; that specific case has no dedicated test.
+
 `codex-hook-trust` is emitted only when this repository has Codex hook
 wiring (`.codex/hooks.json` exists), and is always `warn`
 (`codex-hooks-need-review`) — never `ok`. Its `fix` points the developer at
 Codex's own `/hooks` view to review and trust the checked-in rig hooks
 there; it never claims those hooks are already active or already trusted,
-because doctor has no deterministic signal for Codex's own trust state.
+because doctor has no deterministic signal for Codex's own trust state. The
+one fact behind that caution is itself observed, not guessed: on codex-cli
+0.156.1, a hook whose trust was not already persisted was skipped silently
+rather than run (live probe, 2026-09-24; Jira RP-227 comment 20584) — which
+is exactly why the `fix` text stops at "review and trust" and does not
+promise anything about what runs meanwhile.
+
+Neither check inspects everything the name might suggest. Codex project
+trust and Claude Code workspace trust both live in the user's own personal
+harness configuration, outside this repository, and doctor reads only the
+repository — it never opens personal config to check either one. For the
+`github-issues` adapter, `personal-tracker` omits the check entirely (above)
+and nothing else in this run inspects `gh`'s own authentication state.
 
 The status set is closed: ok, warn, fail.
 

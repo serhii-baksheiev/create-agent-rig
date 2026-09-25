@@ -143,9 +143,14 @@ const MAX_PERSONAL_CHECK_BYTES = 64 * 1024;
 /**
  * Required tracker credential env var NAMES, by queue adapter (RP-230).
  * `plan-md` needs nothing and `github-issues` delegates auth entirely to the
- * `gh` CLI, so both map to an empty list — present, not omitted, so a typo'd
- * adapter name is visibly "unknown to this map" rather than silently the same
- * as "needs nothing".
+ * `gh` CLI, so both map to an empty list — spelled out here for a reader of
+ * this map, not because `personalTrackerCheck` tells the two apart at
+ * runtime: a known adapter with an empty list and an adapter name this map
+ * has no entry for both take the same `required === undefined || required
+ * .length === 0` branch below and both omit the check silently (RP-230
+ * round 2 comment fix — an earlier version of this comment claimed the two
+ * were distinguished; they are not). The full list of ways this check omits
+ * itself silently is in `docs/command-contract.md`'s RP-230 subsection.
  *
  * `jira`'s list is a second copy of
  * `templates/agent-os/universal/.claude/scripts/queue/jira.mjs`'s own
@@ -190,7 +195,16 @@ async function personalTrackerCheck(
     typeof (config as { adapter?: unknown }).adapter === 'string'
       ? (config as { adapter: string }).adapter
       : 'plan-md';
-  const required = TRACKER_REQUIRED_ENV[adapter];
+  // `Object.hasOwn` guard (RP-230 round 2, code-reviewer + security-scanner
+  // blocker): `adapter` is a string from a committed, repo-controlled file.
+  // A plain-object index by that string alone resolves an `Object.prototype`
+  // member name (`__proto__`, `constructor`, `hasOwnProperty`, ...) to an
+  // inherited, non-array value instead of `undefined`, which then throws at
+  // `required.filter` below rather than falling through to "nothing to
+  // check".
+  const required = Object.hasOwn(TRACKER_REQUIRED_ENV, adapter)
+    ? TRACKER_REQUIRED_ENV[adapter]
+    : undefined;
   if (required === undefined || required.length === 0) return undefined;
   const missing = required.filter((name) => !env[name]);
   if (missing.length === 0) {
@@ -483,7 +497,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
               : check.id === 'personal-tracker' && trackerMissingVars
                 ? `Set the missing tracker credential environment variable(s): ${trackerMissingVars.join(', ')}.`
                 : check.id === 'codex-hook-trust'
-                  ? "Open Codex's own /hooks view and review the checked-in rig hooks there: a changed, non-managed hook can be skipped until it is re-trusted in that view."
+                  ? "Open Codex's own /hooks view and review and trust the checked-in rig hooks there."
                   : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
                     ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
                     : check.id === 'custom-memory'
