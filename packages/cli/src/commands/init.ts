@@ -475,11 +475,25 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // duplicated: `regions` is not `recordInstall`'s to touch this run
   // (`extraRegions` stays `undefined`), so `previous.regions` is carried
   // forward unchanged by that function's own default.
+  // Round 3, code-reviewer blocker 1: a region-tracked AGENTS.md the user
+  // DELETED, then `init` re-run — the marker-check block below only ever
+  // runs `if (await exists(dest))`, so a deleted path skips it entirely and
+  // falls straight into the ordinary write loop, which writes the whole
+  // rendered rulebook (there is no existing prefix to splice into). That
+  // write is exactly right — this IS a clean-repo install of AGENTS.md now.
+  // What is not right, without this flag, is `previous.regions['AGENTS.md']`
+  // being carried forward stale: `dropStaleRegion` names the path whose
+  // `regions` entry `recordInstall` must drop this run, so the fresh
+  // whole-file write is recorded in `files` (never `regions`, never both).
+  let dropStaleRegion: string[] | undefined;
   let existingAgentsBytes: Buffer | null = null;
   let existingAgentsText: string | null = null;
   let existingAgentsMode: number | null = null;
   {
     const dest = destinations.get(AGENTS_MAP)!;
+    if (!(await exists(dest)) && previous?.regions?.[AGENTS_MAP] !== undefined) {
+      dropStaleRegion = [AGENTS_MAP];
+    }
     if (await exists(dest)) {
       const stat = await lstat(dest).catch(() => null);
       if (stat?.isDirectory()) {
@@ -651,6 +665,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       extraKept,
       dropKept,
       extraRegions,
+      dropStaleRegion,
     );
   }
 
@@ -804,6 +819,16 @@ async function recordInstall(
   // `files` nor `kept` describes it; the generic loops below explicitly skip
   // it and this is where it is recorded instead.
   extraRegions?: Record<string, string>,
+  // Round 3, code-reviewer blocker 1: the opposite finding to `extraRegions`
+  // — a path `previous.regions` still names but THIS run found the region no
+  // longer applies to (the file was deleted, and the generic loop below just
+  // wrote a fresh WHOLE-file rulebook in its place, a clean-repo install in
+  // every sense). Named here, not re-derived: by the time this function
+  // runs, the file already exists again (this run just wrote it), so a
+  // filesystem check here could never tell "still region-tracked" apart from
+  // "freshly whole-file-written" — only `initProject`, which saw the file's
+  // state BEFORE its own writes, knows which one happened.
+  dropRegions?: readonly string[],
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
@@ -813,9 +838,11 @@ async function recordInstall(
   // bookkeeping too — B2's "always left alone, idempotent" behaviour skips
   // it in the generic write loop, which otherwise reads as "the rig saw it
   // and left it" and would start tracking it under `kept` as well, on top
-  // of `regions`.
+  // of `regions`. Round 3: a path THIS run drops from `regions` (see
+  // `dropRegions` above) is excluded from this set too — it just became an
+  // ordinary whole-file write, and `files` is where that belongs.
   const regionTrackedPaths = new Set([
-    ...Object.keys(previous?.regions ?? {}),
+    ...Object.keys(previous?.regions ?? {}).filter((rel) => !(dropRegions ?? []).includes(rel)),
     ...Object.keys(extraRegions ?? {}),
   ]);
   const files = { ...(previous?.files ?? {}) };
@@ -832,7 +859,9 @@ async function recordInstall(
     else kept[rel] = sha256(found);
   }
   for (const rel of dropKept ?? []) delete kept[rel];
-  const regions = { ...(previous?.regions ?? {}), ...(extraRegions ?? {}) };
+  const regions = { ...(previous?.regions ?? {}) };
+  for (const rel of dropRegions ?? []) delete regions[rel];
+  Object.assign(regions, extraRegions ?? {});
   const manifest: RigManifest = {
     version: await packageVersion(),
     kind: previous?.kind ?? 'init',

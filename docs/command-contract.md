@@ -990,10 +990,15 @@ run a region-tracked AGENTS.md is stripped leaves no readable rulebook
 anywhere even though neither side's own verdict looks unclean, and the note
 says so rather than staying silent. The strip itself writes atomically — a
 temp file in the same directory, then a rename over the target, preserving
-the original file's mode — so a hard-linked AGENTS.md is replaced rather
-than written through to whatever else it names (round 2, security-scanner
-A1). See `docs/decisions/agents-md-canonical.md`, "AGENTS.md coexistence —
-the managed region (RP-256 slice 2)".
+the original file's EXACT mode (`fchmod`'d after the write, not merely the
+umask-filtered creation mode `open`'s own third argument gives it — round 3,
+code-reviewer blocker 3; pinned by
+`packages/cli/test/agents-md-region-safety.test.ts`'s describe block "mode
+preserved exactly through init, upgrade and uninstall (round 3, blocker
+3)") — so a hard-linked AGENTS.md is replaced rather than written through to
+whatever else it names (round 2, security-scanner A1). See
+`docs/decisions/agents-md-canonical.md`, "AGENTS.md coexistence — the
+managed region (RP-256 slice 2)".
 
 `remove` is the plan's answer, not a guarantee: a `remove`-verdict path whose
 bytes no longer match the plan's recorded hash when `applyUninstall` actually

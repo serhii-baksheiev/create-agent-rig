@@ -195,6 +195,37 @@ check at all — it is judged by which manifest bucket names it, exactly like
   foreign markers when the manifest records no region at all" (absent in a
   generated rig, same reason as above).
 
+**Round 3 (code-reviewer blocker 1): a region-tracked AGENTS.md the user
+DELETED entirely, then `init` re-run, is a clean-repo install — never a
+stale `regions` entry pointing at nothing.** The marker-check block above
+only ever runs `if (await exists(dest))`; a deleted path skips it entirely
+and falls straight into the ordinary write loop, which writes the whole
+rendered rulebook (there is no prefix left to splice into — this genuinely
+IS a fresh install of AGENTS.md now). The gap round 2 shipped was not in
+that write — `recordInstall`'s `regionTrackedPaths` set carried
+`previous.regions['AGENTS.md']` forward unconditionally, so the fresh
+whole-file write was recorded in NEITHER bucket, and the stale `regions`
+entry survived pointing at a body that no longer exists anywhere. `init`
+now tells `recordInstall` which region-tracked path to DROP this run
+(`dropRegions`, the region-side mirror of the existing `dropKept` — computed
+in `initProject` itself, which alone saw the file's state BEFORE its own
+writes; `recordInstall` cannot re-derive it, because by the time it runs the
+file already exists again, freshly written) — `regionTrackedPaths` excludes
+a dropped path, so the write lands in `files` where an ordinary whole-file
+install belongs, and the stale `regions` entry is deleted rather than
+carried forward. `upgrade` then sees an ordinary rig-owned file (no
+conflict), and `uninstall` removes it as such — the manifest is deleted too,
+outcome `uninstalled`, not held open by a phantom region entry with nothing
+behind it. Pinned by
+`packages/cli/test/agents-md-region-safety.test.ts`'s describe block
+"initProject — a region-tracked AGENTS.md deleted by the user, then re-init
+(round 3, blocker 1)", tests "is treated like a clean repo: the whole
+rulebook is written, recorded under files, and the stale regions entry is
+removed — never both", "upgrade on the same state does not report a
+conflict" and "uninstall removes AGENTS.md as a rig file, never says it
+\"stays as yours\", removes the manifest, and reports outcome uninstalled"
+(absent in a generated rig, same reason as above).
+
 **Round 2 (code-reviewer B4 / security-scanner B2): a user AGENTS.md that is
 not valid UTF-8 is refused outright by `init`, `upgrade` and `uninstall`
 alike — never silently corrupted.** Every one of the four commands that
@@ -225,25 +256,49 @@ B2)", tests "refuses a Latin-1 byte (0xe9) in the prefix …" and "refuses a
 UTF-16LE file with a BOM (ff fe) …" (absent in a generated rig, same reason
 as above).
 
+**Round 3 (code-reviewer blocker 2): the strict decode in `upgrade` and
+`uninstall` — landed in round 2, alongside `init`'s — had no test of its
+own.** Reverting either file's decode call back to a lossy
+`Buffer#toString('utf8')` left every existing test green: the round-2 UTF-8
+tests above exercise `initProject` only. Round 3 adds a PLAN-TIME test for
+each command (a Latin-1 byte already sitting in the file when `planUpgrade`/
+`planUninstall` first reads it) and an APPLY-TIME test for each (a valid file
+at plan time, with the invalid byte injected into the region body between
+plan and apply — the confirmation-prompt window the apply-time re-check
+exists for), each asserting the verdict AND the sha256 before and after.
+A byte injected into the region body cannot tell the two decodes apart: it
+changes the body's hash either way, so the apply-time check reports it
+whether the decode is strict or lossy. The apply-time decode is therefore
+pinned by a byte injected into the PREFIX instead, outside the region, where
+the body hash still matches. A lossy decode there would rewrite the prefix
+with U+FFFD; the strict one leaves the file byte-identical and reports it
+changed since planning. Reverting `upgrade.ts`'s or `uninstall.ts`'s
+apply-time decode to `toString('utf8')` turns that prefix test red. All of
+this is pinned by `packages/cli/test/agents-md-region-upgrade.test.ts`'s describe
+block "planUpgrade / applyUpgrade — a non-UTF-8 byte in the region file is
+refused, never corrupted (round 3, blocker 2)" and
+`packages/cli/test/agents-md-region-uninstall.test.ts`'s describe block
+"planUninstall / applyUninstall — a non-UTF-8 byte in the region file is
+refused, never corrupted (round 3, blocker 2)" (absent in a generated rig,
+same reason as above).
+
 **Round 2 (security-scanner A1): every write to the user's own AGENTS.md is
 atomic, and a hard link is replaced rather than written through.** `init`'s
 append, `upgrade`'s refresh and `uninstall`'s strip all go through
 `atomicWriteInRepo` (`packages/cli/src/lib/atomic-write.ts`, mirroring
 `commands/integrations.ts`'s own `atomicWrite`, around lines 172-197): a temp
-file in the SAME directory, `wx`-created at the ORIGINAL file's own mode (so
-an atomic rewrite never silently changes a user's file permissions), fully
-written, then `rename`d over the destination — re-checking
-`resolveWritableInside` before the rename too, in case the destination
-itself was swapped for something unsafe in the meantime. `rename` replaces
-the directory ENTRY at the destination with the temp file's own inode; it
-never opens or truncates whatever inode the destination used to name, which
-is what keeps a HARD LINK safe — a second directory entry elsewhere on the
-same filesystem, pointing at the very same data the old entry did, keeps
-pointing at the ORIGINAL bytes, untouched. A plain truncate-then-write
-`writeFile` (what every one of these three call sites did before round 2)
-follows the path and mutates that shared inode in place, which every other
-name for it would observe too — reproduced end to end for all three
-commands. Pinned by
+file in the SAME directory, `wx`-created, fully written, then `rename`d over
+the destination — re-checking `resolveWritableInside` before the rename too,
+in case the destination itself was swapped for something unsafe in the
+meantime. `rename` replaces the directory ENTRY at the destination with the
+temp file's own inode; it never opens or truncates whatever inode the
+destination used to name, which is what keeps a HARD LINK safe — a second
+directory entry elsewhere on the same filesystem, pointing at the very same
+data the old entry did, keeps pointing at the ORIGINAL bytes, untouched. A
+plain truncate-then-write `writeFile` (what every one of these three call
+sites did before round 2) follows the path and mutates that shared inode in
+place, which every other name for it would observe too — reproduced end to
+end for all three commands. Pinned by
 `packages/cli/test/agents-md-region-safety.test.ts`'s describe block "atomic
 write — a hard-linked AGENTS.md is never written through to its outside
 target (round 2, security A1)", tests "init does not write through the hard
@@ -253,6 +308,43 @@ above). A residual race remains between the last `resolveWritableInside`
 check and the `rename` itself — a check-then-act sequence over the
 filesystem cannot close that window entirely, the same limit `uninstall.ts`'s
 own manifest-deletion checkpoint already documents for the identical shape.
+
+**Round 3 (code-reviewer blocker 3): the original file's mode is preserved
+EXACTLY, by `fchmod`, not merely passed as the temp file's creation mode.**
+`open(2)`'s creation mode — what round 2's `open(temporary, 'wx', mode)`
+alone relied on — is ANDed with `~umask` by the kernel, so under an ordinary
+`umask 022` a requested `0o664` silently became `0o644` (the group-write bit
+dropped): the round-2 wording claimed mode preservation without actually
+achieving it, and no test pinned the claim. `atomicWriteInRepo` now calls
+`handle.chmod(mode)` — `fchmod(2)`, which sets the mode bits given, verbatim,
+and is never filtered by the umask — immediately after the write, before the
+rename. This never WIDENS what the original file had: every caller passes
+only the original `stat().mode & 0o777`, so setuid, setgid and the sticky
+bit (bits above `0o777`) are never read from the original file in the first
+place, and `atomicWriteInRepo` never sets them either — dropped, not
+"preserved as zero", and the `0o644` default for a destination that does not
+exist yet carries none of them. Pinned by
+`packages/cli/test/agents-md-region-safety.test.ts`'s describe block "mode
+preserved exactly through init, upgrade and uninstall (round 3, blocker 3)",
+tests "preserves mode 664 exactly under umask 0o022, through init, upgrade
+and uninstall" and "preserves mode 600 exactly under umask 0o022, through
+init, upgrade and uninstall" — the `664` case is the one that actually
+distinguishes `fchmod` from the umask-filtered creation mode alone; `600` is
+unaffected by `umask 022` either way, and is kept as the parallel case
+regardless (absent in a generated rig, same reason as above).
+
+**Round 3 advisory (code-reviewer A3): a Windows rename over a file another
+process holds open, without `FILE_SHARE_DELETE`, can fail where the in-place
+write it replaced would not have.** `commands/integrations.ts`'s own
+`atomicWrite` already makes this same trade-off for its own writes, and
+`atomicWriteInRepo` inherits it rather than avoiding it. A failed rename here
+is never a partial write, though: a rename is one filesystem-metadata
+operation, not a copy, so the destination is left completely untouched, and
+`atomicWriteInRepo`'s own `finally` block unlinks the now-orphaned temp file
+either way — a failure surfaces as an ordinary command error (the write
+simply did not happen this run), not as data loss or a stray temp file left
+for the user to find. Not probed on an actual Windows host; stated as the
+known trade-off, not measured.
 
 **The manifest tracks the region separately from an ordinary file.**
 `RigManifest.regions['AGENTS.md']` is the sha256 of the region BODY alone —

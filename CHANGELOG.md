@@ -57,9 +57,14 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   `uninstall` alike. Every write to the user's own AGENTS.md (`init`'s
   append, `upgrade`'s refresh, `uninstall`'s strip) is now atomic — a temp
   file in the same directory, then a rename over the target, preserving the
-  original file's mode — so a hard-linked AGENTS.md is replaced rather than
-  written through to whatever else it names, and a crash mid-write can never
-  leave it partially truncated. `upgrade` refreshes an unedited region and
+  original file's EXACT mode (set with `fchmod` after the write, so an
+  ordinary process umask can never silently narrow it) — so a hard-linked
+  AGENTS.md is replaced rather than written through to whatever else it
+  names, and a crash mid-write can never leave it partially truncated. A
+  region-tracked AGENTS.md the user deletes entirely and re-runs `init` over
+  is treated as a clean-repo install — the whole rulebook is written,
+  recorded under `files` (never left recorded under the now-stale `regions`
+  entry, and never both). `upgrade` refreshes an unedited region and
   reports an edited one as an ordinary quiet conflict, never merging over
   it — re-verified immediately before it writes, not trusted from the plan:
   an edit landing inside the region (or its markers going missing) between

@@ -6,7 +6,12 @@ import { initProject, projectNameFor } from '../src/commands/init.js';
 import { applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import { agentOsUniversalDir } from '../src/templates.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
-import { REGION_BEGIN, composeRegion, sha256 } from '../../../test/helpers/agents-md-region.js';
+import {
+  REGION_BEGIN,
+  REGION_END,
+  composeRegion,
+  sha256,
+} from '../../../test/helpers/agents-md-region.js';
 
 /**
  * RP-256 slice 2 — `upgrade` splices only the AGENTS.md managed region.
@@ -213,6 +218,49 @@ describe('applyUpgrade — AGENTS.md region re-verified at apply time (data-loss
       (result as unknown as { changedSincePlanning?: string[] }).changedSincePlanning ?? [];
     expect(changedSincePlanning).toContain('AGENTS.md');
   });
+
+  // Round 3, follow-up — a mutation run found the body-injection test above
+  // does not discriminate: the invalid byte changes the BODY's bytes, so
+  // `sha256(located.body) !== action.recordedHash` fails the hash check on
+  // its own, regardless of whether the decode itself was strict or lossy —
+  // reverting `decodeStrictUtf8` back to a lossy `toString('utf8')` at
+  // `upgrade.ts:1293` leaves this test green either way. The PREFIX is
+  // outside the region and is normally CARRIED THROUGH untouched (edits
+  // there are allowed) — injecting the invalid byte there instead leaves
+  // the region's own body byte-for-byte unchanged, so a lossy decode would
+  // still find `sha256(located.body) === action.recordedHash` (the body was
+  // never touched) and proceed to WRITE the composed file, silently
+  // corrupting the prefix (`0xe9` becomes `EF BF BD`) in the process. Only
+  // the strict decode refuses the WHOLE buffer on ANY invalid byte,
+  // regardless of where it sits, which is what actually discriminates the
+  // fix from the mutation.
+  it('apply time: a Latin-1 byte (0xe9) injected into the PREFIX (outside the region) between plan and apply leaves the file byte-identical, and is reported changed since planning', async () => {
+    await installThenSimulateRegion(USER_PREFIX, OLD_BODY);
+    const plan = await planUpgrade(repo);
+    const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(action?.verdict, 'fixture: expected an update at plan time').toBe('update');
+
+    const invalidPrefix = Buffer.concat([
+      Buffer.from('# Team notes\nKeep this section exactly as it is', 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from('\n', 'utf8'),
+    ]);
+    const invalidFile = Buffer.concat([
+      invalidPrefix,
+      Buffer.from(`\n${REGION_BEGIN}\n${OLD_BODY}${REGION_END}\n`, 'utf8'),
+    ]);
+    await writeFile(agentsMdPath(), invalidFile);
+    const shaBefore = sha256(invalidFile);
+
+    const result = await applyUpgrade(repo, plan);
+
+    const onDisk = await readFile(agentsMdPath());
+    expect(onDisk.equals(invalidFile)).toBe(true);
+    expect(sha256(onDisk)).toBe(shaBefore);
+    const changedSincePlanning =
+      (result as unknown as { changedSincePlanning?: string[] }).changedSincePlanning ?? [];
+    expect(changedSincePlanning).toContain('AGENTS.md');
+  });
 });
 
 /**
@@ -243,5 +291,83 @@ describe('applyUpgrade — a user suffix appended after the end marker survives 
     const onDisk = await readFile(agentsMdPath(), 'utf8');
     expect(onDisk).toBe(composeRegion(USER_PREFIX, newBody, SUFFIX));
     expect(onDisk.endsWith(SUFFIX)).toBe(true);
+  });
+});
+
+/**
+ * RP-256 slice 2, round 3, blocker 2 (code-reviewer): the strict-UTF-8
+ * decode `planAgentsMdRegion` (plan time) and `applyUpgrade`'s apply-time
+ * re-verification (`upgrade.ts:546`, `:1293`) both use landed in round 2,
+ * with no test exercising `upgrade` at all — reverting either site back to a
+ * lossy `Buffer#toString('utf8')` left the whole suite green. These pin
+ * both the plan-time path (the file is already non-UTF-8 when `planUpgrade`
+ * reads it) and the apply-time path (the file is valid UTF-8 at plan time,
+ * and the invalid byte is injected between plan and apply — the
+ * confirmation-prompt window the apply-time re-check exists for), each
+ * asserting the sha256 before and after alongside the verdict.
+ */
+describe('planUpgrade / applyUpgrade — a non-UTF-8 byte in the region file is refused, never corrupted (round 3, blocker 2)', () => {
+  const USER_PREFIX = '# Team notes\nKeep this section exactly as it is.\n';
+  const OLD_BODY = '# OLD RULEBOOK BODY — a fake stand-in for a previous release\n';
+
+  /** `composeRegion`'s own byte layout, but built on Buffers so a raw
+   * invalid byte can sit anywhere in `userBytes` without JS string decoding
+   * ever touching it. */
+  function composeRegionBytes(userBytes: Buffer, body: string): Buffer {
+    return Buffer.concat([
+      userBytes,
+      Buffer.from(`\n${REGION_BEGIN}\n${body}${REGION_END}\n`, 'utf8'),
+    ]);
+  }
+
+  it('plan time: a Latin-1 byte (0xe9) already in the prefix is a conflict, and the bytes are left byte-identical', async () => {
+    await installThenSimulateRegion(USER_PREFIX, OLD_BODY);
+    const invalidPrefix = Buffer.concat([
+      Buffer.from('# caf', 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from('\n', 'utf8'),
+    ]);
+    const invalidFile = composeRegionBytes(invalidPrefix, OLD_BODY);
+    await writeFile(agentsMdPath(), invalidFile);
+    const shaBefore = sha256(invalidFile);
+
+    const plan = await planUpgrade(repo);
+    const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(action?.verdict).toBe('conflict');
+
+    await applyUpgrade(repo, plan);
+
+    const onDisk = await readFile(agentsMdPath());
+    expect(onDisk.equals(invalidFile)).toBe(true);
+    expect(sha256(onDisk)).toBe(shaBefore);
+  });
+
+  it('apply time: a Latin-1 byte (0xe9) injected into the region body between plan and apply is never written, and the result reports it changed since planning', async () => {
+    await installThenSimulateRegion(USER_PREFIX, OLD_BODY);
+    const plan = await planUpgrade(repo);
+    const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(action?.verdict, 'fixture: expected an update at plan time').toBe('update');
+
+    const invalidBody = Buffer.concat([
+      Buffer.from(OLD_BODY, 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from('\n', 'utf8'),
+    ]);
+    const invalidFile = Buffer.concat([
+      Buffer.from(`${USER_PREFIX}\n${REGION_BEGIN}\n`, 'utf8'),
+      invalidBody,
+      Buffer.from(`${REGION_END}\n`, 'utf8'),
+    ]);
+    await writeFile(agentsMdPath(), invalidFile);
+    const shaBefore = sha256(invalidFile);
+
+    const result = await applyUpgrade(repo, plan);
+
+    const onDisk = await readFile(agentsMdPath());
+    expect(onDisk.equals(invalidFile)).toBe(true);
+    expect(sha256(onDisk)).toBe(shaBefore);
+    const changedSincePlanning =
+      (result as unknown as { changedSincePlanning?: string[] }).changedSincePlanning ?? [];
+    expect(changedSincePlanning).toContain('AGENTS.md');
   });
 });

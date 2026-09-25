@@ -201,3 +201,117 @@ describe('applyUninstall — a user suffix appended after the end marker survive
     expect(onDisk).not.toContain(REGION_END);
   });
 });
+
+/**
+ * RP-256 slice 2, round 3, blocker 2 (code-reviewer): the strict-UTF-8
+ * decode `planUninstall` (plan time, `uninstall.ts:1214`) and its apply-time
+ * region re-verification (`uninstall.ts:1686`) both use landed in round 2,
+ * with no test exercising `uninstall` at all — reverting either site back to
+ * a lossy `Buffer#toString('utf8')` left the whole suite green. These pin
+ * both the plan-time path (the file is already non-UTF-8 when `planUninstall`
+ * reads it) and the apply-time path (the file is valid UTF-8 at plan time,
+ * and the invalid byte is injected between plan and apply), each asserting
+ * the sha256 before and after alongside the verdict.
+ */
+describe('planUninstall / applyUninstall — a non-UTF-8 byte in the region file is refused, never corrupted (round 3, blocker 2)', () => {
+  const VALID_PREFIX = '# team notes\n';
+
+  function composeRegionBytes(userBytes: Buffer, body: string): Buffer {
+    return Buffer.concat([
+      userBytes,
+      Buffer.from(`\n${REGION_BEGIN}\n${body}${REGION_END}\n`, 'utf8'),
+    ]);
+  }
+
+  it('plan time: a Latin-1 byte (0xe9) already in the prefix is preserved, and the bytes are left byte-identical', async () => {
+    await installThenSimulateRegion(VALID_PREFIX);
+    const body = await renderBody(projectNameFor(repo));
+    const invalidPrefix = Buffer.concat([
+      Buffer.from('# caf', 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from('\n', 'utf8'),
+    ]);
+    const invalidFile = composeRegionBytes(invalidPrefix, body);
+    await writeFile(agentsMdPath(), invalidFile);
+    const shaBefore = sha256(invalidFile);
+
+    const plan = await planUninstall(repo);
+    const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(action?.verdict).toBe('preserved');
+
+    await applyUninstall(repo, plan);
+
+    const onDisk = await readFile(agentsMdPath());
+    expect(onDisk.equals(invalidFile)).toBe(true);
+    expect(sha256(onDisk)).toBe(shaBefore);
+  });
+
+  it('apply time: a Latin-1 byte (0xe9) injected into the region body between plan and apply is never written, and the result reports it changed since planning', async () => {
+    await installThenSimulateRegion(VALID_PREFIX);
+    const plan = await planUninstall(repo);
+    const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(action?.verdict, 'fixture: expected remove at plan time').toBe('remove');
+
+    const body = await renderBody(projectNameFor(repo));
+    const invalidBody = Buffer.concat([
+      Buffer.from(body, 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from('\n', 'utf8'),
+    ]);
+    const invalidFile = Buffer.concat([
+      Buffer.from(`${VALID_PREFIX}\n${REGION_BEGIN}\n`, 'utf8'),
+      invalidBody,
+      Buffer.from(`${REGION_END}\n`, 'utf8'),
+    ]);
+    await writeFile(agentsMdPath(), invalidFile);
+    const shaBefore = sha256(invalidFile);
+
+    const result = await applyUninstall(repo, plan);
+
+    const onDisk = await readFile(agentsMdPath());
+    expect(onDisk.equals(invalidFile)).toBe(true);
+    expect(sha256(onDisk)).toBe(shaBefore);
+    expect(result.changedSincePlanning ?? []).toContain('AGENTS.md');
+  });
+
+  // Round 3, follow-up — a mutation run found the body-injection test above
+  // does not discriminate: the invalid byte changes the BODY's bytes, so
+  // `sha256(located.body) !== recordedHash` fails the hash check on its own,
+  // regardless of whether the decode itself was strict or lossy — reverting
+  // `decodeStrictUtf8` back to a lossy `toString('utf8')` at
+  // `uninstall.ts:1686` leaves this test green either way. The PREFIX is
+  // outside the region and is normally CARRIED THROUGH untouched (edits
+  // there are allowed) — injecting the invalid byte there instead leaves the
+  // region's own body byte-for-byte unchanged, so a lossy decode would still
+  // find `sha256(located.body) === recordedHash` (the body was never
+  // touched) and proceed to WRITE the stripped file, silently corrupting the
+  // prefix (`0xe9` becomes `EF BF BD`) in the process. Only the strict
+  // decode refuses the WHOLE buffer on ANY invalid byte, regardless of where
+  // it sits, which is what actually discriminates the fix from the mutation.
+  it('apply time: a Latin-1 byte (0xe9) injected into the PREFIX between plan and apply leaves the file byte-identical, and is preserved / reported changed since planning', async () => {
+    await installThenSimulateRegion(VALID_PREFIX);
+    const plan = await planUninstall(repo);
+    const action = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(action?.verdict, 'fixture: expected remove at plan time').toBe('remove');
+
+    const body = await renderBody(projectNameFor(repo));
+    const invalidPrefix = Buffer.concat([
+      Buffer.from('# team not', 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from('s\n', 'utf8'),
+    ]);
+    const invalidFile = Buffer.concat([
+      invalidPrefix,
+      Buffer.from(`\n${REGION_BEGIN}\n${body}${REGION_END}\n`, 'utf8'),
+    ]);
+    await writeFile(agentsMdPath(), invalidFile);
+    const shaBefore = sha256(invalidFile);
+
+    const result = await applyUninstall(repo, plan);
+
+    const onDisk = await readFile(agentsMdPath());
+    expect(onDisk.equals(invalidFile)).toBe(true);
+    expect(sha256(onDisk)).toBe(shaBefore);
+    expect(result.changedSincePlanning ?? []).toContain('AGENTS.md');
+  });
+});

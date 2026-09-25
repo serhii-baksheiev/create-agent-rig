@@ -253,6 +253,24 @@ describe('initProject — re-running init on an already region-tracked AGENTS.md
     expect((result as unknown as { written: string[] }).written).not.toContain('AGENTS.md');
   });
 
+  // Round 3 advisory A1 (code-reviewer): the idempotence test above checks
+  // `regions` and `written`, but not `kept` — the mutation removing
+  // `previous.regions` from `regionTrackedPaths` (`init.ts:818`) stays
+  // green without this, because a reverted re-run records `kept['AGENTS.md']`
+  // ALONGSIDE `regions['AGENTS.md']`, and nothing was asserting `kept` is
+  // absent. A region-tracked AGENTS.md has exactly one bucket: `regions`.
+  it('does not add AGENTS.md to `kept` on re-init — the manifest has exactly one bucket for it: `regions`', async () => {
+    await writeFile(path.join(repo, 'AGENTS.md'), USER_PREFIX);
+    await initProject(repo, {});
+
+    await initProject(repo, {});
+
+    const raw = (await readRawManifest()) as RawManifestShape;
+    expect(raw.regions?.['AGENTS.md']).toBeDefined();
+    expect(raw.kept?.['AGENTS.md']).toBeUndefined();
+    expect(raw.files?.['AGENTS.md']).toBeUndefined();
+  });
+
   it('does not refuse, and does not duplicate the region, when the user edited it themselves — left alone, byte-identical, like any other kept file', async () => {
     await writeFile(path.join(repo, 'AGENTS.md'), USER_PREFIX);
     await initProject(repo, {});
