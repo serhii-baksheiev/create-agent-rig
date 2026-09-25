@@ -1,4 +1,4 @@
-import { lstat, readFile, readdir, realpath, rmdir, unlink, writeFile } from 'node:fs/promises';
+import { lstat, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { initManifest, NESTED_CLAUDE } from './init.js';
 import { AGENTS_MD_RESCUE, renderedAgentsMd } from './upgrade.js';
@@ -7,7 +7,12 @@ import { ALL_LAYERS, MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest
 import type { RigManifest } from '../lib/manifest.js';
 import { MAX_PATH_SEGMENTS, exceedsMaxPathSegments, resolveInside } from '../lib/safe-path.js';
 import { readBoundedFileInRepo } from '../lib/bounded-file.js';
-import { locateRegion, MAX_AGENTS_MD_REGION_BYTES } from '../lib/agents-md-region.js';
+import {
+  decodeStrictUtf8,
+  locateRegion,
+  MAX_AGENTS_MD_REGION_BYTES,
+} from '../lib/agents-md-region.js';
+import { atomicWriteInRepo } from '../lib/atomic-write.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class UninstallError extends Error {}
@@ -1203,7 +1208,11 @@ export async function planUninstall(
       onDisk(repoDir, rel),
       MAX_AGENTS_MD_REGION_BYTES,
     );
-    const located = current === null ? null : locateRegion(current.toString('utf8'));
+    // Round 2, code-reviewer B4 / security-scanner B2: strict decode, not a
+    // lossy `Buffer#toString('utf8')` — non-UTF-8 bytes are treated the same
+    // as a malformed region.
+    const decoded = current === null ? null : decodeStrictUtf8(current);
+    const located = decoded === null ? null : locateRegion(decoded);
     if (located === null || sha256(located.body) !== recordedHash) {
       actions.push({
         rel,
@@ -1212,9 +1221,11 @@ export async function planUninstall(
           current === null
             ? 'too large, not a plain file, or resolves outside the repo — the managed region ' +
               'cannot be verified; left untouched'
-            : located === null
-              ? 'the managed region markers are missing or malformed — left untouched'
-              : 'the managed region was edited since it was installed — treated as yours',
+            : decoded === null
+              ? 'AGENTS.md is not valid UTF-8 — the managed region cannot be verified; left untouched'
+              : located === null
+                ? 'the managed region markers are missing or malformed — left untouched'
+                : 'the managed region was edited since it was installed — treated as yours',
       });
       continue;
     }
@@ -1665,12 +1676,15 @@ export async function applyUninstall(
         // delete the file — re-verified the same way the plan itself checked
         // it (the confirmation-prompt window is exactly where a hand edit
         // could land), against the region BODY's hash, not the whole file's.
-        const current = await readBoundedFileInRepo(
-          repoDir,
-          onDisk(repoDir, rel),
-          MAX_AGENTS_MD_REGION_BYTES,
-        );
-        const located = current === null ? null : locateRegion(current.toString('utf8'));
+        const dest = onDisk(repoDir, rel);
+        const currentStat = await lstat(dest).catch(() => null);
+        const current = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
+        // Round 2, code-reviewer B4 / security-scanner B2: strict decode —
+        // bytes that are not valid UTF-8 cannot be safely re-composed as a
+        // string, so they are treated the same as a malformed region:
+        // refused, reported changed-since-planning, never rewritten.
+        const decoded = current === null ? null : decodeStrictUtf8(current);
+        const located = decoded === null ? null : locateRegion(decoded);
         if (
           located === null ||
           recordedHash === undefined ||
@@ -1679,7 +1693,26 @@ export async function applyUninstall(
           changedSincePlanning.push(rel);
           continue;
         }
-        await writeFile(onDisk(repoDir, rel), located.userBytes);
+        // Round 2, code-reviewer B1 / security-scanner B1: `located.suffix`
+        // — content appended AFTER the end marker's own line — survives the
+        // strip too, concatenated directly onto the prefix with no
+        // separator inserted (mirrors `stripRegion` in `agents-md-region.ts`).
+        const restored = `${located.userBytes}${located.suffix}`;
+        // Round 2, security-scanner A1: atomic — a temp file in the same
+        // directory, then a rename, so a hard-linked AGENTS.md is replaced
+        // rather than written through, and the original file's own mode is
+        // preserved rather than defaulted.
+        const result = await atomicWriteInRepo(
+          repoDir,
+          rel,
+          Buffer.from(restored, 'utf8'),
+          currentStat !== null ? currentStat.mode & 0o777 : 0o644,
+        );
+        if (!result.ok) {
+          throw new Error(
+            `refusing to strip the managed region from "${rel}": it resolves outside ${repoDir} or through a symlink`,
+          );
+        }
         removed.push(rel);
         continue;
       }

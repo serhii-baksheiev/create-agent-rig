@@ -112,16 +112,147 @@ endings" and "strips exactly the region and leaves the user prefix
 byte-identical when the prefix already ends in a newline" (absent in a
 generated rig, same reason as above).
 
-**The one refusal that remains is markers `init` cannot safely merge with**
-— a well-formed region already there, or a malformed fragment of one (an
-unterminated begin, a stray end, two begins) — refused the same way slice 1's
-blanket refusal was: `InitError`, non-zero exit, nothing written, and never
-suggesting `upgrade` (there is no rig installed yet for it to refresh).
-Pinned by `packages/cli/test/agents-md-region-init.test.ts`'s describe block
-"refuses foreign or malformed markers, writing nothing" and by
+**Round 2 (code-reviewer B1 / security-scanner B1): content the user appends
+AFTER the end marker's own line survives too, byte-for-byte, through every
+refresh and every strip.** The natural place to add a new section to a file
+that already has one is at the bottom — below the end marker, not inside the
+region. `locateRegion` (`agents-md-region.ts`) returns this as `suffix`:
+everything after the end marker's own trailing `"\n"`, or `''` when that line
+is the last thing in the file. `composeRegion` takes a third, optional
+`suffix` parameter and appends it immediately after the end marker's own
+newline, verbatim, with no further separator inserted; `init`'s append,
+`upgrade`'s refresh and `uninstall`'s strip all read and re-emit it. `doctor`
+never had to change: its own check only ever hashes `locateRegion(...).body`
+against the manifest, so a suffix never made an otherwise-intact region read
+as unhealthy in the first place — pinned as an explicit regression guard
+rather than a fix. Pinned by
+`packages/cli/test/agents-md-region-upgrade.test.ts`'s test "carries the
+suffix through byte-for-byte while refreshing the region",
+`packages/cli/test/agents-md-region-uninstall.test.ts`'s test "keeps the
+suffix: prefix + suffix restored exactly, with no region left behind", and
+`packages/cli/test/agents-md-region-doctor.test.ts`'s test "still reports the
+region healthy when the body is intact and a suffix follows the end marker"
+(absent in a generated rig, same reason as above).
+
+**The one refusal that remains is markers `init` cannot safely merge with,
+on a FOREIGN AGENTS.md — one neither of this rig's own manifest buckets
+already names.** A well-formed region already there, or a malformed fragment
+of one (an unterminated begin, a stray end, two begins), is refused the same
+way slice 1's blanket refusal was: `InitError`, non-zero exit, nothing
+written, and never suggesting `upgrade` (there is no rig installed yet for
+it to refresh). Pinned by
+`packages/cli/test/agents-md-region-init.test.ts`'s describe block "refuses
+foreign or malformed markers, writing nothing" and by
 `packages/cli/test/init.test.ts`'s test "an AGENTS.md with malformed or
 foreign markers is still refused, writing nothing, without looping into the
 upgrade refusal" (absent in a generated rig, same reason as above).
+
+**Round 2 (code-reviewer B2/B3): re-running `init` on an AGENTS.md THIS
+rig's own manifest already names is never routed through that foreign-marker
+check at all — it is judged by which manifest bucket names it, exactly like
+`init` already treats every other tracked-or-kept path.**
+- **Already region-tracked** (`manifest.regions['AGENTS.md']` from an earlier
+  run) — always left alone: idempotent when unedited (exit 0, bytes
+  unchanged, the `regions` hash unchanged), and never refused, never
+  duplicated, when the user has since edited inside it either — the same
+  "left alone, edited or not" treatment `kept` already gives a file `init`
+  found and never wrote. `recordInstall` (`init.ts`) never touches `regions`
+  on this path (no `extraRegions` this run), so `previous.regions` carries
+  forward unchanged by that function's own default; it is also excluded from
+  the generic `kept`-tracking loop, which would otherwise have started
+  vouching for it under `kept` too, on top of `regions` (a defect this round
+  found and closed in the same change, not merely in the region-append
+  path). Pinned by
+  `packages/cli/test/agents-md-region-init.test.ts`'s describe block
+  "initProject — re-running init on an already region-tracked AGENTS.md
+  (round 2, B2)", tests "is idempotent when the region is unedited: exit 0,
+  AGENTS.md bytes unchanged, and the regions hash unchanged" and "does not
+  refuse, and does not duplicate the region, when the user edited it
+  themselves — left alone, byte-identical, like any other kept file" (absent
+  in a generated rig, same reason as above).
+- **Already a whole-file rig-owned AGENTS.md** (`manifest.files['AGENTS.md']`
+  — the pre-slice-2 shape, or a clean install this same release did) — keeps
+  the EXACT pre-slice-2 behaviour, unchanged: unedited is left alone
+  (idempotent, `skipped`), edited is refused outright, exactly as every
+  release before this slice already did. Never routed into the
+  foreign-marker check either: this rig's own rendered rulebook carries no
+  region markers at all, so that check would otherwise silently accept an
+  EDITED whole-file rulebook as a foreign prefix and append a SECOND copy of
+  the rulebook underneath the edited first one — measured as the regression
+  this guards against (15,460 bytes growing to 30,991, with AGENTS.md
+  recorded under both `files` and `regions` at once, which `planUninstall`
+  then read as two separate, conflicting actions for the same path). Pinned
+  by `packages/cli/test/agents-md-region-init.test.ts`'s describe block
+  "initProject — re-running init after the user edits a rig-owned WHOLE-FILE
+  AGENTS.md (round 2, B3)", test "is still refused, as before this PR — no
+  region is appended, and AGENTS.md is never recorded in both files and
+  regions" (absent in a generated rig, same reason as above).
+- **Genuinely foreign** (neither bucket names it) — the ordinary
+  first-install path above: markers refuse, otherwise the region is
+  appended. Restated explicitly next to the two cases above that must NOT
+  refuse the same way, by
+  `packages/cli/test/agents-md-region-init.test.ts`'s test "still refuses
+  foreign markers when the manifest records no region at all" (absent in a
+  generated rig, same reason as above).
+
+**Round 2 (code-reviewer B4 / security-scanner B2): a user AGENTS.md that is
+not valid UTF-8 is refused outright by `init`, `upgrade` and `uninstall`
+alike — never silently corrupted.** Every one of the four commands that
+reads this file decodes it with `new TextDecoder('utf-8', { fatal: true,
+ignoreBOM: true })` (`decodeStrictUtf8`, `packages/cli/src/lib/agents-md-
+region.ts`) — `doctor`'s own `text()` already decoded this way before round
+2; the other three did not, and a lossy `Buffer#toString('utf8')` silently
+turns an invalid byte into `U+FFFD` (`EF BF BD` once re-encoded), which is
+not the byte that was there. `ignoreBOM: true` matters for more than habit:
+a leading UTF-8 BOM (`EF BB BF`) is a legitimate three-byte UTF-8 encoding of
+U+FEFF, decoded AS that character rather than stripped, so re-encoding the
+returned string reproduces the original bytes exactly — which is also why a
+UTF-8 BOM plus CRLF file round-trips exactly through `init` → `upgrade` →
+`uninstall` unchanged, pinned end-to-end by
+`packages/cli/test/agents-md-region-safety.test.ts`'s test "round-trips the
+BOM and CRLF bytes exactly, with no corruption at any step". A genuinely
+non-UTF-8 prefix — Latin-1, or UTF-16LE with its BOM (`FF FE`, exactly what
+Windows PowerShell 5.1's `echo … > AGENTS.md` writes) — is never valid UTF-8
+lead-byte data, so `fatal: true` refuses it with no special-case BOM
+detection needed: `init` exits non-zero, writes nothing, and the message
+names AGENTS.md and says it is not UTF-8; `upgrade` reports the same file as
+an ordinary `conflict` and `uninstall` as `preserved`, in both cases the
+"left untouched, never rewritten" path each already has for a malformed
+region. Pinned by
+`packages/cli/test/agents-md-region-init.test.ts`'s describe block
+"initProject — a user AGENTS.md that is not valid UTF-8 (round 2, B4/security
+B2)", tests "refuses a Latin-1 byte (0xe9) in the prefix …" and "refuses a
+UTF-16LE file with a BOM (ff fe) …" (absent in a generated rig, same reason
+as above).
+
+**Round 2 (security-scanner A1): every write to the user's own AGENTS.md is
+atomic, and a hard link is replaced rather than written through.** `init`'s
+append, `upgrade`'s refresh and `uninstall`'s strip all go through
+`atomicWriteInRepo` (`packages/cli/src/lib/atomic-write.ts`, mirroring
+`commands/integrations.ts`'s own `atomicWrite`, around lines 172-197): a temp
+file in the SAME directory, `wx`-created at the ORIGINAL file's own mode (so
+an atomic rewrite never silently changes a user's file permissions), fully
+written, then `rename`d over the destination — re-checking
+`resolveWritableInside` before the rename too, in case the destination
+itself was swapped for something unsafe in the meantime. `rename` replaces
+the directory ENTRY at the destination with the temp file's own inode; it
+never opens or truncates whatever inode the destination used to name, which
+is what keeps a HARD LINK safe — a second directory entry elsewhere on the
+same filesystem, pointing at the very same data the old entry did, keeps
+pointing at the ORIGINAL bytes, untouched. A plain truncate-then-write
+`writeFile` (what every one of these three call sites did before round 2)
+follows the path and mutates that shared inode in place, which every other
+name for it would observe too — reproduced end to end for all three
+commands. Pinned by
+`packages/cli/test/agents-md-region-safety.test.ts`'s describe block "atomic
+write — a hard-linked AGENTS.md is never written through to its outside
+target (round 2, security A1)", tests "init does not write through the hard
+link", "upgrade does not write through the hard link" and "uninstall does
+not write through the hard link" (absent in a generated rig, same reason as
+above). A residual race remains between the last `resolveWritableInside`
+check and the `rename` itself — a check-then-act sequence over the
+filesystem cannot close that window entirely, the same limit `uninstall.ts`'s
+own manifest-deletion checkpoint already documents for the identical shape.
 
 **The manifest tracks the region separately from an ordinary file.**
 `RigManifest.regions['AGENTS.md']` is the sha256 of the region BODY alone —
@@ -174,9 +305,27 @@ writing:
   reported on `UpgradeResult.changedSincePlanning?: string[]`, the same field
   name `ApplyUninstallResult` already uses for the identical concept
   (`.claude/rules/invariants.md`, "one spelling of a fact") — printed by the
-  CLI the same run, and the manifest's own `regions['AGENTS.md']` entry is
-  written back to the OLD hash rather than left vouching for a body this run
-  never actually wrote.
+  CLI the same run (without promising a refresh a re-run may not actually
+  give — round 2, code-reviewer advisory A3: an edit OUTSIDE the region
+  refreshes cleanly on the next run, but an edit INSIDE it reports an
+  ordinary `conflict` instead, so the message says only that a re-run will
+  show the current status, not that it will refresh), and the manifest's own
+  `regions['AGENTS.md']` entry is written back to the OLD hash rather than
+  left vouching for a body this run never actually wrote.
+
+**Round 2 (security-scanner A2): the new body is rendered BEFORE the
+apply-time re-read, not after.** Rendering is template I/O, and the body it
+produces depends only on the project/layers this manifest already carries
+forward — never on the file the re-read is about to look at — so awaiting it
+BETWEEN the re-verify and the write (the shape round 1 shipped) left a
+window an edit could land in and be silently overwritten. Rendering first
+shrinks that window to exactly the re-read-to-write gap `uninstall.ts`'s own
+region-strip branch already has. The re-read itself now also carries the
+suffix through (composed as `composeRegion(located.userBytes, newBody,
+located.suffix)`) and decodes strictly — content that is not valid UTF-8, or
+a suffix, is only ever an existing-file question at this point, so a
+malformed decode is treated exactly like a malformed region: refused,
+reported changed-since-planning, never written.
 
 Pinned by `packages/cli/test/agents-md-region-upgrade.test.ts`'s describe
 block "applyUpgrade — AGENTS.md region re-verified at apply time (data-loss
@@ -232,12 +381,30 @@ same handle, refused over 1 MiB
 `upgrade.ts`, `uninstall.ts` and `doctor.ts` rather than reimplemented once
 per caller (`.claude/rules/invariants.md`, "one spelling of a fact").
 
-**A combined file over Codex's documented 32 KiB default per-document cap is
-a warning, never a refusal** — the install still succeeds, and `init` prints
-it (`InitResult.warnings`). Pinned by
+**A combined file over Codex's default combined AGENTS.md budget is a
+warning, never a refusal** — the install still succeeds, and `init` prints
+it (`InitResult.warnings`). Codex's own documentation
+(learn.chatgpt.com/docs/agent-configuration/agents-md, redirected from
+developers.openai.com/codex/guides/agents-md, read 2026-09-25) says Codex
+"stops adding files once the combined size reaches the limit defined by
+`project_doc_max_bytes` (32 KiB by default)" — a configurable, COMBINED
+budget across every AGENTS.md file Codex reads for a project, not a
+per-document cap (round 2, prose-reviewer blocker 1: the earlier wording
+here called it a "documented … per-document cap", which is not what that
+sentence says, and the only pointer offered for it —
+`agents-md-region-init.test.ts`'s "the 32 KiB Codex default doc cap" — proves
+only this CLI's own hardcoded threshold, never Codex's actual behaviour).
+This warning fires on this ONE file alone already exceeding that default
+combined total — a conservative proxy for the real question (is the
+COMBINED total over budget), since a single file this large leaves no room
+for any other AGENTS.md Codex would otherwise also read, before the rest of
+the combined total is even considered. Pinned by
 `packages/cli/test/agents-md-region-init.test.ts`'s describe block "the 32
 KiB Codex default doc cap" (absent in a generated rig, same reason as
-above).
+above) — that test, and `CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES` in
+`packages/cli/src/commands/init.ts`, are both this CLI's own threshold,
+which is exactly Codex's documented DEFAULT for `project_doc_max_bytes`, not
+an independent measurement of it.
 
 ## The migration (RP-186)
 

@@ -6,28 +6,22 @@ import { initProject, projectNameFor } from '../src/commands/init.js';
 import { applyUninstall, planUninstall } from '../src/commands/uninstall.js';
 import { agentOsUniversalDir } from '../src/templates.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
-import { composeRegion, sha256 } from '../../../test/helpers/agents-md-region.js';
+import {
+  REGION_BEGIN,
+  REGION_END,
+  composeRegion,
+  sha256,
+} from '../../../test/helpers/agents-md-region.js';
 
 /**
  * RP-256 slice 2 — `uninstall` strips only the managed region and leaves the
  * user's original AGENTS.md bytes exactly as they were before `init` ever
  * ran.
  *
- * The fixture below cannot be built through `initProject` today (a
- * pre-existing AGENTS.md is still refused — see `agents-md-region-init.
- * test.ts`'s header note on the conflict this creates with two existing
- * `init.test.ts` tests), so it is built by hand exactly the way
- * `agents-md-region-upgrade.test.ts` builds its own: a real `init` install
- * for every other file, then AGENTS.md and the manifest's raw JSON are
- * rewritten directly to look like an unedited region-mode rig.
- *
- * Today, with no production support for `regions` at all, `planUninstall`
- * only ever walks `manifest.files` and `manifest.kept` — since a
- * region-tracked AGENTS.md is in neither, it gets no action at all, and
- * `applyUninstall` (which only ever touches `remove`-verdict actions) never
- * touches the file. Every assertion below is a genuine Red today: the file
- * is left with its markers exactly as this fixture wrote it, not stripped
- * back to the user's own bytes.
+ * The fixture is built by hand exactly the way `agents-md-region-upgrade.
+ * test.ts` builds its own: a real `init` install for every other file, then
+ * AGENTS.md and the manifest's raw JSON are rewritten directly to look like
+ * an unedited region-mode rig.
  */
 
 let repo: string;
@@ -161,10 +155,10 @@ describe('planUninstall — a nested rig with a region-tracked AGENTS.md, withou
     expect(claudeAction?.verdict).toBe('remove');
     expect(agentsAction?.verdict).toBe('remove');
 
-    // The discriminating assertion: today, `notACleanRemoval` reads a
-    // `'remove'` verdict as always clean — so with BOTH the shim and the
-    // region-strip marked `remove`, no note fires on either side, even
-    // though afterwards neither file carries a readable rulebook.
+    // The discriminating assertion: `notACleanRemoval` reads a `'remove'`
+    // verdict as always clean — so with BOTH the shim and the region-strip
+    // marked `remove`, no note fires on either side, even though afterwards
+    // neither file carries a readable rulebook.
     const note = claudeAction?.note ?? agentsAction?.note;
     expect(
       note,
@@ -177,5 +171,33 @@ describe('planUninstall — a nested rig with a region-tracked AGENTS.md, withou
     // gone from it too.
     expect(note).not.toMatch(/AGENTS\.md,? which is already gone/);
     expect(note).not.toMatch(/AGENTS\.md,? which exists and is yours/);
+  });
+});
+
+/**
+ * RP-256 slice 2, round 2 — code-reviewer B1 / security-scanner B1:
+ * `locateRegion` drops everything after the end marker without saying so,
+ * and `uninstall.ts` writes back `located.userBytes` alone — so content the
+ * user appended below the region (the natural place to add a new section to
+ * a file that already has one) is silently discarded on every uninstall.
+ * Pinned design choice (the coordinator's ruling): keep the suffix — the
+ * final file is the prefix followed directly by the suffix, with the region
+ * gone and nothing else inserted between them.
+ */
+describe('applyUninstall — a user suffix appended after the end marker survives the strip (round 2, B1)', () => {
+  it('keeps the suffix: prefix + suffix restored exactly, with no region left behind', async () => {
+    const userPrefix = '# My project rules\nkeep me\n';
+    const suffix = '## Added later by hand\nIMPORTANT-USER-TAIL\n';
+    await installThenSimulateRegion(userPrefix);
+    const withSuffix = `${await readFile(agentsMdPath(), 'utf8')}${suffix}`;
+    await writeFile(agentsMdPath(), withSuffix);
+
+    const plan = await planUninstall(repo);
+    await applyUninstall(repo, plan);
+
+    const onDisk = await readFile(agentsMdPath(), 'utf8');
+    expect(onDisk).toBe(`${userPrefix}${suffix}`);
+    expect(onDisk).not.toContain(REGION_BEGIN);
+    expect(onDisk).not.toContain(REGION_END);
   });
 });

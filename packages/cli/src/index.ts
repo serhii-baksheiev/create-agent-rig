@@ -754,11 +754,18 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   // a fact") — but its own `CHANGED_SINCE_PLANNING_REASON` text says
   // "planned to be removed", which is not true of an update, so this prints
   // its own, upgrade-accurate wording rather than reusing that string.
+  // Round 2, code-reviewer advisory A3: this must not promise a refresh —
+  // re-running `upgrade` only refreshes cleanly when the edit landed OUTSIDE
+  // the region (the plan-time body hash still matches); an edit INSIDE the
+  // region makes the very next plan report an ordinary `conflict` instead,
+  // which does not write either. The wording says what is known to be true
+  // either way: nothing was written this run, and a re-run will report
+  // whichever of those two is now the case.
   for (const rel of result.changedSincePlanning ?? []) {
     process.stdout.write(
       `\n!  ${rel} — changed since planning: its managed region no longer matches what the ` +
-        'plan vouched for, so it was left untouched. Re-run `create-agent-rig upgrade` to ' +
-        'refresh it against its current bytes.\n',
+        'plan vouched for, so it was left untouched. Re-run `create-agent-rig upgrade` to see ' +
+        'its current status.\n',
     );
   }
 

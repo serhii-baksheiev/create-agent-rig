@@ -41,23 +41,40 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 - **`init` installs beside a pre-existing `AGENTS.md` too, through one
   bounded managed region, superseding slice 1's blanket refusal above.** A
   repo that already has its own `AGENTS.md` keeps its bytes as an exact
-  prefix; this release's rendered rulebook is appended after them inside one
-  marked region (`<!-- create-agent-rig:begin -->` … `<!--
+  prefix, and anything the user later appends AFTER the region (the natural
+  place to add a new section) survives byte-for-byte through every refresh
+  or strip too; this release's rendered rulebook is appended after the
+  prefix inside one marked region (`<!-- create-agent-rig:begin -->` … `<!--
 create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
-  `regions` field vouching for the region body alone. `upgrade` refreshes an
-  unedited region and reports an edited one as an ordinary quiet conflict,
-  never merging over it — re-verified immediately before it writes, not
-  trusted from the plan: an edit landing inside the region (or its markers
-  going missing) between the plan and `--yes` refuses that one write instead
-  of silently overwriting or losing it, reported on the new
+  `regions` field vouching for the region body alone. Re-running `init` on
+  an already region-tracked AGENTS.md is idempotent — left alone, never
+  refused, whether or not the user has since edited inside it — exactly like
+  any other rig-tracked path; a whole-file rig-owned AGENTS.md from before
+  this feature (or a clean install this same release did) keeps its own,
+  older behaviour unchanged: unedited is left alone, edited is refused.
+  AGENTS.md bytes that are not valid UTF-8 are refused outright rather than
+  silently corrupted by a lossy re-encode, in `init`, `upgrade` and
+  `uninstall` alike. Every write to the user's own AGENTS.md (`init`'s
+  append, `upgrade`'s refresh, `uninstall`'s strip) is now atomic — a temp
+  file in the same directory, then a rename over the target, preserving the
+  original file's mode — so a hard-linked AGENTS.md is replaced rather than
+  written through to whatever else it names, and a crash mid-write can never
+  leave it partially truncated. `upgrade` refreshes an unedited region and
+  reports an edited one as an ordinary quiet conflict, never merging over
+  it — re-verified immediately before it writes, not trusted from the plan:
+  an edit landing inside the region (or its markers going missing) between
+  the plan and `--yes` refuses that one write instead of silently
+  overwriting or losing it, reported on the new
   `UpgradeResult.changedSincePlanning` (the same field name `uninstall`
   already uses for the identical concept). `uninstall` strips only the
   region and always keeps the file, and its CLAUDE.md/AGENTS.md pairing note
   now also fires truthfully when a region strip, not a whole-file removal,
   leaves no readable rulebook anywhere. The one refusal that remains is
-  markers `init` cannot safely merge with — a region already there, or a
-  malformed fragment of one. A combined file over Codex's documented 32 KiB
-  default per-document cap is a warning, not a refusal (see
+  markers `init` cannot safely merge with — a region already there (that
+  THIS rig's own manifest does not already vouch for), or a malformed
+  fragment of one. A combined file over Codex's default combined AGENTS.md
+  budget (`project_doc_max_bytes`, 32 KiB by default) is a warning, not a
+  refusal, when this one file alone already exceeds it (see
   `docs/decisions/agents-md-canonical.md`, "AGENTS.md coexistence — the
   managed region (RP-256 slice 2)").
 

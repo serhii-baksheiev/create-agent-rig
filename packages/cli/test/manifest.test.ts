@@ -198,10 +198,7 @@ describe('the install manifest — the evidence upgrade reads', () => {
 
     // RP-256 slice 2: `regions` is keyed the same way as `files`/`kept` — a
     // rendered-rulebook body spliced into a user-owned AGENTS.md — so it
-    // shares the same path-key validator. Currently RED: `parseManifest`
-    // does not read a `regions` field at all yet, so it never gets far
-    // enough to void the manifest over an unsafe key in it — the object it
-    // returns today is simply valid, with `regions` silently dropped.
+    // shares the same path-key validator.
     it('voids the manifest when it is a `regions` key', () => {
       expect(
         parseManifest(JSON.stringify({ ...sample(), regions: { [key]: sha256('x') } })),

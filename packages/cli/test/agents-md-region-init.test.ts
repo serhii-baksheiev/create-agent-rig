@@ -15,23 +15,6 @@ import {
 /**
  * RP-256 slice 2 — installing beside a user-owned AGENTS.md through one
  * bounded managed region (Jira RP-256 comment 20585).
- *
- * ⚠ Conflict with existing tests, surfaced rather than resolved here (see
- * `.claude/rules/workflow.md` — a test-writer never overwrites an old test):
- * `packages/cli/test/init.test.ts` currently has two tests that assert the
- * OPPOSITE of what this slice asks for —
- *   - "refuses to clobber an existing AGENTS.md, without looping into the
- *     upgrade refusal" (init.test.ts, describe "initProject — the install")
- *   - "when both CLAUDE.md and AGENTS.md already exist, blames AGENTS.md —
- *     not the coexisting CLAUDE.md" (init.test.ts, describe "initProject —
- *     CLAUDE.md coexistence (RP-256 slice 1)")
- * Both assert `initProject` THROWS `InitError` for exactly the two fixtures
- * this file's "a plain pre-existing AGENTS.md" and "both files" describe
- * blocks below expect to SUCCEED. Implementing slice 2 as designed means
- * those two old tests become obsolete and need to be rewritten or removed —
- * a decision for whoever drives Green, not made here. The `docs/decisions/
- * agents-md-canonical.md` table row "A repo that had its own AGENTS.md
- * before init → init refuses outright" names the same obsolete behaviour.
  */
 
 let repo: string;
@@ -244,5 +227,151 @@ describe('initProject — AGENTS.md coexistence (RP-256 slice 2)', () => {
       expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(hostile);
       await expect(access(manifestPath())).rejects.toThrow();
     });
+  });
+});
+
+// RP-256 slice 2, round 2 — code-reviewer B2: re-running `init` on a rig
+// that already region-tracks AGENTS.md must behave like re-running it on any
+// other rig-owned or kept path, never as a fresh foreign-marker refusal.
+describe('initProject — re-running init on an already region-tracked AGENTS.md (round 2, B2)', () => {
+  const USER_PREFIX = '# Host team notes\nkeep me\n';
+
+  it('is idempotent when the region is unedited: exit 0, AGENTS.md bytes unchanged, and the regions hash unchanged', async () => {
+    await writeFile(path.join(repo, 'AGENTS.md'), USER_PREFIX);
+    await initProject(repo, {});
+    const before = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    const rawBefore = (await readRawManifest()) as RawManifestShape;
+
+    // Must not throw — a second, unedited run is a no-op, exactly like a
+    // second run over any other unchanged rig-owned or kept path.
+    const result = await initProject(repo, {});
+
+    const after = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(after).toBe(before);
+    const rawAfter = (await readRawManifest()) as RawManifestShape;
+    expect(rawAfter.regions?.['AGENTS.md']).toBe(rawBefore.regions?.['AGENTS.md']);
+    expect((result as unknown as { written: string[] }).written).not.toContain('AGENTS.md');
+  });
+
+  it('does not refuse, and does not duplicate the region, when the user edited it themselves — left alone, byte-identical, like any other kept file', async () => {
+    await writeFile(path.join(repo, 'AGENTS.md'), USER_PREFIX);
+    await initProject(repo, {});
+    const original = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    // The user edits INSIDE the region, right before the end marker.
+    const edited = original.replace(REGION_END, `EDITED BY THE USER\n${REGION_END}`);
+    await writeFile(path.join(repo, 'AGENTS.md'), edited);
+
+    // Must not throw "markers init cannot safely merge with".
+    await initProject(repo, {});
+
+    const after = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(after).toBe(edited);
+    expect(after.split(REGION_BEGIN).length - 1).toBe(1); // never duplicated
+    expect(after.split(REGION_END).length - 1).toBe(1);
+  });
+
+  // Still refused: this is the ordinary first-install refusal (already
+  // pinned above, in "refuses foreign or malformed markers, writing
+  // nothing") — restated here, explicitly framed as "the manifest records no
+  // region at all", so it reads next to the two cases above that must NOT
+  // refuse the same way.
+  it('still refuses foreign markers when the manifest records no region at all', async () => {
+    const hostile = `# mine\n${REGION_BEGIN}\nunterminated\n`;
+    await writeFile(path.join(repo, 'AGENTS.md'), hostile);
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(hostile);
+    await expect(access(manifestPath())).rejects.toThrow();
+  });
+});
+
+// RP-256 slice 2, round 2 — code-reviewer B3: this is master's own behaviour
+// (before this PR), pinned as a regression guard. A clean-repo install
+// records AGENTS.md under `files` (a whole-file rig-owned path, not a
+// region) — editing it and re-running init must still refuse, exactly as it
+// always has; it must never fall into the region-append path meant for a
+// FOREIGN pre-existing file, and AGENTS.md must never end up recorded under
+// both `files` and `regions` at once.
+describe('initProject — re-running init after the user edits a rig-owned WHOLE-FILE AGENTS.md (round 2, B3)', () => {
+  it('is still refused, as before this PR — no region is appended, and AGENTS.md is never recorded in both files and regions', async () => {
+    await initProject(repo, {}); // clean repo: AGENTS.md is rig-owned, under `files`
+    const original = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    const edited = `${original}\nEDITED BY THE USER\n`;
+    await writeFile(path.join(repo, 'AGENTS.md'), edited);
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    const onDisk = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(onDisk).toBe(edited); // unchanged — no second rulebook appended
+    expect(onDisk).not.toContain(REGION_BEGIN);
+
+    const raw = (await readRawManifest()) as RawManifestShape;
+    const inFiles = raw.files?.['AGENTS.md'] !== undefined;
+    const inRegions = raw.regions?.['AGENTS.md'] !== undefined;
+    expect(inFiles && inRegions).toBe(false);
+  });
+});
+
+// RP-256 slice 2, round 2 — code-reviewer B4 / security-scanner B2: a user
+// AGENTS.md that is not valid UTF-8 must not be silently corrupted by a
+// lossy `Buffer#toString('utf8')` round trip while init reports success.
+// Pinned choice (the coordinator decided this one, not left open): REFUSE.
+describe('initProject — a user AGENTS.md that is not valid UTF-8 (round 2, B4/security B2)', () => {
+  it('refuses a Latin-1 byte (0xe9) in the prefix — non-zero, nothing written, the message names AGENTS.md and says it is not UTF-8', async () => {
+    const bytes = Buffer.concat([
+      Buffer.from('# caf', 'utf8'),
+      Buffer.from([0xe9]),
+      Buffer.from('\n'),
+    ]);
+    await writeFile(path.join(repo, 'AGENTS.md'), bytes);
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/AGENTS\.md/);
+    expect(message).toMatch(/utf-?8/i);
+    expect(await readFile(path.join(repo, 'AGENTS.md'))).toEqual(bytes);
+    await expect(access(manifestPath())).rejects.toThrow();
+  });
+
+  it('refuses a UTF-16LE file with a BOM (ff fe) — non-zero, nothing written, the message names AGENTS.md and says it is not UTF-8', async () => {
+    // "hi" encoded UTF-16LE with its BOM — exactly what PowerShell 5.1's
+    // `echo … > AGENTS.md` writes on Windows (security-scanner B2's own
+    // example of why this is not an exotic case).
+    const bytes = Buffer.from([0xff, 0xfe, 0x68, 0x00, 0x69, 0x00]);
+    await writeFile(path.join(repo, 'AGENTS.md'), bytes);
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/AGENTS\.md/);
+    expect(message).toMatch(/utf-?8/i);
+    expect(await readFile(path.join(repo, 'AGENTS.md'))).toEqual(bytes);
+    await expect(access(manifestPath())).rejects.toThrow();
   });
 });

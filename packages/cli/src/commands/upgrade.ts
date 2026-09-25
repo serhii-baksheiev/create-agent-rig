@@ -22,9 +22,11 @@ import { packageVersion } from '../lib/version.js';
 import { readBoundedFileInRepo } from '../lib/bounded-file.js';
 import {
   composeRegion,
+  decodeStrictUtf8,
   locateRegion,
   MAX_AGENTS_MD_REGION_BYTES,
 } from '../lib/agents-md-region.js';
+import { atomicWriteInRepo } from '../lib/atomic-write.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class UpgradeError extends Error {}
@@ -538,7 +540,23 @@ async function planAgentsMdRegion(
       currentBytes: null,
     };
   }
-  const located = locateRegion(current.bytes.toString('utf8'));
+  // Round 2, code-reviewer B4 / security-scanner B2: decoded strictly, not
+  // with a lossy `Buffer#toString('utf8')` — a file that is not valid UTF-8
+  // is treated exactly like a malformed region: reported, never rewritten.
+  const decoded = decodeStrictUtf8(current.bytes);
+  if (decoded === null) {
+    return {
+      action: {
+        rel: 'AGENTS.md',
+        verdict: 'conflict',
+        reason:
+          'AGENTS.md is not valid UTF-8 — the managed region cannot be verified; left untouched',
+      },
+      nextHash: recordedHash,
+      currentBytes: current.bytes,
+    };
+  }
+  const located = locateRegion(decoded);
   if (located === null || sha256(located.body) !== recordedHash) {
     return {
       action: {
@@ -575,7 +593,12 @@ async function planAgentsMdRegion(
     },
     nextHash: sha256(newBody),
     currentBytes: current.bytes,
-    content: composeRegion(located.userBytes, newBody),
+    // Round 2, code-reviewer B1 / security-scanner B1: `located.suffix`
+    // carries through — see `applyUpgrade`'s own re-read-and-splice for why
+    // this plan-time copy is not what actually gets written (it is rebuilt
+    // from a fresh re-read immediately before the write); kept here so a
+    // caller inspecting the plan alone still sees the correct shape.
+    content: composeRegion(located.userBytes, newBody, located.suffix),
   };
 }
 
@@ -1252,23 +1275,48 @@ export async function applyUpgrade(
     // `update` ever carries `recordedHash` (`planAgentsMdRegion`'s only
     // branch that sets it), so this never touches an ordinary file.
     if (action.rel === 'AGENTS.md' && action.recordedHash !== undefined) {
+      // Round 2, security-scanner A2: rendered BEFORE the re-read, not after
+      // — the rendered body depends only on the project/layers this
+      // manifest already carries forward, never on the file this block is
+      // about to re-read, so there is no reason to await template I/O
+      // between the re-verify and the write. Doing it first shrinks the
+      // window an edit could land in to exactly the re-read-to-write gap,
+      // the same size `uninstall.ts`'s own region-strip branch already has.
+      const newBody = (await renderedAgentsMd(plan.manifest.project, plan.manifest.layers)) ?? '';
       const dest = destinations.get('AGENTS.md')!;
-      const current = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
-      const located = current === null ? null : locateRegion(current.toString('utf8'));
+      const currentStat = await lstat(dest).catch(() => null);
+      const currentBytes = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
+      // Round 2, code-reviewer B4 / security-scanner B2: decoded strictly —
+      // a file that is not valid UTF-8 can never be safely re-composed as a
+      // string, so it is treated exactly like a malformed or edited region:
+      // refused, never written, reported changed-since-planning.
+      const currentText = currentBytes === null ? null : decodeStrictUtf8(currentBytes);
+      const located = currentText === null ? null : locateRegion(currentText);
       if (located === null || sha256(located.body) !== action.recordedHash) {
         changedSincePlanning.push('AGENTS.md');
         revertAgentsRegionHash = action.recordedHash;
         continue;
       }
-      // The rendered body depends only on the project/layers this manifest
-      // already carries forward — never on the file this loop just re-read —
-      // so re-deriving it here (rather than trusting `plan.contents`, which
-      // was built from the PLAN-time prefix) is what makes splicing onto the
-      // CURRENT prefix below correct.
-      const newBody = (await renderedAgentsMd(plan.manifest.project, plan.manifest.layers)) ?? '';
-      const composed = composeRegion(located.userBytes, newBody);
-      await mkdir(path.dirname(dest), { recursive: true });
-      await writeFile(await writableOnDisk(repoDir, 'AGENTS.md'), composed);
+      // Round 2, code-reviewer B1 / security-scanner B1: `located.suffix`
+      // carries through byte-for-byte — content the user appended AFTER the
+      // end marker's own line is outside the managed region, exactly like
+      // their prefix, and a refresh must not silently drop it.
+      const composed = composeRegion(located.userBytes, newBody, located.suffix);
+      // Round 2, security-scanner A1: atomic — a temp file in the same
+      // directory, then a rename, so a hard-linked AGENTS.md is replaced
+      // rather than written through to whatever else it names, and the
+      // original file's own mode is preserved rather than defaulted.
+      const result = await atomicWriteInRepo(
+        repoDir,
+        'AGENTS.md',
+        Buffer.from(composed, 'utf8'),
+        currentStat !== null ? currentStat.mode & 0o777 : 0o644,
+      );
+      if (!result.ok) {
+        throw new UpgradeError(
+          `Refusing to write "AGENTS.md" through a symlink or outside ${repoDir}.`,
+        );
+      }
       written.push('AGENTS.md');
       continue;
     }

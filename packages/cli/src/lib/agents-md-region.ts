@@ -32,9 +32,35 @@ export const REGION_END = '<!-- create-agent-rig:end -->';
 export const MAX_AGENTS_MD_REGION_BYTES = 1024 * 1024;
 
 /**
+ * `bytes` decoded as strict UTF-8, or `null` when they are not (round 2,
+ * code-reviewer B4 / security-scanner B2) — including a UTF-16 BOM (`FF FE`
+ * or `FE FF`), which is never valid UTF-8 lead-byte data and so is refused
+ * by the same `fatal: true` check, not by a special case for it. The one
+ * spelling of this decode `init.ts`, `upgrade.ts` and `uninstall.ts` all use
+ * for the user's own AGENTS.md bytes — `doctor.ts`'s own `text()` already
+ * decoded this way before round 2, for the same reason: a lossy
+ * `Buffer#toString('utf8')` silently turns an invalid byte into `U+FFFD`
+ * (`EF BF BD` once re-encoded), which is not the byte that was there.
+ *
+ * `ignoreBOM: true` matters for more than habit: a leading UTF-8 BOM
+ * (`EF BB BF`) is a legitimate three-byte UTF-8 encoding of U+FEFF, decoded
+ * here AS that character rather than stripped — so re-encoding the returned
+ * string with `Buffer.from(str, 'utf8')` reproduces the original bytes
+ * exactly, which the byte-for-byte "left untouched" guarantee this whole
+ * module exists for depends on.
+ */
+export function decodeStrictUtf8(bytes: Buffer): string | null {
+  try {
+    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The user's own bytes, the separator `composeRegion` always inserts, the
  * begin marker on its own line, the rendered body, then the end marker on
- * its own line followed by a trailing newline.
+ * its own line followed by a trailing newline, then `suffix` verbatim.
  *
  * The separator between `userBytes` and the begin marker is ALWAYS exactly
  * one inserted `"\n"`, regardless of whether `userBytes` already ends in
@@ -44,9 +70,18 @@ export const MAX_AGENTS_MD_REGION_BYTES = 1024 * 1024;
  * user's own trailing newline untouched); user bytes not ending in `"\n"`
  * get the separator as their only new newline (stripping it restores no
  * trailing newline at all).
+ *
+ * `suffix` (round 2, code-reviewer B1 / security-scanner B1): whatever bytes
+ * sit AFTER the end marker's own line — the natural place for a user to add
+ * a new section to a file that already has one. Defaults to `''`, which
+ * reproduces exactly the bytes this function always produced before this
+ * parameter existed — a call site that never passes a third argument is
+ * byte-for-byte unaffected. Appended immediately after the end marker's own
+ * trailing `"\n"`, verbatim, with no further separator inserted: `suffix`
+ * already carries whatever bytes originally followed that newline.
  */
-export function composeRegion(userBytes: string, body: string): string {
-  return `${userBytes}\n${REGION_BEGIN}\n${body}${REGION_END}\n`;
+export function composeRegion(userBytes: string, body: string, suffix: string = ''): string {
+  return `${userBytes}\n${REGION_BEGIN}\n${body}${REGION_END}\n${suffix}`;
 }
 
 /**
@@ -83,6 +118,14 @@ export interface RegionMatch {
   userBytes: string;
   /** Exactly the `body` a `composeRegion` call would have been given. */
   body: string;
+  /**
+   * Exactly the `suffix` a `composeRegion` call would have been given —
+   * everything after the end marker's own line, including its own trailing
+   * `"\n"` if the end marker is not the file's last line (round 2,
+   * code-reviewer B1 / security-scanner B1). `''` when the end marker's line
+   * IS the last thing in `text` (with or without its own trailing newline).
+   */
+  suffix: string;
 }
 
 /**
@@ -108,15 +151,23 @@ export function locateRegion(text: string): RegionMatch | null {
   const userBytes = text.slice(0, beginIdx - 1);
   const bodyStart = beginIdx + REGION_BEGIN.length + 1;
   const body = text.slice(bodyStart, endIdx);
-  return { userBytes, body };
+  // The end marker's own line ends either at the end of `text` (no trailing
+  // newline at all — `suffix` is empty) or at a `\n` `wholeLineIndexesOf`
+  // already confirmed is there (`atLineEnd`) — skip exactly that one
+  // newline, never more, and everything past it is `suffix`, verbatim.
+  const endLineTextEnd = endIdx + REGION_END.length;
+  const suffix = endLineTextEnd === text.length ? '' : text.slice(endLineTextEnd + 1);
+  return { userBytes, body, suffix };
 }
 
 /**
  * The user's own bytes, restored exactly — the inverse of {@link
- * composeRegion}. `null` when `text` is not a well-formed region (see
- * {@link locateRegion}).
+ * composeRegion}: `userBytes` followed immediately by `suffix`, with no
+ * separator inserted between them (`suffix` already carries whatever bytes
+ * originally followed the region, including any newline of its own).
+ * `null` when `text` is not a well-formed region (see {@link locateRegion}).
  */
 export function stripRegion(text: string): string | null {
   const located = locateRegion(text);
-  return located === null ? null : located.userBytes;
+  return located === null ? null : `${located.userBytes}${located.suffix}`;
 }

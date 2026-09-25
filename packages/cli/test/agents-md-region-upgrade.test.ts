@@ -11,34 +11,26 @@ import { REGION_BEGIN, composeRegion, sha256 } from '../../../test/helpers/agent
 /**
  * RP-256 slice 2 — `upgrade` splices only the AGENTS.md managed region.
  *
- * These fixtures cannot be built through `initProject` today (a pre-existing
- * AGENTS.md is still refused — see `agents-md-region-init.test.ts`'s header
- * note on the conflict this creates with two existing `init.test.ts` tests),
- * so each one is built by hand: a real `init` install for every OTHER file,
- * then the manifest's raw JSON is read back and mutated directly — `AGENTS.md`
- * dropped from `files`, a `regions` entry added — and AGENTS.md itself is
- * overwritten with a hand-composed region. `writeManifest`/`serializeManifest`
- * are deliberately NOT used for the mutation: today they would silently drop
- * an unknown `regions` field, which is exactly the gap these tests exist to
- * close, so the fixture writes the manifest's raw bytes directly instead.
+ * Fixtures are built by hand rather than through two `initProject` calls: a
+ * real `init` install for every OTHER file, then the manifest's raw JSON is
+ * read back and mutated directly — `AGENTS.md` dropped from `files`, a
+ * `regions` entry added — and AGENTS.md itself is overwritten with a
+ * hand-composed region. The mutation writes the manifest's raw bytes
+ * directly rather than going through `writeManifest`/`serializeManifest`,
+ * so a fixture never depends on those functions already round-tripping the
+ * `regions` field the way `manifest.test.ts` pins independently.
  *
- * ⚠ Why every test below also asserts on the manifest's raw `regions` entry,
- * not only on AGENTS.md's own bytes: `RigManifest` has no `regions` field
- * today, and `parseManifest`/`planUpgrade` silently drop the fixture's
- * `regions` key the moment they read the manifest — `plan.manifest` (the
- * object `applyUpgrade` serialises back to disk) can never carry one
- * forward. Because of that, an ASSERTION ABOUT AGENTS.md's OWN BYTES ALONE
- * is not always a reliable Red signal here: today's code has no idea a
- * region exists at all, so it treats the whole file as one more path it does
- * not recognise (an ordinary whole-file `conflict`) and simply leaves it
- * untouched — which happens to be byte-identical to several of this slice's
- * own desired outcomes (an unedited or edited region that nothing was
- * supposed to change this run) for reasons that have nothing to do with
- * regions being understood at all. The `regions` manifest assertion is the
- * one signal that is genuinely missing under every scenario today, so it is
- * the discriminating assertion in every test in this file; the AGENTS.md
- * byte assertions are kept alongside it because they pin the actually-wanted
- * end state, not because they are independently sufficient to prove Red.
+ * Every test below also asserts on the manifest's raw `regions` entry, not
+ * only on AGENTS.md's own bytes: an assertion about AGENTS.md's bytes alone
+ * can be satisfied by a mechanism that never looked at `regions` at all (an
+ * ordinary whole-file `conflict` that simply leaves the file untouched
+ * happens to be byte-identical to several of this slice's own desired
+ * outcomes — an unedited or edited region nothing was supposed to change
+ * this run). The `regions` manifest assertion is the one signal specific to
+ * region-awareness in every scenario here, so it is the discriminating
+ * assertion in every test in this file; the AGENTS.md byte assertions are
+ * kept alongside it because they pin the actually-wanted end state, not
+ * because they are independently sufficient on their own.
  */
 
 let repo: string;
@@ -145,14 +137,13 @@ describe('planUpgrade / applyUpgrade — AGENTS.md managed region (RP-256 slice 
  * region, re-verified at apply time." `planAgentsMdRegion` (`upgrade.ts`)
  * decides the region's verdict and bakes the WHOLE FILE's new content —
  * including the user's prefix, read ONCE at plan time — into `plan.contents`.
- * `applyUpgrade`'s write loop then writes that plan-time content unconditionally
- * for every `update` verdict, AGENTS.md's region included, with no re-read of
- * the file immediately before the write the way `uninstall.ts`'s OWN region
- * handling already does (`applyUninstall`'s `region === true` branch re-reads
- * the file, re-locates the region and re-checks its hash against
- * `recordedHash` right before acting — see that function's own comment: "the
- * confirmation-prompt window is exactly where a hand edit could land"). That
- * gap is what this describe block is red for.
+ * The write this describe block pins against is `applyUpgrade`'s write loop
+ * for AGENTS.md's region, re-reading the file immediately before the write
+ * the way `uninstall.ts`'s OWN region handling already does
+ * (`applyUninstall`'s `region === true` branch re-reads the file, re-locates
+ * the region and re-checks its hash against `recordedHash` right before
+ * acting — see that function's own comment: "the confirmation-prompt window
+ * is exactly where a hand edit could land").
  *
  * Vocabulary pinned here, not invented: `ApplyUninstallResult` already has
  * exactly this concept, named `changedSincePlanning?: string[]` — "one
@@ -183,8 +174,8 @@ describe('applyUpgrade — AGENTS.md region re-verified at apply time (data-loss
 
     const newBody = await renderBody(projectNameFor(repo));
     const onDisk = await readFile(agentsMdPath(), 'utf8');
-    // Today's implementation writes the plan-time content — the user's edit
-    // is silently lost, and this is the assertion that shows it.
+    // A write from stale plan-time content would silently lose the user's
+    // edit; this is the assertion that catches it.
     expect(onDisk).toBe(composeRegion(editedPrefix, newBody));
   });
 
@@ -221,5 +212,36 @@ describe('applyUpgrade — AGENTS.md region re-verified at apply time (data-loss
     const changedSincePlanning =
       (result as unknown as { changedSincePlanning?: string[] }).changedSincePlanning ?? [];
     expect(changedSincePlanning).toContain('AGENTS.md');
+  });
+});
+
+/**
+ * RP-256 slice 2, round 2 — code-reviewer B1 / security-scanner B1: content
+ * the user appends AFTER the end marker's own line — the natural place to
+ * add a new section to a file that already has one — is outside the managed
+ * region and must survive an upgrade byte-for-byte, exactly like the user's
+ * own prefix already does. `locateRegion` (`agents-md-region.ts`) drops
+ * everything after the end marker without saying so, and `applyUpgrade`
+ * writes `composeRegion(located.userBytes, newBody)` — no suffix parameter —
+ * so a suffix is silently discarded on every refresh. Pinned design choice
+ * (the coordinator's ruling, not left open): carry the suffix through,
+ * never treat it as a conflict.
+ */
+describe('applyUpgrade — a user suffix appended after the end marker survives a refresh (round 2, B1)', () => {
+  const USER_PREFIX = '# Team notes\nKeep this section exactly as it is.\n';
+  const OLD_BODY = '# OLD RULEBOOK BODY — a fake stand-in for a previous release\n';
+  const SUFFIX = '## Added later by hand\nIMPORTANT-USER-TAIL\n';
+
+  it('carries the suffix through byte-for-byte while refreshing the region', async () => {
+    await installThenSimulateRegion(USER_PREFIX, OLD_BODY);
+    await writeFile(agentsMdPath(), composeRegion(USER_PREFIX, OLD_BODY, SUFFIX));
+
+    const plan = await planUpgrade(repo);
+    await applyUpgrade(repo, plan);
+
+    const newBody = await renderBody(projectNameFor(repo));
+    const onDisk = await readFile(agentsMdPath(), 'utf8');
+    expect(onDisk).toBe(composeRegion(USER_PREFIX, newBody, SUFFIX));
+    expect(onDisk.endsWith(SUFFIX)).toBe(true);
   });
 });

@@ -1,5 +1,4 @@
-import { lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
-import { access } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
@@ -21,9 +20,28 @@ import { packageVersion } from '../lib/version.js';
 import { readBoundedFileInRepo } from '../lib/bounded-file.js';
 import {
   composeRegion,
+  decodeStrictUtf8,
   hasAnyMarker,
   MAX_AGENTS_MD_REGION_BYTES,
 } from '../lib/agents-md-region.js';
+import { atomicWriteInRepo } from '../lib/atomic-write.js';
+
+/**
+ * Codex's documented combined-budget default (round 2, prose-reviewer
+ * blocker 1): `project_doc_max_bytes`, 32 KiB, is the total Codex stops
+ * ADDING AGENTS.md files at once it reaches — not a per-file cap — per
+ * Codex's own docs (learn.chatgpt.com/docs/agent-configuration/agents-md,
+ * redirected from developers.openai.com/codex/guides/agents-md, read
+ * 2026-09-25): "stops adding files once the combined size reaches the limit
+ * defined by `project_doc_max_bytes` (32 KiB by default)". Configurable, and
+ * a budget across every AGENTS.md Codex reads for a project — not specific
+ * to this one file. The warning below fires on this one file alone already
+ * exceeding that DEFAULT combined budget, which is a fair (if conservative)
+ * proxy: a file this large leaves no room for any other AGENTS.md Codex
+ * would otherwise also read, even before the rest of the combined total is
+ * considered.
+ */
+const CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES = 32768;
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class InitError extends Error {}
@@ -108,9 +126,9 @@ export interface InitResult {
   plannedCount: number;
   /**
    * Non-fatal notices the CLI prints after a successful install — today,
-   * only the AGENTS.md managed region landing over Codex's documented
-   * 32 KiB default per-document cap (RP-256 slice 2). Always present, empty
-   * when there is nothing to say.
+   * only the AGENTS.md managed region landing over Codex's default combined
+   * AGENTS.md budget (`project_doc_max_bytes`, 32 KiB) on its own
+   * (RP-256 slice 2). Always present, empty when there is nothing to say.
    */
   warnings: string[];
 }
@@ -445,11 +463,26 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // elsewhere, or a malformed/foreign fragment of one (an unterminated
   // begin, a stray end, two begins). Never suggests `upgrade` — there is no
   // rig installed yet for it to refresh.
+  //
+  // Round 2, code-reviewer B2/B3: a pre-existing AGENTS.md this run's OWN
+  // manifest already vouches for — either as a whole rig-owned file
+  // (`previous.files[AGENTS.md]`, the pre-slice-2 shape) or as an already
+  // region-tracked one (`previous.regions[AGENTS.md]`) — is never routed
+  // through the foreign-file marker check at all. A whole-file entry keeps
+  // the EXACT pre-slice-2 behaviour: unedited is left alone, edited is
+  // refused outright. A region entry is always left alone, edited or not —
+  // idempotent, like any other `kept` path — never refused, never
+  // duplicated: `regions` is not `recordInstall`'s to touch this run
+  // (`extraRegions` stays `undefined`), so `previous.regions` is carried
+  // forward unchanged by that function's own default.
   let existingAgentsBytes: Buffer | null = null;
+  let existingAgentsText: string | null = null;
+  let existingAgentsMode: number | null = null;
   {
     const dest = destinations.get(AGENTS_MAP)!;
     if (await exists(dest)) {
-      if ((await lstat(dest).catch(() => null))?.isDirectory()) {
+      const stat = await lstat(dest).catch(() => null);
+      if (stat?.isDirectory()) {
         throw new InitError(
           `This repo already has a directory at ${AGENTS_MAP}. Refusing to write into it. Move or remove that directory, then run create-agent-rig init again.`,
         );
@@ -462,23 +495,50 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
             'it, then run create-agent-rig init again.',
         );
       }
-      // Idempotent re-run: this rig already wrote exactly these bytes as a
-      // plain (region-less) AGENTS.md on an earlier run, and nothing has
-      // edited them since — the manifest vouches for the hash. That is the
-      // pre-existing "already installed, unchanged" case, not a foreign file
-      // to coexist with: leave `existingAgentsBytes` unset so AGENTS.md stays
-      // in the ordinary write loop below and is reported `skipped`, exactly
-      // as it was before RP-256 slice 2.
-      const alreadyOwnedUnedited =
-        previous?.files[AGENTS_MAP] !== undefined && sha256(bytes) === previous.files[AGENTS_MAP];
-      if (!alreadyOwnedUnedited) {
-        if (hasAnyMarker(bytes.toString('utf8'))) {
+      const wholeFileHash = previous?.files[AGENTS_MAP];
+      const regionHash = previous?.regions?.[AGENTS_MAP];
+      if (wholeFileHash !== undefined) {
+        // Round 2, B3: this rig's OWN whole-file AGENTS.md (from before
+        // slice 2, or from a clean install this same release did) — unedited
+        // is the ordinary idempotent "already installed" case (left in
+        // `files` below, generic loop reports it `skipped`); edited is
+        // refused exactly as every release before this slice already did.
+        // Never routed into the foreign-marker check: a rig's own rendered
+        // rulebook carries no region markers at all, so that check would
+        // silently accept it and append a SECOND copy of the rulebook.
+        if (sha256(bytes) !== wholeFileHash) {
+          throw new InitError(
+            `This repo already has an ${AGENTS_MAP}. Refusing to overwrite it. Merge the agent-os ` +
+              'map in by hand, or run create-agent-rig upgrade to refresh a rig.',
+          );
+        }
+      } else if (regionHash !== undefined) {
+        // Round 2, B2: already region-tracked by THIS rig's own manifest —
+        // always left alone, whether the region is still exactly what was
+        // installed or the user has since edited inside it. Nothing to
+        // refuse, nothing to append: `existingAgentsBytes` stays unset, so
+        // AGENTS.md stays in the ordinary write loop below and is reported
+        // `skipped` (the file already exists), exactly like any other
+        // untouched or user-edited rig-tracked path.
+      } else {
+        // Genuinely foreign: neither manifest bucket names this path.
+        const text = decodeStrictUtf8(bytes);
+        if (text === null) {
+          throw new InitError(
+            `Refusing to merge "${AGENTS_MAP}": its bytes are not valid UTF-8, so this rig cannot ` +
+              'safely read it as text without risking corruption. Save it as UTF-8, then run ' +
+              'create-agent-rig init again.',
+          );
+        }
+        if (hasAnyMarker(text)) {
           throw new InitError(
             `This repo's ${AGENTS_MAP} already carries create-agent-rig region markers that init ` +
               'cannot safely merge with. Resolve them by hand, then run create-agent-rig init again.',
           );
         }
         existingAgentsBytes = bytes;
+        existingAgentsText = text;
+        existingAgentsMode = stat !== null ? stat.mode & 0o777 : null;
       }
     }
   }
@@ -514,34 +574,37 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // RP-256 slice 2: the append itself. `existingAgentsBytes` is only ever
   // set once the marker check above has already let this run through, so
   // there is nothing left to refuse here — only compose, warn if the result
-  // is large, and (outside a dry run) write it and record it.
+  // is large, and (outside a dry run) write it and record it. Round 2,
+  // security-scanner B1/A1: written atomically (a temp file in the same
+  // directory, then a rename), so a hard link at AGENTS.md is replaced —
+  // never written through to whatever else it names — and the original
+  // file's own mode is preserved rather than defaulted.
   let regionBodyHash: string | undefined;
-  if (existingAgentsBytes !== null) {
+  if (existingAgentsBytes !== null && existingAgentsText !== null) {
     const body = contents.get(AGENTS_MAP) ?? '';
-    const composed = composeRegion(existingAgentsBytes.toString('utf8'), body);
+    const composed = composeRegion(existingAgentsText, body);
     regionBodyHash = sha256(body);
     const composedSize = Buffer.byteLength(composed, 'utf8');
-    // Codex's documented default per-document cap — named by the ticket, not
-    // measured here; a warning, never a refusal, since the install already
-    // succeeded by the time this is known.
-    const CODEX_DEFAULT_DOC_CAP_BYTES = 32768;
-    if (composedSize > CODEX_DEFAULT_DOC_CAP_BYTES) {
+    if (composedSize > CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES) {
       warnings.push(
-        `${AGENTS_MAP} is now ${composedSize} bytes, over Codex's documented 32,768-byte ` +
-          '(32 KiB) default per-document cap. The install still succeeded — consider trimming ' +
-          'your own content, or Codex may not read the whole file.',
+        `${AGENTS_MAP} is now ${composedSize} bytes, over Codex's default combined AGENTS.md ` +
+          `budget of ${CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES} bytes (32 KiB, \`project_doc_max_bytes\`) ` +
+          'on its own. The install still succeeded — Codex may stop reading before the rest of ' +
+          'this file, or before any other AGENTS.md it would otherwise also read.',
       );
     }
     if (!options.dryRun) {
-      const dest = destinations.get(AGENTS_MAP)!;
-      await mkdir(path.dirname(dest), { recursive: true });
-      const checked = await resolveWritableInside(repoDir, AGENTS_MAP);
-      if (checked === null) {
+      const result = await atomicWriteInRepo(
+        repoDir,
+        AGENTS_MAP,
+        Buffer.from(composed, 'utf8'),
+        existingAgentsMode ?? 0o644,
+      );
+      if (!result.ok) {
         throw new InitError(
           `Refusing to write "${AGENTS_MAP}" through a symlink or outside ${repoDir}.`,
         );
       }
-      await writeFile(checked, composed);
       written.push(AGENTS_MAP);
     }
   }
@@ -744,7 +807,17 @@ async function recordInstall(
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
-  const regionTrackedPaths = new Set(Object.keys(extraRegions ?? {}));
+  // Round 2: a path ALREADY region-tracked by a previous run (carried
+  // forward via `previous?.regions`, not only one this run itself just
+  // appended via `extraRegions`) must stay excluded from `files`/`kept`
+  // bookkeeping too — B2's "always left alone, idempotent" behaviour skips
+  // it in the generic write loop, which otherwise reads as "the rig saw it
+  // and left it" and would start tracking it under `kept` as well, on top
+  // of `regions`.
+  const regionTrackedPaths = new Set([
+    ...Object.keys(previous?.regions ?? {}),
+    ...Object.keys(extraRegions ?? {}),
+  ]);
   const files = { ...(previous?.files ?? {}) };
   for (const rel of written) {
     if (regionTrackedPaths.has(rel)) continue;
@@ -753,7 +826,7 @@ async function recordInstall(
   const kept = { ...(previous?.kept ?? {}), ...(extraKept ?? {}) };
   for (const rel of written) delete kept[rel];
   for (const rel of skipped) {
-    if (files[rel] !== undefined) continue; // the rig wrote it once; still its bytes to vouch for
+    if (files[rel] !== undefined || regionTrackedPaths.has(rel)) continue; // the rig already vouches for it elsewhere
     const found = await readRegularFile(path.join(repoDir, rel));
     if (found === null) delete kept[rel];
     else kept[rel] = sha256(found);

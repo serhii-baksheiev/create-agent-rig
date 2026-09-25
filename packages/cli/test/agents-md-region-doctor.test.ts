@@ -14,14 +14,11 @@ import type { ProviderProcessResult } from '../src/integrations/spawn.js';
  * region reports healthy, and a missing or edited one is a finding.
  *
  * Pinned choice (the ticket asks only for "the minimal observable signal",
- * left the exact shape to this suite): a new check, `id: 'rig-managed-
- * regions'`, `status: 'ok'` when the region on disk matches what the
- * manifest's `regions` entry vouches for, `'warn'` otherwise (missing
- * entirely, or edited) — mirroring `rig-owned-files`'s own pass/warn split
- * for the same kind of evidence. Today there is no such check at all — every
- * test below fails on `check` being `undefined`, which is the correct Red:
- * it is not that doctor currently reports the wrong status, it is that
- * nothing reports on a region at all.
+ * left the exact shape to this suite): a check, `id: 'rig-managed-regions'`,
+ * `status: 'ok'` when the region on disk matches what the manifest's
+ * `regions` entry vouches for, `'warn'` otherwise (missing entirely, or
+ * edited) — mirroring `rig-owned-files`'s own pass/warn split for the same
+ * kind of evidence.
  *
  * The same by-hand fixture construction as the other slice-2 suites (see
  * `agents-md-region-upgrade.test.ts`'s header note): a real `init` install
@@ -121,5 +118,42 @@ describe('doctor — AGENTS.md managed region (RP-256 slice 2)', () => {
     const check = report.checks.find((c) => c.id === 'rig-managed-regions');
     expect(check, JSON.stringify(report.checks)).toBeDefined();
     expect(check?.status).not.toBe('ok');
+  });
+});
+
+/**
+ * RP-256 slice 2, round 2, item 1 — decision, stated: content the user
+ * appends AFTER the end marker is outside the managed region, exactly like
+ * their prefix. `doctor`'s own check (`doctor.ts`) only ever hashes
+ * `locateRegion(...).body` against the manifest's recorded hash — it never
+ * looks at anything past the end marker — so a region whose BODY is intact
+ * and unedited is legitimately healthy regardless of what the user appended
+ * below it, the same way an edited prefix does not make the region
+ * unhealthy. This is the doctor half of the carry-through design (round 2,
+ * item 1) the coordinator asked to be decided and stated: the suffix does
+ * NOT make an otherwise-intact region unhealthy.
+ *
+ * This test is expected to already pass: `doctor.ts`'s check never reads
+ * past the end marker in the first place, so it was never wrong about this
+ * case — the round-1 security-scanner advisory (A3) that flagged
+ * "`rig-managed-regions` reports pristine for a region with user content
+ * after the end marker" is not a doctor defect under this design; it is
+ * doctor already agreeing with the answer this suite pins. It is pinned
+ * here as an explicit regression guard, so a future "fix" for B1 (upgrade
+ * and uninstall dropping the suffix) does not accidentally make doctor
+ * start flagging a healthy suffix-carrying file too.
+ */
+describe('doctor — a user suffix appended after the end marker does not make an intact region unhealthy (round 2, B1/A3)', () => {
+  it('still reports the region healthy when the body is intact and a suffix follows the end marker', async () => {
+    const body = await renderBody(projectNameFor(repo));
+    await installThenSimulateRegion('# team notes\n', body);
+    const suffix = '## Added later by hand\nIMPORTANT-USER-TAIL\n';
+    await writeFile(agentsMdPath(), `${await readFile(agentsMdPath(), 'utf8')}${suffix}`);
+
+    const report = await doctor();
+
+    const check = report.checks.find((c) => c.id === 'rig-managed-regions');
+    expect(check, JSON.stringify(report.checks)).toBeDefined();
+    expect(check?.status).toBe('ok');
   });
 });

@@ -47,7 +47,20 @@ export function sha256(bytes: string | Buffer): string {
  * marker on its own line, the rendered body (which already carries its own
  * trailing "\n" — the shipped template ends in one), and the end marker on
  * its own line followed by a trailing newline.
+ *
+ * `suffix` (round 2, code-reviewer B1 / security-scanner B1): whatever bytes
+ * the user placed AFTER the end marker's own line — the natural place to add
+ * a new section to a file that already has one. Defaults to `''`, which
+ * reproduces exactly the bytes this function always produced before this
+ * parameter existed (`${REGION_END}\n` with nothing after) — a call site
+ * that never passes a third argument is byte-for-byte unaffected. When
+ * `suffix` is non-empty it is appended immediately after the end marker's
+ * own trailing `"\n"`, verbatim — no further separator is inserted, because
+ * `suffix` already carries whatever bytes originally followed that newline
+ * (which may itself start with a blank line, more prose, anything): the
+ * ticket's carry-through design (round 2, item 1) is "preserve exactly what
+ * was there", not "insert a fresh one".
  */
-export function composeRegion(userBytes: string, body: string): string {
-  return `${userBytes}\n${REGION_BEGIN}\n${body}${REGION_END}\n`;
+export function composeRegion(userBytes: string, body: string, suffix: string = ''): string {
+  return `${userBytes}\n${REGION_BEGIN}\n${body}${REGION_END}\n${suffix}`;
 }
