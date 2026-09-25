@@ -116,17 +116,21 @@ Also: create-agent-rig uninstall [dir] [--dry-run] [--yes] [--detach] [--json]
   still one of the exact paths this release installs, and still match right
   up to the moment each one is removed; anything under .git is refused
   outright, whatever hash a manifest pairs it with. Everything else (edited,
-  foreign, deleted already, kept by init, changed since the plan was shown, or
-  not a path this release owns) is left in place and reported. The manifest
-  is removed last, and only once every removal succeeded AND nothing was
-  preserved — a preserved path means the rig still owns bytes it did not
-  remove, so the evidence naming them stays; a failed run also keeps it, so a
-  re-run picks up where it stopped. --detach removes the manifest anyway,
-  after the same safe cleanup, leaving every preserved path for you and
-  printing the full handover list — it never forces away a conflicting or
-  modified file. --json's payload names which of three outcomes a run
-  reached: "uninstalled" (clean), "partial" (something kept, manifest stays),
-  "detached" (--detach: manifest gone, a handover list left behind). Prints
+  foreign, deleted already, kept by init, changed since the plan was shown,
+  or not a path this release owns) is left in place and reported. A path
+  kept by init is listed here too, but does not hold the manifest open by
+  itself — init only ever vouched for its bytes, never owned it. The
+  manifest is removed last, and only once every removal succeeded and
+  nothing else in the plan is preserved for a reason that still belongs to
+  the rig: such a path means the rig still owns bytes it did not remove, so
+  the evidence naming them stays; a failed run also keeps it, so a re-run
+  picks up where it stopped. --detach removes the manifest anyway, after the
+  same safe cleanup, leaving every preserved path for you and printing the
+  full handover list — it never forces away a conflicting or modified file.
+  --json's payload names which of three outcomes a run reached: "uninstalled"
+  (clean — including a run whose only preserved path was kept by init),
+  "partial" (something else still kept, manifest stays), "detached"
+  (--detach: manifest gone, a handover list left behind). Prints
   the plan, then asks before removing anything: --yes answers up front
   (required off a terminal, and always required with --json, which never
   prompts) — the same consent rule applies to --detach. --json prints one

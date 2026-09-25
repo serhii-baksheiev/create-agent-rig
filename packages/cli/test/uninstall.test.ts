@@ -2295,6 +2295,53 @@ describe('planUninstall — a nested rig preserves the kept CLAUDE.md, without a
     expect(agents?.verdict).toBe('remove');
     expect(agents?.note).toBeUndefined();
   });
+
+  // RP-260: a `kept` path was never the rig's — `init` found it already in
+  // place and only ever vouches for its bytes, never owns them — yet
+  // `applyUninstall`'s `wouldDeleteManifest` treats EVERY `preserved` verdict
+  // alike, `kept` included, so a repository whose only "preserved" path is
+  // this user-owned CLAUDE.md finishes uninstall still reporting the rig as
+  // installed. This is the acceptance case: nothing else in the plan is
+  // `preserved`, so a fix scoped correctly removes the manifest here.
+  it('removes every rig file and deletes the manifest when the only preserved path is a kept CLAUDE.md (RP-260)', async () => {
+    const userBytes = '# host rules\n';
+    await installNestedRig(userBytes);
+
+    const plan = await planUninstall(repo);
+    const claudeAction = actionFor(plan, 'CLAUDE.md');
+    expect(claudeAction?.verdict).toBe('preserved');
+    expect(claudeAction?.reason).toBe('user-owned (kept by init)');
+    // sanity: the kept CLAUDE.md is the ONLY preserved path in this fixture —
+    // otherwise this test would pass today for the wrong reason (some other
+    // preserved path already keeping the manifest alive).
+    expect(plan.actions.filter((a) => a.verdict === 'preserved')).toEqual([claudeAction]);
+
+    const result = await applyUninstall(repo, plan);
+
+    for (const action of plan.actions) {
+      if (action.verdict !== 'remove') continue;
+      expect(result.removed).toContain(action.rel);
+      await expect(readFile(abs(action.rel))).rejects.toThrow();
+    }
+    expect(await read('CLAUDE.md')).toBe(userBytes);
+    expect(result.manifestRemoved).toBe(true);
+    expect(result.outcome).toBe('uninstalled');
+    await expect(readFile(abs(MANIFEST_REL))).rejects.toThrow();
+  });
+
+  // Sibling of the test above: once the manifest is genuinely gone, a repeat
+  // run must see nothing left to act on — the same idempotency every other
+  // clean uninstall in this file gets (see "applyUninstall — the happy
+  // path" › "is idempotent"), which a manifest wrongly kept alive would
+  // break here specifically.
+  it('is idempotent: a second plan after uninstalling beside a kept CLAUDE.md reports noManifest (RP-260)', async () => {
+    await installNestedRig();
+    const plan = await planUninstall(repo);
+    await applyUninstall(repo, plan);
+
+    const second = await planUninstall(repo);
+    expect(second.noManifest).toBe(true);
+  });
 });
 
 // code-reviewer round 1 advisory A2 (PR #324): `kept` records evidence that
@@ -2320,6 +2367,102 @@ describe('planUninstall — a nested rig whose user deletes their root CLAUDE.md
     const plan = await planUninstall(repo);
 
     expect(actionFor(plan, 'CLAUDE.md')).toBeUndefined();
+  });
+});
+
+// RP-260: the CLAUDE.md fixture above is one instance of a wider bug — ANY
+// path recorded under `manifest.kept` was counted by `wouldDeleteManifest`
+// alongside every other `preserved` verdict, so a user-owned file that was
+// never the rig's kept the manifest alive on its own. These three pin the
+// fix's exact shape: a `kept` entry drops out of that count (first case
+// below), while every OTHER `preserved` reason — including a hook a `kept`
+// wiring file still references, which is preserved for a DIFFERENT reason
+// (`hookStillReferencedReason`, never `'user-owned (kept by init)'`) — must
+// keep counting exactly as before.
+describe('applyUninstall — a kept path no longer holds the manifest alive on its own (RP-260)', () => {
+  it('a kept file that is not wiring does not keep the manifest alive', async () => {
+    const keptContent = '# my own workflow notes, not the rig template\n';
+    await write(WORKFLOW, keptContent); // pre-existing, so init leaves it and kept-records it
+    await installRig();
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.[WORKFLOW]).toBeTruthy();
+    expect(manifest?.files[WORKFLOW]).toBeUndefined();
+
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, WORKFLOW);
+    expect(action?.verdict).toBe('preserved');
+    expect(action?.reason).toBe('user-owned (kept by init)');
+    // sanity: this is the only preserved path in the fixture
+    expect(plan.actions.filter((a) => a.verdict === 'preserved')).toEqual([action]);
+
+    const result = await applyUninstall(repo, plan);
+
+    expect(await read(WORKFLOW)).toBe(keptContent);
+    expect(result.manifestRemoved).toBe(true);
+    expect(result.outcome).toBe('uninstalled');
+    await expect(readFile(abs(MANIFEST_REL))).rejects.toThrow();
+  });
+
+  // Regression pin, and it may already pass today: a hook file a KEPT wiring
+  // file still references is preserved for a completely different reason
+  // (`hookStillReferencedReason(SETTINGS, 'kept')`, never the `kept`-path
+  // wording) — it is a rig-owned file preserved for safety, not a `kept`
+  // entry itself, so the fix above must not reach it.
+  it('a kept wiring file whose hooks are therefore preserved still keeps the manifest', async () => {
+    const keptSettings = JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash',
+            hooks: [
+              {
+                type: 'command',
+                command: 'node "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs"',
+              },
+            ],
+          },
+        ],
+      },
+    });
+    await write(SETTINGS, keptSettings); // pre-existing, so init leaves it and kept-records it
+    await installRig();
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, SETTINGS)?.reason).toBe('user-owned (kept by init)');
+    const guardBashAction = actionFor(plan, '.claude/hooks/guard-bash.mjs');
+    expect(guardBashAction?.verdict).toBe('preserved');
+    // it is preserved because the KEPT wiring still calls it — not itself a
+    // `kept` entry, and must not read as one
+    expect(guardBashAction?.reason).not.toBe('user-owned (kept by init)');
+
+    const result = await applyUninstall(repo, plan);
+
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.outcome).toBe('partial');
+    await expect(readFile(abs(MANIFEST_REL))).resolves.toBeTruthy();
+  });
+
+  // Regression pin: an ordinary edited `files` entry, sitting alongside a
+  // kept path in the same plan, must still keep the manifest — the fix only
+  // stops a `kept` entry from counting on its own; it must not weaken any
+  // other `preserved` reason.
+  it('an edited files entry alongside a kept file still keeps the manifest', async () => {
+    await write(WORKFLOW, 'pre-existing before init, becomes kept\n');
+    await installRig();
+    const invariants = '.claude/rules/invariants.md';
+    const editedInvariants = `${await read(invariants)}\n<!-- mine -->\n`;
+    await write(invariants, editedInvariants);
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, WORKFLOW)?.reason).toBe('user-owned (kept by init)');
+    expect(actionFor(plan, invariants)?.verdict).toBe('preserved');
+    expect(actionFor(plan, invariants)?.reason).toBe('modified');
+
+    const result = await applyUninstall(repo, plan);
+
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.outcome).toBe('partial');
+    await expect(readFile(abs(MANIFEST_REL))).resolves.toBeTruthy();
   });
 });
 

@@ -291,6 +291,24 @@ describe('create-agent-rig uninstall', () => {
     await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
   });
 
+  // RP-260: a `kept` path (here, the user's own root CLAUDE.md, recorded
+  // under `manifest.kept` by the nested-placement install — RP-256 slice 1)
+  // is still reported `preserved`, but on its own it must not make the CLI
+  // claim the rig is still installed — that wording belongs to a `preserved`
+  // path the rig actually still owns bytes for, never a file that was
+  // always the user's.
+  it('a kept CLAUDE.md alone does not report the rig as still installed', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules\n');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const result = await runCli(['uninstall', '--yes']);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).not.toMatch(/still installed/i);
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules\n');
+    await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
+  });
+
   it('preserves modified wiring, a deleted managed file, and a foreign file, and reports all three', async () => {
     await initGitRepo();
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');

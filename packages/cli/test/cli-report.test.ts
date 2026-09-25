@@ -879,6 +879,30 @@ describe('`--help` on a subcommand (RP-239 A1)', () => {
     expect(await readFile(abs(MANIFEST_REL), 'utf8')).toBe(manifestBefore);
   });
 
+  // RP-260 round 2, code-reviewer round-1 blocker: a run whose only preserved
+  // path is one `init` kept (a user-owned file, `manifest.kept`) now removes
+  // the manifest and reports "uninstalled" — production already does this
+  // (`uninstall.ts`'s manifest-removal check excludes `kept: true` actions).
+  // The help text had not caught up: it still claimed an unconditional gate
+  // ("nothing was preserved") and never named the kept-by-init exception.
+  it('uninstall --help no longer claims the manifest survives whenever anything was preserved', async () => {
+    const run = await runCli(repo, ['uninstall', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    // the old, now-false claim: removal gated on an unconditional "nothing
+    // was preserved" — true of every preserved reason, including kept-by-init
+    expect(run.stdout).not.toMatch(/succeeded AND nothing was\s+preserved/);
+  });
+
+  it('uninstall --help states a user-owned file init kept does not hold the manifest', async () => {
+    const run = await runCli(repo, ['uninstall', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toMatch(
+      /kept by init[\s\S]{0,120}(does not|doesn't|never)\s+(hold|keep)s?\s+the manifest/i,
+    );
+  });
+
   it('doctor --help prints usage to stdout and exits 0, never the "accepts only --json" refusal', async () => {
     const run = await runCli(repo, ['doctor', '--help']);
 

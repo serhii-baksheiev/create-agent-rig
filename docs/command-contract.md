@@ -1052,24 +1052,36 @@ do"; on `--dry-run` the two necessarily differ (`planned` non-empty, `removed`
 empty).
 
 The manifest is deleted last, and only once every `remove` action succeeded
-**and — outside `--detach` — nothing in the plan is `preserved`, nor turned
-out changed since planning.** A `preserved` action means the rig still owns
-bytes it did not remove — an edit, a CRLF checkout, wiring left in place, a
-hook a preserved wiring file still calls, a path outside the current install
-set, a file caught changed at apply time — and deleting the manifest anyway
-would discard the only evidence naming what it still owns, blinding a later
-`upgrade`. This holds even when every removal that WAS planned succeeded:
-nothing was removed at all (e.g. every file preserved by a CRLF checkout)
-keeps the manifest exactly as a partial failure does. On an actual failure
-the run stops where it is, keeps the manifest, and the payload carries
-`completed` (what finished), `remaining` (what a re-run still owes, including
-the path that failed) and `error`. `remaining` names the manifest itself too,
+**and — outside `--detach` — nothing in the plan is `preserved` for a reason
+that still belongs to the rig, nor turned out changed since planning.** A
+`preserved` action means the rig still owns bytes it did not remove — an
+edit, a CRLF checkout, wiring left in place, a hook a preserved wiring file
+still calls, a path outside the current install set, a file caught changed
+at apply time — and deleting the manifest anyway would discard the only
+evidence naming what it still owns, blinding a later `upgrade`. **One
+`preserved` reason is the exception (RP-260): a `kept` path — one `init`
+found already in place and only ever vouched for the bytes of, never owned
+— is still listed as `preserved` with its `'user-owned (kept by init)'`
+reason, but it does not by itself keep the manifest alive.** A `kept` path
+was never the rig's, so there is nothing the manifest still needs to own on
+its account; if a `kept` entry is the ONLY `preserved` action in the plan,
+the manifest is deleted and the run reports `uninstalled` all the same.
+
+Outside that exception, the rig-owned-preserved rule holds even when every
+removal that WAS planned succeeded: nothing was removed at all (e.g. every
+file preserved by a CRLF checkout) keeps the manifest exactly as a partial
+failure does. On an actual failure the run
+stops where it is, keeps the manifest, and the payload carries `completed`
+(what finished), `remaining` (what a re-run still owes, including the path
+that failed) and `error`. `remaining` names the manifest itself too,
 appended last, whenever a clean re-run really would go on to delete it — that
-is, whenever nothing in the plan is `preserved` (or `--detach` was given,
-which always intends to); when something else IS preserved and this is not a
-detach, the manifest is never deleted regardless of this run's outcome, and
-`remaining` does not name it, since it is not something a re-run would
-actually do.
+is, whenever nothing in the plan is `preserved` for a rig-owned reason (or
+`--detach` was given, which always intends to); when something else IS
+preserved for a rig-owned reason and this is not a detach, the manifest is
+never deleted regardless of this run's outcome, and `remaining` does not name
+it, since it is not something a re-run would actually do. See
+`packages/cli/test/uninstall.test.ts` › "removes every rig file and deletes
+the manifest when the only preserved path is a kept CLAUDE.md (RP-260)".
 
 ### The manifest's own digest, and `--detach`
 
@@ -1096,12 +1108,12 @@ rule, no exceptions:** present on every completed run that is not a
 (non-dry) run has acted, or declined to act, on it. Also absent whenever
 `error` is set — a hard failure is its own signal, not one of the three:
 
-| `outcome`     | when                                                                                                                                                | manifest                                    |
-| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------- |
-| `uninstalled` | not `--dry-run`; nothing in the plan was `preserved`, and nothing was caught changed since planning (also the `noManifest` case)                    | removed                                     |
-| `partial`     | not `--dry-run`; something was `preserved`, caught changed since planning, or a hook was protected only at apply time, and `--detach` was not given | kept                                        |
-| `detached`    | not `--dry-run`; `--detach` was given                                                                                                               | removed, regardless of what was `preserved` |
-| _(absent)_    | `--dry-run` — the plan was only shown, nothing was decided yet, whether or not a manifest exists                                                    | unchanged — nothing was touched             |
+| `outcome`     | when                                                                                                                                                                                             | manifest                                    |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------- |
+| `uninstalled` | not `--dry-run`; nothing in the plan was `preserved` for a rig-owned reason (a `kept` entry does not count — RP-260), and nothing was caught changed since planning (also the `noManifest` case) | removed                                     |
+| `partial`     | not `--dry-run`; something was `preserved` for a rig-owned reason, caught changed since planning, or a hook was protected only at apply time, and `--detach` was not given                       | kept                                        |
+| `detached`    | not `--dry-run`; `--detach` was given                                                                                                                                                            | removed, regardless of what was `preserved` |
+| _(absent)_    | `--dry-run` — the plan was only shown, nothing was decided yet, whether or not a manifest exists                                                                                                 | unchanged — nothing was touched             |
 
 A hook file (`.claude/hooks/*.mjs`) a wiring file still calls is preserved
 even when that protection is discovered only at APPLY time, not at plan
