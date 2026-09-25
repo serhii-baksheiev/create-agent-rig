@@ -498,6 +498,28 @@ describe('the plan summary accounts for every file it planned', () => {
     expect(sum(numbersIn(summary ?? ''))).toBe(plan.actions.length);
   });
 
+  // code-reviewer round 1 (PR #332) blocker 5: nothing exercised the CLI's
+  // own rendering of a `seeded` verdict (RP-257) — the `=` mark on its own
+  // line, and "N yours (seeded once)" in the summary (`MARK.seeded`, the
+  // `seeded` entry in the `occasional` table, `index.ts`).
+  it('renders the `=` mark and "yours (seeded once)" for an edited PLAN.md', async () => {
+    await installRig();
+    await writeFile(
+      abs('PLAN.md'),
+      `${await readFile(abs('PLAN.md'), 'utf8')}\n- add a GET /notes/:id route through every layer (TDD)\n`,
+    );
+
+    const plan = await groundTruth();
+    expect(plan.actions.find((a) => a.rel === 'PLAN.md')?.verdict, 'fixture').toBe('seeded');
+
+    const run = await runCli(repo, ['upgrade', '--dry-run']);
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toMatch(/^ {2}= PLAN\.md {2}— seeded once by the rig/m);
+    const summary = lineMatching(run.stdout, /to replace/);
+    expect(summary, 'the plan printed no summary line').toBeTruthy();
+    expect(summary).toMatch(/\b1 yours \(seeded once\)/);
+  });
+
   // PR #241 round 3 advisory: a held-back CLAUDE.md is `conflict` in verdict
   // name only — it is this release's OWN old content, re-vouched pending a
   // fix to AGENTS.md, not the user's bytes kept aside. Counting it under

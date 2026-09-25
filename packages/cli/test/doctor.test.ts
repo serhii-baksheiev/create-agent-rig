@@ -593,6 +593,54 @@ describe('aggregated doctor (RP-21)', () => {
     });
   });
 
+  // RP-257: PLAN.md is the live Agent/Operator queue — seeded once by a plain
+  // `init` (it ships with the process/Core layer, `layers.json`, not the
+  // opt-in workflow layer), then explicitly the user's own document to edit
+  // by hand (the template header itself says "Keep entries one line each ...
+  // Delete done items"). Byte-diffing it against the manifest-recorded install
+  // hash the way every other rig-owned file is diffed turns the FIRST
+  // legitimate queue edit into a permanent, unresolvable `content-drift`
+  // warning. A genuinely rig-owned file (a script, a rule, a hook) must keep
+  // reporting drift exactly as before — only PLAN.md is exempt.
+  describe('rig-owned-files treats PLAN.md as seed-once, not byte-owned (RP-257)', () => {
+    it('a normal queue edit to PLAN.md is never reported as drift — the check stays pristine', async () => {
+      await initProject(repo, { withWorkflow: true });
+      const planPath = path.join(repo, 'PLAN.md');
+      await writeFile(
+        planPath,
+        `${await readFile(planPath, 'utf8')}\n- add a GET /notes/:id route through every layer (TDD)\n`,
+      );
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(check).toMatchObject({ status: 'ok', reason: 'pristine' });
+      expect(check?.counts).toEqual({ absent: 0, contentDrift: 0, lineDrift: 0, unreadable: 0 });
+    });
+
+    it('still counts a drifted rig script as content drift while an edited PLAN.md sitting right beside it counts as nothing — only PLAN.md is exempt', async () => {
+      await initProject(repo, { withWorkflow: true });
+      const planPath = path.join(repo, 'PLAN.md');
+      await writeFile(
+        planPath,
+        `${await readFile(planPath, 'utf8')}\n- add a GET /notes/:id route through every layer (TDD)\n`,
+      );
+      const scriptPath = path.join(repo, '.claude', 'scripts', 'doctor.mjs');
+      await writeFile(scriptPath, `${await readFile(scriptPath, 'utf8')}\n// manual change\n`);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      expect(check).toMatchObject({ status: 'warn', reason: 'content-drift' });
+      // exactly one drifted path — the rig script; the PLAN.md edit next to
+      // it is the user's own queue and never counts as drift at all
+      expect(check?.counts).toEqual({ absent: 0, contentDrift: 1, lineDrift: 0, unreadable: 0 });
+    });
+  });
+
   it('rejects invalid doctor arguments with CLI usage exit 2', async () => {
     const result = await doctor(['--unexpected']);
 

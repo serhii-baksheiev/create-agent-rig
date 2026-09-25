@@ -142,11 +142,16 @@ command tell Rig's files from yours:
 | edited by you               | kept, reported as a conflict | kept, reported |
 | deleted by you              | stays deleted                | nothing to do  |
 | not Rig's, or there before  | never claimed                | never touched  |
+| `PLAN.md`                   | never touched, either way    | kept, reported |
 
 Conflicts are reported with the path to the new version, so you can compare
 and merge yourself — Rig does no automatic merging of the documents your agents
-obey. The details, including how line endings and hook wiring are handled, are
-in [`docs/command-contract.md`](docs/command-contract.md) and
+obey. `PLAN.md` is the one **seed-once** exception to the table above: Rig
+writes it once, on the first `init`, and it is yours from that moment —
+pristine or edited, `upgrade` never diffs or rewrites it and `uninstall`
+always preserves it, reported the same way an edited file is. The details,
+including how line endings and hook wiring are handled, are in
+[`docs/command-contract.md`](docs/command-contract.md) and
 [`docs/decisions/raw-byte-ownership.md`](docs/decisions/raw-byte-ownership.md).
 
 ## Lifecycle
@@ -180,9 +185,12 @@ npx create-agent-rig@latest uninstall
 ```
 
 Only files whose bytes still match what Rig installed are removed. Anything
-edited is kept and listed, and the manifest stays until nothing of Rig's is
-left. `--detach` removes the manifest anyway and hands the kept files over to
-you. Integration wiring is removed with `setup remove`, not `uninstall`.
+edited is kept and listed — and `PLAN.md` always is, pristine or edited, since
+it was never Rig's to begin with once seeded. A kept file does not hold the
+manifest back on its own; the manifest stays only while something else is
+still owned and unremoved. `--detach` removes the manifest anyway and hands
+the kept files over to you. Integration wiring is removed with `setup
+remove`, not `uninstall`.
 
 ## Optional integrations
 

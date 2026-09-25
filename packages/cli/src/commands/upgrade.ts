@@ -16,6 +16,7 @@ import type { HashHistory } from '../lib/history.js';
 import { ALL_LAYERS, MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
 import type { Layer, RigManifest, RigProject } from '../lib/manifest.js';
 import { isSafeSubstitutionValue, resolveInside, resolveWritableInside } from '../lib/safe-path.js';
+import { isSeedOncePath, priorSeedHash } from '../lib/seed-once.js';
 import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { packageVersion } from '../lib/version.js';
@@ -43,7 +44,22 @@ export type UpgradeVerdict =
    * drops its claim and the path becomes the project's own, whatever state it
    * is in on disk.
    */
-  | 'retired';
+  | 'retired'
+  /**
+   * A seed-once path (RP-257 — see `lib/seed-once.ts`): written by the rig at
+   * most once, ever, and the user's own document from that point on. Covers
+   * every state that is neither a genuine first-time write (`new`, still
+   * used the one time a seed-once path is actually planted) nor an untouched
+   * match with what this release would write (`unchanged`, still used when
+   * the bytes happen to be identical) — present-and-edited, present with
+   * unknown provenance, or a non-regular entry sitting where it belongs.
+   * Never written, never compared byte-for-byte, and never reported as
+   * `conflict`, `update` or `wiring` — none of those verdicts' remedies
+   * ("merge the entries below", "treated as yours", "edited since it was
+   * installed") fit a file whose whole point is to be edited by hand from
+   * day one.
+   */
+  | 'seeded';
 
 export interface UpgradeAction {
   rel: string;
@@ -655,7 +671,13 @@ export async function planUpgrade(
   // CLAUDE.md's CURRENT content when it holds the shim back.
   const currentBytesByRel = new Map<string, Buffer>();
 
+  // A seed-once path (RP-257) is handled in its own pass, below the main
+  // loop — none of the verdicts this loop can reach (`conflict`, `update`,
+  // `wiring`, and the `deleted`/`new` branches' own manifest bookkeeping)
+  // fit a file that is written at most once and never byte-compared again.
+  const seedOnceKept: Record<string, string> = {};
   for (const file of files) {
+    if (isSeedOncePath(file.rel)) continue;
     const currentFile = await readIfPresent(repoDir, file.rel);
     if (currentFile.kind === 'non-file') {
       actions.push({
@@ -825,6 +847,84 @@ export async function planUpgrade(
     }
   }
 
+  // The seed-once pass (RP-257) skipped above — one path today, `PLAN.md` —
+  // decided entirely on its own terms: never a diff against what this
+  // release would write, only "has this ever been seeded, and is it there
+  // right now". `priorSeedHash` reads EITHER manifest bucket, so a
+  // pre-RP-257 manifest (`PLAN.md` recorded in `files`, the ordinary,
+  // byte-owned shape) is recognised as already-seeded here too — that manifest
+  // entry is migrated to `kept` below (it is simply never re-added to
+  // `nextFiles`) rather than left to be read as "never installed".
+  for (const file of files) {
+    if (!isSeedOncePath(file.rel)) continue;
+    contents.set(file.rel, file.content);
+    const currentFile = await readIfPresent(repoDir, file.rel);
+    const prior = priorSeedHash(manifest, file.rel);
+
+    if (currentFile.kind === 'non-file') {
+      actions.push({
+        rel: file.rel,
+        verdict: 'seeded',
+        reason:
+          'a directory or other non-regular entry exists where this seed-once file belongs — ' +
+          'left untouched',
+      });
+      if (prior !== undefined) seedOnceKept[file.rel] = prior;
+      continue;
+    }
+
+    if (currentFile.kind === 'absent') {
+      if (prior !== undefined) {
+        actions.push({
+          rel: file.rel,
+          verdict: 'deleted',
+          reason: 'seeded once by the rig, removed since — not restored',
+        });
+        seedOnceKept[file.rel] = prior;
+      } else if (presentInEveryRelease(history, file.rel)) {
+        // code-reviewer round 1 (PR #332) blocker 1: `prior` only ever reads
+        // the MANIFEST — undefined here means either "genuinely never
+        // seeded" or "no manifest to read at all" (`manifest === null`,
+        // the bootstrapped path), and those are not the same claim. The
+        // main loop above already tells them apart with this exact
+        // fallback (`presentInEveryRelease`, a few lines up in this same
+        // function) for every ORDINARY file; a seed-once path needs the
+        // identical fallback or a bootstrapped run — no manifest, nothing
+        // to vouch for a deliberate deletion — reads a missing PLAN.md as
+        // brand new and writes it straight back, resurrecting a queue the
+        // user removed on purpose.
+        actions.push({
+          rel: file.rel,
+          verdict: 'deleted',
+          reason: `shipped in every release since ${history.versions[0]}, and is gone — not restored`,
+        });
+      } else {
+        // Never seeded before, and nothing on disk — the one case this pass
+        // actually writes: a release that adds a seed-once path a rig
+        // installed before it existed gets it planted, exactly like an
+        // ordinary `new` file.
+        actions.push({ rel: file.rel, verdict: 'new', templatePath: file.source });
+        seedOnceKept[file.rel] = sha256(file.content);
+      }
+      continue;
+    }
+
+    // currentFile.kind === 'file': present on disk, whatever its bytes are —
+    // never overwritten, whether they match this release's template or not.
+    if (currentFile.bytes.equals(Buffer.from(file.content, 'utf8'))) {
+      actions.push({ rel: file.rel, verdict: 'unchanged' });
+    } else {
+      actions.push({
+        rel: file.rel,
+        verdict: 'seeded',
+        reason:
+          'seeded once by the rig — edited since, or never matched a released template — ' +
+          'never overwritten; it is yours from the moment it was seeded',
+      });
+    }
+    seedOnceKept[file.rel] = sha256(currentFile.bytes);
+  }
+
   // Round 5 design ruling (replacing round 4's verdict-only rule, gate cycle
   // 4 blocker 1): a PRISTINE CLAUDE.md must never be replaced by the
   // `@AGENTS.md` shim while the on-disk AGENTS.md cannot actually SERVE as
@@ -957,9 +1057,16 @@ export async function planUpgrade(
   // `kept` travels forward untouched, minus every path the plan now vouches
   // for in `files` — a kept file that turned out to be a released version, or
   // is byte-identical to this release, has become the rig's to manage.
-  const nextKept: Record<string, string> = {};
+  // Seeded first: `seedOnceKept` is authoritative for every seed-once path
+  // (RP-257) — it is recomputed above from THIS run's own read, so an old
+  // `manifest.kept` entry for the same path (or, migrating, an old
+  // `manifest.files` entry, which never reaches `nextFiles` for a seed-once
+  // path at all — see the pass above) never overwrites it below.
+  const nextKept: Record<string, string> = { ...seedOnceKept };
   for (const [rel, hash] of Object.entries(manifest?.kept ?? {})) {
-    if (nextFiles[rel] === undefined) nextKept[rel] = hash;
+    if (nextFiles[rel] !== undefined) continue;
+    if (nextKept[rel] !== undefined) continue;
+    nextKept[rel] = hash;
   }
 
   // With no manifest, "there is a rig here" has to be *recognised*, not

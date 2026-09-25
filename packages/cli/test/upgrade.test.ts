@@ -187,6 +187,176 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     await expect(read(STOP_FLAG)).rejects.toThrow();
   });
 
+  // RP-257: PLAN.md is the live Agent/Operator queue, seeded once by a plain
+  // `init` (it ships with the process/Core layer, `layers.json`, not the
+  // opt-in workflow layer) and explicitly the user's own document from that
+  // point on (the template header itself: "Keep entries one line each ...
+  // Delete done items"). Diffing it against the manifest-recorded install hash
+  // the way every other manifest-tracked path is diffed makes an ordinary
+  // queue edit a `conflict`, and makes a pristine-but-outdated queue (never
+  // touched, but a newer release shipped different template text) an `update`
+  // that silently overwrites whatever real entries it holds. Neither may
+  // happen: PLAN.md is never planned as `conflict`, `update` or `wiring`, and
+  // its on-disk bytes are never rewritten by `applyUpgrade`, in either case.
+  describe('PLAN.md is seed-once, not byte-owned (RP-257)', () => {
+    it('never overwrites an edited PLAN.md, and never plans it as conflict, update or wiring', async () => {
+      await initProject(repo, { withWorkflow: true });
+      const edited = `${await read('PLAN.md')}\n- add a GET /notes/:id route through every layer (TDD)\n`;
+      await write('PLAN.md', edited);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(['conflict', 'update', 'wiring']).not.toContain(verdictFor(plan, 'PLAN.md'));
+
+      await applyUpgrade(repo, plan);
+      expect(await read('PLAN.md')).toBe(edited);
+    });
+
+    it('never overwrites a pristine, never-touched PLAN.md with a newer release template, and never plans it as conflict, update or wiring', async () => {
+      await initProject(repo, { withWorkflow: true });
+      const shipped = await read('PLAN.md');
+      // simulate: an OLDER release installed this different text, and the
+      // user never touched it since — `pretendInstalled` records it as what
+      // THIS release's on-disk bytes were recorded against, exactly like the
+      // RP-186 fixture above does for CLAUDE.md/AGENTS.md.
+      const olderTemplate = `${shipped}\n<!-- an older template revision, never edited by the user -->\n`;
+      await pretendInstalled('PLAN.md', olderTemplate);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(['conflict', 'update', 'wiring']).not.toContain(verdictFor(plan, 'PLAN.md'));
+
+      await applyUpgrade(repo, plan);
+      // the newer release's template is never silently written over a queue
+      // that might already hold real, unfinished entries
+      expect(await read('PLAN.md')).toBe(olderTemplate);
+    });
+  });
+
+  // code-reviewer round 1 (PR #332) blocker 1: the seed-once pass (above)
+  // decides an absent PLAN.md's verdict from `priorSeedHash(manifest, rel)`
+  // alone — `undefined` whenever `manifest` itself is `undefined` (no
+  // readable manifest at all), which is exactly the bootstrapped case. The
+  // main loop's OWN absent-file branch has a fallback for precisely this
+  // situation — `presentInEveryRelease(history, file.rel)`, a few lines
+  // above — so a manifest-less run of an ordinary process-layer file present
+  // since the table's oldest recorded version (say `.claude/rules/workflow.md`,
+  // shipped since 0.2.0) still reports `deleted`, "not restored", never
+  // `new`. PLAN.md has no such fallback: today, a bootstrapped run treats a
+  // deliberately-deleted PLAN.md exactly like a release that adds a
+  // brand-new path, plans it `new`, and `--yes` writes it straight back —
+  // silently resurrecting a queue the user removed on purpose, and doing so
+  // ONLY for PLAN.md while every other pre-0.2.0 process file in the same
+  // run correctly stays deleted. `history` is left
+  // at its default (the real, shipped `templates/hash-history.json`, where
+  // PLAN.md is recorded present since 0.2.0, the table's own oldest version)
+  // rather than `emptyHistory`, because the fix this pins is explicitly
+  // modelled on `presentInEveryRelease`, which needs real data to decide
+  // anything — `emptyHistory` would make the assertion vacuous.
+  describe('upgrade — a deleted PLAN.md on a bootstrapped run stays deleted, not restored (RP-257 round 2, blocker 1)', () => {
+    it('with the manifest deleted outright, PLAN.md is planned `deleted` — exactly like the other rule file deleted in the same run — never `new`, and `--yes` does not restore it', async () => {
+      await initProject(repo, { withWorkflow: true });
+      await rm(abs('PLAN.md'));
+      // WORKFLOW, not STOP_FLAG: `presentInEveryRelease` needs a path
+      // recorded since the table's OLDEST version (0.2.0) to take the
+      // `deleted` branch on a bootstrapped run — WORKFLOW has shipped since
+      // 0.2.0; STOP_FLAG was added later (0.3.0) and would itself read `new`
+      // here, which would make it the wrong comparison file.
+      await rm(abs(WORKFLOW));
+      await rm(abs(MANIFEST_REL));
+
+      const plan = await planUpgrade(repo);
+      expect(plan.bootstrapped).toBe(true);
+      expect(verdictFor(plan, WORKFLOW), 'fixture: the comparison file itself').toBe('deleted');
+      expect(verdictFor(plan, 'PLAN.md')).toBe('deleted');
+      expect(verdictFor(plan, 'PLAN.md')).not.toBe('new');
+
+      await applyUpgrade(repo, plan);
+      await expect(read('PLAN.md')).rejects.toThrow();
+    });
+
+    it('with the manifest unreadable (corrupted, not merely absent), PLAN.md is planned `deleted` the same way', async () => {
+      await initProject(repo, { withWorkflow: true });
+      await rm(abs('PLAN.md'));
+      const raw = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
+      raw.layers = 'workflow'; // corrupt (wrong type) -> the bootstrapped path
+      await write(MANIFEST_REL, `${JSON.stringify(raw)}\n`);
+      expect(await readManifest(repo)).toBeNull();
+
+      const plan = await planUpgrade(repo);
+      expect(plan.bootstrapped).toBe(true);
+      expect(verdictFor(plan, 'PLAN.md')).toBe('deleted');
+      expect(verdictFor(plan, 'PLAN.md')).not.toBe('new');
+
+      await applyUpgrade(repo, plan);
+      await expect(read('PLAN.md')).rejects.toThrow();
+    });
+  });
+
+  // code-reviewer round 1 (PR #332) blocker 5: the migration this ticket
+  // promises — a pre-RP-257 manifest (PLAN.md recorded as an ordinary,
+  // byte-owned `files` entry, no `kept` bucket at all) converges to the
+  // RP-257 shape (PLAN.md moved to `kept`, dropped from `files`) the next
+  // time `upgrade` runs — had no test building that literal shape; the PR
+  // body called it "probed", not tested. `buildPreRp257Manifest` builds it
+  // for real: a freshly-installed manifest (already RP-257-shaped) is
+  // rewritten by hand to what a rig installed BEFORE RP-257 actually looked
+  // like, exactly the same fixture idiom `pretendInstalled` above uses for a
+  // different migration.
+  //
+  // The two verdicts also had no test: `upgrade.ts`'s seed-once pass
+  // (above) compares the CURRENT on-disk bytes against THIS release's own
+  // template content (`file.content`), never against the manifest-recorded
+  // hash — so a PLAN.md that is byte-identical to what this release ships
+  // today gets `unchanged`, and anything else (hand-edited, or merely an
+  // older release's template text) gets `seeded`. That is the design this
+  // pins: `unchanged` for pristine, `seeded` for edited, regardless of what
+  // the stale pre-RP-257 manifest hash says either way.
+  describe('upgrade — migrating a pre-RP-257 manifest (PLAN.md still in `files`, no `kept` entry) (RP-257 round 2, blocker 5)', () => {
+    /** Rewrites the freshly-seeded manifest into the pre-RP-257 shape, and returns the bytes on disk. */
+    async function buildPreRp257Manifest(): Promise<string> {
+      await initProject(repo, { withWorkflow: true });
+      const bytes = await read('PLAN.md');
+      const manifest = await readManifest(repo);
+      if (manifest === null) throw new Error('fixture: no manifest');
+      const priorHash = manifest.kept?.['PLAN.md'];
+      if (priorHash === undefined) throw new Error('fixture: PLAN.md was not seeded into `kept`');
+      manifest.files['PLAN.md'] = priorHash;
+      delete manifest.kept!['PLAN.md'];
+      await writeManifest(repo, manifest);
+      // fixture sanity: genuinely the pre-RP-257 shape now
+      expect((await readManifest(repo))?.files['PLAN.md']).toBe(priorHash);
+      expect((await readManifest(repo))?.kept?.['PLAN.md']).toBeUndefined();
+      return bytes;
+    }
+
+    it('a pristine PLAN.md migrates from `files` to `kept`, verdict `unchanged`, bytes untouched', async () => {
+      const pristine = await buildPreRp257Manifest();
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(plan, 'PLAN.md')).toBe('unchanged');
+      await applyUpgrade(repo, plan);
+
+      const after = await readManifest(repo);
+      expect(after?.files['PLAN.md']).toBeUndefined();
+      expect(after?.kept?.['PLAN.md']).toBe(sha256(pristine));
+      expect(await read('PLAN.md')).toBe(pristine);
+    });
+
+    it('an edited PLAN.md migrates from `files` to `kept`, verdict `seeded`, bytes untouched', async () => {
+      const pristine = await buildPreRp257Manifest();
+      const edited = `${pristine}\n- add a GET /notes/:id route through every layer (TDD)\n`;
+      await write('PLAN.md', edited);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(verdictFor(plan, 'PLAN.md')).toBe('seeded');
+      await applyUpgrade(repo, plan);
+
+      const after = await readManifest(repo);
+      expect(after?.files['PLAN.md']).toBeUndefined();
+      expect(after?.kept?.['PLAN.md']).toBe(sha256(edited));
+      expect(await read('PLAN.md')).toBe(edited);
+    });
+  });
+
   // RP-186's own migration gate. A rig installed before RP-186 has a
   // byte-identical CLAUDE.md/AGENTS.md pair recorded in its manifest — the old
   // "publish the same text as AGENTS.md" model this ticket replaces.
@@ -1879,18 +2049,22 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // more (104→105) when RP-228 added .claude/scripts/token-report.mjs, both
   // workflow-layer only — the core-only figure stayed 62 for the same
   // reason.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 105 manifest entries to 62', async () => {
+  // RP-257: `PLAN.md` is a seed-once path (`lib/seed-once.ts`) — `init`
+  // records it under `files[]` one fewer path than before, in `kept[]`
+  // instead, so both counts below are one lower than the chronicle above
+  // would otherwise give (105/62 manifest entries, either way).
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 104 manifest entries to 61', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(105);
+    expect(Object.keys(before!.files).length).toBe(104);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(62);
+    expect(Object.keys(after!.files).length).toBe(61);
   });
 });
 
