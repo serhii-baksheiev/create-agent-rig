@@ -1178,9 +1178,23 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
   // does more for an operator than reading every reason individually
   // (UX-lens review, RP-181, carried since cycle 5 as the roll-up advisory).
   const unverifiedCount = preserved.filter((p) => isUnverifiedReason(p.reason)).length;
+  // code-reviewer round 1 (PR #332) blocker 2: `preserved.length -
+  // unverifiedCount` used to assume every preserved path that was not an
+  // unverified precaution was a genuinely-traced hook dependency — true
+  // before a `kept` path (RP-182) could sit in the SAME plan a hook sweep
+  // also ran in. A `kept` path was never the rig's to begin with — it
+  // cannot be "referenced or imported" by wiring the rig itself never
+  // wrote — and RP-257 (`PLAN.md`, seed-once, always `kept`) puts one in
+  // EVERY plan, not only the rare hand-built fixture this used to be. Read
+  // from `plan.actions`'s own structural `kept` flag — the same field
+  // RP-260's manifest-removal decision reads — never a reason-text guess,
+  // which is exactly the mistake `hookStillReferencedReason`'s own history
+  // warns against.
+  const keptCount = plan.actions.filter((a) => a.verdict === 'preserved' && a.kept === true).length;
+  const genuinelyTracedCount = preserved.length - unverifiedCount - keptCount;
   const rollup =
     unverifiedCount > 0
-      ? `  (${preserved.length - unverifiedCount} genuinely referenced or imported; ` +
+      ? `  (${genuinelyTracedCount} genuinely referenced or imported; ` +
         `${unverifiedCount} kept only as a precaution — something needed to verify them ` +
         `could not be read)\n`
       : '';
@@ -1194,7 +1208,21 @@ async function runUninstall(rawArgs: string[]): Promise<number> {
           : ''),
     );
   } else if (result.manifestRemoved) {
-    process.stdout.write(`\nRemoved ${result.removed.length} files and the manifest.\n`);
+    // Advisory (code-reviewer round 1, PR #332): RP-260 already lets this
+    // branch report a clean `uninstalled` outcome while a `kept` path (every
+    // rig's own `PLAN.md`, since RP-257) is still sitting on disk, left
+    // behind rather than removed — this line used to say nothing about
+    // that. Same wording the `detached` branch above already uses for the
+    // identical situation, so one phrasing describes "the manifest is gone,
+    // something user-owned remains" everywhere it can happen.
+    process.stdout.write(
+      `\nRemoved ${result.removed.length} files and the manifest.\n` +
+        (preserved.length > 0
+          ? `${preserved.length} file(s) left behind — they are yours now, uninstall no longer owns them:\n` +
+            rollup +
+            `${preservedList()}\n`
+          : ''),
+    );
   } else {
     // Every removal that was planned succeeded, but something else was
     // preserved (in the plan, or discovered changed at apply time) — the rig

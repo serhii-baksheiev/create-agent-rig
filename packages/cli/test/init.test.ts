@@ -23,7 +23,7 @@ import {
 } from '../src/commands/init.js';
 import { applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import type { HashHistory } from '../src/lib/history.js';
-import { readManifest, sha256 } from '../src/lib/manifest.js';
+import { readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { fifosAvailable, skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
@@ -1090,12 +1090,13 @@ describe('initProject — a rig it already owns', () => {
 // RP-257: PLAN.md is the live Agent/Operator queue — the template header says
 // so ("Keep entries one line each ... Delete done items"), and it is the one
 // payload path a rig is designed to have edited by hand from the moment it is
-// installed. It ships once, from `init --layer workflow`, exactly like every
-// other payload file — but unlike every other payload file it must never be
-// healed back onto disk once the user has removed it: a missing PLAN.md is a
-// deliberate deletion of the user's own queue, not a rig file that fell out
-// of place. Doctor's and upgrade's halves of this same contract are pinned
-// in doctor.test.ts and upgrade.test.ts respectively.
+// installed. It ships once, from a plain `init` (it ships with the
+// process/Core layer, `layers.json`, not the opt-in workflow layer), exactly
+// like every other payload file — but unlike every other payload file it must
+// never be healed back onto disk once the user has removed it: a missing
+// PLAN.md is a deliberate deletion of the user's own queue, not a rig file
+// that fell out of place. Doctor's and upgrade's halves of this same contract
+// are pinned in doctor.test.ts and upgrade.test.ts respectively.
 describe('initProject / planUpgrade — PLAN.md is seed-once, not byte-owned (RP-257)', () => {
   it('seeds PLAN.md with the template content on a clean install, and never recreates it once the user deletes it — not via upgrade, not via a plain init re-run', async () => {
     await initProject(repo, { withWorkflow: true });
@@ -1113,5 +1114,109 @@ describe('initProject / planUpgrade — PLAN.md is seed-once, not byte-owned (RP
     // missing RIG file, and PLAN.md stopped being one the moment it shipped
     await initProject(repo, {});
     await expect(readFile(path.join(repo, 'PLAN.md'))).rejects.toThrow();
+  });
+});
+
+// code-reviewer round 1 (PR #332) blocker 3: `initProject` reports a
+// `seed-gone` path (already seeded, since deleted by the user — see
+// `initProject`'s own `seed-gone` verdict) by folding it into the SAME
+// `skipped` array a present, kept-not-overwritten file goes into. The one
+// caller of this array (`index.ts`) reads its length as "kept N existing"
+// and lists it under "Already present (kept, not overwritten)" — both claims
+// that are simply false of a file that is not on disk at all. This pins the
+// public surface (`InitResult.skipped`) rather than the private split
+// (`skippedExisting`/`seedGone` inside `initProject`), and computes its
+// expected count from the fixture's own file-system state — deleting one
+// file that would otherwise be "kept" must shrink `skipped` by exactly one —
+// rather than importing production's own tally.
+describe('initProject — a seed-gone PLAN.md is not reported as "kept" (RP-257 round 2, blocker 3)', () => {
+  it('excludes a deleted PLAN.md from `InitResult.skipped` — it does not exist, so it cannot have been kept', async () => {
+    await initProject(repo, { withWorkflow: true });
+    // baseline: a second, ordinary init over an untouched rig — PLAN.md is
+    // still on disk, so it genuinely is "kept, not overwritten" here.
+    const baseline = await initProject(repo, {});
+    expect(baseline.skipped).toContain('PLAN.md');
+
+    await rm(path.join(repo, 'PLAN.md'));
+    const afterDeletion = await initProject(repo, {});
+
+    expect(afterDeletion.skipped).not.toContain('PLAN.md');
+    // the ONLY thing that changed between the two runs is PLAN.md's absence
+    expect(afterDeletion.skipped.length).toBe(baseline.skipped.length - 1);
+  });
+
+  // Advisory in the same review: `planInit` (the `--dry-run` preview) lists
+  // every process-layer path unconditionally, so a deleted, already-seeded
+  // PLAN.md still prints `+ PLAN.md` — the dry-run promises work `init`
+  // would never actually do (a plain, non-dry-run `init` never re-plants a
+  // seed-gone path — see the describe block above).
+  it('a dry run does not list a seed-gone PLAN.md as something it would plant', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await rm(path.join(repo, 'PLAN.md'));
+
+    const plan = await planInit(repo, { withWorkflow: true });
+    expect(plan.files.map((f) => f.path)).not.toContain('PLAN.md');
+  });
+
+  // Same advisory, the OTHER number a dry run prints: "N files planned"
+  // (`InitResult.plannedCount`, `initProject`'s own dry-run branch) is
+  // `files.length` — every process-layer path, computed before the per-file
+  // loop even runs — so it does not shrink when one of those paths is
+  // seed-gone either. Computed from the fixture (one dry run before the
+  // deletion, one after) rather than a literal, so this does not restate
+  // whatever number production happens to produce today.
+  it('a dry run does not count a seed-gone PLAN.md among the files planned', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const baselineDry = await initProject(repo, { dryRun: true, withWorkflow: true });
+
+    await rm(path.join(repo, 'PLAN.md'));
+    const afterDeletionDry = await initProject(repo, { dryRun: true, withWorkflow: true });
+
+    expect(afterDeletionDry.plannedCount).toBe(baselineDry.plannedCount - 1);
+  });
+});
+
+// code-reviewer round 1 (PR #332) blocker 5: no test built a genuine
+// pre-RP-257 manifest (PLAN.md recorded as an ordinary, byte-owned `files`
+// entry, no `kept` bucket) and asserted `init`'s own half of the migration
+// the CHANGELOG promises — `upgrade.test.ts` pins the sibling `upgrade` half
+// with the same fixture idiom.
+describe('initProject — migrating a pre-RP-257 manifest (PLAN.md still in `files`, no `kept` entry) (RP-257 round 2, blocker 5)', () => {
+  /** Rewrites the freshly-seeded manifest into the pre-RP-257 shape, and returns the bytes on disk. */
+  async function buildPreRp257Manifest(): Promise<string> {
+    await initProject(repo, { withWorkflow: true });
+    const bytes = await readFile(path.join(repo, 'PLAN.md'), 'utf8');
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    const priorHash = manifest.kept?.['PLAN.md'];
+    if (priorHash === undefined) throw new Error('fixture: PLAN.md was not seeded into `kept`');
+    manifest.files['PLAN.md'] = priorHash;
+    delete manifest.kept!['PLAN.md'];
+    await writeManifest(repo, manifest);
+    return bytes;
+  }
+
+  it('a pristine PLAN.md migrates from `files` to `kept` on the next plain init, bytes untouched', async () => {
+    const pristine = await buildPreRp257Manifest();
+
+    await initProject(repo, {});
+
+    const after = await readManifest(repo);
+    expect(after?.files['PLAN.md']).toBeUndefined();
+    expect(after?.kept?.['PLAN.md']).toBe(sha256(pristine));
+    expect(await readFile(path.join(repo, 'PLAN.md'), 'utf8')).toBe(pristine);
+  });
+
+  it('an edited PLAN.md migrates from `files` to `kept` on the next plain init, bytes untouched', async () => {
+    const pristine = await buildPreRp257Manifest();
+    const edited = `${pristine}\n- add a GET /notes/:id route through every layer (TDD)\n`;
+    await writeFile(path.join(repo, 'PLAN.md'), edited);
+
+    await initProject(repo, {});
+
+    const after = await readManifest(repo);
+    expect(after?.files['PLAN.md']).toBeUndefined();
+    expect(after?.kept?.['PLAN.md']).toBe(sha256(edited));
+    expect(await readFile(path.join(repo, 'PLAN.md'), 'utf8')).toBe(edited);
   });
 });

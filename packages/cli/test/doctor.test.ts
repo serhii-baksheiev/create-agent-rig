@@ -593,8 +593,9 @@ describe('aggregated doctor (RP-21)', () => {
     });
   });
 
-  // RP-257: PLAN.md is the live Agent/Operator queue — seeded once by
-  // `init --layer workflow`, then explicitly the user's own document to edit
+  // RP-257: PLAN.md is the live Agent/Operator queue — seeded once by a plain
+  // `init` (it ships with the process/Core layer, `layers.json`, not the
+  // opt-in workflow layer), then explicitly the user's own document to edit
   // by hand (the template header itself says "Keep entries one line each ...
   // Delete done items"). Byte-diffing it against the manifest-recorded install
   // hash the way every other rig-owned file is diffed turns the FIRST

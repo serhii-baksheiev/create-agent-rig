@@ -347,7 +347,17 @@ export async function planInit(repoDir: string, options: PlanInitOptions = {}): 
   if (placement === 'nested' && (await exists(path.join(repoDir, ROOT_CLAUDE)))) {
     conflicts.push(ROOT_CLAUDE);
   }
-  return { files: files.map((p) => ({ path: p })), conflicts };
+  const conflictSet = new Set(conflicts);
+  // code-reviewer round 1 (PR #332) blocker 3 advisory: a seed-once path
+  // (RP-257) absent from disk (so not in `conflicts` above) but already
+  // recorded as seeded before is exactly the `seed-gone` case `initProject`
+  // itself refuses to replant — this preview must not promise a write a
+  // real (or dry) `init` run would not actually make either.
+  const plannedFiles = files.filter(
+    (rel) =>
+      conflictSet.has(rel) || !(isSeedOncePath(rel) && priorSeedHash(previous, rel) !== undefined),
+  );
+  return { files: plannedFiles.map((p) => ({ path: p })), conflicts };
 }
 
 export async function initProject(repoDir: string, options: InitOptions): Promise<InitResult> {
@@ -428,7 +438,6 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   }
 
   const contents = await initFileContents(repoDir, options.project, layers, placement);
-  const plannedCount = files.length;
   const actions = await mapConcurrent(files, 16, async (rel) => {
     const dest = destinations.get(rel)!;
     if (await exists(dest)) {
@@ -466,7 +475,19 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     .filter(({ verdict }) => verdict === 'skipped')
     .map(({ rel }) => rel);
   const seedGone = actions.filter(({ verdict }) => verdict === 'seed-gone').map(({ rel }) => rel);
-  const skipped = [...skippedExisting, ...seedGone];
+  // code-reviewer round 1 (PR #332) blocker 3: a seed-gone path is not on
+  // disk at all — it is a deliberate deletion this run is refusing to heal,
+  // not something init "kept, not overwritten" — so it never joins the
+  // PUBLIC `skipped` list either. `index.ts` reads this list's length
+  // straight into "kept N existing" (and, for `SETTINGS`/`CODEX_HOOKS`
+  // specifically, a wiring warning); both readings are false of a file that
+  // does not exist.
+  const skipped = skippedExisting;
+  // Same advisory: `files.length` (every process-layer path this run's
+  // layer set names) over-counts a `--dry-run` preview by one for every
+  // seed-gone path — a plain `init` never plants one (see the loop above),
+  // so it is not among the files THIS run would actually write either.
+  const plannedCount = files.length - seedGone.length;
 
   if (!options.dryRun) {
     // RP-256 slice 1: on a `nested` placement, root CLAUDE.md is the user's

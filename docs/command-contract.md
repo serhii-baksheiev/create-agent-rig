@@ -1813,7 +1813,7 @@ and how an old manifest missing one is read:
 | `stacks` (string array)                                  | always        | — (required; legacy — always empty on a current install, RP-177 retired the overlays it once named)                                                                                                                                                                                |
 | `layers` (`'process'` and/or `'workflow'`, deduplicated) | RP-180        | **every layer this release ships** (`ALL_LAYERS`) — never the default-only set, so a pre-RP-180 rig's workflow files stay owned rather than becoming `retired` — `packages/cli/test/manifest.test.ts` › "a manifest with no `layers` key parses as though it recorded every layer" |
 | `files` (path → sha256)                                  | always        | — (required)                                                                                                                                                                                                                                                                       |
-| `kept` (path → sha256)                                   | RP-182        | present from the very first `init`, since RP-257: `PLAN.md`, a seed-once path, is always recorded here, never in `files` — a manifest with nothing else kept still carries `{"PLAN.md": …}`                                                                                        |
+| `kept` (path → sha256)                                   | RP-182        | no kept paths at all — read as an empty record (`{}`)                                                                                                                                                                                                                              |
 
 A manifest carrying an unrecognised shape in any required key, or a
 `stacks`, `layers` or `kept` value this reader does not accept, does not
@@ -1823,7 +1823,10 @@ hash-history fallback rather than a half-trusted read.
 **Seed-once paths (RP-257) live in `kept`, never `files`, and are decided by
 their own list, not by content.** `PLAN.md` is the one member today
 (`packages/cli/src/lib/seed-once.ts`'s `SEED_ONCE`) — it ships with the
-process layer (every rig has it), but it is the live Agent/Operator queue
+process layer (every rig has it), so its `kept` entry lands in the manifest
+on the very first `init`: `kept` is no longer ever genuinely empty on a
+fresh install, only on a manifest older than RP-182 or one hand-edited to
+drop it (the "absent reads as" column above). It is the live Agent/Operator queue
 from the instant `init` writes it, meant to be hand-edited (the template's
 own header). Diffing it against the recorded install hash the way an
 ordinary `files` entry is diffed would turn the first legitimate queue edit
@@ -2104,6 +2107,7 @@ and self-checks against a planted mutation.
 | edited by you                                                                                    | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
 | deleted by you                                                                                   | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "installs a file this release added, and does not resurrect one the user deleted"                         |
 | not Rig's, or there before                                                                       | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never claims a file it kept rather than wrote"                                                           |
+| PLAN.md                                                                                          | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites an edited PLAN.md, and never plans it as conflict, update or wiring"                    |
 | No application scaffolding, no project templates to choose from.                                 | Not part of 1.0                         | `packages/cli/test/create.test.ts` › "makes the directory and installs the one payload into it"                                                 |
 | Not an agent runtime, scheduler or workflow engine; it configures the harnesses you already run. | Not part of 1.0                         | `test/template/layers-split.test.ts` › "the workflow layer is exactly the named set RP-180 decided on"                                          |
 | No plugin manager, and no bundled memory engine.                                                 | Not part of 1.0                         | `packages/cli/test/package-contents.test.ts` › "keeps a `.claude-plugin/` directory and a `marketplace.json` file out of the published tarball" |

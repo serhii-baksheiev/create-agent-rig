@@ -881,6 +881,23 @@ export async function planUpgrade(
           reason: 'seeded once by the rig, removed since — not restored',
         });
         seedOnceKept[file.rel] = prior;
+      } else if (presentInEveryRelease(history, file.rel)) {
+        // code-reviewer round 1 (PR #332) blocker 1: `prior` only ever reads
+        // the MANIFEST — undefined here means either "genuinely never
+        // seeded" or "no manifest to read at all" (`manifest === null`,
+        // the bootstrapped path), and those are not the same claim. The
+        // main loop above already tells them apart with this exact
+        // fallback (`presentInEveryRelease`, a few lines up in this same
+        // function) for every ORDINARY file; a seed-once path needs the
+        // identical fallback or a bootstrapped run — no manifest, nothing
+        // to vouch for a deliberate deletion — reads a missing PLAN.md as
+        // brand new and writes it straight back, resurrecting a queue the
+        // user removed on purpose.
+        actions.push({
+          rel: file.rel,
+          verdict: 'deleted',
+          reason: `shipped in every release since ${history.versions[0]}, and is gone — not restored`,
+        });
       } else {
         // Never seeded before, and nothing on disk — the one case this pass
         // actually writes: a release that adds a seed-once path a rig

@@ -446,18 +446,19 @@ describe('create-agent-rig uninstall', () => {
   // imports, stay the same 7 + 6, plus the two non-dependency entries
   // themselves (`settings.json`, `guard-secret-file.mjs`).
   //
-  // RP-257 moved it to 16: the roll-up's formula is `preserved.length -
+  // code-reviewer round 1 (PR #332) blocker 2: RP-257 moved the printed
+  // number to 16 by widening what the formula counts, not by adding
+  // anything genuinely traced. The roll-up's formula is `preserved.length -
   // unverifiedCount`, so ANY additional `preserved` path that is not itself
   // an `isUnverifiedReason` match — traced or not — widens the "genuinely
   // referenced or imported" bucket by one. `PLAN.md` (a seed-once path,
   // always `kept`, reason `'user-owned (kept by init)'`, never
-  // `isUnverifiedReason`) is now on every rig, so it is the one addition
-  // here — not a hook, not traced, but the formula does not distinguish that
-  // from the 15 that are. This is a pre-existing imprecision in the roll-up
-  // itself, not something this change fixes: PLAN.md is exactly as
-  // "genuinely referenced or imported" as a `kept` `CLAUDE.md` sitting
-  // alongside the same sweep would already have been counted as, before
-  // RP-257 ever existed.
+  // `isUnverifiedReason`) is now on every rig, and it is not a hook, not
+  // traced, and not one of the 7 direct hooks + 6 imports + 2 non-dependency
+  // entries the count is defined to mean. The number this test pins stays
+  // 15: a `kept` non-hook path must be excluded from "genuinely referenced
+  // or imported" (or bucketed on its own), the same way an unreadable seed
+  // is already excluded via `isUnverifiedReason`.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -479,7 +480,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(16 genuinely referenced or imported; 10 kept only as a precaution',
+        '(15 genuinely referenced or imported; 10 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',
@@ -546,8 +547,15 @@ describe('create-agent-rig uninstall', () => {
         reason.startsWith('protected because'),
       );
       expect(precaution.length).toBeGreaterThan(0);
+      // A `kept` path (e.g. PLAN.md, RP-257) is preserved because `init`
+      // found it already in place, never because this sweep traced it as a
+      // hook or an import — it must not count as "genuinely referenced or
+      // imported" any more than a precaution-only path does.
+      const keptUserOwned = [...reasonByPath.values()].filter(
+        (reason) => reason === 'user-owned (kept by init)',
+      ).length;
       expect(result.stdout).toContain(
-        `(${reasonByPath.size - precaution.length} genuinely referenced or imported; ${precaution.length} kept only as a precaution`,
+        `(${reasonByPath.size - precaution.length - keptUserOwned} genuinely referenced or imported; ${precaution.length} kept only as a precaution`,
       );
     } finally {
       await removeFixture(outside);
