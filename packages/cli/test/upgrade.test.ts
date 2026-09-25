@@ -1534,6 +1534,205 @@ describe('planUpgrade — a path `kept` by init, not written (RP-182)', () => {
   });
 });
 
+// RP-256 slice 1: `init` may now leave a repo's own root CLAUDE.md in place
+// and install the Rig shim nested at `.claude/CLAUDE.md` instead (see
+// `init.test.ts`). Placement must be derived from the MANIFEST — never
+// re-guessed from what happens to be on disk — so `upgrade` reads
+// `files['.claude/CLAUDE.md']` to recognise a nested rig, and from that
+// point on root CLAUDE.md is simply not this rig's file: never planned,
+// never shimmed, never accused of "shadowing" AGENTS.md.
+describe('planUpgrade — a nested rig, CLAUDE.md beside AGENTS.md (RP-256 slice 1)', () => {
+  const NESTED_CLAUDE = '.claude/CLAUDE.md';
+
+  /**
+   * Builds the manifest/file shape a nested `init` install (RP-256 slice 1)
+   * is expected to leave, out of an ordinary `installRig()`: the shim bytes
+   * `init` wrote at root `CLAUDE.md` are moved to `.claude/CLAUDE.md`, the
+   * user's own text takes root `CLAUDE.md`'s place, and the manifest is
+   * edited with the same primitives every other fixture in this file uses
+   * (`readManifest`/`writeManifest`) — `files['CLAUDE.md']` removed,
+   * `files['.claude/CLAUDE.md']` added, the user's bytes recorded under
+   * `kept['CLAUDE.md']`. This never calls any not-yet-written nested-install
+   * code; it only constructs the state that code is expected to leave.
+   */
+  const installNestedRig = async (userClaudeContent = '# host rules\n'): Promise<string> => {
+    await installRig();
+    // The nested shim imports `@../AGENTS.md`, not the root shim's
+    // `@AGENTS.md` — take the release's own nested template bytes.
+    const shimBytes = await readFile(path.join(agentOsUniversalDir(), NESTED_CLAUDE), 'utf8');
+    await write(NESTED_CLAUDE, shimBytes);
+    await write('CLAUDE.md', userClaudeContent);
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    delete manifest.files['CLAUDE.md'];
+    manifest.files[NESTED_CLAUDE] = sha256(shimBytes);
+    manifest.kept = { ...manifest.kept, 'CLAUDE.md': sha256(userClaudeContent) };
+    await writeManifest(repo, manifest);
+    return shimBytes;
+  };
+
+  it('never plans root CLAUDE.md, even after the user edits their own file', async () => {
+    await installNestedRig();
+    await write('CLAUDE.md', '# host rules, edited later\n');
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(plan.actions.find((a) => a.rel === 'CLAUDE.md')).toBeUndefined();
+  });
+
+  it('plans the nested shim like any other owned file: `unchanged` while untouched', async () => {
+    await installNestedRig();
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(verdictFor(plan, NESTED_CLAUDE)).toBe('unchanged');
+  });
+
+  it('plans the nested shim like any other owned file: `conflict` once edited', async () => {
+    const shimBytes = await installNestedRig();
+    await write(NESTED_CLAUDE, `${shimBytes}\nmy own note\n`);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(verdictFor(plan, NESTED_CLAUDE)).toBe('conflict');
+  });
+
+  it('carries the kept user CLAUDE.md forward, byte-identical, and keeps tracking the nested shim', async () => {
+    const userBytes = '# host rules\n';
+    await installNestedRig(userBytes);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    await applyUpgrade(repo, plan);
+
+    expect(await read('CLAUDE.md')).toBe(userBytes);
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(userBytes));
+    expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+    // The upgrade must not silently drop the manifest's record of the nested
+    // shim just because it is not on the fixed MAPS list.
+    expect(manifest?.files[NESTED_CLAUDE]).toBeTruthy();
+  });
+
+  // code-reviewer round 1 advisory A3 (PR #324): `claudePlacement` falls
+  // back to `root` whenever there is no MANIFEST to read `NESTED_CLAUDE`
+  // from — including a nested rig whose manifest was deleted or voided
+  // (the bootstrapped path). With no manifest, this is currently the ONLY
+  // signal `planUpgrade` looks at, even though the nested shim itself is
+  // sitting right there on disk with its own recognisable first line
+  // (`@../AGENTS.md`, never the root shim's `@AGENTS.md`). Falling back to
+  // `root` plans the user's own file as though it were this rig's copy of
+  // the map, and — because it is not the `@AGENTS.md` shim — tells the user
+  // to replace their own content with the shim, which would destroy it.
+  it('a bootstrapped upgrade (manifest deleted) recognises a nested rig from its own `.claude/CLAUDE.md` on disk, and never plans root CLAUDE.md at all', async () => {
+    const userBytes = '# host rules\n';
+    await installNestedRig(userBytes);
+    await rm(abs(MANIFEST_REL));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(plan.bootstrapped).toBe(true);
+    // never planned as the shim target, never told to "replace this file's
+    // content with `@AGENTS.md`" — root CLAUDE.md is simply not this rig's
+    // file once a nested rig is recognised, exactly as the manifest-present
+    // case above already pins.
+    expect(plan.actions.find((a) => a.rel === 'CLAUDE.md')).toBeUndefined();
+    // the nested shim itself is still tracked
+    expect(plan.actions.find((a) => a.rel === NESTED_CLAUDE)).toBeDefined();
+  });
+
+  // code-reviewer round 3 advisory N3 (PR #324): `nestedClaudeShimOnDisk`
+  // rejects on `info.size > MAX_SHIM_PROBE_BYTES` — the file's TOTAL size —
+  // rather than reading only the first `MAX_SHIM_PROBE_BYTES` to find the
+  // one line that matters. Its own doc comment says it reads "the most bytes
+  // ... to find one line", which a total-size rejection does not implement: a
+  // nested shim whose first line is still exactly `@../AGENTS.md`, but which
+  // has gathered MORE than 4 KiB of trailing content afterward (the user's
+  // own notes, say), is refused detection entirely on a bootstrapped
+  // upgrade — falling back to `root`, which plans root `CLAUDE.md` and
+  // tells the user to replace their own file with the shim, the misleading
+  // advice the manifest-present case above already rules out.
+  it('a bootstrapped upgrade recognises a nested rig from `.claude/CLAUDE.md` even when the file carries more than 4 KiB AFTER its `@../AGENTS.md` first line', async () => {
+    const shimBytes = await installNestedRig();
+    const firstNewline = shimBytes.indexOf('\n');
+    // Comfortably over the 4 KiB probe bound, appended AFTER the first line
+    // — the first line itself, the only thing the probe is documented to
+    // need, is untouched.
+    const bulkyShim = `${shimBytes.slice(0, firstNewline + 1)}${'#'.repeat(4200)}\n${shimBytes.slice(firstNewline + 1)}`;
+    await write(NESTED_CLAUDE, bulkyShim);
+    await rm(abs(MANIFEST_REL));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    expect(plan.bootstrapped).toBe(true);
+    // never planned as the shim target, never told to replace the user's own
+    // root CLAUDE.md — root CLAUDE.md is simply not this rig's file once a
+    // nested rig is recognised.
+    expect(plan.actions.find((a) => a.rel === 'CLAUDE.md')).toBeUndefined();
+    // the nested shim itself is still tracked
+    expect(plan.actions.find((a) => a.rel === NESTED_CLAUDE)).toBeDefined();
+  });
+
+  // code-reviewer round 2 advisory N1 (PR #324): `nestedClaudeShimOnDisk`
+  // (the bootstrapped path's only signal) reads `.claude/CLAUDE.md` through
+  // `readIfPresent` -> `writableOnDisk`, which THROWS `UpgradeError` for
+  // anything a write must refuse through — including a symlink, even though
+  // this call only ever wants to CLASSIFY the path, never to write through
+  // it. A user who happens to keep `.claude/CLAUDE.md` as a symlink (to a
+  // dotfiles repo, say) and then loses the manifest gets an upgrade that
+  // refuses outright over a file it was never going to write in the first
+  // place. Detection must `lstat` and treat a non-regular file as "not the
+  // nested shim" — falling through to whatever `root` placement would have
+  // decided — rather than propagating the write-safety refusal into a
+  // read-only classification. This pins only that `planUpgrade` itself does
+  // not throw; whether the LATER root-placement path still refuses to WRITE
+  // through that same symlink is a separate question this test does not
+  // answer.
+  it('a bootstrapped upgrade does not throw when `.claude/CLAUDE.md` is a user symlink — detection treats it as not-the-shim', async (context) => {
+    await installNestedRig();
+    await rm(abs(MANIFEST_REL));
+    await rm(abs(NESTED_CLAUDE));
+    const outside = await mkdtemp(path.join(tmpdir(), 'rp256-n1-outside-'));
+    try {
+      const target = path.join(outside, 'host.md');
+      await writeFile(target, '@../AGENTS.md\nnot actually the shim, just named like it\n');
+      try {
+        await symlink(target, abs(NESTED_CLAUDE), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+
+      expect(plan).toBeDefined();
+      expect(plan.bootstrapped).toBe(true);
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  // code-reviewer round 1 advisory A4 (PR #324): the reason a `deleted`
+  // AGENTS.md gives names its importer unconditionally as "CLAUDE.md" and
+  // its import as `` `@AGENTS.md` `` — correct on a `root` rig, but on a
+  // `nested` rig the file that actually imports AGENTS.md is
+  // `.claude/CLAUDE.md`, and the import it uses is `` `@../AGENTS.md` ``
+  // (one directory up from where the nested shim sits). The reason must
+  // name the file that is actually the rulebook's one remaining path back
+  // to AGENTS.md, not the user's own, unrelated root CLAUDE.md.
+  it("names `.claude/CLAUDE.md` (not root CLAUDE.md) as AGENTS.md's importer on a nested rig, with the nested import syntax", async () => {
+    await installNestedRig();
+    await rm(abs('AGENTS.md'));
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+
+    const agentsAction = plan.actions.find((a) => a.rel === 'AGENTS.md');
+    expect(agentsAction?.verdict).toBe('deleted');
+    expect(agentsAction?.reason).toContain('.claude/CLAUDE.md imports it (`@../AGENTS.md`)');
+    expect(agentsAction?.reason).not.toContain('CLAUDE.md imports it (`@AGENTS.md`)');
+  });
+});
+
 // RP-180: the workflow layer (queue/loop/pr-ship/run-state/journal/
 // revalidation/claim-records/PR-lifecycle helpers) is an opt-in layer.
 // `upgrade` must refresh only the layers a rig's manifest recorded — and an

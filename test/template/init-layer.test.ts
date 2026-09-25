@@ -54,6 +54,16 @@ const DOCUMENTED_ABSENT: Record<string, string> = {
     'the deploy HEALTHY/REGRESSION verdict that feeds the next automated ' +
     'selection — part of the opt-in workflow layer; autonomy.md’s ' +
     '"Post-deploy verification" says so',
+  // RP-256 slice 1: `initFileContents` here defaults to the `root`
+  // placement (no repo to inspect at `/tmp/example-repo`) — the nested
+  // shim ships only when `init` finds a pre-existing root CLAUDE.md, the
+  // same conditional-presence shape every other entry in this map already
+  // has, just decided by disk state instead of the opt-in layer flag.
+  '.claude/CLAUDE.md':
+    'ships only on a `nested` CLAUDE.md-coexistence install (a repo that ' +
+    'already has its own root CLAUDE.md) — protected by ' +
+    '`unattended-flag.mjs` either way, referenced from the RP-256 slice 1 ' +
+    'coexistence decision record',
 };
 
 async function installed(): Promise<Map<string, string>> {

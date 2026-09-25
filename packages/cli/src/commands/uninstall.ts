@@ -1,6 +1,6 @@
 import { lstat, readFile, readdir, realpath, rmdir, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { initManifest } from './init.js';
+import { initManifest, NESTED_CLAUDE } from './init.js';
 import { AGENTS_MD_RESCUE, renderedAgentsMd } from './upgrade.js';
 import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { ALL_LAYERS, MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
@@ -428,7 +428,15 @@ function refuseFilesKeptOverlap(manifest: RigManifest): void {
  */
 async function rigOwnedPaths(): Promise<Set<string>> {
   const files = await initManifest(ALL_LAYERS);
-  return new Set(files.map((f) => f.rel));
+  const paths = new Set(files.map((f) => f.rel));
+  // RP-256 slice 1: `initManifest`'s default is the `root` placement, so the
+  // set above already has plain `CLAUDE.md`. A `nested` rig's manifest
+  // carries `.claude/CLAUDE.md` instead (see `init.ts`'s `ClaudeMdPlacement`)
+  // — this is the ownership BOUNDARY, not one given rig's actual layout, so
+  // both possible shim paths belong in it, the same way a workflow-layer
+  // path is unioned in regardless of whether THIS rig opted in.
+  paths.add(NESTED_CLAUDE);
+  return paths;
 }
 
 /**
@@ -1130,7 +1138,14 @@ export async function planUninstall(
   // own half at all. `init` refuses outright over a pre-existing CLAUDE.md
   // or AGENTS.md (the `MAPS` special case), so neither ever appears under
   // `manifest.kept` — both are always decided by the loop above, never here.
-  const claudeAction = actions.find((a) => a.rel === 'CLAUDE.md');
+  // RP-256 slice 1: on a `nested` rig, root CLAUDE.md is never the rig's own
+  // copy of the rulebook — it is the user's, recorded only under `kept`
+  // (always `preserved`, never the rig-owned sibling AGENTS.md pairs with).
+  // The nested shim at `.claude/CLAUDE.md` plays that role instead, so the
+  // pair check below has to look at THAT path once the manifest says the
+  // rig went nested.
+  const claudeMapRel = Object.hasOwn(manifest.files, NESTED_CLAUDE) ? NESTED_CLAUDE : 'CLAUDE.md';
+  const claudeAction = actions.find((a) => a.rel === claudeMapRel);
   const agentsAction = actions.find((a) => a.rel === 'AGENTS.md');
   // Round 5 advisory: the `undefined` case previously said "is not tracked
   // by this rig", which reads as "is absent" — it is not. `undefined` here
@@ -1151,13 +1166,13 @@ export async function planUninstall(
     a === undefined || a.verdict === 'preserved' || a.verdict === 'absent';
   if (claudeAction?.verdict === 'remove' && notACleanRemoval(agentsAction)) {
     claudeAction.note =
-      `this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which ` +
+      `this is the rig's own ${claudeMapRel} — removing it leaves AGENTS.md, which ` +
       `${await siblingState(agentsAction, 'AGENTS.md')}, as the only rulebook copy`;
   }
   if (agentsAction?.verdict === 'remove' && notACleanRemoval(claudeAction)) {
     agentsAction.note =
-      `this is the rig's own AGENTS.md — removing it leaves CLAUDE.md, which ` +
-      `${await siblingState(claudeAction, 'CLAUDE.md')}, as the only rulebook copy`;
+      `this is the rig's own AGENTS.md — removing it leaves ${claudeMapRel}, which ` +
+      `${await siblingState(claudeAction, claudeMapRel)}, as the only rulebook copy`;
   }
 
   // Round 4, blocker 1 (round 5: shares `renderedAgentsMd` with `upgrade.ts`

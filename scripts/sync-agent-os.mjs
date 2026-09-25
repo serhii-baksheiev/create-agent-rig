@@ -157,6 +157,13 @@ function compose() {
         else if (entry.isFile()) {
           const rel = path.relative(baseDir, abs).replaceAll('\\', '/');
           if (rel === 'CLAUDE.md' || rel === 'AGENTS.md') continue; // handled separately below
+          // RP-256 slice 1: the nested Rig shim a CLAUDE.md-coexistence
+          // install writes at `.claude/CLAUDE.md` — this repo's own root
+          // CLAUDE.md already plays that role for its own dogfood copy (it
+          // is never installed alongside a pre-existing one here), so the
+          // nested template is a `packages/cli` payload, not something this
+          // repo's own composed `.claude/` should carry a second copy of.
+          if (rel === '.claude/CLAUDE.md') continue;
           if (rel === 'layers.json') continue; // init-manifest, not project content
           if (rel === 'PLAN.md') continue; // this repo has its own owner-authored plan
           out.set(rel, substitute(readFileSync(abs, 'utf8')));

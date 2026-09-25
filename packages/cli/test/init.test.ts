@@ -1,4 +1,16 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { constants } from 'node:fs';
+import {
+  lstat,
+  mkdtemp,
+  mkdir,
+  open,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -10,6 +22,7 @@ import {
   projectNameFor,
 } from '../src/commands/init.js';
 import { readManifest, sha256 } from '../src/lib/manifest.js';
+import { fifosAvailable, skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 let repo: string;
@@ -81,24 +94,51 @@ describe('initProject — the install', () => {
     ).rejects.toThrow();
   });
 
-  it('refuses to clobber an existing CLAUDE.md unless forced', async () => {
-    await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
-    await expect(initProject(repo, {})).rejects.toThrow(InitError);
-    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# mine');
-  });
-
-  // PR #241 round 3 advisory: "already has an CLAUDE.md" is a grammar defect
-  // ("an" before a consonant), pinned here as its own assertion so a later
-  // rewrite of this message cannot silently reintroduce it.
-  it('says "a CLAUDE.md", not "an CLAUDE.md"', async () => {
-    await writeFile(path.join(repo, 'CLAUDE.md'), '# mine');
-    await expect(initProject(repo, {})).rejects.toThrow('already has a CLAUDE.md');
-  });
-
-  it('refuses to clobber an existing AGENTS.md', async () => {
+  // RP-256 slice 1: an AGENTS.md refusal is the one MAPS refusal left in this
+  // slice (CLAUDE.md now coexists — see "initProject — CLAUDE.md
+  // coexistence" below). The old blanket-refusal message suggested `upgrade`
+  // unconditionally, which loops straight into upgrade's own "no rig found,
+  // run init" refusal when nothing has been installed yet (the bug this
+  // ticket exists to close) — so the message must not do that while there is
+  // no rig manifest on disk, and it must actually name AGENTS.md, with the
+  // grammatically correct article ("an", not "a", before the vowel sound).
+  it('refuses to clobber an existing AGENTS.md, without looping into the upgrade refusal', async () => {
     await writeFile(path.join(repo, 'AGENTS.md'), '# mine');
-    await expect(initProject(repo, {})).rejects.toThrow(InitError);
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/already has an AGENTS\.md/);
+    expect(message).not.toMatch(/create-agent-rig upgrade/);
     expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe('# mine');
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  // The MAPS loop used to check CLAUDE.md before AGENTS.md and throw on the
+  // first hit — so when BOTH already existed, the message blamed CLAUDE.md
+  // even though slice 1 no longer refuses over CLAUDE.md alone. The message
+  // must name the file that actually blocks the run.
+  it('when both CLAUDE.md and AGENTS.md already exist, blames AGENTS.md — not the coexisting CLAUDE.md', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules\n');
+    await writeFile(path.join(repo, 'AGENTS.md'), '# host agents doc\n');
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/AGENTS\.md/);
+    expect(message).not.toMatch(/already has a CLAUDE\.md/);
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules\n');
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe('# host agents doc\n');
+    await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+    await expect(readManifest(repo)).resolves.toBeNull();
   });
 
   it('never overwrites a pre-existing process file it did not write', async () => {
@@ -116,6 +156,501 @@ describe('initProject — the install', () => {
     expect(result.written).toEqual([]);
     await expect(readFile(path.join(repo, '.claude', 'rules', 'workflow.md'))).rejects.toThrow();
     expect(result.plannedCount).toBeGreaterThan(0);
+  });
+});
+
+// RP-256 slice 1: a repo that already has its own root CLAUDE.md no longer
+// refuses outright. Both `./CLAUDE.md` and `./.claude/CLAUDE.md` are loaded
+// by Claude Code, with imports resolved relative to the importing file —
+// measured, not assumed: see `docs/decisions/agents-md-canonical.md`,
+// "CLAUDE.md coexistence — measured (RP-256 slice 1)" — so `init` leaves
+// the user's CLAUDE.md byte-for-byte untouched and installs the Rig shim
+// nested at `.claude/CLAUDE.md` instead, importing the canonical rulebook
+// as `@../AGENTS.md`. The user's file is recorded in the manifest's `kept`
+// (evidence, not ownership); `.claude/CLAUDE.md` is an ordinary `files`
+// entry like any other rig-owned path.
+describe('initProject — CLAUDE.md coexistence (RP-256 slice 1)', () => {
+  const USER_CLAUDE = '# host rules — do not touch\n';
+
+  it('installs the nested shim beside a user CLAUDE.md, leaving it byte-identical', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    expect(result.written).toContain('AGENTS.md');
+    expect(result.written).not.toContain('CLAUDE.md');
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+    const shim = await readFile(path.join(repo, '.claude', 'CLAUDE.md'), 'utf8');
+    // Imports resolve relative to the IMPORTING file — `.claude/CLAUDE.md` is
+    // one directory below the repo root, so it climbs back up to AGENTS.md,
+    // unlike the root shim's plain `@AGENTS.md`.
+    expect(shim.split(/\r?\n/, 1)[0]).toBe('@../AGENTS.md');
+  });
+
+  it('records the user CLAUDE.md under `kept`, never `files`, and the nested shim under `files`', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+
+    await initProject(repo, {});
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(USER_CLAUDE));
+    expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+    expect(manifest?.files['.claude/CLAUDE.md']).toBeTruthy();
+    expect(manifest?.files['AGENTS.md']).toBeTruthy();
+  });
+
+  it('is idempotent: a second init leaves the user CLAUDE.md and the nested shim untouched', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+    await initProject(repo, {});
+
+    const second = await initProject(repo, {});
+
+    expect(second.written).toEqual([]);
+    expect(second.skipped).toContain('.claude/CLAUDE.md');
+    expect(second.skipped).toContain('AGENTS.md');
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+  });
+
+  it('a dry run writes nothing when a user CLAUDE.md is present', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+
+    const result = await initProject(repo, { dryRun: true });
+
+    expect(result.written).toEqual([]);
+    await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  // Explicit regression pin: nothing about a CLEAN repo's install may change
+  // because a DIFFERENT repo now takes the nested path — no `.claude/CLAUDE.md`
+  // appears, and the manifest gets no `kept` entry at all, exactly as before.
+  it('a clean repo (no pre-existing CLAUDE.md) is installed exactly as before: no nested shim, no `kept`', async () => {
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('CLAUDE.md');
+    expect(result.written).not.toContain('.claude/CLAUDE.md');
+    await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.files['CLAUDE.md']).toBeTruthy();
+    expect(manifest?.files['.claude/CLAUDE.md']).toBeUndefined();
+    expect(manifest?.kept).toBeUndefined();
+  });
+
+  // The one case still refused in this slice: a pre-existing `.claude/CLAUDE.md`
+  // that this rig never wrote (no manifest entry vouches for it) means the
+  // nested slot is already occupied by something unknown — `init` must not
+  // guess whether it is safe to overwrite, so it refuses exactly like the
+  // AGENTS.md case above, and it must name the file actually in its way.
+  it('refuses when the nested slot is already occupied by an unrecorded `.claude/CLAUDE.md`, and writes nothing', async () => {
+    await writeFile(path.join(repo, 'CLAUDE.md'), USER_CLAUDE);
+    await mkdir(path.join(repo, '.claude'), { recursive: true });
+    await writeFile(path.join(repo, '.claude', 'CLAUDE.md'), '# something already living here\n');
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    expect((caught as Error).message).toMatch(/\.claude[/\\]CLAUDE\.md/);
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(USER_CLAUDE);
+    expect(await readFile(path.join(repo, '.claude', 'CLAUDE.md'), 'utf8')).toBe(
+      '# something already living here\n',
+    );
+    await expect(readFile(path.join(repo, 'AGENTS.md'))).rejects.toThrow();
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+});
+
+// code-reviewer round 1, blocker B1 (PR #324): a symlink sitting at root
+// `CLAUDE.md` is the user's own file — it points at their content, exactly
+// like a regular file would — so it must not block installation any more
+// than a regular file does. Nested placement never writes root `CLAUDE.md`
+// at all, so the link itself is never touched; what changes is that
+// `claudeMdPlacementForInstall` must recognise a symlink as "the user already
+// has a CLAUDE.md" the same way it recognises a regular file, instead of
+// falling through to `root` and having the later symlink-confinement check
+// refuse the write.
+//
+// security-scanner round 2 advisory A1 (PR #324, decided in scope): `kept`
+// is evidence about THIS repository, committed into a manifest the user
+// pushes — so it records the target's bytes only when the target resolves
+// INSIDE the repo. A target outside the repo gets no `kept` entry at all:
+// install still goes nested exactly as before, but nothing about a file the
+// rig never touched, and that may not even be the user's to disclose (an
+// outside symlink can point anywhere readable, including outside this
+// project entirely), goes into a document this project commits.
+//
+// security-scanner round 2 blocker B1 (PR #324): reading that in-repo target
+// to hash it must also be BOUNDED — a repository-controlled symlink can point
+// at a FIFO, a device, or a huge file, and a plain `readFile` through the
+// link has no defence against any of the three. See the two tests below this
+// describe block for the bound itself; this block covers only which targets
+// get a `kept` entry at all.
+describe('initProject — a symlinked root CLAUDE.md (RP-256 slice 1, code-review B1; security-scanner round 2 B1/A1)', () => {
+  it('installs nested beside a symlink to a file OUTSIDE the repo, leaving the link untouched and recording NO kept entry for it', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      const target = path.join(outside, 'host.md');
+      const targetContent = '# host rules, reached through a symlink\n';
+      await writeFile(target, targetContent);
+      try {
+        await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const result = await initProject(repo, {});
+
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      expect(result.written).toContain('AGENTS.md');
+      expect(result.written).not.toContain('CLAUDE.md');
+      // the link itself survives, unreplaced and unfollowed-through-to-write
+      const linkStat = await lstat(path.join(repo, 'CLAUDE.md'));
+      expect(linkStat.isSymbolicLink()).toBe(true);
+      expect(await readFile(target, 'utf8')).toBe(targetContent);
+
+      const manifest = await readManifest(repo);
+      expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+      expect(manifest?.files['.claude/CLAUDE.md']).toBeTruthy();
+      // security-scanner round 2 advisory A1: the target resolves OUTSIDE
+      // repoDir, so its hash must never enter the committed manifest.
+      expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('installs nested beside a symlink to a file INSIDE the repo, recording the target bytes under kept', async (context) => {
+    try {
+      const targetContent = '# host rules, reached through an in-repo symlink\n';
+      await writeFile(path.join(repo, 'host.md'), targetContent);
+      try {
+        await symlink(path.join(repo, 'host.md'), path.join(repo, 'CLAUDE.md'), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const result = await initProject(repo, {});
+
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      const manifest = await readManifest(repo);
+      expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+      // in-repo target: today's behaviour is unchanged — the sha256 of the
+      // bytes a reader following the link would see.
+      expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(targetContent));
+    } finally {
+      // nothing outside the repo to clean up
+    }
+  });
+
+  it('a dry run does not refuse a symlinked root CLAUDE.md either, and writes nothing', async (context) => {
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-outside-'));
+    try {
+      const target = path.join(outside, 'host.md');
+      await writeFile(target, '# host rules, reached through a symlink\n');
+      try {
+        await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+      } catch {
+        // Windows without the symlink privilege refuses file links.
+        context.skip();
+        return;
+      }
+
+      const result = await initProject(repo, { dryRun: true });
+
+      expect(result.written).toEqual([]);
+      const linkStat = await lstat(path.join(repo, 'CLAUDE.md'));
+      expect(linkStat.isSymbolicLink()).toBe(true);
+      await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
+      await expect(readManifest(repo)).resolves.toBeNull();
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  // security-scanner round 2, blocker B1 (PR #324): `readKeptRootClaudeMd`
+  // follows the symlink with a plain `readFile`, which has no defence
+  // against what a repository-controlled target actually is. Reproduced
+  // against the built CLI: a FIFO target hangs `init` in `open()` after
+  // every other file has already been written, and no manifest is ever
+  // written — a half-installed repo `init` cannot repair on its own re-run.
+  // The fix this pins: open the path itself (bounded, non-blocking), require
+  // a REGULAR file before reading through it, and read from that same
+  // handle — never the two-step `lstat` + `readFile` that leaves a window
+  // for the target to be anything at all.
+  it('does not block on a root CLAUDE.md symlinked to a FIFO, and records no kept entry for it', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    skipUnless(context, fifosAvailable().ok, fifosAvailable().reason);
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-fifo-'));
+    const target = path.join(outside, 'host-fifo');
+    try {
+      execFileSync('mkfifo', [target]);
+      await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+      // The case budget is generous on purpose: the bound this pins is
+      // "does not block on the read", not a tight performance figure. A
+      // plain `readFile` through the link would hang here indefinitely —
+      // there is no writer and never will be one — so any bound this small
+      // is already well past what a correct, non-blocking open needs.
+      const BOUND_MS = 4_000;
+      const TIMED_OUT = Symbol('initProject did not settle within the bound');
+      const start = Date.now();
+      const outcome = await Promise.race([
+        initProject(repo, {}),
+        new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), BOUND_MS)),
+      ]);
+      const elapsed = Date.now() - start;
+
+      expect(
+        outcome,
+        'initProject did not settle before the bound — it likely blocked reading the FIFO target through the symlink',
+      ).not.toBe(TIMED_OUT);
+      expect(elapsed).toBeLessThan(BOUND_MS);
+      const result = outcome as Awaited<ReturnType<typeof initProject>>;
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      const manifest = await readManifest(repo);
+      // a non-regular target is not hashed — there is no "bytes" a reader
+      // opening a FIFO even means
+      expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    } finally {
+      // Best-effort, itself non-blocking: if the implementation under test
+      // is still the unbounded `readFile`, a reader is left mid-`open()` on
+      // the FIFO with no writer ever coming. Opening the write end with
+      // O_NONBLOCK either completes that rendezvous (reader present) or
+      // fails immediately with ENXIO (no reader) — it never blocks on its
+      // own, so this cannot turn a red test into a hung process.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          const fh = await open(target, constants.O_WRONLY | constants.O_NONBLOCK);
+          await fh.close();
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+      }
+      await removeFixture(outside);
+    }
+  }, 10_000);
+
+  it('records no kept entry for a root CLAUDE.md symlinked to a regular file over the size cap', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-init-big-'));
+    try {
+      const target = path.join(outside, 'big.md');
+      // ~1.1 MiB — comfortably over a 1 MiB cap without ever approaching a
+      // size that stresses the host.
+      const OVER_CAP_BYTES = 1024 * 1024 + 100 * 1024;
+      await writeFile(target, Buffer.alloc(OVER_CAP_BYTES, 'x'));
+      await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+      const result = await initProject(repo, {});
+
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      const manifest = await readManifest(repo);
+      expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  // code-reviewer round 3 blocker: every case above builds its target
+  // OUTSIDE the repo, so `readKeptRootClaudeMd`'s containment check
+  // (`targetReal` outside `repoReal`) already returns `null` on its own,
+  // before the FIFO/`isFile()` check or the size-cap check is ever reached.
+  // A mutation that deletes either of those checks leaves every test above
+  // green, because the containment check alone still produces the same
+  // `kept === undefined` outcome. The cases below place the target INSIDE
+  // the repo, so containment passes and the isFile()/size-cap checks are the
+  // only thing left deciding the outcome.
+
+  it('does not block on a root CLAUDE.md symlinked to an IN-REPO FIFO, and records no kept entry for it', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    skipUnless(context, fifosAvailable().ok, fifosAvailable().reason);
+    const target = path.join(repo, 'fifo');
+    try {
+      execFileSync('mkfifo', [target]);
+      await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+      // Same generous bound as the outside-repo FIFO case above: the
+      // property this pins is "does not block", not a tight timing figure.
+      const BOUND_MS = 4_000;
+      const TIMED_OUT = Symbol('initProject did not settle within the bound');
+      const start = Date.now();
+      const outcome = await Promise.race([
+        initProject(repo, {}),
+        new Promise((resolve) => setTimeout(() => resolve(TIMED_OUT), BOUND_MS)),
+      ]);
+      const elapsed = Date.now() - start;
+
+      expect(
+        outcome,
+        'initProject did not settle before the bound — it likely blocked reading the FIFO target through the symlink',
+      ).not.toBe(TIMED_OUT);
+      expect(elapsed).toBeLessThan(BOUND_MS);
+      const result = outcome as Awaited<ReturnType<typeof initProject>>;
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      const manifest = await readManifest(repo);
+      expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    } finally {
+      // Best-effort, itself non-blocking — see the outside-repo FIFO case
+      // above for why this cannot turn a red test into a hung process.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        try {
+          const fh = await open(target, constants.O_WRONLY | constants.O_NONBLOCK);
+          await fh.close();
+          break;
+        } catch {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+      }
+    }
+  }, 10_000);
+
+  it('records no kept entry for a root CLAUDE.md symlinked to an IN-REPO regular file over the size cap', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(repo, 'docs'), { recursive: true });
+    const target = path.join(repo, 'docs', 'big.md');
+    // ~1.1 MiB — comfortably over a 1 MiB cap without ever approaching a
+    // size that stresses the host.
+    const OVER_CAP_BYTES = 1024 * 1024 + 100 * 1024;
+    await writeFile(target, Buffer.alloc(OVER_CAP_BYTES, 'x'));
+    await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+  });
+
+  it('records a kept entry (the exact bytes, hashed) for an IN-REPO regular target of EXACTLY the 1 MiB cap', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(repo, 'docs'), { recursive: true });
+    const target = path.join(repo, 'docs', 'exact-cap.md');
+    const AT_CAP_BYTES = 1024 * 1024;
+    const content = Buffer.alloc(AT_CAP_BYTES, 'x');
+    await writeFile(target, content);
+    await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(content));
+  });
+
+  it('records no kept entry for an IN-REPO regular target exactly ONE BYTE over the 1 MiB cap', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(repo, 'docs'), { recursive: true });
+    const target = path.join(repo, 'docs', 'one-over-cap.md');
+    const ONE_OVER_CAP_BYTES = 1024 * 1024 + 1;
+    await writeFile(target, Buffer.alloc(ONE_OVER_CAP_BYTES, 'x'));
+    await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+  });
+
+  // code-reviewer round 3, item 3: the containment check is
+  // `targetReal !== repoReal && !targetReal.startsWith(repoReal + path.sep)`
+  // — separator-aware on purpose. A plain `targetReal.startsWith(repoReal)`
+  // (no trailing separator) would treat a SIBLING directory whose name
+  // merely starts with the repo dir's own name as "inside" it — e.g. repo
+  // `.../caf-init-XXXX` and sibling `.../caf-init-XXXX-evil` — even though
+  // the sibling is a different directory entirely.
+  it('records no kept entry for a root CLAUDE.md symlinked into a sibling directory whose name merely starts with the repo directory name', async (context) => {
+    skipUnless(context, symlinksAvailable().ok, symlinksAvailable().reason);
+    const evilSibling = `${repo}-evil`;
+    await mkdir(evilSibling, { recursive: true });
+    try {
+      const targetContent = '# a sibling directory, not the repo itself\n';
+      const target = path.join(evilSibling, 'host.md');
+      await writeFile(target, targetContent);
+      await symlink(target, path.join(repo, 'CLAUDE.md'), 'file');
+
+      const result = await initProject(repo, {});
+
+      expect(result.written).toContain('.claude/CLAUDE.md');
+      const manifest = await readManifest(repo);
+      expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    } finally {
+      await removeFixture(evilSibling);
+    }
+  });
+});
+
+// code-reviewer round 1 advisory A8, folded into this round's fix for B1: a
+// DIRECTORY at root `CLAUDE.md` is not the user's file to leave in place the
+// way a regular file or a symlink is — there is no content to import, byte
+// for byte or through a link — so it stays refused. What must change is the
+// message: the generic MAPS refusal ends with "Merge the agent-os map in by
+// hand", advice that assumes a text file whose content can be merged, and
+// does not fit a directory at all.
+describe('initProject — a directory at root CLAUDE.md (RP-256 slice 1, code-review B1/A8)', () => {
+  it('refuses a directory at CLAUDE.md with a message that fits a directory, not the generic "merge the map in by hand" advice, and writes nothing', async () => {
+    await mkdir(path.join(repo, 'CLAUDE.md'), { recursive: true });
+
+    let caught: unknown;
+    try {
+      await initProject(repo, {});
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InitError);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/CLAUDE\.md/);
+    expect(message.toLowerCase()).toContain('directory');
+    expect(message).not.toMatch(/Merge the agent-os map in by hand/);
+    await expect(readFile(path.join(repo, 'AGENTS.md'))).rejects.toThrow();
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+});
+
+// code-reviewer round 1, blocker B2 (PR #324): the one situation that reaches
+// `claudeMdPlacementForInstall`'s manifest-first branch (line 172) without the
+// filesystem rule on the next line also firing — a nested rig whose user
+// later deletes their OWN root `CLAUDE.md`, then runs `init` again. Nothing in
+// the existing suite builds that state; deleting the manifest-first branch
+// would leave this suite green and would make `init` write a second, root
+// `@AGENTS.md` shim next to the nested one. Folded in with it (code-review
+// advisory A2): `recordInstall` only ever drops a stale `kept` entry for a
+// path that reaches its `written`/`skipped` loops, and root `CLAUDE.md` on a
+// `nested` placement never does — it is not in `files` at all — so the
+// `kept['CLAUDE.md']` entry the first install wrote goes stale and is never
+// cleared once the file it vouches for is gone.
+describe('initProject — a nested rig whose user deletes their root CLAUDE.md (RP-256 slice 1, code-review B2/A2)', () => {
+  it('stays nested on re-run (manifest-first placement), and drops the stale kept CLAUDE.md entry now that the file is gone', async () => {
+    const userClaude = '# host rules — do not touch\n';
+    await writeFile(path.join(repo, 'CLAUDE.md'), userClaude);
+    await initProject(repo, {});
+    await rm(path.join(repo, 'CLAUDE.md'));
+
+    const second = await initProject(repo, {});
+
+    // B2: manifest-first placement — no root shim appears next to the nested one
+    expect(second.written).not.toContain('CLAUDE.md');
+    await expect(readFile(path.join(repo, 'CLAUDE.md'))).rejects.toThrow();
+    const manifest = await readManifest(repo);
+    expect(manifest?.files['.claude/CLAUDE.md']).toBeTruthy();
+    expect(manifest?.files['CLAUDE.md']).toBeUndefined();
+
+    // A2: the file this entry vouched for is gone — the manifest must not
+    // keep claiming it saw and left something that is no longer there
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
   });
 });
 

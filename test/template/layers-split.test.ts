@@ -172,6 +172,11 @@ describe('layers.json — the core/workflow split (RP-180)', () => {
     const NOT_PER_LAYER = new Set([
       'CLAUDE.md',
       'AGENTS.md',
+      // RP-256 slice 1: the nested CLAUDE.md-coexistence shim, applied
+      // unconditionally alongside root `CLAUDE.md` — same `MAPS`-style
+      // handling in `init.ts`, just the `nested` placement's path instead
+      // of the `root` one.
+      '.claude/CLAUDE.md',
       '.codex/config.toml',
       '.claude/settings.json',
       '.codex/hooks.json',
