@@ -59,6 +59,15 @@ type Check = {
    * may name a file path").
    */
   ownedFilePaths?: OwnedFilePaths;
+  /**
+   * `personal-tracker` only, and only on the `warn` outcome — the required
+   * tracker credential env var NAMES this run found missing. Carried from
+   * `personalTrackerCheck` only to build `fix` below and stripped before the
+   * record reaches the report; never surfaced in `reason` or `detail`
+   * (RP-230 — variable VALUES must never appear anywhere in the payload, and
+   * NAMES appear only in `fix`).
+   */
+  trackerMissingVars?: string[];
 };
 export type DoctorOptions = {
   cwd: string;
@@ -124,6 +133,88 @@ function text(bytes: Buffer): string | undefined {
   } catch {
     return undefined;
   }
+}
+
+const QUEUE_CONFIG_REL = '.claude/queue.json';
+const CODEX_HOOKS_REL = '.codex/hooks.json';
+/** Both are small, hand-edited config files — same bound as `DECLARATION_REL`. */
+const MAX_PERSONAL_CHECK_BYTES = 64 * 1024;
+
+/**
+ * Required tracker credential env var NAMES, by queue adapter (RP-230).
+ * `plan-md` needs nothing and `github-issues` delegates auth entirely to the
+ * `gh` CLI, so both map to an empty list — present, not omitted, so a typo'd
+ * adapter name is visibly "unknown to this map" rather than silently the same
+ * as "needs nothing".
+ *
+ * `jira`'s list is a second copy of
+ * `templates/agent-os/universal/.claude/scripts/queue/jira.mjs`'s own
+ * `requireCredentials` (`jira.mjs:284`,
+ * `['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN']`) — that file is
+ * template payload this package copies into a generated project, not a
+ * module the CLI can import at runtime, so the names are duplicated here by
+ * hand rather than shared. Keep the two lists in sync when either changes.
+ */
+const TRACKER_REQUIRED_ENV: Record<string, string[]> = {
+  'plan-md': [],
+  'github-issues': [],
+  jira: ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN'],
+};
+
+/**
+ * Presence-only report of the tracker credential env vars the repository's
+ * own `.claude/queue.json` adapter requires (RP-230). `undefined` — no check
+ * emitted at all — when there is nothing personal to check: no queue.json,
+ * an unreadable or unparseable one, or an adapter this map does not require
+ * anything for (`plan-md`, `github-issues`, or a name this map does not
+ * know). Never inspects a credential VALUE, only whether its env var NAME is
+ * set.
+ */
+async function personalTrackerCheck(
+  root: string,
+  env: NodeJS.ProcessEnv,
+): Promise<Check | undefined> {
+  const source = await readBounded(root, QUEUE_CONFIG_REL, MAX_PERSONAL_CHECK_BYTES);
+  if (source.status !== 'ok') return undefined;
+  const decoded = text(source.bytes);
+  if (decoded === undefined) return undefined;
+  let config: unknown;
+  try {
+    config = JSON.parse(decoded);
+  } catch {
+    return undefined;
+  }
+  const adapter =
+    config !== null &&
+    typeof config === 'object' &&
+    typeof (config as { adapter?: unknown }).adapter === 'string'
+      ? (config as { adapter: string }).adapter
+      : 'plan-md';
+  const required = TRACKER_REQUIRED_ENV[adapter];
+  if (required === undefined || required.length === 0) return undefined;
+  const missing = required.filter((name) => !env[name]);
+  if (missing.length === 0) {
+    return { id: 'personal-tracker', status: 'pass', reason: 'tracker-credentials-present' };
+  }
+  return {
+    id: 'personal-tracker',
+    status: 'warn',
+    reason: 'tracker-credentials-missing',
+    trackerMissingVars: missing,
+  };
+}
+
+/**
+ * Diagnostic-only presence check for this repository's checked-in Codex
+ * hook wiring (RP-230). Emitted only when `.codex/hooks.json` exists, and
+ * always `warn` — Codex's own trust state for those hooks is not something
+ * doctor has a deterministic signal for, so this never claims they are
+ * active or already trusted.
+ */
+async function codexHookTrustCheck(root: string): Promise<Check | undefined> {
+  const source = await readBounded(root, CODEX_HOOKS_REL, MAX_PERSONAL_CHECK_BYTES);
+  if (source.status === 'absent') return undefined;
+  return { id: 'codex-hook-trust', status: 'warn', reason: 'codex-hooks-need-review' };
 }
 
 async function rigChecks(root: string, codexHash?: string): Promise<Check[]> {
@@ -277,6 +368,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   }
   const memory = await inspectMemory({ repoDir: options.cwd, env: options.env ?? process.env });
   checks.push({ id: 'custom-memory', status: memory.status, reason: memory.reason });
+  // RP-230: personal-machine onboarding diagnostics. Neither check depends
+  // on the manifest, and neither can push doctor's own exit status past
+  // `warn` — both are personal setup guidance, not installation failures.
+  const personalTracker = await personalTrackerCheck(options.cwd, options.env ?? process.env);
+  if (personalTracker) checks.push(personalTracker);
+  const codexHookTrust = await codexHookTrustCheck(options.cwd);
+  if (codexHookTrust) checks.push(codexHookTrust);
   let specKit: SpecKitInspection | undefined;
   const wiring = await verifyIntegrations({ repoDir: options.cwd, env: options.env });
   const invalid = wiring.issues.some((issue) => issue.status !== 'missing');
@@ -364,7 +462,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const report = {
     schemaVersion: 1,
     status: status === 'pass' ? 'ok' : status,
-    checks: checks.map(({ rigVersion, ownedFilePaths, ...check }) => ({
+    checks: checks.map(({ rigVersion, ownedFilePaths, trackerMissingVars, ...check }) => ({
       ...check,
       status: check.status === 'pass' ? 'ok' : check.status,
       detail:
@@ -382,13 +480,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
             ? rigVersionFix(check.reason, rigVersion ?? { cli: '', repository: '' })
             : check.id === 'rig-owned-files' && ownedFilePaths
               ? ownedFilesFix(ownedFilePaths)
-              : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
-                ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
-                : check.id === 'custom-memory'
-                  ? 'Check the machine-scoped Memory installation and its compatible version.'
-                  : check.id === 'spec-kit'
-                    ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
-                    : 'Review create-agent-rig setup list and the intended provider wiring.',
+              : check.id === 'personal-tracker' && trackerMissingVars
+                ? `Set the missing tracker credential environment variable(s): ${trackerMissingVars.join(', ')}.`
+                : check.id === 'codex-hook-trust'
+                  ? "Open Codex's own /hooks view and review the checked-in rig hooks there: a changed, non-managed hook can be skipped until it is re-trusted in that view."
+                  : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
+                    ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
+                    : check.id === 'custom-memory'
+                      ? 'Check the machine-scoped Memory installation and its compatible version.'
+                      : check.id === 'spec-kit'
+                        ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
+                        : 'Review create-agent-rig setup list and the intended provider wiring.',
     })),
     integrations,
     memory: { ...memory, status: memory.status === 'pass' ? 'ok' : memory.status },
