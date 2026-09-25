@@ -55,7 +55,12 @@ interface JournalRecord {
   [key: string]: unknown;
 }
 
-/** The independent copy of the allowlist the hook may write into `data`. */
+/**
+ * The independent copy of the allowlist the hook may write into `data`.
+ * `usage`/`usageUnavailable`/`measuredModel` are RP-226's Claude usage-capture
+ * fields — see dispatch-usage.test.ts (absent in a generated rig) › "exports
+ * DISPATCH_FIELDS containing usage, usageUnavailable, and measuredModel".
+ */
 const EXPECTED_DISPATCH_FIELDS = [
   'schema',
   'harness',
@@ -65,6 +70,9 @@ const EXPECTED_DISPATCH_FIELDS = [
   'declaredModel',
   'declaredEffort',
   'declaredSource',
+  'usage',
+  'usageUnavailable',
+  'measuredModel',
 ].sort();
 
 /** `ref(x) = sha256(basename(runDir) + "\0" + x).slice(0, 16)` — the design's own formula, reimplemented here rather than imported. */
