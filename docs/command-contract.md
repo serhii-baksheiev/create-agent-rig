@@ -1840,12 +1840,46 @@ and how an old manifest missing one is read:
 | `stacks` (string array)                                  | always        | — (required; legacy — always empty on a current install, RP-177 retired the overlays it once named)                                                                                                                                                                                |
 | `layers` (`'process'` and/or `'workflow'`, deduplicated) | RP-180        | **every layer this release ships** (`ALL_LAYERS`) — never the default-only set, so a pre-RP-180 rig's workflow files stay owned rather than becoming `retired` — `packages/cli/test/manifest.test.ts` › "a manifest with no `layers` key parses as though it recorded every layer" |
 | `files` (path → sha256)                                  | always        | — (required)                                                                                                                                                                                                                                                                       |
-| `kept` (path → sha256)                                   | RP-182        | omitted entirely — nothing was kept                                                                                                                                                                                                                                                |
+| `kept` (path → sha256)                                   | RP-182        | no kept paths at all — read as an empty record (`{}`)                                                                                                                                                                                                                              |
 
 A manifest carrying an unrecognised shape in any required key, or a
 `stacks`, `layers` or `kept` value this reader does not accept, does not
 parse at all: `readManifest` returns `null`, which sends `upgrade` to the
 hash-history fallback rather than a half-trusted read.
+
+**Seed-once paths (RP-257) live in `kept`, never `files`, and are decided by
+their own list, not by content.** `PLAN.md` is the one member today
+(`packages/cli/src/lib/seed-once.ts`'s `SEED_ONCE`) — it ships with the
+process layer (every rig has it), so its `kept` entry lands in the manifest
+on the very first `init`: `kept` is no longer ever genuinely empty on a
+fresh install, only on a manifest older than RP-182 or one hand-edited to
+drop it (the "absent reads as" column above). It is the live Agent/Operator queue
+from the instant `init` writes it, meant to be hand-edited (the template's
+own header). Diffing it against the recorded install hash the way an
+ordinary `files` entry is diffed would turn the first legitimate queue edit
+into permanent `content-drift` (`doctor`) or an unresolvable `conflict`
+(`upgrade`), and would let a newer release's template silently overwrite
+real, unfinished entries. So a seed-once path is written at most once —
+`init` on a clean install, or `upgrade`'s own `new` verdict the one time a
+release adds a seed-once path an older rig never had — and from that moment
+records its hash in `kept`, exactly like a file `init` found already in
+place: never compared, never rewritten, and (`uninstall`'s unconditional
+`kept` loop) always `preserved`. A path recorded this way but missing from
+disk is a deliberate deletion, not a gap to heal — neither `upgrade`
+(`deleted` verdict) nor a plain `init` re-run recreates it. `upgrade`'s own
+verdict for a present-but-edited (or provenance-unknown) seed-once path is
+`seeded`, never `conflict`/`update`/`wiring` — see `UpgradeVerdict` in
+`packages/cli/src/commands/upgrade.ts`. A manifest written before RP-257
+still has `PLAN.md` recorded in `files` (the ordinary, byte-owned shape of
+that time); `priorSeedHash` reads either bucket, so the next `init` or
+`upgrade` recognises it as already-seeded and migrates the entry to `kept`
+rather than reading its history as "never installed". Landing this on `kept`
+rather than a byte-owned `files` entry is also what keeps a plain uninstall
+whole: RP-260 excludes a `kept` path from the set of `preserved` reasons that
+keep the manifest alive, so an ordinary (non-`--detach`) uninstall still
+removes the manifest and reports `uninstalled` with `PLAN.md` itself left
+behind, `preserved`, exactly as any other `kept` file is (`## Mutations`,
+"the manifest is deleted last").
 
 ### `subsystems.json`
 
@@ -1870,19 +1904,20 @@ it a second time.
 
 `upgrade`'s per-file verdict is the closed set `UpgradeVerdict` names in
 `packages/cli/src/commands/upgrade.ts`: `update`, `new`, `unchanged`,
-`conflict`, `deleted`, `wiring`, `retired`. README.md's `## How ownership
-works` is the reader-facing summary; this is where a README promise
+`conflict`, `deleted`, `wiring`, `retired`, `seeded`. README.md's `## How
+ownership works` is the reader-facing summary; this is where a README promise
 (`## README promises`) resolves against the actual verdict it names:
 
-| verdict     | meaning                                                                                                                                                               |
-| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `update`    | Installed by the rig, untouched since, and this release changed it — replaced.                                                                                        |
-| `new`       | This release adds it; nothing on disk, nothing in the manifest — written.                                                                                             |
-| `unchanged` | Already what this release would write.                                                                                                                                |
-| `conflict`  | Edited, or of unknown provenance — reported, never written.                                                                                                           |
-| `deleted`   | The manifest says the rig installed it; the user removed it — stays removed, never restored.                                                                          |
-| `wiring`    | Hook wiring that is not replaceable — handed over, not overwritten.                                                                                                   |
-| `retired`   | The manifest says the rig installed it; this release's payload no longer ships it at all (RP-177) — never written, never deleted; the path becomes the project's own. |
+| verdict     | meaning                                                                                                                                                                                                                                                                    |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `update`    | Installed by the rig, untouched since, and this release changed it — replaced.                                                                                                                                                                                             |
+| `new`       | This release adds it; nothing on disk, nothing in the manifest — written.                                                                                                                                                                                                  |
+| `unchanged` | Already what this release would write.                                                                                                                                                                                                                                     |
+| `conflict`  | Edited, or of unknown provenance — reported, never written.                                                                                                                                                                                                                |
+| `deleted`   | The manifest says the rig installed it; the user removed it — stays removed, never restored.                                                                                                                                                                               |
+| `wiring`    | Hook wiring that is not replaceable — handed over, not overwritten.                                                                                                                                                                                                        |
+| `retired`   | The manifest says the rig installed it; this release's payload no longer ships it at all (RP-177) — never written, never deleted; the path becomes the project's own.                                                                                                      |
+| `seeded`    | A seed-once path (RP-257, `lib/seed-once.ts`) — present and edited, or of unknown provenance, or a non-regular entry sitting where it belongs. Never written, never compared byte-for-byte; a genuine first write uses `new` instead, and an exact match uses `unchanged`. |
 
 `uninstall`'s own verdicts — `remove`, `preserved` and `absent` — are that
 section's own closed set, not `UpgradeVerdict`. **The three verdicts are
@@ -2105,6 +2140,7 @@ and self-checks against a planted mutation.
 | edited by you                                                                                    | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites a file the user edited — one byte is enough"                                            |
 | deleted by you                                                                                   | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "installs a file this release added, and does not resurrect one the user deleted"                         |
 | not Rig's, or there before                                                                       | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never claims a file it kept rather than wrote"                                                           |
+| PLAN.md                                                                                          | Ownership verdicts                      | `packages/cli/test/upgrade.test.ts` › "never overwrites an edited PLAN.md, and never plans it as conflict, update or wiring"                    |
 | No application scaffolding, no project templates to choose from.                                 | Not part of 1.0                         | `packages/cli/test/create.test.ts` › "makes the directory and installs the one payload into it"                                                 |
 | Not an agent runtime, scheduler or workflow engine; it configures the harnesses you already run. | Not part of 1.0                         | `test/template/layers-split.test.ts` › "the workflow layer is exactly the named set RP-180 decided on"                                          |
 | No plugin manager, and no bundled memory engine.                                                 | Not part of 1.0                         | `packages/cli/test/package-contents.test.ts` › "keeps a `.claude-plugin/` directory and a `marketplace.json` file out of the published tarball" |

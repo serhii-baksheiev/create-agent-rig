@@ -440,9 +440,25 @@ describe('create-agent-rig uninstall', () => {
   // Core only (no `--layer workflow`), and the superset sweep's precaution
   // bucket is every owned `.mjs` path the direct/imported trace does not
   // already account for — a smaller Core install set means fewer such paths,
-  // not a change in how the sweep itself works. The 15 genuinely-traced count
-  // is unchanged: every hook `.claude/settings.json` wires, and their real
-  // imports, are unaffected by which OTHER files moved to the opt-in layer.
+  // not a change in how the sweep itself works. The genuinely-traced count
+  // (15, then) is otherwise unaffected by which OTHER files moved to the
+  // opt-in layer: every hook `.claude/settings.json` wires, and their real
+  // imports, stay the same 7 + 6, plus the two non-dependency entries
+  // themselves (`settings.json`, `guard-secret-file.mjs`).
+  //
+  // code-reviewer round 1 (PR #332) blocker 2: RP-257 moved the printed
+  // number to 16 by widening what the formula counts, not by adding
+  // anything genuinely traced. The roll-up's formula is `preserved.length -
+  // unverifiedCount`, so ANY additional `preserved` path that is not itself
+  // an `isUnverifiedReason` match — traced or not — widens the "genuinely
+  // referenced or imported" bucket by one. `PLAN.md` (a seed-once path,
+  // always `kept`, reason `'user-owned (kept by init)'`, never
+  // `isUnverifiedReason`) is now on every rig, and it is not a hook, not
+  // traced, and not one of the 7 direct hooks + 6 imports + 2 non-dependency
+  // entries the count is defined to mean. The number this test pins stays
+  // 15: a `kept` non-hook path must be excluded from "genuinely referenced
+  // or imported" (or bucketed on its own), the same way an unreadable seed
+  // is already excluded via `isUnverifiedReason`.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -531,8 +547,15 @@ describe('create-agent-rig uninstall', () => {
         reason.startsWith('protected because'),
       );
       expect(precaution.length).toBeGreaterThan(0);
+      // A `kept` path (e.g. PLAN.md, RP-257) is preserved because `init`
+      // found it already in place, never because this sweep traced it as a
+      // hook or an import — it must not count as "genuinely referenced or
+      // imported" any more than a precaution-only path does.
+      const keptUserOwned = [...reasonByPath.values()].filter(
+        (reason) => reason === 'user-owned (kept by init)',
+      ).length;
       expect(result.stdout).toContain(
-        `(${reasonByPath.size - precaution.length} genuinely referenced or imported; ${precaution.length} kept only as a precaution`,
+        `(${reasonByPath.size - precaution.length - keptUserOwned} genuinely referenced or imported; ${precaution.length} kept only as a precaution`,
       );
     } finally {
       await removeFixture(outside);
@@ -588,7 +611,11 @@ describe('create-agent-rig uninstall', () => {
       };
       expect(payload.outcome).toBe('detached');
       expect(payload.manifestRemoved).toBe(true);
-      expect(payload.preserved).toEqual([]);
+      // RP-257: `PLAN.md` is a seed-once path, always `preserved` (`kept`) —
+      // even a genuinely "clean" install has one preserved path now, and
+      // RP-260 is exactly what keeps that from stopping detach (or an
+      // ordinary uninstall) from still reporting a clean end state.
+      expect(payload.preserved).toEqual([{ path: 'PLAN.md', reason: 'user-owned (kept by init)' }]);
       await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
     });
 
