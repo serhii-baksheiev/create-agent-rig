@@ -38,20 +38,35 @@
 // most 32 MiB read in total, at most 8 MiB in one line, at most 3s wall
 // time (checked between chunks) — a fixed-size buffer on an
 // `O_RDONLY|O_NONBLOCK` handle opened after an `lstatSync`/`fstatSync`
-// `isFile()` check, the same open pattern `readDefinitionHead` already uses
-// above. Crossing ANY bound, an unreadable file, or a single malformed JSON
-// line ANYWHERE in the transcript makes the whole dispatch
-// `usageUnavailable: '<short reason code>'` — never a partial number, and
-// the reason codes themselves never carry the path or any transcript
-// content. Assistant records' `message.usage` counters (`input_tokens`,
-// `output_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`)
-// are deduped by `requestId ?? message.id`, last occurrence per key wins,
-// then summed; `usage.requests` is the count of distinct keys. A counter
-// absent from every deduped record stays absent (never `0`, never
-// inferred); `measuredModel` is set only when every assistant record's
-// `message.model` agrees. `usage.evidenceSource` is always
-// `'claude-subagent-transcript'`. Codex is untouched by this section — see
-// RP-227.
+// `isFile()` check. Crossing ANY bound, an unreadable file, an empty
+// transcript, a transcript with no usage-bearing assistant record, an
+// out-of-range counter, or a single malformed JSON line ANYWHERE in the
+// transcript makes the whole dispatch `usageUnavailable: '<short reason
+// code>'` (`transcript-unreadable`, `transcript-path-missing`,
+// `transcript-path-mismatch`, `transcript-too-large`,
+// `transcript-line-too-large`, `transcript-timeout`,
+// `transcript-malformed-line`, `transcript-empty`, `no-usage-records`,
+// `invalid-usage-counter`) — never a partial number, and the reason codes
+// themselves never carry the path or any transcript content. Assistant
+// records' `message.usage` counters (`input_tokens`, `output_tokens`,
+// `cache_creation_input_tokens`, `cache_read_input_tokens`) are deduped by
+// `requestId ?? message.id`, last occurrence per key wins, then summed;
+// `usage.requests` is the count of distinct keys. A counter absent from
+// every deduped record stays absent (never `0`, never inferred); a counter
+// present anywhere but not a non-negative safe integer makes the whole
+// dispatch `usageUnavailable: 'invalid-usage-counter'` instead of a sum built
+// from an out-of-range number. `measuredModel` is set only when every
+// assistant record's `message.model` agrees AND that string is at most 128
+// characters matching `^[A-Za-z0-9][A-Za-z0-9._:/@-]*$` — a disagreement or a
+// non-matching string omits `measuredModel` but still records `usage`.
+// `usage.evidenceSource` is always `'claude-subagent-transcript'`. Codex is
+// untouched by this section — see RP-227.
+//
+// The reader is exported as `readClaudeTranscriptUsage(file, { now } = {})`,
+// `now` defaulting to `Date.now` and gating every wall-clock read inside it,
+// so the 3s bound can be driven deterministically from a test with no real
+// sleep. Importing this module for that export (or for `DISPATCH_FIELDS`)
+// never runs `main()` — see `invokedDirectly()` below.
 //
 // LIMITS, stated because a hook's own claim about its reach is the first thing
 // to go stale:
@@ -78,6 +93,11 @@
 //   - **`usage`/`usageUnavailable`/`measuredModel` are Claude-only.** Codex
 //     dispatches carry neither key — the Codex projection of this hook is
 //     unchanged by RP-226 (RP-227 is its own ticket).
+//   - **The 3s bound is checked only between read chunks, not around the
+//     whole read.** `lstatSync`, `openSync`, a single slow `readSync`, and
+//     the final line's `JSON.parse` all run outside the clock; a process
+//     stuck in one of those still relies on the harness's own hook timeout
+//     as the real backstop (security-scanner-r1.md A5).
 //
 // PRIVACY: this record never carries `cwd`, a transcript path, a prompt, a
 // response, a raw `session_id`/`agent_id`, or an email address — see
@@ -121,6 +141,27 @@
 // partial sum, when the transcript contains a malformed JSON line", and ›
 // "exports DISPATCH_FIELDS containing usage, usageUnavailable, and
 // measuredModel".
+//
+// The RP-226 fix round (code-reviewer-r1.md / security-scanner-r1.md) is
+// pinned in dispatch-usage.test.ts (absent in a generated rig) › "reports
+// usageUnavailable with code transcript-empty for a zero-byte transcript",
+// › "reports usageUnavailable with code no-usage-records for a transcript
+// containing only user records", › "reports transcript-timeout when an
+// injected clock crosses the 3 s bound between two read chunks", › "processes
+// four ~7.9 MiB lines (inside both size bounds) well within the 3 s bound",
+// › "does not record measuredModel when message.model is a 7 KiB string, but
+// still records usage", › "does not record measuredModel when message.model
+// contains an ESC control character, but still records usage, and ESC never
+// reaches the journal", › "does not record measuredModel when it is 129
+// characters — one over the 128-character allowlist bound — but still
+// records usage", › "records measuredModel at exactly the 128-character
+// allowlist bound — a guard against an off-by-one in the Green step’s fix",
+// › "records measuredModel for a normal Claude model id shape
+// (claude-haiku-4-5-20251001) — a guard against the Green step’s allowlist
+// rejecting real ids", › "reports usageUnavailable with code
+// invalid-usage-counter for a negative token counter, not a sum", and ›
+// "reports usageUnavailable with code invalid-usage-counter for a fractional
+// token counter, not a sum".
 import {
   closeSync,
   constants,
@@ -154,6 +195,10 @@ export const DISPATCH_FIELDS = Object.freeze([
 
 /** A narrow, allowlisted shape for an agent type — never echoed unless it matches. */
 const AGENT_TYPE_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+
+/** A narrow, allowlisted shape for `measuredModel` — never echoed unless it matches. */
+const MEASURED_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;
+const MAX_MEASURED_MODEL_LENGTH = 128;
 
 /** The `effort:`/`model_reasoning_effort` values this hook will ever declare. */
 const DECLARED_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
@@ -303,10 +348,15 @@ const expectedTranscriptBasename = (agentId) => `agent-${agentId}.jsonl`;
  * returns either `{ usage, measuredModel? }` or `{ usageUnavailable: <short
  * reason code> }`. Never returns or logs the path or any message content —
  * only aggregated numbers, a model string already present verbatim in the
- * transcript, or a short static reason code.
+ * transcript (and only when it passes `MEASURED_MODEL_RE`), or a short
+ * static reason code.
+ *
+ * `now` defaults to `Date.now` and is the only source of wall-clock reads in
+ * this function — the test suite injects a fake one to drive the 3s bound
+ * (`MAX_TRANSCRIPT_MS`) deterministically, with no real sleep.
  */
-function readClaudeTranscriptUsage(file) {
-  const start = Date.now();
+export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
+  const start = now();
   let fd;
   try {
     let lst;
@@ -323,7 +373,14 @@ function readClaudeTranscriptUsage(file) {
     const usageByKey = new Map();
     const models = new Set();
     const chunk = Buffer.alloc(TRANSCRIPT_READ_CHUNK_BYTES);
-    let carry = Buffer.alloc(0);
+    // The pending partial line, carried across chunk reads as a list of
+    // already-copied slices plus a running byte length — never
+    // re-concatenated or rescanned from its start on every chunk (one
+    // forward pass; code-reviewer-r1.md B1). Each new chunk is scanned only
+    // for its own newlines; a completed line's slices are concatenated and
+    // decoded exactly once.
+    let carrySlices = [];
+    let carryLength = 0;
     let totalRead = 0;
     let position = 0;
 
@@ -350,8 +407,21 @@ function readClaudeTranscriptUsage(file) {
       return true;
     };
 
+    /** Completes the pending carry with `finalSlice` (may be empty), folds it, and resets the carry. */
+    const flushLine = (finalSlice) => {
+      const lineBuf =
+        carrySlices.length === 0
+          ? finalSlice
+          : finalSlice.length === 0
+            ? Buffer.concat(carrySlices)
+            : Buffer.concat([...carrySlices, finalSlice]);
+      carrySlices = [];
+      carryLength = 0;
+      return foldLine(lineBuf);
+    };
+
     for (;;) {
-      if (Date.now() - start > MAX_TRANSCRIPT_MS) return { usageUnavailable: 'transcript-timeout' };
+      if (now() - start > MAX_TRANSCRIPT_MS) return { usageUnavailable: 'transcript-timeout' };
       let bytesRead;
       try {
         bytesRead = readSync(fd, chunk, 0, chunk.length, position);
@@ -365,29 +435,36 @@ function readClaudeTranscriptUsage(file) {
         return { usageUnavailable: 'transcript-too-large' };
       }
 
-      const data =
-        carry.length > 0 ? Buffer.concat([carry, chunk.subarray(0, bytesRead)]) : chunk.subarray(0, bytesRead);
       let cursor = 0;
       for (;;) {
-        const newline = data.indexOf(0x0a, cursor);
-        if (newline === -1) break;
-        const line = data.subarray(cursor, newline);
-        if (line.length > MAX_TRANSCRIPT_LINE_BYTES) {
+        const relative = chunk.subarray(cursor, bytesRead).indexOf(0x0a);
+        if (relative === -1) break;
+        const newline = cursor + relative;
+        const slice = chunk.subarray(cursor, newline);
+        if (carryLength + slice.length > MAX_TRANSCRIPT_LINE_BYTES) {
           return { usageUnavailable: 'transcript-line-too-large' };
         }
-        if (!foldLine(line)) return { usageUnavailable: 'transcript-malformed-line' };
+        if (!flushLine(slice)) return { usageUnavailable: 'transcript-malformed-line' };
         cursor = newline + 1;
       }
-      carry = Buffer.from(data.subarray(cursor)); // copy: `data` may alias `chunk`, which is reused next pass
-      if (carry.length > MAX_TRANSCRIPT_LINE_BYTES) {
-        return { usageUnavailable: 'transcript-line-too-large' };
+      if (cursor < bytesRead) {
+        // Copy once: `chunk` is a fixed buffer reused by the next `readSync`.
+        const remainder = Buffer.from(chunk.subarray(cursor, bytesRead));
+        carryLength += remainder.length;
+        if (carryLength > MAX_TRANSCRIPT_LINE_BYTES) {
+          return { usageUnavailable: 'transcript-line-too-large' };
+        }
+        carrySlices.push(remainder);
       }
     }
 
-    if (carry.length > MAX_TRANSCRIPT_LINE_BYTES) {
+    if (totalRead === 0) return { usageUnavailable: 'transcript-empty' };
+    if (carryLength > MAX_TRANSCRIPT_LINE_BYTES) {
       return { usageUnavailable: 'transcript-line-too-large' };
     }
-    if (!foldLine(carry)) return { usageUnavailable: 'transcript-malformed-line' };
+    if (!flushLine(Buffer.alloc(0))) return { usageUnavailable: 'transcript-malformed-line' };
+
+    if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
 
     const usage = { evidenceSource: 'claude-subagent-transcript', requests: usageByKey.size };
     for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
@@ -395,16 +472,23 @@ function readClaudeTranscriptUsage(file) {
       let sum = 0;
       for (const raw of usageByKey.values()) {
         const value = raw?.[rawKey];
-        if (Number.isFinite(value)) {
-          present = true;
-          sum += value;
+        if (value === undefined) continue;
+        if (!Number.isSafeInteger(value) || value < 0) {
+          return { usageUnavailable: 'invalid-usage-counter' };
         }
+        present = true;
+        sum += value;
       }
       if (present) usage[outKey] = sum;
     }
 
     const result = { usage };
-    if (models.size === 1) result.measuredModel = [...models][0];
+    if (models.size === 1) {
+      const candidate = [...models][0];
+      if (candidate.length <= MAX_MEASURED_MODEL_LENGTH && MEASURED_MODEL_RE.test(candidate)) {
+        result.measuredModel = candidate;
+      }
+    }
     return result;
   } catch {
     return { usageUnavailable: 'transcript-unreadable' };

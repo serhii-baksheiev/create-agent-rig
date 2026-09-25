@@ -23,11 +23,13 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   (only an `agent_transcript_path` named `agent-<agent_id>.jsonl` for that
   event's `agent_id`), sums the assistant records' `message.usage` counters
   deduplicated per request, and journals them as `usage`, with
-  `measuredModel` when every record names the same model. Reading is bounded
-  (32 MiB total, 8 MiB per line, 3 s); a crossed bound, a mismatched or
-  unreadable path, or a malformed line records `usageUnavailable` with a
-  reason code instead of a partial number, and no path or message content is
-  ever journalled. Codex dispatches are unchanged (RP-226).
+  `measuredModel` when every record names the same model AND that model
+  string is a short allowlisted shape. Reading is bounded (32 MiB total,
+  8 MiB per line, 3 s); a crossed bound, an empty or usage-less transcript, an
+  out-of-range counter, a mismatched or unreadable path, or a malformed line
+  records `usageUnavailable` with a reason code instead of a partial number,
+  and no path or message content is ever journalled. Codex dispatches are
+  unchanged (RP-226).
 
 - **`init` installs beside a pre-existing root `CLAUDE.md` instead of
   refusing outright.** A repo that already has its own `CLAUDE.md` keeps it
