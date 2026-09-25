@@ -176,6 +176,40 @@ describe('planUninstall — per-file verdicts', () => {
     await expect(planUninstall(repo)).rejects.toThrow(UninstallError);
   });
 
+  // RP-257: PLAN.md is the live Agent/Operator queue — seeded once by a plain
+  // `init` (it ships with the process/Core layer, `layers.json`, not the
+  // opt-in workflow layer), then the user's own document from that point on
+  // (the template header itself: "Keep entries one line each ... Delete done
+  // items"). Uninstall's ordinary byte-match rule ("bytes matching the
+  // recorded hash exactly is `remove`") treats a never-edited PLAN.md exactly
+  // like any other pristine rig file and deletes it — but a pristine PLAN.md
+  // still IS the user's queue; it just happens to hold no entries yet. It is
+  // preserved either way, edited or not.
+  it('preserves PLAN.md on uninstall whether the user has edited it or not — it is the user queue, not rig-owned bytes', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const pristine = await read('PLAN.md');
+
+    // pristine — never touched since install
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, 'PLAN.md')?.verdict).toBe('preserved');
+
+    // edited — the ordinary case, must stay preserved too
+    const edited = `${pristine}\n- add a GET /notes/:id route through every layer (TDD)\n`;
+    await write('PLAN.md', edited);
+    const plan2 = await planUninstall(repo);
+    expect(actionFor(plan2, 'PLAN.md')?.verdict).toBe('preserved');
+
+    // RP-260: PLAN.md's `kept` entry does not by itself keep the manifest
+    // alive — applying this plan removes every other rig file and the
+    // manifest too (reporting `uninstalled`), while PLAN.md itself, the one
+    // preserved path, is left exactly as edited. (Applying is deliberately
+    // checked once, here, rather than also after the pristine plan above:
+    // that first apply would already remove the manifest under RP-260,
+    // leaving nothing for the second `planUninstall` call to read.)
+    await applyUninstall(repo, plan2);
+    expect(await read('PLAN.md')).toBe(edited);
+  });
+
   // Ownership hashes cover exact bytes (ADR-RP-003 / RP-177): the manifest
   // comparison reads the file as bytes and hashes those bytes, never a
   // UTF-8-decoded string. A file that is not valid UTF-8 at all is the sharpest
@@ -1266,6 +1300,14 @@ describe('planUninstall / applyUninstall — a symlink never gets read or remove
       const manifest = await readManifest(repo);
       if (manifest === null) throw new Error('fixture: no manifest');
       manifest.files = {};
+      // RP-257: `installRig()` also seeds `PLAN.md`, always a `kept` path —
+      // cleared too, so the plan really is empty, matching this fixture's
+      // own stated premise ("nothing else in between to race"). This is
+      // unrelated to RP-260's fix (a `kept` entry not blocking the manifest
+      // deletion this test races): an empty PLAN here would still be a
+      // `preserved` action, which is one action too many for "no files to
+      // remove at all".
+      delete manifest.kept;
       await writeManifest(repo, manifest);
 
       const plan = await planUninstall(repo);
@@ -2311,10 +2353,20 @@ describe('planUninstall — a nested rig preserves the kept CLAUDE.md, without a
     const claudeAction = actionFor(plan, 'CLAUDE.md');
     expect(claudeAction?.verdict).toBe('preserved');
     expect(claudeAction?.reason).toBe('user-owned (kept by init)');
-    // sanity: the kept CLAUDE.md is the ONLY preserved path in this fixture —
-    // otherwise this test would pass today for the wrong reason (some other
-    // preserved path already keeping the manifest alive).
-    expect(plan.actions.filter((a) => a.verdict === 'preserved')).toEqual([claudeAction]);
+    // code-reviewer round 1 (PR #332) blocker 4: an exact list — not "every
+    // preserved action happens to carry `kept`" — is what actually catches a
+    // rig-owned preserved path wrongly flagged `kept`; the every() form
+    // passes such a regression as readily as the correct fixture. Exactly
+    // two paths are preserved here: the user-owned CLAUDE.md this test is
+    // about, and `PLAN.md`, itself always a `kept` path since RP-257 (every
+    // `installRig()` seeds it, on every layer set).
+    const preservedActions = plan.actions.filter((a) => a.verdict === 'preserved');
+    expect(preservedActions.map((a) => a.rel).sort()).toEqual(['CLAUDE.md', 'PLAN.md']);
+    for (const action of preservedActions) {
+      expect(action.reason, action.rel).toBe('user-owned (kept by init)');
+      expect(action.kept, action.rel).toBe(true);
+    }
+    expect(claudeAction?.kept).toBe(true);
 
     const result = await applyUninstall(repo, plan);
 
@@ -2392,8 +2444,20 @@ describe('applyUninstall — a kept path no longer holds the manifest alive on i
     const action = actionFor(plan, WORKFLOW);
     expect(action?.verdict).toBe('preserved');
     expect(action?.reason).toBe('user-owned (kept by init)');
-    // sanity: this is the only preserved path in the fixture
-    expect(plan.actions.filter((a) => a.verdict === 'preserved')).toEqual([action]);
+    // code-reviewer round 1 (PR #332) blocker 4: an exact list — not "every
+    // preserved action happens to carry `kept`" — is what actually catches a
+    // rig-owned preserved path wrongly flagged `kept`; the every() form
+    // passes such a regression as readily as the correct fixture. Exactly
+    // two paths are preserved here: the user-owned WORKFLOW this test is
+    // about, and `PLAN.md`, itself always a `kept` path since RP-257 (every
+    // `installRig()` seeds it, on every layer set).
+    const preservedActions = plan.actions.filter((a) => a.verdict === 'preserved');
+    expect(preservedActions.map((a) => a.rel).sort()).toEqual([WORKFLOW, 'PLAN.md'].sort());
+    for (const preserved of preservedActions) {
+      expect(preserved.reason, preserved.rel).toBe('user-owned (kept by init)');
+      expect(preserved.kept, preserved.rel).toBe(true);
+    }
+    expect(action?.kept).toBe(true);
 
     const result = await applyUninstall(repo, plan);
 

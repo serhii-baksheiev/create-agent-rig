@@ -108,6 +108,18 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   recognised and still refused, in favour of `upgrade`, exactly as it has
   been since 0.5 — the usage text, `InitOptions['force']`'s JSDoc, and
   `docs/command-contract.md` now say only what is true today (RP-259).
+- **`PLAN.md` is seed-once, not byte-owned.** `init` still seeds it once, but
+  from that moment it is the user's own Agent/Operator queue, never diffed or
+  rewritten again: `doctor` no longer reports an ordinary queue edit as
+  `content-drift`, `upgrade` never plans it as `conflict`, `update` or
+  `wiring` (a new `seeded` verdict covers a present-but-edited seed-once
+  path) and never silently overwrites a pristine-but-outdated queue with a
+  newer release's template, and a `PLAN.md` the user deleted stays deleted —
+  neither `upgrade` nor a plain `init` re-run recreates it. `uninstall`
+  preserves it unconditionally, edited or not. A manifest written before this
+  change (`PLAN.md` recorded under `files`) migrates to the new shape (`kept`)
+  the next time `init` or `upgrade` runs, without a false conflict or an
+  overwrite (RP-257).
 
 ### Fixed
 
