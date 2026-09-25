@@ -59,14 +59,54 @@
 // assistant record's `message.model` agrees AND that string is at most 128
 // characters matching `^[A-Za-z0-9][A-Za-z0-9._:/@-]*$` — a disagreement or a
 // non-matching string omits `measuredModel` but still records `usage`.
-// `usage.evidenceSource` is always `'claude-subagent-transcript'`. Codex is
-// untouched by this section — see RP-227.
+// `usage.evidenceSource` is always `'claude-subagent-transcript'`. Codex's
+// own usage capture is CODEX USAGE CAPTURE, just below.
 //
 // The reader is exported as `readClaudeTranscriptUsage(file, { now } = {})`,
 // `now` defaulting to `Date.now` and gating every wall-clock read inside it,
 // so the 3s bound can be driven deterministically from a test with no real
 // sleep. Importing this module for that export (or for `DISPATCH_FIELDS`)
 // never runs `main()` — see `invokedDirectly()` below.
+//
+// CODEX USAGE CAPTURE (RP-227), on `SubagentStop` with `--harness=codex`
+// only: this hook reads ONLY the payload's `agent_transcript_path` — the
+// CHILD rollout — never `transcript_path` (the parent's, on `SubagentStop`).
+// The path is refused before any file is even opened, checked in this order:
+// missing or empty (`transcript-path-missing`, reused from RP-226), not
+// absolute (`rollout-path-not-absolute`), UNC-shaped — a leading `\\` or `//`
+// (`rollout-path-unc`) — then an `lstatSync`/`fstatSync` `isFile()` check
+// exactly as the Claude transcript gets (`transcript-unreadable`; a symlink,
+// FIFO, or other non-regular file is refused without ever being followed).
+// The read itself shares RP-226's bounded JSONL reader verbatim
+// (`readBoundedLines`, extracted below so both sections call the same
+// lstat/open/chunked-read/carry-across-chunk implementation once) — the same
+// 32 MiB total / 8 MiB per line / 3s wall-time bounds and the same
+// `transcript-too-large`/`transcript-line-too-large`/`transcript-timeout`/
+// `transcript-malformed-line`/`transcript-empty` reason codes, because a
+// Codex rollout is JSONL exactly as a Claude transcript is.
+//
+// Identity is Codex-specific: the rollout's `session_meta.payload.id` must
+// equal the payload's own `agent_id`, or the whole dispatch is
+// `usageUnavailable: 'rollout-identity-mismatch'` — a rollout with no
+// `session_meta` record at all is the same failure. Once identity holds, the
+// LAST `token_usage_record` whose `payload.thread_id === agent_id` is the one
+// read (no such record is `usageUnavailable: 'no-usage-records'`, reused from
+// RP-226); its `thread_token_usage` — the thread's CUMULATIVE total, never
+// `turn_token_usage` (one turn) or `usage` (that event's own delta) — is
+// mapped onto this hook's own field names: `input_tokens`→`inputTokens`,
+// `cached_input_tokens`→`cachedInputTokens`, `output_tokens`→`outputTokens`,
+// `reasoning_output_tokens`→`reasoningOutputTokens` — exactly the four fields
+// `token-report.mjs`'s own `codexUsageOf` already sums. A LATER matching
+// record REPLACES the previous one rather than summing with it, because the
+// total is already cumulative; a field absent from `thread_token_usage` stays
+// absent (never `0`, never inferred); a present-but-negative-or-fractional
+// field makes the whole dispatch `usageUnavailable: 'invalid-usage-counter'`
+// (reused from RP-226) instead of a partial record. `usage.evidenceSource` is
+// always `'codex-subagent-rollout'`.
+//
+// The reader is exported as `readCodexRolloutUsage(file, agentId, { now =
+// Date.now } = {})`, mirroring `readClaudeTranscriptUsage`'s own `now`
+// injection so the shared 3s bound stays deterministic under test.
 //
 // LIMITS, stated because a hook's own claim about its reach is the first thing
 // to go stale:
@@ -90,9 +130,24 @@
 //   - **Usage is only ever attempted on `SubagentStop`.** A `SubagentStart`
 //     carries the same `agent_transcript_path`, but the file is not yet
 //     complete at start, so this hook never reads it there.
-//   - **`usage`/`usageUnavailable`/`measuredModel` are Claude-only.** Codex
-//     dispatches carry neither key — the Codex projection of this hook is
-//     unchanged by RP-226 (RP-227 is its own ticket).
+//   - **`measuredModel` is Claude-only, even after RP-227.** A Codex rollout
+//     carries no per-message model field this hook reads, so `measuredModel`
+//     is never set for `--harness=codex` — `usage`/`usageUnavailable` are now
+//     captured for both harnesses (RP-226 Claude, RP-227 Codex), each from
+//     its own file shape and its own reason-code vocabulary (Codex adds
+//     `rollout-identity-mismatch`; every other code is shared).
+//   - **`cache_write_input_tokens` and `total_tokens` are read off a real
+//     Codex rollout's `thread_token_usage` but never mapped.** Only the four
+//     fields `token-report.mjs`'s `codexUsageOf` already sums are read
+//     (`input_tokens`, `cached_input_tokens`, `output_tokens`,
+//     `reasoning_output_tokens`); a real rollout's other two
+//     `thread_token_usage` fields are ignored, never folded into an existing
+//     counter.
+//   - **A rollout with more than one `session_meta` record is read as its
+//     LAST one**, mirroring the Claude reader's own last-occurrence-wins
+//     dedup style; a real Codex rollout has been observed carrying exactly
+//     one, so this has not been exercised against a multi-`session_meta`
+//     rollout.
 //   - **The 3s bound is checked only between read chunks, not around the
 //     whole read.** `lstatSync`, `openSync`, a single slow `readSync`, and
 //     the final line's `JSON.parse` all run outside the clock; a process
@@ -129,8 +184,11 @@
 // it", › "omits a cache counter absent from every assistant record in the
 // transcript — never zero", › "records measuredModel when every assistant
 // record names the same model", › "omits measuredModel when assistant
-// records disagree on the model", › "does not attempt usage capture on
-// Codex — neither usage nor usageUnavailable appears", › "reports
+// records disagree on the model", and — ⚠ superseded by RP-227's own Codex
+// capture below, and left here only as a citation of what this same file
+// still literally declares, not as a description of this hook's current
+// behaviour — › "does not attempt usage capture on Codex — neither usage nor
+// usageUnavailable appears". › "reports
 // usageUnavailable when agent_transcript_path’s basename does not match
 // agent-<agent_id>.jsonl for the payload’s own agent_id", › "reports
 // usageUnavailable and never reads transcript_path (the parent) when
@@ -162,6 +220,46 @@
 // invalid-usage-counter for a negative token counter, not a sum", and ›
 // "reports usageUnavailable with code invalid-usage-counter for a fractional
 // token counter, not a sum".
+//
+// The Codex reader is pinned in dispatch-usage-codex.test.ts (absent in a
+// generated rig) › "reads thread_token_usage from the LAST matching
+// token_usage_record, maps its four counters, and sets evidenceSource", ›
+// "uses the LAST token_usage_record for the agent — a later, smaller
+// thread_token_usage is not summed with an earlier one", › "ignores a
+// token_usage_record for a DIFFERENT thread_id, even when it appears after
+// the matching one", › "a counter absent from thread_token_usage stays
+// absent — never zero, never inferred", › "does not attempt usage capture on
+// SubagentStart — only SubagentStop reads the rollout", › "reports
+// usageUnavailable with rollout-identity-mismatch when session_meta.payload.id
+// differs from the dispatch's agent_id", › "reports usageUnavailable with
+// rollout-identity-mismatch when the rollout has no session_meta record at
+// all", › "reports usageUnavailable with no-usage-records when identity
+// holds but no token_usage_record names this thread_id", › "reports
+// usageUnavailable and never reads transcript_path (the parent) when
+// agent_transcript_path is absent", › "reports usageUnavailable with
+// rollout-path-not-absolute for a relative agent_transcript_path", › "reports
+// usageUnavailable with rollout-path-unc for a UNC-shaped
+// agent_transcript_path", › "reports usageUnavailable, never following it,
+// when agent_transcript_path is a symlink to a real usage-bearing rollout",
+// › "reports usageUnavailable when agent_transcript_path is a FIFO — mkfifo
+// is POSIX-only, so this is skipped on win32", › "reports usageUnavailable
+// when agent_transcript_path names a file that does not exist", › "reports
+// usageUnavailable with transcript-empty for a zero-byte rollout", › "reports
+// usageUnavailable with transcript-malformed-line for a malformed JSON line
+// anywhere in the rollout", › "reports usageUnavailable with
+// transcript-line-too-large, with no partial numbers, when a single line
+// exceeds 8 MiB", › "reports usageUnavailable with transcript-too-large, with
+// no partial numbers, when the rollout exceeds 32 MiB total", › "reports
+// transcript-timeout when an injected clock crosses the 3 s bound between two
+// read chunks", › "reports usageUnavailable with invalid-usage-counter for a
+// negative thread_token_usage counter, not a partial record", › "reports
+// usageUnavailable with invalid-usage-counter for a fractional
+// thread_token_usage counter, not a partial record", › "never carries the
+// rollout path, the padding/canary content, or turn_token_usage/usage (the
+// non-cumulative fields) in the journal record", and › "still sums
+// input/output tokens from a Claude transcript on --harness=claude,
+// unaffected by the Codex rollout reader" (this last one the Claude
+// regression the same file also pins).
 import {
   closeSync,
   constants,
@@ -355,7 +453,17 @@ const expectedTranscriptBasename = (agentId) => `agent-${agentId}.jsonl`;
  * this function — the test suite injects a fake one to drive the 3s bound
  * (`MAX_TRANSCRIPT_MS`) deterministically, with no real sleep.
  */
-export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
+/**
+ * The one-pass, bounded JSONL line reader both RP-226 (Claude transcript) and
+ * RP-227 (Codex rollout) fold their own records through — the lstat/open,
+ * chunked read, carry-across-chunk partial line, and all three bounds (total
+ * bytes, one line's bytes, wall time) live here exactly once. `foldLine(buf)`
+ * is called with each complete line's raw bytes (no trailing newline,
+ * possibly zero-length for a trailing blank line) and returns `false` for a
+ * malformed line, `true` otherwise; this function never parses JSON itself.
+ * Returns a short reason code on any failure, or `null` on a clean read.
+ */
+function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
   const start = now();
   let fd;
   try {
@@ -363,15 +471,13 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     try {
       lst = lstatSync(file);
     } catch {
-      return { usageUnavailable: 'transcript-unreadable' };
+      return 'transcript-unreadable';
     }
-    if (!lst.isFile()) return { usageUnavailable: 'transcript-unreadable' };
+    if (!lst.isFile()) return 'transcript-unreadable';
 
     fd = openSync(file, OPEN_FLAGS);
-    if (!fstatSync(fd).isFile()) return { usageUnavailable: 'transcript-unreadable' };
+    if (!fstatSync(fd).isFile()) return 'transcript-unreadable';
 
-    const usageByKey = new Map();
-    const models = new Set();
     const chunk = Buffer.alloc(TRANSCRIPT_READ_CHUNK_BYTES);
     // The pending partial line, carried across chunk reads as a list of
     // already-copied slices plus a running byte length — never
@@ -383,29 +489,6 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     let carryLength = 0;
     let totalRead = 0;
     let position = 0;
-
-    /** Parses and folds one complete line (no trailing newline) into the accumulators. */
-    const foldLine = (lineBuf) => {
-      if (lineBuf.length === 0) return true;
-      let record;
-      try {
-        record = JSON.parse(lineBuf.toString('utf8'));
-      } catch {
-        return false;
-      }
-      if (record === null || typeof record !== 'object' || record.type !== 'assistant') return true;
-      const message = record.message;
-      if (message === null || typeof message !== 'object') return true;
-      if (typeof message.model === 'string') models.add(message.model);
-      const usage = message.usage;
-      if (usage === null || typeof usage !== 'object') return true;
-      const requestId = typeof record.requestId === 'string' ? record.requestId : undefined;
-      const messageId = typeof message.id === 'string' ? message.id : undefined;
-      const key = requestId ?? messageId;
-      if (key === undefined) return true;
-      usageByKey.set(key, usage); // last occurrence for this key wins
-      return true;
-    };
 
     /** Completes the pending carry with `finalSlice` (may be empty), folds it, and resets the carry. */
     const flushLine = (finalSlice) => {
@@ -421,18 +504,18 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     };
 
     for (;;) {
-      if (now() - start > MAX_TRANSCRIPT_MS) return { usageUnavailable: 'transcript-timeout' };
+      if (now() - start > MAX_TRANSCRIPT_MS) return 'transcript-timeout';
       let bytesRead;
       try {
         bytesRead = readSync(fd, chunk, 0, chunk.length, position);
       } catch {
-        return { usageUnavailable: 'transcript-unreadable' };
+        return 'transcript-unreadable';
       }
       if (bytesRead === 0) break;
       position += bytesRead;
       totalRead += bytesRead;
       if (totalRead > MAX_TRANSCRIPT_TOTAL_BYTES) {
-        return { usageUnavailable: 'transcript-too-large' };
+        return 'transcript-too-large';
       }
 
       let cursor = 0;
@@ -442,9 +525,9 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
         const newline = cursor + relative;
         const slice = chunk.subarray(cursor, newline);
         if (carryLength + slice.length > MAX_TRANSCRIPT_LINE_BYTES) {
-          return { usageUnavailable: 'transcript-line-too-large' };
+          return 'transcript-line-too-large';
         }
-        if (!flushLine(slice)) return { usageUnavailable: 'transcript-malformed-line' };
+        if (!flushLine(slice)) return 'transcript-malformed-line';
         cursor = newline + 1;
       }
       if (cursor < bytesRead) {
@@ -452,46 +535,21 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
         const remainder = Buffer.from(chunk.subarray(cursor, bytesRead));
         carryLength += remainder.length;
         if (carryLength > MAX_TRANSCRIPT_LINE_BYTES) {
-          return { usageUnavailable: 'transcript-line-too-large' };
+          return 'transcript-line-too-large';
         }
         carrySlices.push(remainder);
       }
     }
 
-    if (totalRead === 0) return { usageUnavailable: 'transcript-empty' };
+    if (totalRead === 0) return 'transcript-empty';
     if (carryLength > MAX_TRANSCRIPT_LINE_BYTES) {
-      return { usageUnavailable: 'transcript-line-too-large' };
+      return 'transcript-line-too-large';
     }
-    if (!flushLine(Buffer.alloc(0))) return { usageUnavailable: 'transcript-malformed-line' };
+    if (!flushLine(Buffer.alloc(0))) return 'transcript-malformed-line';
 
-    if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
-
-    const usage = { evidenceSource: 'claude-subagent-transcript', requests: usageByKey.size };
-    for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
-      let present = false;
-      let sum = 0;
-      for (const raw of usageByKey.values()) {
-        const value = raw?.[rawKey];
-        if (value === undefined) continue;
-        if (!Number.isSafeInteger(value) || value < 0) {
-          return { usageUnavailable: 'invalid-usage-counter' };
-        }
-        present = true;
-        sum += value;
-      }
-      if (present) usage[outKey] = sum;
-    }
-
-    const result = { usage };
-    if (models.size === 1) {
-      const candidate = [...models][0];
-      if (candidate.length <= MAX_MEASURED_MODEL_LENGTH && MEASURED_MODEL_RE.test(candidate)) {
-        result.measuredModel = candidate;
-      }
-    }
-    return result;
+    return null;
   } catch {
-    return { usageUnavailable: 'transcript-unreadable' };
+    return 'transcript-unreadable';
   } finally {
     if (fd !== undefined) {
       try {
@@ -501,6 +559,64 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
       }
     }
   }
+}
+
+export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
+  const usageByKey = new Map();
+  const models = new Set();
+
+  /** Parses and folds one complete line (no trailing newline) into the accumulators. */
+  const foldLine = (lineBuf) => {
+    if (lineBuf.length === 0) return true;
+    let record;
+    try {
+      record = JSON.parse(lineBuf.toString('utf8'));
+    } catch {
+      return false;
+    }
+    if (record === null || typeof record !== 'object' || record.type !== 'assistant') return true;
+    const message = record.message;
+    if (message === null || typeof message !== 'object') return true;
+    if (typeof message.model === 'string') models.add(message.model);
+    const usage = message.usage;
+    if (usage === null || typeof usage !== 'object') return true;
+    const requestId = typeof record.requestId === 'string' ? record.requestId : undefined;
+    const messageId = typeof message.id === 'string' ? message.id : undefined;
+    const key = requestId ?? messageId;
+    if (key === undefined) return true;
+    usageByKey.set(key, usage); // last occurrence for this key wins
+    return true;
+  };
+
+  const errorCode = readBoundedLines(file, foldLine, { now });
+  if (errorCode) return { usageUnavailable: errorCode };
+
+  if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
+
+  const usage = { evidenceSource: 'claude-subagent-transcript', requests: usageByKey.size };
+  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
+    let present = false;
+    let sum = 0;
+    for (const raw of usageByKey.values()) {
+      const value = raw?.[rawKey];
+      if (value === undefined) continue;
+      if (!Number.isSafeInteger(value) || value < 0) {
+        return { usageUnavailable: 'invalid-usage-counter' };
+      }
+      present = true;
+      sum += value;
+    }
+    if (present) usage[outKey] = sum;
+  }
+
+  const result = { usage };
+  if (models.size === 1) {
+    const candidate = [...models][0];
+    if (candidate.length <= MAX_MEASURED_MODEL_LENGTH && MEASURED_MODEL_RE.test(candidate)) {
+      result.measuredModel = candidate;
+    }
+  }
+  return result;
 }
 
 /**
@@ -517,6 +633,116 @@ function claudeUsageOf(input, agentId) {
     return { usageUnavailable: 'transcript-path-mismatch' };
   }
   return readClaudeTranscriptUsage(transcriptPath);
+}
+
+// ── Codex subagent usage capture (RP-227), on SubagentStop only ────────────
+//
+// See the header's CODEX USAGE CAPTURE section. A Codex rollout is JSONL
+// exactly as a Claude transcript is, so this reuses `readBoundedLines` for
+// the read itself and RP-226's own reason codes for every bound it shares;
+// only the identity check and the record shapes it folds are new.
+
+/** `input_tokens`/`cached_input_tokens`/`output_tokens`/`reasoning_output_tokens`
+ * (a Codex rollout's `thread_token_usage`) → this hook's own field names —
+ * exactly the four fields `token-report.mjs`'s `codexUsageOf` already sums. */
+const CODEX_USAGE_COUNTER_FIELDS = Object.freeze([
+  ['input_tokens', 'inputTokens'],
+  ['cached_input_tokens', 'cachedInputTokens'],
+  ['output_tokens', 'outputTokens'],
+  ['reasoning_output_tokens', 'reasoningOutputTokens'],
+]);
+
+/** A leading `\\` or `/` doubled — UNC-shaped, refused before any fs call. */
+const UNC_PATH_RE = /^(?:\\\\|\/\/)/;
+
+/**
+ * Reads one Codex rollout, bounded exactly as `readClaudeTranscriptUsage` is,
+ * and returns either `{ usage }` or `{ usageUnavailable: <short reason
+ * code> }`. `agentId` is the dispatch's own `agent_id` — the rollout's
+ * `session_meta.payload.id` must equal it (a rollout with no `session_meta`
+ * record at all is the same failure: `'rollout-identity-mismatch'`), and only
+ * the LAST `token_usage_record` whose `payload.thread_id === agentId` is
+ * read; its `thread_token_usage` (the cumulative total) is mapped, never
+ * summed across records. Never returns or logs the path or any rollout
+ * content — only aggregated numbers or a short static reason code.
+ *
+ * `now` defaults to `Date.now`, exactly as `readClaudeTranscriptUsage` — the
+ * test suite injects a fake one to drive the shared 3s bound deterministically.
+ */
+export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
+  let sessionMetaId;
+  let matched = false;
+  let lastThreadTokenUsage = {};
+
+  const foldLine = (lineBuf) => {
+    if (lineBuf.length === 0) return true;
+    let record;
+    try {
+      record = JSON.parse(lineBuf.toString('utf8'));
+    } catch {
+      return false;
+    }
+    if (record === null || typeof record !== 'object') return true;
+    if (record.type === 'session_meta') {
+      const payload = record.payload;
+      if (payload !== null && typeof payload === 'object' && typeof payload.id === 'string') {
+        sessionMetaId = payload.id; // last session_meta record wins, matching RP-226's dedup style
+      }
+      return true;
+    }
+    if (record.type === 'token_usage_record') {
+      const payload = record.payload;
+      if (payload !== null && typeof payload === 'object' && payload.thread_id === agentId) {
+        matched = true;
+        const threadTokenUsage = payload.thread_token_usage;
+        // thread_token_usage is the thread's cumulative total, so the LAST
+        // matching record replaces (never sums with) the previous one.
+        lastThreadTokenUsage =
+          threadTokenUsage !== null && typeof threadTokenUsage === 'object' ? threadTokenUsage : {};
+      }
+      return true;
+    }
+    return true;
+  };
+
+  const errorCode = readBoundedLines(file, foldLine, { now });
+  if (errorCode) return { usageUnavailable: errorCode };
+
+  if (sessionMetaId === undefined || sessionMetaId !== agentId) {
+    return { usageUnavailable: 'rollout-identity-mismatch' };
+  }
+  if (!matched) return { usageUnavailable: 'no-usage-records' };
+
+  const usage = { evidenceSource: 'codex-subagent-rollout' };
+  for (const [rawKey, outKey] of CODEX_USAGE_COUNTER_FIELDS) {
+    const value = lastThreadTokenUsage[rawKey];
+    if (value === undefined) continue;
+    if (!Number.isSafeInteger(value) || value < 0) {
+      return { usageUnavailable: 'invalid-usage-counter' };
+    }
+    usage[outKey] = value;
+  }
+  return { usage };
+}
+
+/**
+ * `{ usage }` or `{ usageUnavailable }` for one `SubagentStop` payload's
+ * Codex rollout — the path is refused before any file is even opened (missing
+ * or empty, not absolute, UNC-shaped, in that order), and `transcript_path`
+ * (the parent's) is never consulted.
+ */
+function codexUsageOf(input, agentId) {
+  const rolloutPath = input.agent_transcript_path;
+  if (typeof rolloutPath !== 'string' || rolloutPath.trim() === '') {
+    return { usageUnavailable: 'transcript-path-missing' };
+  }
+  if (!path.isAbsolute(rolloutPath)) {
+    return { usageUnavailable: 'rollout-path-not-absolute' };
+  }
+  if (UNC_PATH_RE.test(rolloutPath)) {
+    return { usageUnavailable: 'rollout-path-unc' };
+  }
+  return readCodexRolloutUsage(rolloutPath, agentId);
 }
 
 function main() {
@@ -566,8 +792,9 @@ function main() {
       }
     }
 
-    if (eventName === 'SubagentStop' && harness === 'claude') {
-      const usageResult = claudeUsageOf(input, agentId);
+    if (eventName === 'SubagentStop' && (harness === 'claude' || harness === 'codex')) {
+      const usageResult =
+        harness === 'claude' ? claudeUsageOf(input, agentId) : codexUsageOf(input, agentId);
       if (usageResult.usageUnavailable) {
         data.usageUnavailable = usageResult.usageUnavailable;
       } else {

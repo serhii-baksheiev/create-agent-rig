@@ -28,7 +28,11 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 //     dispatch `usageUnavailable` — pinned here, not "skip and count the
 //     rest", for truthfulness;
 //   - never persists a transcript path or message content into the journal;
-//   - Codex is untouched by this ticket (RP-227).
+//   - the Claude reader (`readClaudeTranscriptUsage`) is never applied to a
+//     Codex dispatch — RP-227 gave Codex its own rollout-based capture
+//     (`readCodexRolloutUsage`, `test/template/dispatch-usage-codex.test.ts`),
+//     and this file's own boundary test is "does not apply the Claude
+//     transcript reader to a Codex dispatch …" below.
 //
 // The reader, `token-report.mjs` (RP-228, merged into this branch), consumes
 // exactly `usage: { evidenceSource, requests, inputTokens, outputTokens,
@@ -372,8 +376,16 @@ describe('record-dispatch.mjs — Claude usage capture on SubagentStop (RP-226)'
     expect('measuredModel' in data).toBe(false);
   });
 
-  it('does not attempt usage capture on Codex — neither usage nor usageUnavailable appears', async () => {
-    const agentId = 'codex-untouched';
+  it('does not apply the Claude transcript reader to a Codex dispatch — a rollout with no session_meta records usageUnavailable: rollout-identity-mismatch, never a Claude-shaped usage (RP-227)', async () => {
+    const agentId = 'codex-no-session-meta';
+    // Deliberately Claude-shaped content: an `assistant` record carrying a
+    // valid `message.usage` — exactly what `readClaudeTranscriptUsage` would
+    // happily sum. If the Claude reader were ever reached for a Codex
+    // dispatch, this fixture would produce a Claude-shaped `usage` with
+    // `evidenceSource: 'claude-subagent-transcript'`. It must not: Codex's
+    // own reader is the one that runs, and it refuses this file for a
+    // different, Codex-specific reason — no `session_meta` record names this
+    // agent_id (`test/template/dispatch-usage-codex.test.ts`, RP-227).
     const file = await writeTranscript(agentId, [
       assistantLine({ requestId: 'req-1', usage: { input_tokens: 10, output_tokens: 5 } }),
     ]);
@@ -385,8 +397,10 @@ describe('record-dispatch.mjs — Claude usage capture on SubagentStop (RP-226)'
     expect(result.code).toBe(0);
     const events = await readEvents(runDir);
     const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('rollout-identity-mismatch');
     expect('usage' in data).toBe(false);
-    expect('usageUnavailable' in data).toBe(false);
+    const bytes = await eventsFileBytes(runDir);
+    expect(bytes).not.toContain('claude-subagent-transcript');
   });
 });
 

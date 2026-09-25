@@ -28,8 +28,25 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   8 MiB per line, 3 s); a crossed bound, an empty or usage-less transcript, an
   out-of-range counter, a mismatched or unreadable path, or a malformed line
   records `usageUnavailable` with a reason code instead of a partial number,
-  and no path or message content is ever journalled. Codex dispatches are
-  unchanged (RP-226).
+  and no path or message content is ever journalled. Codex dispatches now get
+  their own equivalent capture — see the next entry (RP-226, RP-227).
+
+- **The dispatch journal records Codex subagent token usage too.** On a
+  Codex `SubagentStop`, `record-dispatch.mjs` reads the subagent's own child
+  rollout (only an absolute, non-UNC `agent_transcript_path` — never the
+  parent's `transcript_path`), checks that the rollout's
+  `session_meta.payload.id` matches the event's own `agent_id`
+  (`usageUnavailable: 'rollout-identity-mismatch'` otherwise, including a
+  rollout with no `session_meta` at all), and reads the LAST
+  `token_usage_record` for that thread's `thread_token_usage` — the running
+  cumulative total, mapped onto `inputTokens`/`cachedInputTokens`/
+  `outputTokens`/`reasoningOutputTokens`. The read reuses the Claude reader's
+  bounds and reason codes verbatim (32 MiB total, 8 MiB per line, 3 s; a
+  crossed bound, an unreadable/mismatched path, an out-of-range counter, or a
+  malformed line records `usageUnavailable` instead of a partial number), and
+  no rollout path or content is ever journalled. `measuredModel` stays
+  Claude-only — a Codex rollout carries no per-message model field this hook
+  reads (RP-227).
 
 - **`init` installs beside a pre-existing root `CLAUDE.md` instead of
   refusing outright.** A repo that already has its own `CLAUDE.md` keeps it
