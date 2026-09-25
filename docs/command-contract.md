@@ -343,31 +343,35 @@ fields:
 - `detail` — what was observed.
 - `fix` — what a human should do about it.
 
-`id` has a closed set of nine fixed values as of the RP-256 minor bump. A
+`id` has a closed set of eleven fixed values as of the RP-230 minor bump. A
 single id may be emitted from more than one branch of
 `packages/cli/src/commands/doctor.ts` — one per outcome of the same check —
 so what identifies a check is the id, never the call site:
 
-| `id`                  | what it checks                                                                                                                                                                                                                                                 |
-| --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rig-manifest`        | Whether `.claude/.rig-manifest.json` exists and parses — absent is a warning, unreadable or corrupt is a failure.                                                                                                                                              |
-| `rig-owned-files`     | Whether every manifest-recorded owned path still matches its recorded bytes, distinguishing absence, content drift, and line-ending-only drift from a pristine install; an owned path that cannot be read at all is the one failing outcome.                   |
-| `rig-managed-regions` | Whether the AGENTS.md managed region (RP-256 slice 2, `manifest.regions`) is still intact and its body's hash still matches — a warning when it is missing, malformed or edited since install; absent from the report entirely when nothing is region-tracked. |
-| `rig-version`         | Whether the CLI's own version and the version recorded in the manifest can be compared, and if so, which one is ahead — see "`rig-version` (RP-229)" below.                                                                                                    |
-| `guards`              | Whether the installed hook wiring and the installed guard bytes match this package's own, verified by running allowed/denied fixtures against the installed guards in a disposable directory.                                                                  |
-| `workflow`            | For the optional workflow layer, whether the installed workflow scripts — including the frozen revalidation and claim-record mechanisms — still match the installed bytes; `not-selected` when the manifest does not record that layer.                        |
-| `custom-memory`       | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                                               |
-| `integrations`        | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                                          |
-| `spec-kit`            | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                                         |
+| `id`                  | what it checks                                                                                                                                                                                                                                                  |
+| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rig-manifest`        | Whether `.claude/.rig-manifest.json` exists and parses — absent is a warning, unreadable or corrupt is a failure.                                                                                                                                               |
+| `rig-owned-files`     | Whether every manifest-recorded owned path still matches its recorded bytes, distinguishing absence, content drift, and line-ending-only drift from a pristine install; an owned path that cannot be read at all is the one failing outcome.                    |
+| `rig-managed-regions` | Whether the AGENTS.md managed region (RP-256 slice 2, `manifest.regions`) is still intact and its body's hash still matches — a warning when it is missing, malformed or edited since install; absent from the report entirely when nothing is region-tracked.  |
+| `rig-version`         | Whether the CLI's own version and the version recorded in the manifest can be compared, and if so, which one is ahead — see "`rig-version` (RP-229)" below.                                                                                                     |
+| `guards`              | Whether the installed hook wiring and the installed guard bytes match this package's own, verified by running allowed/denied fixtures against the installed guards in a disposable directory.                                                                   |
+| `workflow`            | For the optional workflow layer, whether the installed workflow scripts — including the frozen revalidation and claim-record mechanisms — still match the installed bytes; `not-selected` when the manifest does not record that layer.                         |
+| `custom-memory`       | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                                                |
+| `integrations`        | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                                           |
+| `spec-kit`            | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                                          |
+| `personal-tracker`    | Presence-only report of the tracker credential env var NAMES this repository's `.claude/queue.json` adapter requires (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Absent from the report when there is nothing personal to check. |
+| `codex-hook-trust`    | Diagnostic-only pointer at Codex's own `/hooks` view, emitted only when `.codex/hooks.json` exists (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Never `ok`: trust is not something doctor observes.                               |
 
-This is the closed set as of the RP-256 minor bump (RP-229 first closed it at
-eight; RP-256 added `rig-managed-regions` as the ninth): like every other
-closed value domain this contract names, adding a tenth fixed id is a minor
-bump, and removing or renaming one of the nine above needs a major one (`##
-Deprecation policy and ledger`). It excludes the per-integration and
-per-harness records the same run also emits — `id: '<integration>:<harness>'`
-(e.g. `figma-mcp:claude-code`) or `id: '<integration>:harness-selection'` —
-whose ids are built from whatever the caller declared, not fixed here.
+This is the closed set as of the RP-230 minor bump (RP-229 first closed it at
+eight; RP-256 added `rig-managed-regions` as the ninth; RP-230 added
+`personal-tracker` and `codex-hook-trust` as the tenth and eleventh): like
+every other closed value domain this contract names, adding a twelfth fixed
+id is a minor bump, and removing or renaming one of the eleven above needs a
+major one (`## Deprecation policy and ledger`). It excludes the
+per-integration and per-harness records the same run also emits —
+`id: '<integration>:<harness>'` (e.g. `figma-mcp:claude-code`) or
+`id: '<integration>:harness-selection'` — whose ids are built from whatever
+the caller declared, not fixed here.
 
 ### `rig-version` (RP-229)
 
@@ -400,6 +404,57 @@ By team convention, a repository's recorded rig version moves only through an
 ordinary, reviewed pull request that runs `upgrade` — there is no distributed
 upgrade manager reconciling checkouts on its own, and `doctor` only warns; it
 never mutates the manifest or the installation to resolve a mismatch itself.
+
+### `personal-tracker` and `codex-hook-trust` (RP-230)
+
+Both are personal-machine onboarding diagnostics, not installation checks —
+neither depends on the manifest, and neither can push the run's overall
+status past `warn`, so a clean rig's exit code stays `0` regardless of what
+either one reports.
+
+`personal-tracker` is a presence-only report of the tracker credential env
+var NAMES this repository's own `.claude/queue.json` `adapter` requires. It
+is absent from the report entirely — not even a `warn` — when there is
+nothing personal to check: no `queue.json`, the plan-only default adapter
+(`plan-md`), or an adapter that delegates auth elsewhere (`github-issues`,
+to the `gh` CLI). For the `jira` adapter it is `ok`
+(`tracker-credentials-present`) when `JIRA_BASE_URL`, `JIRA_EMAIL` and
+`JIRA_API_TOKEN` are all set in the environment, and `warn`
+(`tracker-credentials-missing`) otherwise, with `fix` naming only the
+specific NAMES still missing. A credential VALUE never appears anywhere in
+the record, in either field, in `--json` or in the human-readable form; a
+NAME appears only in `fix` — `reason` and `detail` stay generic.
+
+The check is silently absent, by that same "nothing personal to check"
+path, for every input it cannot read as a live tracker adapter: a
+`queue.json` that is not valid JSON, a non-string `adapter` value, and an
+adapter name this repository's map has no entry for at all — including one
+that collides with an inherited `Object.prototype` member (`__proto__`,
+`constructor`, `hasOwnProperty`, `toString`, ...), which round 2 of this
+feature guards against explicitly
+(`packages/cli/test/doctor-onboarding.test.ts` › "personal-tracker check
+never throws on an adapter name that reaches Object.prototype (RP-230 round
+2)"). A `queue.json` over the 64 KiB `readBounded` bound is silently absent
+the same way; that specific case has no dedicated test.
+
+`codex-hook-trust` is emitted only when this repository has Codex hook
+wiring (`.codex/hooks.json` exists), and is always `warn`
+(`codex-hooks-need-review`) — never `ok`. Its `fix` points the developer at
+Codex's own `/hooks` view to review and trust the checked-in rig hooks
+there; it never claims those hooks are already active or already trusted,
+because doctor has no deterministic signal for Codex's own trust state. The
+one fact behind that caution is itself observed, not guessed: on codex-cli
+0.156.1, a hook whose trust was not already persisted was skipped silently
+rather than run (live probe, 2026-09-24; Jira RP-227 comment 20584) — which
+is exactly why the `fix` text stops at "review and trust" and does not
+promise anything about what runs meanwhile.
+
+Neither check inspects everything the name might suggest. Codex project
+trust and Claude Code workspace trust both live in the user's own personal
+harness configuration, outside this repository, and doctor reads only the
+repository — it never opens personal config to check either one. For the
+`github-issues` adapter, `personal-tracker` omits the check entirely (above)
+and nothing else in this run inspects `gh`'s own authentication state.
 
 The status set is closed: ok, warn, fail.
 

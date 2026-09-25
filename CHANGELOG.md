@@ -18,6 +18,20 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ### Added
 
+- **`doctor` adds two personal-machine onboarding diagnostics.**
+  `personal-tracker` is a presence-only check of the tracker credential
+  environment variable names the repository's own `.claude/queue.json`
+  adapter requires — `ok`/`tracker-credentials-present` when all are set,
+  `warn`/`tracker-credentials-missing` (naming only the missing names in
+  `fix`) otherwise, and absent from the report entirely when there is
+  nothing personal to check (no `queue.json`, the `plan-md` default, or the
+  `github-issues` adapter, which delegates auth to the `gh` CLI).
+  `codex-hook-trust` is a diagnostic-only pointer at Codex's own `/hooks`
+  view, emitted only when this repository has checked-in Codex hook wiring
+  (`.codex/hooks.json`), always `warn`, and never claiming those hooks are
+  already active or trusted. Neither check can push a clean rig's `doctor`
+  exit code past `0` (RP-230).
+
 - **The dispatch journal records Claude subagent token usage.** On a Claude
   `SubagentStop`, `record-dispatch.mjs` reads the subagent's own transcript
   (only a non-UNC `agent_transcript_path` named `agent-<agent_id>.jsonl` for

@@ -177,6 +177,12 @@ and the Memory registration. It exits `1` only when a check fails. It reports
 wiring, not reachability: it never contacts a provider, and never claims that
 authorization, connectivity or trust were verified.
 
+It also carries two personal-machine onboarding diagnostics that never affect
+the exit code: a presence-only check of the tracker credential environment
+variable names your `.claude/queue.json` adapter needs, and — only when this
+repository has checked-in Codex hook wiring — a pointer to Codex's own
+`/hooks` view to review and trust it.
+
 **Uninstall**, keeping everything you wrote:
 
 ```sh
