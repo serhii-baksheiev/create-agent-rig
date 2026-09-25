@@ -82,6 +82,16 @@ export interface RigManifest {
    * install serialises exactly as before.
    */
   kept?: Record<string, string>;
+  /**
+   * Install-relative path → sha256 of the managed-region BODY alone (never
+   * the marker lines) spliced into a user-owned file (RP-256 slice 2) —
+   * `'AGENTS.md'` today. Kept apart from `files` and `kept` for the same
+   * reason `kept` is: the file on disk is a mix of the user's own bytes and
+   * a region this rig wrote and vouches for, so neither existing bucket
+   * describes it. Absent when nothing is region-tracked, so a clean install
+   * serialises exactly as before.
+   */
+  regions?: Record<string, string>;
 }
 
 export function sha256(data: string | Buffer): string {
@@ -188,6 +198,15 @@ export function parseManifest(raw: string): RigManifest | null {
   ) {
     return null;
   }
+  // Present in a shape this reader does not accept voids the manifest,
+  // exactly as `files`/`kept` do; absent is every manifest written before
+  // the field existed.
+  if (
+    m.regions !== undefined &&
+    (!isStringRecord(m.regions) || Object.keys(m.regions).some((rel) => !isSafeManifestPath(rel)))
+  ) {
+    return null;
+  }
   return {
     version: m.version,
     kind: m.kind,
@@ -203,6 +222,7 @@ export function parseManifest(raw: string): RigManifest | null {
     layers: m.layers !== undefined ? [...new Set(m.layers as Layer[])] : [...LEGACY_LAYERS],
     files: { ...m.files },
     ...(m.kept !== undefined ? { kept: { ...m.kept } } : {}),
+    ...(m.regions !== undefined ? { regions: { ...m.regions } } : {}),
   };
 }
 
@@ -218,11 +238,14 @@ const sortedRecord = (record: Record<string, string>): Record<string, string> =>
  * must serialise byte-identical to one written before the key existed.
  */
 export function serializeManifest(manifest: RigManifest): string {
-  const { kept, ...rest } = manifest;
+  const { kept, regions, ...rest } = manifest;
   const body = {
     ...rest,
     files: sortedRecord(manifest.files),
     ...(kept !== undefined && Object.keys(kept).length > 0 ? { kept: sortedRecord(kept) } : {}),
+    ...(regions !== undefined && Object.keys(regions).length > 0
+      ? { regions: sortedRecord(regions) }
+      : {}),
   };
   return `${JSON.stringify(body, null, 2)}\n`;
 }

@@ -23,8 +23,35 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   byte-identical; the Rig shim installs nested at `.claude/CLAUDE.md`
   instead, importing the rulebook as `@../AGENTS.md`. Both files are loaded
   (measured — see `docs/decisions/agents-md-canonical.md`, "CLAUDE.md
-  coexistence — measured"). A pre-existing `AGENTS.md` is still refused
-  (RP-256 slice 1).
+  coexistence — measured") (RP-256 slice 1).
+
+- **`init` installs beside a pre-existing `AGENTS.md` too, through one
+  bounded managed region, superseding slice 1's blanket refusal above.** A
+  repo that already has its own `AGENTS.md` keeps its bytes as an exact
+  prefix; this release's rendered rulebook is appended after them inside one
+  marked region (`<!-- create-agent-rig:begin -->` … `<!--
+create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
+  `regions` field vouching for the region body alone. `upgrade` refreshes an
+  unedited region and reports an edited one as an ordinary quiet conflict,
+  never merging over it — re-verified immediately before it writes, not
+  trusted from the plan: an edit landing inside the region (or its markers
+  going missing) between the plan and `--yes` refuses that one write instead
+  of silently overwriting or losing it, reported on the new
+  `UpgradeResult.changedSincePlanning` (the same field name `uninstall`
+  already uses for the identical concept). `uninstall` strips only the
+  region and always keeps the file, and its CLAUDE.md/AGENTS.md pairing note
+  now also fires truthfully when a region strip, not a whole-file removal,
+  leaves no readable rulebook anywhere. The one refusal that remains is
+  markers `init` cannot safely merge with — a region already there, or a
+  malformed fragment of one. A combined file over Codex's documented 32 KiB
+  default per-document cap is a warning, not a refusal (see
+  `docs/decisions/agents-md-canonical.md`, "AGENTS.md coexistence — the
+  managed region (RP-256 slice 2)").
+
+- **`doctor` gains a ninth check, `rig-managed-regions`.** Reports whether
+  the AGENTS.md managed region above is intact and unedited, or a warning
+  when it is missing, malformed, or edited since install; absent from the
+  report entirely on a rig with nothing region-tracked (RP-256 slice 2).
 
 - **`doctor`'s `rig-owned-files` check reports per-reason counts.** The JSON
   record gains an additive

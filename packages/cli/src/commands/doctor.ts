@@ -17,6 +17,7 @@ import { inspectGuards } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
 import { packageVersion } from '../lib/version.js';
 import type { runProviderProcess } from '../integrations/spawn.js';
+import { locateRegion, MAX_AGENTS_MD_REGION_BYTES } from '../lib/agents-md-region.js';
 
 type Status = 'pass' | 'warn' | 'fail';
 /**
@@ -216,6 +217,35 @@ async function rigChecks(root: string, codexHash?: string): Promise<Check[]> {
     counts,
     ownedFilePaths,
   });
+  // RP-256 slice 2: the AGENTS.md managed region, judged the same way
+  // `rig-owned-files` judges an ordinary file — `pass` (reported as `ok`,
+  // like every other check here) when it is intact and its body's hash
+  // still matches what the manifest vouches for, `warn` otherwise (the
+  // region missing entirely, its markers malformed, or its body edited
+  // since install). Absent from the report altogether when nothing is
+  // region-tracked — a clean, pre-RP-256-slice-2 install has nothing new to
+  // say here.
+  const regionRecordedHash = manifest.regions?.['AGENTS.md'];
+  if (regionRecordedHash !== undefined) {
+    const file = await readBounded(root, 'AGENTS.md', MAX_AGENTS_MD_REGION_BYTES);
+    const decodedRegionFile = file.status === 'ok' ? text(file.bytes) : undefined;
+    const located = decodedRegionFile === undefined ? null : locateRegion(decodedRegionFile);
+    const intact = located !== null && sha256(located.body) === regionRecordedHash;
+    checks.push({
+      id: 'rig-managed-regions',
+      status: intact ? 'pass' : 'warn',
+      reason:
+        file.status === 'absent'
+          ? 'region-file-missing'
+          : file.status !== 'ok'
+            ? 'region-file-unreadable'
+            : intact
+              ? 'pristine'
+              : located === null
+                ? 'region-markers-missing'
+                : 'region-edited',
+    });
+  }
   return checks;
 }
 
