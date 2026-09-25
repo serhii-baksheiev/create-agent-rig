@@ -707,12 +707,11 @@ describe('record-dispatch.mjs — Codex rollout path is refused before anything 
     expect('usage' in data).toBe(false);
   });
 
-  // Round 2 — security-scanner-r1.md B1. Win32 treats "/" and "\" as the
-  // same separator, so a MIXED leading pair is UNC-shaped too, and on
-  // Windows the unfixed regex let it through to lstatSync/openSync (proven
-  // there against a real \\wsl$ share: the hook read over SMB and journalled
-  // usage). Pinned here as a reason-code assertion that runs on every
-  // platform — a real host would need to exist for the bypass to leak
+  // Win32 treats "/" and "\" as the same separator, so a MIXED leading pair
+  // is UNC-shaped too; the earlier regex, which matched only two
+  // same-character separators, let both mixed forms through to
+  // lstatSync/openSync. Pinned here as a reason-code assertion that runs on
+  // every platform — a real host would need to exist for the bypass to leak
   // content, but the wrong reason code alone already proves the path was
   // NOT refused at the UNC check.
   it('reports usageUnavailable with rollout-path-unc for a mixed-separator UNC path (leading "/\\\\") — never opens anything', async () => {

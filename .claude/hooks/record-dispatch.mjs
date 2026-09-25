@@ -31,12 +31,15 @@
 //
 // CLAUDE USAGE CAPTURE (RP-226), on `SubagentStop` with `--harness=claude`
 // only: this hook reads ONLY the payload's `agent_transcript_path` — never
-// `transcript_path` (the parent's) — and, since round 2 (RP-227,
-// security-scanner-r1.md A5), refuses a UNC-shaped path first (reusing
-// `UNC_PATH_RE`, shared with the Codex path below), then requires its
-// basename to be exactly `agent-<agent_id>.jsonl` for the payload's OWN
-// `agent_id`; any other basename, a UNC-shaped or missing/empty path,
-// resolves to `usageUnavailable` without opening anything. The read itself
+// `transcript_path` (the parent's) — and refuses a UNC-shaped path first
+// (reusing `UNC_PATH_RE`, shared with the Codex path below; see
+// dispatch-usage.test.ts (absent in a generated rig) › "reports
+// usageUnavailable: transcript-path-unc for a UNC-shaped
+// agent_transcript_path (leading "//") — never opens anything"), then
+// requires its basename to be exactly `agent-<agent_id>.jsonl` for the
+// payload's OWN `agent_id`; any other basename, a UNC-shaped or
+// missing/empty path, resolves to `usageUnavailable` without opening
+// anything. The read itself
 // is bounded on three axes at once: at
 // most 32 MiB read in total, at most 8 MiB in one line, at most 3s wall
 // time (checked between chunks) — a fixed-size buffer on an
@@ -77,9 +80,9 @@
 // The path is refused before any file is even opened, checked in this order:
 // missing or empty (`transcript-path-missing`, reused from RP-226),
 // UNC-shaped — a leading pair of separators, `\`/`/` in ANY mix
-// (`rollout-path-unc`; round 2, security-scanner-r1.md B1) — checked BEFORE
-// and independently of `path.isAbsolute`, because a mixed-separator UNC path
-// is not POSIX-absolute and would otherwise fall through as the wrong reason
+// (`rollout-path-unc`) — checked BEFORE and independently of
+// `path.isAbsolute`, because a mixed-separator UNC path is not
+// POSIX-absolute and would otherwise fall through as the wrong reason
 // code — then not absolute (`rollout-path-not-absolute`), then an
 // `lstatSync`/`fstatSync` `isFile()` check exactly as the Claude transcript
 // gets (`transcript-unreadable`; a symlink, FIFO, or other non-regular file
@@ -95,10 +98,10 @@
 // Identity is Codex-specific: the rollout's FIRST `session_meta.payload.id`
 // — never a later one — must equal the payload's own `agent_id`, or the
 // whole dispatch is `usageUnavailable: 'rollout-identity-mismatch'` — a
-// rollout with no `session_meta` record at all is the same failure (round 2,
-// code-reviewer-r1.md B1: a Codex child spawned with forked context writes
-// TWO `session_meta` records, the child's own first and the PARENT's
-// second; reading the last one made every forked child mismatch). Once
+// rollout with no `session_meta` record at all is the same failure. A Codex
+// child spawned with forked context writes TWO `session_meta` records, the
+// child's own first and the PARENT's second — see the LIMITS entry below on
+// forked children for the test that pins reading only the first. Once
 // identity holds, the LAST `token_usage_record` whose `payload.thread_id ===
 // agent_id` is the one read (no such record is `usageUnavailable:
 // 'no-usage-records'`, reused from RP-226); its `thread_token_usage` — the
@@ -112,10 +115,10 @@
 // total is already cumulative; a field absent from `thread_token_usage` stays
 // absent (never `0`, never inferred); a matched record whose
 // `thread_token_usage` is absent, `null`, `{}`, or not an object — so no
-// counter is extracted at all — is `usageUnavailable: 'no-usage-counters'`
-// (round 2, code-reviewer-r1.md B2), never `usage: { evidenceSource }` with
-// no counters, which would read as "measured" to any caller checking
-// `'usage' in data`; a present-but-negative-or-fractional field makes the
+// counter is extracted at all — is `usageUnavailable: 'no-usage-counters'`,
+// never `usage: { evidenceSource }` with no counters, which would read as
+// "measured" to any caller checking `'usage' in data`; a
+// present-but-negative-or-fractional field makes the
 // whole dispatch `usageUnavailable: 'invalid-usage-counter'` (reused from
 // RP-226) instead of a partial record. `usage.evidenceSource` is always
 // `'codex-subagent-rollout'`.
@@ -160,22 +163,20 @@
 //     `thread_token_usage` fields are ignored, never folded into an existing
 //     counter.
 //   - **A forked child rollout carries TWO `session_meta` records, and only
-//     the FIRST is read.** Measured on this machine (round 2,
-//     code-reviewer-r1.md B1): a real forked child rollout, codex-cli
-//     0.156.1, 2026-09-23
-//     (`~/.codex/sessions/2026/09/23/rollout-2026-09-23T16-59-32-01a0ce59-....jsonl`),
-//     writes the child's OWN `session_meta` (carrying `forked_from_id`/
-//     `parent_thread_id`) at ordinal 0 and the PARENT's `session_meta` at
-//     ordinal 1. 132 of 281 child rollouts on this machine are forked this
-//     way, across codex-cli 0.148.0–0.156.1 — this is not a rare shape.
-//     Reading only the first record is a deliberate choice, not an
-//     unexercised gap: a rollout whose first `session_meta` does not name
-//     `agent_id` is `rollout-identity-mismatch` even when a later one does.
+//     the FIRST is read** — the child's OWN `session_meta` (carrying
+//     `forked_from_id`/`parent_thread_id`) first, the PARENT's second; see
+//     dispatch-usage-codex.test.ts (absent in a generated rig) › "identifies
+//     a forked child rollout from its FIRST session_meta record (the
+//     child's own, carrying forked_from_id/parent_thread_id) — not the
+//     parent's second record". Reading only the first record is a
+//     deliberate choice, not an unexercised gap: a rollout whose first
+//     `session_meta` does not name `agent_id` is `rollout-identity-mismatch`
+//     even when a later one does.
 //   - **The 3s bound is checked only between read chunks, not around the
 //     whole read.** `lstatSync`, `openSync`, a single slow `readSync`, and
 //     the final line's `JSON.parse` all run outside the clock; a process
 //     stuck in one of those still relies on the harness's own hook timeout
-//     as the real backstop (security-scanner-r1.md A5).
+//     as the real backstop.
 //
 // PRIVACY: this record never carries `cwd`, a transcript path, a prompt, a
 // response, a raw `session_id`/`agent_id`, or an email address — see
@@ -208,9 +209,9 @@
 // transcript — never zero", › "records measuredModel when every assistant
 // record names the same model", › "omits measuredModel when assistant
 // records disagree on the model", and — this file's own Codex-boundary test,
-// renamed by RP-227 round 2 (prose-reviewer-r1.md, replacing a dead citation
-// to the pre-RP-227 test name this same sentence used to quote) — › "does
-// not apply the Claude transcript reader to a Codex dispatch — a rollout
+// renamed by RP-227 (replacing a dead citation to the pre-RP-227 test name
+// this same sentence used to quote) — › "does not apply the Claude
+// transcript reader to a Codex dispatch — a rollout
 // with no session_meta records usageUnavailable: rollout-identity-mismatch,
 // never a Claude-shaped usage (RP-227)". › "reports
 // usageUnavailable when agent_transcript_path’s basename does not match
@@ -224,8 +225,8 @@
 // "exports DISPATCH_FIELDS containing usage, usageUnavailable, and
 // measuredModel".
 //
-// The RP-226 fix round (code-reviewer-r1.md / security-scanner-r1.md) is
-// pinned in dispatch-usage.test.ts (absent in a generated rig) › "reports
+// The RP-226 fix round is pinned in dispatch-usage.test.ts (absent in a
+// generated rig) › "reports
 // usageUnavailable with code transcript-empty for a zero-byte transcript",
 // › "reports usageUnavailable with code no-usage-records for a transcript
 // containing only user records", › "reports transcript-timeout when an
@@ -284,15 +285,14 @@
 // input/output tokens from a Claude transcript on --harness=claude,
 // unaffected by the Codex rollout reader" (this last one the Claude
 // regression the same file also pins), and — the token-report.mjs
-// end-to-end read of a Codex dispatch-end, added to this citation list in
-// round 2 (code-reviewer-r1.md A4) — › "shows the Codex usage and the
+// end-to-end read of a Codex dispatch-end — › "shows the Codex usage and the
 // "usage measured; monetary cost unavailable" money line for a run with a
 // measured dispatch-end".
 //
-// Round 2 (RP-227, review of PR #333 head 3b82189) is pinned in
-// dispatch-usage-codex.test.ts (absent in a generated rig) › "identifies a
-// forked child rollout from its FIRST session_meta record (the child's own,
-// carrying forked_from_id/parent_thread_id) — not the parent's second
+// RP-227's forked-identity, no-usage-counters and mixed-separator-UNC fixes
+// are pinned in dispatch-usage-codex.test.ts (absent in a generated rig) ›
+// "identifies a forked child rollout from its FIRST session_meta record (the
+// child's own, carrying forked_from_id/parent_thread_id) — not the parent's second
 // record", › "reports usageUnavailable with rollout-identity-mismatch when
 // the FIRST session_meta does not match agent_id, even when a LATER
 // session_meta does", › "reports usageUnavailable (no usage key at all) when
@@ -360,9 +360,7 @@ const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
  * `/\host\share\...` and `\/host/share/...` resolve to `\\?\UNC\...` exactly
  * as `\\host\share\...` and `//host/share/...` do; a regex matching only the
  * two same-character pairs let both mixed forms through to
- * `lstatSync`/`openSync` (round 2, security-scanner-r1.md B1 — proven on
- * Windows against a real `\\wsl$` share: the unfixed regex read over SMB and
- * journalled usage for both mixed spellings).
+ * `lstatSync`/`openSync`.
  */
 const UNC_PATH_RE = /^[\\/]{2}/;
 
@@ -529,9 +527,8 @@ function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
     // The pending partial line, carried across chunk reads as a list of
     // already-copied slices plus a running byte length — never
     // re-concatenated or rescanned from its start on every chunk (one
-    // forward pass; code-reviewer-r1.md B1). Each new chunk is scanned only
-    // for its own newlines; a completed line's slices are concatenated and
-    // decoded exactly once.
+    // forward pass). Each new chunk is scanned only for its own newlines; a
+    // completed line's slices are concatenated and decoded exactly once.
     let carrySlices = [];
     let carryLength = 0;
     let totalRead = 0;
@@ -680,10 +677,9 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
 
 /**
  * `{ usage }` or `{ usageUnavailable }` for one `SubagentStop` payload's
- * Claude transcript — a UNC-shaped path is refused first (round 2,
- * security-scanner-r1.md A5, reusing the Codex path's fixed `UNC_PATH_RE`),
- * then the basename binding, both before any file is even opened;
- * `transcript_path` (the parent's) is never consulted.
+ * Claude transcript — a UNC-shaped path is refused first (reusing the
+ * Codex path's `UNC_PATH_RE`), then the basename binding, both before any
+ * file is even opened; `transcript_path` (the parent's) is never consulted.
  */
 function claudeUsageOf(input, agentId) {
   const transcriptPath = input.agent_transcript_path;
@@ -748,8 +744,8 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
     if (record.type === 'session_meta') {
       // The FIRST session_meta record wins, never a later one — a forked
       // child rollout carries the child's OWN session_meta first and the
-      // PARENT's second (round 2, code-reviewer-r1.md B1); once one has been
-      // read, every later session_meta line is inert, even a malformed one.
+      // PARENT's second; once one has been read, every later session_meta
+      // line is inert, even a malformed one.
       if (!sessionMetaSeen) {
         sessionMetaSeen = true;
         const payload = record.payload;
@@ -796,7 +792,7 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
   // A matched record whose thread_token_usage is absent, null, {}, or not an
   // object normalises to {} above, so this loop finds nothing — that must
   // never read as "measured": `'usage' in data` is exactly what a caller
-  // checks (round 2, code-reviewer-r1.md B2).
+  // checks.
   if (!anyCounter) return { usageUnavailable: 'no-usage-counters' };
   return { usage };
 }
@@ -808,8 +804,8 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
  * `transcript_path` (the parent's) is never consulted.
  *
  * The UNC check runs BEFORE `path.isAbsolute` and independently of its
- * result (round 2, security-scanner-r1.md B1): `path.isAbsolute` is
- * platform-native, and on POSIX a mixed-separator UNC path like
+ * result: `path.isAbsolute` is platform-native, and on POSIX a
+ * mixed-separator UNC path like
  * `\/host/share/...` is NOT absolute (it does not start with `/`), which
  * would let it fall through as `rollout-path-not-absolute` — the wrong
  * refusal, and one that implies the UNC check never ran — if absoluteness

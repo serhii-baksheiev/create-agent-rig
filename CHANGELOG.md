@@ -20,8 +20,8 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 - **The dispatch journal records Claude subagent token usage.** On a Claude
   `SubagentStop`, `record-dispatch.mjs` reads the subagent's own transcript
-  (only an absolute, non-UNC `agent_transcript_path` named
-  `agent-<agent_id>.jsonl` for that event's `agent_id`), sums the assistant
+  (only a non-UNC `agent_transcript_path` named `agent-<agent_id>.jsonl` for
+  that event's `agent_id`), sums the assistant
   records' `message.usage` counters deduplicated per request, and journals
   them as `usage`, with `measuredModel` when every record names the same
   model AND that model string is a short allowlisted shape. Reading is

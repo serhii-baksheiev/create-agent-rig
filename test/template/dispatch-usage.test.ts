@@ -545,11 +545,10 @@ describe('record-dispatch.mjs — a UNC-shaped agent_transcript_path is refused 
   // Each path below carries a basename that would otherwise satisfy
   // `agent-<agent_id>.jsonl` for its own dispatch's agent_id — the UNC
   // refusal must fire first, so the basename never gets a chance to matter.
-  // None of these hosts/shares exist on this machine: if the UNC check were
-  // ever bypassed, the next thing that would run is a real filesystem call
-  // (`lstatSync`) against a path this test never created, so the discovered
-  // reason code would differ from `transcript-path-unc` — that difference is
-  // exactly what the throwaway mutant below is used to prove.
+  // None of these hosts/shares exist, so if the UNC check were ever
+  // bypassed, the next thing that would run is a real filesystem call
+  // (`lstatSync`) against a path this test never created, and the reason
+  // code would differ from `transcript-path-unc`.
 
   it('reports usageUnavailable: transcript-path-unc for a UNC-shaped agent_transcript_path (leading "//") — never opens anything', async () => {
     const agentId = 'unc-double-forward';
