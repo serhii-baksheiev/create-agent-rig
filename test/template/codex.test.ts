@@ -393,8 +393,54 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-root-'));
       const home = await mkdtemp(path.join(tmpdir(), 'codex-hook-windows-home-'));
       const nested = path.join(scratch, 'packages', 'core', 'src');
+
+      // RP-264: this case's only bound used to be its own 60 s budget
+      // (`WINDOWS_POWERSHELL_CASE_TIMEOUT_MS` above), which names the CASE,
+      // never the child that actually stalled — `git init`, the PowerShell
+      // wrapper, `git rev-parse`, or the probe re-run below. Each gets its
+      // own bound now, all comfortably under the case budget (5 + 25 + 5 +
+      // 20 = 55 s), and `bounded()` NAMES the one that stalls instead of
+      // letting the case timeout absorb it. `boundedSpawn` settles on a
+      // timer rather than waiting for a child's stdio streams to close — a
+      // plain `execFile` timeout does not, and the node grandchild the
+      // wrapper spawns holds the inherited pipes open.
+      const timings: string[] = [];
+      const { boundedSpawn } = (await import('../helpers/bounded-spawn.js')) as {
+        boundedSpawn: (
+          label: string,
+          file: string,
+          args: string[],
+          options: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string; timeoutMs: number },
+        ) => Promise<{ code: number; stdout: string; stderr: string; elapsedMs: number }>;
+      };
+      const bounded = async (
+        label: string,
+        file: string,
+        args: string[],
+        options: { cwd?: string; env?: NodeJS.ProcessEnv; input?: string; timeoutMs: number },
+      ): Promise<{ code: number; stdout: string; stderr: string; elapsedMs: number }> => {
+        try {
+          const result = await boundedSpawn(label, file, args, options);
+          timings.push(`${label} ${result.elapsedMs} ms`);
+          return result;
+        } catch (error) {
+          const elapsedMs = (error as { elapsedMs?: number }).elapsedMs;
+          timings.push(`${label} ${elapsedMs ?? '?'} ms (${(error as Error).message})`);
+          // If the wrapper (or any child) times out, this rethrow fails the
+          // case immediately, on the message boundedSpawn names, and the
+          // probe below never runs — there is nothing left to probe once
+          // the guard invocation itself never returned.
+          console.error(`bounded-spawn child timings so far:\n${timings.join('\n')}`);
+          throw error;
+        }
+      };
+
       try {
-        await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+        const initResult = await bounded('git init', 'git', ['init', '-q', scratch], {
+          env: withoutGitLocation(),
+          timeoutMs: 5_000,
+        });
+        if (initResult.code !== 0) throw new Error(`git init failed: ${initResult.stderr}`);
         await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
           recursive: true,
         });
@@ -433,24 +479,22 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           cwd: nested,
         });
 
-        const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
-          const child = execFile(
-            'powershell.exe',
-            ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
-            {
-              cwd: nested,
-              env: {
-                ...withoutGitLocation(process.env),
-                HOME: home,
-                CLAUDE_PROJECT_DIR: '',
-              },
+        const wrapper = await bounded(
+          'wrapper',
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+          {
+            cwd: nested,
+            env: {
+              ...withoutGitLocation(process.env),
+              HOME: home,
+              CLAUDE_PROJECT_DIR: '',
             },
-            (error, _stdout, stderr) =>
-              resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
-          );
-          if (!child.stdin) return reject(new Error('no stdin'));
-          child.stdin.end(payloadText);
-        });
+            input: payloadText,
+            timeoutMs: 25_000,
+          },
+        );
+        const result = { code: wrapper.code, stderr: wrapper.stderr };
 
         // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
         // the edit, and the only stderr PowerShell returns on the allow path is
@@ -458,12 +502,15 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         // the guard compared. The spellings are the whole question: the hook
         // derives its root from `git rev-parse --show-toplevel` while the payload
         // path comes from `os.tmpdir()`, and the flag is named by a hash of that root.
-        const toplevel = (
-          await exec('git', ['rev-parse', '--show-toplevel'], {
-            cwd: nested,
-            env: withoutGitLocation(),
-          })
-        ).stdout.trim();
+        const rev = await bounded('git rev-parse', 'git', ['rev-parse', '--show-toplevel'], {
+          cwd: nested,
+          env: withoutGitLocation(),
+          timeoutMs: 5_000,
+        });
+        if (rev.code !== 0) {
+          throw new Error(`git rev-parse --show-toplevel failed: ${rev.stderr}`);
+        }
+        const toplevel = rev.stdout.trim();
         // Only when the guard already allowed the edit: re-run the SAME unmodified
         // wrapper against a probe standing in for the guard, so the failure says
         // whether the payload reached the child at all. It separates a wrapper
@@ -483,26 +530,22 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
                     'process.exit(3);',
                   ].join('\n'),
                 );
-                return new Promise<string>((resolve, reject) => {
-                  const child = execFile(
-                    'powershell.exe',
-                    ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
-                    {
-                      cwd: nested,
-                      env: {
-                        ...withoutGitLocation(process.env),
-                        HOME: home,
-                        CLAUDE_PROJECT_DIR: '',
-                      },
+                const probeResult = await bounded(
+                  'probe',
+                  'powershell.exe',
+                  ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+                  {
+                    cwd: nested,
+                    env: {
+                      ...withoutGitLocation(process.env),
+                      HOME: home,
+                      CLAUDE_PROJECT_DIR: '',
                     },
-                    (error, _stdout, stderr) => {
-                      const code = error ? ((error as { code?: number }).code ?? 1) : 0;
-                      resolve(`exit=${code} ${stderr.replace(/\s+/g, ' ').trim()}`);
-                    },
-                  );
-                  if (!child.stdin) return reject(new Error('no stdin'));
-                  child.stdin.end(payloadText);
-                });
+                    input: payloadText,
+                    timeoutMs: 20_000,
+                  },
+                );
+                return `exit=${probeResult.code} ${probeResult.stderr.replace(/\s+/g, ' ').trim()}`;
               })();
 
         const seen = [
@@ -517,6 +560,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           `flag exists       ${existsSync(flag!)}`,
           `transport probe   ${probe}`,
           `stderr            ${result.stderr}`,
+          `child timings     ${timings.join(' | ')}`,
         ].join('\n');
 
         expect(result.code, seen).toBe(2);
