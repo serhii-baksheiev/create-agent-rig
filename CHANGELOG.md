@@ -20,16 +20,40 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 - **The dispatch journal records Claude subagent token usage.** On a Claude
   `SubagentStop`, `record-dispatch.mjs` reads the subagent's own transcript
-  (only an `agent_transcript_path` named `agent-<agent_id>.jsonl` for that
-  event's `agent_id`), sums the assistant records' `message.usage` counters
-  deduplicated per request, and journals them as `usage`, with
-  `measuredModel` when every record names the same model AND that model
-  string is a short allowlisted shape. Reading is bounded (32 MiB total,
-  8 MiB per line, 3 s); a crossed bound, an empty or usage-less transcript, an
-  out-of-range counter, a mismatched or unreadable path, or a malformed line
-  records `usageUnavailable` with a reason code instead of a partial number,
-  and no path or message content is ever journalled. Codex dispatches are
-  unchanged (RP-226).
+  (only a non-UNC `agent_transcript_path` named `agent-<agent_id>.jsonl` for
+  that event's `agent_id`), sums the assistant
+  records' `message.usage` counters deduplicated per request, and journals
+  them as `usage`, with `measuredModel` when every record names the same
+  model AND that model string is a short allowlisted shape. Reading is
+  bounded (32 MiB total, 8 MiB per line, 3 s); a crossed bound, an empty or
+  usage-less transcript, an out-of-range counter, a UNC-shaped, mismatched or
+  unreadable path, or a malformed line records `usageUnavailable` with a
+  reason code instead of a partial number, and no path or message content is
+  ever journalled. Codex dispatches now get their own equivalent capture —
+  see the next entry (RP-226, RP-227).
+
+- **The dispatch journal records Codex subagent token usage too.** On a
+  Codex `SubagentStop`, `record-dispatch.mjs` reads the subagent's own child
+  rollout (only an absolute, non-UNC `agent_transcript_path` — never the
+  parent's `transcript_path`), checks that the rollout's FIRST
+  `session_meta.payload.id` matches the event's own `agent_id`
+  (`usageUnavailable: 'rollout-identity-mismatch'` otherwise, including a
+  rollout with no `session_meta` at all) — a forked child rollout carries a
+  SECOND `session_meta` naming its parent, which is never consulted for
+  identity — and reads the LAST `token_usage_record` for that thread's
+  `thread_token_usage` — the running cumulative total, mapped onto
+  `inputTokens`/`cachedInputTokens`/`outputTokens`/`reasoningOutputTokens`. A
+  matched record whose `thread_token_usage` is absent, `null`, `{}`, or not
+  an object is `usageUnavailable: 'no-usage-counters'`, never a `usage` key
+  with no counters in it. The read reuses the Claude reader's bounds and
+  reason codes verbatim (32 MiB total, 8 MiB per line, 3 s; a crossed bound,
+  an unreadable/mismatched path, an out-of-range counter, or a malformed line
+  records `usageUnavailable` instead of a partial number), and no rollout
+  path or content is ever journalled. The UNC-path refusal (both harnesses)
+  matches any leading pair of `\`/`/` separators in any mix, not just two of
+  the same character, since Windows treats them as interchangeable.
+  `measuredModel` stays Claude-only — a Codex rollout carries no per-message
+  model field this hook reads (RP-227).
 
 - **`init` installs beside a pre-existing root `CLAUDE.md` instead of
   refusing outright.** A repo that already has its own `CLAUDE.md` keeps it
