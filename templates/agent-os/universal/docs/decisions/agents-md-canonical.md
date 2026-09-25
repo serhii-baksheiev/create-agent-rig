@@ -93,6 +93,420 @@ time — a probe session, tools disabled, with a distinct codeword planted in
 each file. The answer returned both codewords, confirming both files were
 loaded.
 
+## AGENTS.md coexistence — the managed region (RP-256 slice 2)
+
+RP-256 slice 2 removes the one refusal slice 1 left standing: a repo that
+already has its own `AGENTS.md` is no longer refused outright. `init` now
+appends this release's rendered rulebook after the user's own bytes, inside
+one bounded, marked region — `<!-- create-agent-rig:begin -->` … `<!--
+create-agent-rig:end -->`, both markers matched as WHOLE lines only
+(`packages/cli/src/lib/agents-md-region.ts`). The separator between the
+user's bytes and the begin marker is always exactly one inserted `"\n"`,
+which is what makes stripping the region an exact inverse regardless of
+whether the user's own file already ended in a newline — pinned by
+`packages/cli/test/agents-md-region-uninstall.test.ts`'s three round-trip
+tests "strips exactly the region and leaves the user prefix byte-identical
+when the prefix has no trailing newline", "strips exactly the region and
+leaves the user prefix byte-identical when the prefix uses CRLF line
+endings" and "strips exactly the region and leaves the user prefix
+byte-identical when the prefix already ends in a newline" (absent in a
+generated rig, same reason as above).
+
+**Round 2 (code-reviewer B1 / security-scanner B1): content the user appends
+AFTER the end marker's own line survives too, byte-for-byte, through every
+refresh and every strip.** The natural place to add a new section to a file
+that already has one is at the bottom — below the end marker, not inside the
+region. `locateRegion` (`agents-md-region.ts`) returns this as `suffix`:
+everything after the end marker's own trailing `"\n"`, or `''` when that line
+is the last thing in the file. `composeRegion` takes a third, optional
+`suffix` parameter and appends it immediately after the end marker's own
+newline, verbatim, with no further separator inserted; `init`'s append,
+`upgrade`'s refresh and `uninstall`'s strip all read and re-emit it. `doctor`
+never had to change: its own check only ever hashes `locateRegion(...).body`
+against the manifest, so a suffix never made an otherwise-intact region read
+as unhealthy in the first place — pinned as an explicit regression guard
+rather than a fix. Pinned by
+`packages/cli/test/agents-md-region-upgrade.test.ts`'s test "carries the
+suffix through byte-for-byte while refreshing the region",
+`packages/cli/test/agents-md-region-uninstall.test.ts`'s test "keeps the
+suffix: prefix + suffix restored exactly, with no region left behind", and
+`packages/cli/test/agents-md-region-doctor.test.ts`'s test "still reports the
+region healthy when the body is intact and a suffix follows the end marker"
+(absent in a generated rig, same reason as above).
+
+**The one refusal that remains is markers `init` cannot safely merge with,
+on a FOREIGN AGENTS.md — one neither of this rig's own manifest buckets
+already names.** A well-formed region already there, or a malformed fragment
+of one (an unterminated begin, a stray end, two begins), is refused the same
+way slice 1's blanket refusal was: `InitError`, non-zero exit, nothing
+written, and never suggesting `upgrade` (there is no rig installed yet for
+it to refresh). Pinned by
+`packages/cli/test/agents-md-region-init.test.ts`'s describe block "refuses
+foreign or malformed markers, writing nothing" and by
+`packages/cli/test/init.test.ts`'s test "an AGENTS.md with malformed or
+foreign markers is still refused, writing nothing, without looping into the
+upgrade refusal" (absent in a generated rig, same reason as above).
+
+**Round 2 (code-reviewer B2/B3): re-running `init` on an AGENTS.md THIS
+rig's own manifest already names is never routed through that foreign-marker
+check at all — it is judged by which manifest bucket names it, exactly like
+`init` already treats every other tracked-or-kept path.**
+- **Already region-tracked** (`manifest.regions['AGENTS.md']` from an earlier
+  run) — always left alone: idempotent when unedited (exit 0, bytes
+  unchanged, the `regions` hash unchanged), and never refused, never
+  duplicated, when the user has since edited inside it either — the same
+  "left alone, edited or not" treatment `kept` already gives a file `init`
+  found and never wrote. `recordInstall` (`init.ts`) never touches `regions`
+  on this path (no `extraRegions` this run), so `previous.regions` carries
+  forward unchanged by that function's own default; it is also excluded from
+  the generic `kept`-tracking loop, which would otherwise have started
+  vouching for it under `kept` too, on top of `regions` (a defect this round
+  found and closed in the same change, not merely in the region-append
+  path). Pinned by
+  `packages/cli/test/agents-md-region-init.test.ts`'s describe block
+  "initProject — re-running init on an already region-tracked AGENTS.md
+  (round 2, B2)", tests "is idempotent when the region is unedited: exit 0,
+  AGENTS.md bytes unchanged, and the regions hash unchanged" and "does not
+  refuse, and does not duplicate the region, when the user edited it
+  themselves — left alone, byte-identical, like any other kept file" (absent
+  in a generated rig, same reason as above).
+- **Already a whole-file rig-owned AGENTS.md** (`manifest.files['AGENTS.md']`
+  — the pre-slice-2 shape, or a clean install this same release did) — keeps
+  the EXACT pre-slice-2 behaviour, unchanged: unedited is left alone
+  (idempotent, `skipped`), edited is refused outright, exactly as every
+  release before this slice already did. Never routed into the
+  foreign-marker check either: this rig's own rendered rulebook carries no
+  region markers at all, so that check would otherwise silently accept an
+  EDITED whole-file rulebook as a foreign prefix and append a SECOND copy of
+  the rulebook underneath the edited first one — measured as the regression
+  this guards against (15,460 bytes growing to 30,991, with AGENTS.md
+  recorded under both `files` and `regions` at once, which `planUninstall`
+  then read as two separate, conflicting actions for the same path). Pinned
+  by `packages/cli/test/agents-md-region-init.test.ts`'s describe block
+  "initProject — re-running init after the user edits a rig-owned WHOLE-FILE
+  AGENTS.md (round 2, B3)", test "is still refused, as before this PR — no
+  region is appended, and AGENTS.md is never recorded in both files and
+  regions" (absent in a generated rig, same reason as above).
+- **Genuinely foreign** (neither bucket names it) — the ordinary
+  first-install path above: markers refuse, otherwise the region is
+  appended. Restated explicitly next to the two cases above that must NOT
+  refuse the same way, by
+  `packages/cli/test/agents-md-region-init.test.ts`'s test "still refuses
+  foreign markers when the manifest records no region at all" (absent in a
+  generated rig, same reason as above).
+
+**Round 3 (code-reviewer blocker 1): a region-tracked AGENTS.md the user
+DELETED entirely, then `init` re-run, is a clean-repo install — never a
+stale `regions` entry pointing at nothing.** The marker-check block above
+only ever runs `if (await exists(dest))`; a deleted path skips it entirely
+and falls straight into the ordinary write loop, which writes the whole
+rendered rulebook (there is no prefix left to splice into — this genuinely
+IS a fresh install of AGENTS.md now). The gap round 2 shipped was not in
+that write — `recordInstall`'s `regionTrackedPaths` set carried
+`previous.regions['AGENTS.md']` forward unconditionally, so the fresh
+whole-file write was recorded in NEITHER bucket, and the stale `regions`
+entry survived pointing at a body that no longer exists anywhere. `init`
+now tells `recordInstall` which region-tracked path to DROP this run
+(`dropRegions`, the region-side mirror of the existing `dropKept` — computed
+in `initProject` itself, which alone saw the file's state BEFORE its own
+writes; `recordInstall` cannot re-derive it, because by the time it runs the
+file already exists again, freshly written) — `regionTrackedPaths` excludes
+a dropped path, so the write lands in `files` where an ordinary whole-file
+install belongs, and the stale `regions` entry is deleted rather than
+carried forward. `upgrade` then sees an ordinary rig-owned file (no
+conflict), and `uninstall` removes it as such — the manifest is deleted too,
+outcome `uninstalled`, not held open by a phantom region entry with nothing
+behind it. Pinned by
+`packages/cli/test/agents-md-region-safety.test.ts`'s describe block
+"initProject — a region-tracked AGENTS.md deleted by the user, then re-init
+(round 3, blocker 1)", tests "is treated like a clean repo: the whole
+rulebook is written, recorded under files, and the stale regions entry is
+removed — never both", "upgrade on the same state does not report a
+conflict" and "uninstall removes AGENTS.md as a rig file, never says it
+\"stays as yours\", removes the manifest, and reports outcome uninstalled"
+(absent in a generated rig, same reason as above).
+
+**Round 2 (code-reviewer B4 / security-scanner B2): a user AGENTS.md that is
+not valid UTF-8 is refused outright by `init`, `upgrade` and `uninstall`
+alike — never silently corrupted.** Every one of the four commands that
+reads this file decodes it with `new TextDecoder('utf-8', { fatal: true,
+ignoreBOM: true })` (`decodeStrictUtf8`, `packages/cli/src/lib/agents-md-
+region.ts`) — `doctor`'s own `text()` already decoded this way before round
+2; the other three did not, and a lossy `Buffer#toString('utf8')` silently
+turns an invalid byte into `U+FFFD` (`EF BF BD` once re-encoded), which is
+not the byte that was there. `ignoreBOM: true` matters for more than habit:
+a leading UTF-8 BOM (`EF BB BF`) is a legitimate three-byte UTF-8 encoding of
+U+FEFF, decoded AS that character rather than stripped, so re-encoding the
+returned string reproduces the original bytes exactly — which is also why a
+UTF-8 BOM plus CRLF file round-trips exactly through `init` → `upgrade` →
+`uninstall` unchanged, pinned end-to-end by
+`packages/cli/test/agents-md-region-safety.test.ts`'s test "round-trips the
+BOM and CRLF bytes exactly, with no corruption at any step". A genuinely
+non-UTF-8 prefix — Latin-1, or UTF-16LE with its BOM (`FF FE`, exactly what
+Windows PowerShell 5.1's `echo … > AGENTS.md` writes) — is never valid UTF-8
+lead-byte data, so `fatal: true` refuses it with no special-case BOM
+detection needed: `init` exits non-zero, writes nothing, and the message
+names AGENTS.md and says it is not UTF-8; `upgrade` reports the same file as
+an ordinary `conflict` and `uninstall` as `preserved`, in both cases the
+"left untouched, never rewritten" path each already has for a malformed
+region. Pinned by
+`packages/cli/test/agents-md-region-init.test.ts`'s describe block
+"initProject — a user AGENTS.md that is not valid UTF-8 (round 2, B4/security
+B2)", tests "refuses a Latin-1 byte (0xe9) in the prefix …" and "refuses a
+UTF-16LE file with a BOM (ff fe) …" (absent in a generated rig, same reason
+as above).
+
+**Round 3 (code-reviewer blocker 2): the strict decode in `upgrade` and
+`uninstall` — landed in round 2, alongside `init`'s — had no test of its
+own.** Reverting either file's decode call back to a lossy
+`Buffer#toString('utf8')` left every existing test green: the round-2 UTF-8
+tests above exercise `initProject` only. Round 3 adds a PLAN-TIME test for
+each command (a Latin-1 byte already sitting in the file when `planUpgrade`/
+`planUninstall` first reads it) and an APPLY-TIME test for each (a valid file
+at plan time, with the invalid byte injected into the region body between
+plan and apply — the confirmation-prompt window the apply-time re-check
+exists for), each asserting the verdict AND the sha256 before and after.
+A byte injected into the region body cannot tell the two decodes apart: it
+changes the body's hash either way, so the apply-time check reports it
+whether the decode is strict or lossy. The apply-time decode is therefore
+pinned by a byte injected into the PREFIX instead, outside the region, where
+the body hash still matches. A lossy decode there would rewrite the prefix
+with U+FFFD; the strict one leaves the file byte-identical and reports it
+changed since planning. Reverting `upgrade.ts`'s or `uninstall.ts`'s
+apply-time decode to `toString('utf8')` turns that prefix test red. The
+plan-time tests and the body-injection tests are pinned by
+`packages/cli/test/agents-md-region-upgrade.test.ts`'s describe block
+"planUpgrade / applyUpgrade — a non-UTF-8 byte in the region file is
+refused, never corrupted (round 3, blocker 2)" and
+`packages/cli/test/agents-md-region-uninstall.test.ts`'s describe block
+"planUninstall / applyUninstall — a non-UTF-8 byte in the region file is
+refused, never corrupted (round 3, blocker 2)". The discriminating
+prefix-injection tests are
+`packages/cli/test/agents-md-region-upgrade.test.ts` (absent in a generated
+rig) › "apply time: a
+Latin-1 byte (0xe9) injected into the PREFIX (outside the region) between
+plan and apply leaves the file byte-identical, and is reported changed since
+planning" (in the describe block "applyUpgrade — AGENTS.md region
+re-verified at apply time (data-loss guard, owner design)") and its
+counterpart in the uninstall describe block named above (all absent in a
+generated rig, same reason as above).
+
+**Round 2 (security-scanner A1): every write to the user's own AGENTS.md is
+atomic, and a hard link is replaced rather than written through.** `init`'s
+append, `upgrade`'s refresh and `uninstall`'s strip all go through
+`atomicWriteInRepo` (`packages/cli/src/lib/atomic-write.ts`, mirroring
+`commands/integrations.ts`'s own `atomicWrite`, around lines 172-197): a temp
+file in the SAME directory, `wx`-created, fully written, then `rename`d over
+the destination — re-checking `resolveWritableInside` before the rename too,
+in case the destination itself was swapped for something unsafe in the
+meantime. `rename` replaces the directory ENTRY at the destination with the
+temp file's own inode; it never opens or truncates whatever inode the
+destination used to name, which is what keeps a HARD LINK safe — a second
+directory entry elsewhere on the same filesystem, pointing at the very same
+data the old entry did, keeps pointing at the ORIGINAL bytes, untouched. A
+plain truncate-then-write `writeFile` (what every one of these three call
+sites did before round 2) follows the path and mutates that shared inode in
+place, which every other name for it would observe too — reproduced end to
+end for all three commands. Pinned by
+`packages/cli/test/agents-md-region-safety.test.ts`'s describe block "atomic
+write — a hard-linked AGENTS.md is never written through to its outside
+target (round 2, security A1)", tests "init does not write through the hard
+link", "upgrade does not write through the hard link" and "uninstall does
+not write through the hard link" (absent in a generated rig, same reason as
+above). A residual race remains between the last `resolveWritableInside`
+check and the `rename` itself — a check-then-act sequence over the
+filesystem cannot close that window entirely, the same limit `uninstall.ts`'s
+own manifest-deletion checkpoint already documents for the identical shape.
+
+**Round 3 (code-reviewer blocker 3): the original file's mode is preserved
+EXACTLY, by `fchmod`, not merely passed as the temp file's creation mode.**
+`open(2)`'s creation mode — what round 2's `open(temporary, 'wx', mode)`
+alone relied on — is ANDed with `~umask` by the kernel, so under an ordinary
+`umask 022` a requested `0o664` silently became `0o644` (the group-write bit
+dropped): the round-2 wording claimed mode preservation without actually
+achieving it, and no test pinned the claim. `atomicWriteInRepo` now calls
+`handle.chmod(mode)` — `fchmod(2)`, which sets the mode bits given, verbatim,
+and is never filtered by the umask — immediately after the write, before the
+rename. This never WIDENS what the original file had: every caller passes
+only the original `stat().mode & 0o777`, so setuid, setgid and the sticky
+bit (bits above `0o777`) are never read from the original file in the first
+place, and `atomicWriteInRepo` never sets them either — dropped, not
+"preserved as zero", and the `0o644` default for a destination that does not
+exist yet carries none of them. Pinned by
+`packages/cli/test/agents-md-region-safety.test.ts`'s describe block "mode
+preserved exactly through init, upgrade and uninstall (round 3, blocker 3)",
+tests "preserves mode 664 exactly under umask 0o022, through init, upgrade
+and uninstall" and "preserves mode 600 exactly under umask 0o022, through
+init, upgrade and uninstall" — the `664` case is the one that actually
+distinguishes `fchmod` from the umask-filtered creation mode alone; `600` is
+unaffected by `umask 022` either way, and is kept as the parallel case
+regardless (absent in a generated rig, same reason as above).
+
+**Round 3 advisory (code-reviewer A3): a Windows rename over a file another
+process holds open, without `FILE_SHARE_DELETE`, can fail where the in-place
+write it replaced would not have.** `commands/integrations.ts`'s own
+`atomicWrite` already makes this same trade-off for its own writes, and
+`atomicWriteInRepo` inherits it rather than avoiding it. A failed rename here
+is never a partial write, though: a rename is one filesystem-metadata
+operation, not a copy, so the destination is left completely untouched, and
+`atomicWriteInRepo`'s own `finally` block unlinks the now-orphaned temp file
+either way — a failure surfaces as an ordinary command error (the write
+simply did not happen this run), not as data loss or a stray temp file left
+for the user to find. Not probed on an actual Windows host; stated as the
+known trade-off, not measured.
+
+**The manifest tracks the region separately from an ordinary file.**
+`RigManifest.regions['AGENTS.md']` is the sha256 of the region BODY alone —
+the marker lines are excluded — never recorded under `files` or `kept`
+(`packages/cli/src/lib/manifest.ts`); pinned by
+`packages/cli/test/agents-md-region-init.test.ts`'s test "records
+manifest.regions[\"AGENTS.md\"] as sha256 of the region body alone, and does
+not record AGENTS.md under files or kept". A clean repo with no pre-existing
+AGENTS.md installs exactly as before — no markers, no `regions` key at all —
+pinned by the same file's test "a clean repo (no pre-existing AGENTS.md) is
+installed exactly as before: no markers, no manifest `regions` key" (absent
+in a generated rig, same reason as above).
+
+**`upgrade` never plans a region-tracked AGENTS.md as a whole file.** It
+splices only the region: an unedited region (its body's hash still matches
+the manifest) is refreshed to this release's current rendering, the user's
+own prefix preserved exactly; an edited region, or one whose markers are
+missing or malformed, is a quiet `conflict` — reported, never written, the
+user's bytes untouched. Pinned by
+`packages/cli/test/agents-md-region-upgrade.test.ts`'s tests "refreshes an
+unedited region when the payload has changed, preserving the user prefix
+exactly, and updates the regions hash" and "an already-current, unedited
+region is left alone, and its regions entry survives the upgrade untouched".
+The `AGENTS.md.rig-new` rescue file — slice 1's remedy for a CLAUDE.md held
+back because AGENTS.md cannot serve as the rulebook — has no meaning once
+AGENTS.md is a mix of user and rig bytes (its own `mv` remedy would destroy
+the user's prefix), so a region-tracked layout never holds CLAUDE.md back
+over it and never writes it — pinned by the same suite's test "leaves an
+edited region completely untouched — a conflict, never written — and never
+writes the AGENTS.md.rig-new rescue file for it" (absent in a generated rig,
+same reason as above).
+
+**The region write is re-verified immediately before it happens, not trusted
+from the plan (owner design, RP-256 comment 20585: "splices only the region,
+re-verify it at apply time").** `planUpgrade` reads AGENTS.md once, to decide
+the verdict; the confirmation-prompt window between a plan being shown and
+`--yes` being answered is exactly where a hand edit can land, and baking that
+one plan-time read into the bytes `applyUpgrade` writes would silently lose
+it — the same class of gap `uninstall.ts`'s own region-strip branch already
+closes for the opposite operation. So `applyUpgrade` re-reads AGENTS.md
+through the same bounded reader, re-locates the region, and re-checks its
+body's hash against the SAME value the plan-time check used, right before
+writing:
+- an edit OUTSIDE the region (the user's own prefix) between plan and apply
+  is not a reason to refuse — the region body itself still matches, so the
+  refreshed region is spliced onto the CURRENT prefix, not the stale
+  plan-time one;
+- an edit INSIDE the region, or the markers going missing or malformed,
+  between plan and apply is refused — nothing is written, and the path is
+  reported on `UpgradeResult.changedSincePlanning?: string[]`, the same field
+  name `ApplyUninstallResult` already uses for the identical concept
+  (`.claude/rules/invariants.md`, "one spelling of a fact") — printed by the
+  CLI the same run (without promising a refresh a re-run may not actually
+  give — round 2, code-reviewer advisory A3: an edit OUTSIDE the region
+  refreshes cleanly on the next run, but an edit INSIDE it reports an
+  ordinary `conflict` instead, so the message says only that a re-run will
+  show the current status, not that it will refresh), and the manifest's own
+  `regions['AGENTS.md']` entry is written back to the OLD hash rather than
+  left vouching for a body this run never actually wrote.
+
+**Round 2 (security-scanner A2): the new body is rendered BEFORE the
+apply-time re-read, not after.** Rendering is template I/O, and the body it
+produces depends only on the project/layers this manifest already carries
+forward — never on the file the re-read is about to look at — so awaiting it
+BETWEEN the re-verify and the write (the shape round 1 shipped) left a
+window an edit could land in and be silently overwritten. Rendering first
+shrinks that window to exactly the re-read-to-write gap `uninstall.ts`'s own
+region-strip branch already has. The re-read itself now also carries the
+suffix through (composed as `composeRegion(located.userBytes, newBody,
+located.suffix)`) and decodes strictly — content that is not valid UTF-8, or
+a suffix, is only ever an existing-file question at this point, so a
+malformed decode is treated exactly like a malformed region: refused,
+reported changed-since-planning, never written.
+
+Pinned by `packages/cli/test/agents-md-region-upgrade.test.ts`'s describe
+block "applyUpgrade — AGENTS.md region re-verified at apply time (data-loss
+guard, owner design)", tests "(a) a concurrent edit OUTSIDE the region,
+between plan and apply, survives: the region refreshes onto the CURRENT
+prefix, not the stale plan-time one", "(b) a concurrent edit INSIDE the
+region, between plan and apply, is never overwritten — nothing is written,
+and the result reports it changed since planning" and "(c) the end marker
+deleted between plan and apply — a malformed region at apply time — is never
+overwritten, and the result reports it changed since planning" (absent in a
+generated rig, same reason as above).
+
+**`uninstall` strips the region, never the file.** An intact, unedited
+region is removed by restoring exactly the user's own prefix bytes; the file
+itself is kept either way — `uninstall` never deletes a user-owned
+AGENTS.md. Pinned by `packages/cli/test/agents-md-region-uninstall.test.ts`'s
+test "produces an action for a region-tracked AGENTS.md, rather than
+silently ignoring it" and the three round-trip tests named above (absent in
+a generated rig, same reason as above).
+
+**The CLAUDE.md/AGENTS.md pair note (round 4, blocker 2) accounts for a
+region strip too, not only a whole-file removal.** `notACleanRemoval`
+(`uninstall.ts`) still reads ANY `'remove'` verdict as clean — correct for
+the ordinary whole-file case slice 1 already pins (both files genuinely gone,
+nothing false about staying silent). A region-tracked AGENTS.md's `'remove'`
+verdict is different: the file survives, only the region is stripped — so
+removing the nested shim in the SAME run leaves no readable rulebook
+anywhere even though NEITHER side individually looks unclean. A third,
+separate condition catches this combination and gives it its own wording —
+neither "is already gone" (the file survives) nor "exists and is yours" (the
+survivor lost its rulebook content) describes it truthfully. Pinned by
+`packages/cli/test/agents-md-region-uninstall.test.ts`'s describe block
+"planUninstall — a nested rig with a region-tracked AGENTS.md, without a
+false pair note (RP-256 slice 2)", test "does not claim AGENTS.md was
+cleanly removed, or that it still holds the rulebook, once the nested shim is
+removed too" (absent in a generated rig, same reason as above).
+
+**`doctor` reports a new check, `id: 'rig-managed-regions'`**: `ok` when the
+region on disk is intact and its body's hash still matches the manifest,
+`warn` when it is missing, malformed, or edited since install — absent from
+the report entirely on a rig with nothing region-tracked. Pinned by
+`packages/cli/test/agents-md-region-doctor.test.ts`'s tests "reports the
+managed region healthy when it is intact and unedited", "reports a finding
+when the region has been edited since it was installed" and "reports a
+finding when the region is missing entirely (the markers are gone)" (absent
+in a generated rig, same reason as above).
+
+**The AGENTS.md read this splices into is bounded and FIFO-safe**, mirroring
+slice 1's `readKeptRootClaudeMd`: opened with `O_NONBLOCK`, `fstat`'d on that
+same handle, refused over 1 MiB
+(`MAX_AGENTS_MD_REGION_BYTES`) — `packages/cli/src/lib/bounded-file.ts`'s
+`readBoundedFileInRepo` is the one implementation, shared by `init.ts`,
+`upgrade.ts`, `uninstall.ts` and `doctor.ts` rather than reimplemented once
+per caller (`.claude/rules/invariants.md`, "one spelling of a fact").
+
+**A combined file over Codex's default combined AGENTS.md budget is a
+warning, never a refusal** — the install still succeeds, and `init` prints
+it (`InitResult.warnings`). Codex's own documentation
+(learn.chatgpt.com/docs/agent-configuration/agents-md, redirected from
+developers.openai.com/codex/guides/agents-md, read 2026-09-25) says Codex
+"stops adding files once the combined size reaches the limit defined by
+`project_doc_max_bytes` (32 KiB by default)" — a configurable, COMBINED
+budget across every AGENTS.md file Codex reads for a project, not a
+per-document cap (round 2, prose-reviewer blocker 1: the earlier wording
+here called it a "documented … per-document cap", which is not what that
+sentence says, and the only pointer offered for it —
+`agents-md-region-init.test.ts`'s "the 32 KiB Codex default doc cap" — proves
+only this CLI's own hardcoded threshold, never Codex's actual behaviour).
+This warning fires on this ONE file alone already exceeding that default
+combined total — a conservative proxy for the real question (is the
+COMBINED total over budget), since a single file this large leaves no room
+for any other AGENTS.md Codex would otherwise also read, before the rest of
+the combined total is even considered. Pinned by
+`packages/cli/test/agents-md-region-init.test.ts`'s describe block "the 32
+KiB Codex default doc cap" (absent in a generated rig, same reason as
+above) — that test, and `CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES` in
+`packages/cli/src/commands/init.ts`, are both this CLI's own threshold,
+which is exactly Codex's documented DEFAULT for `project_doc_max_bytes`, not
+an independent measurement of it.
+
 ## The migration (RP-186)
 
 A rig installed before this change has a `CLAUDE.md`/`AGENTS.md` pair that is
@@ -187,7 +601,7 @@ same reason as above).
 | `CLAUDE.md` deleted by the user | `deleted`: stays deleted, never restored as the new shim; unaffected by AGENTS.md's own state | already absent |
 | `AGENTS.md` deleted by the user, CLAUDE.md deleted too | Both `deleted`: stays deleted on both sides — there is nothing left to hold back | already absent |
 | The migration already finished (CLAUDE.md is already the shim), THEN AGENTS.md is deleted on a later run | AGENTS.md `deleted`: stays deleted. CLAUDE.md's own verdict is `unchanged` — the held-back coupling above only overrides a verdict that would otherwise become `update`, and an already-adopted shim's verdict never is, so it is left exactly as it is rather than resurrected, rewritten, or held back a second time | CLAUDE.md (the shim) removed like any other untouched file — WITH a `note`, measured verbatim: `this is the rig's own CLAUDE.md — removing it leaves AGENTS.md, which is already gone, as the only rulebook copy` — pinned by `packages/cli/test/uninstall.test.ts`'s test "discloses when the sibling is already gone (absent), not only when it is preserved as edited" (absent in a generated rig, same reason as above); AGENTS.md already absent. Upgrade side pinned by `packages/cli/test/upgrade.test.ts`'s test "AGENTS.md deleted after the migration already finished: the already-adopted shim is left exactly alone" (absent in a generated rig, same reason as above) |
-| A repo that had its own `AGENTS.md` before `init` | `init` **refuses outright** (`InitError`, non-zero exit) rather than installing over it or recording it as `kept`. Pinned by `packages/cli/test/init.test.ts`'s test "refuses to clobber an existing AGENTS.md, without looping into the upgrade refusal" — named by full path deliberately: `test/e2e/init.test.ts` (a different suite) shares the bare basename `init.test.ts`, and either mention is absent in a generated rig for the same reason as above regardless | N/A — `init` never installed here, so there is nothing for `uninstall` to have owned |
+| A repo that had its own `AGENTS.md` before `init` (RP-256 slice 2 supersedes the slice-1-era blanket refusal below) | `init` **no longer refuses** — the user's bytes become the prefix of a bounded, marked managed region; this release's rendered rulebook is appended after them, and `manifest.regions['AGENTS.md']` vouches for the region body alone. The one refusal that remains is markers `init` cannot safely merge with (a region already there, or a malformed fragment of one). See "AGENTS.md coexistence — the managed region (RP-256 slice 2)" below. Pinned by `packages/cli/test/agents-md-region-init.test.ts` and `packages/cli/test/init.test.ts`'s test "a plain existing AGENTS.md is not clobbered — its bytes survive as the region prefix, and install succeeds" — named by full path deliberately: `test/e2e/init.test.ts` (a different suite) shares the bare basename `init.test.ts`, and either mention is absent in a generated rig for the same reason as above regardless | `.claude/.rig-manifest.json`'s `regions['AGENTS.md']` is the one path this coexistence tracks; `upgrade` splices only the region, `uninstall` strips only the region and keeps the file, `doctor`'s `rig-managed-regions` check judges it — see the same section below |
 | A repo that had its own root `CLAUDE.md` before `init` (RP-256 slice 1) | `init` **no longer refuses** — root `CLAUDE.md` is left byte-identical, and recorded under the manifest's `kept` when it resolves (following a symlink) to an in-repo regular file no larger than 1 MiB — `readKeptRootClaudeMd`'s own bound, `MAX_KEPT_BYTES` — with anything past that bound simply not recorded, never refused; the shim installs instead at `.claude/CLAUDE.md`, importing the rulebook as `@../AGENTS.md` (resolved relative to that nested file, not the repo root). Both files are loaded — measured, see "CLAUDE.md coexistence — measured (RP-256 slice 1)" above — so nothing is lost. Pinned by `packages/cli/test/init.test.ts`'s describe block "initProject — CLAUDE.md coexistence (RP-256 slice 1)" (absent in a generated rig, same reason as above). The one case still refused is an UNRECORDED `.claude/CLAUDE.md` already occupying the nested slot — `init` does not guess whether it is safe to overwrite | `.claude/CLAUDE.md` is an ordinary rig-owned path (`update`/`unchanged`/`conflict` like any other file `upgrade` tracks — no shim/AGENTS.md coupling, since that coupling only ever keys on a literal `CLAUDE.md` action, which a nested rig never has); root `CLAUDE.md` stays `kept`, carried forward untouched by `upgrade`, and `uninstall` preserves it as user-owned, never claiming it as the rulebook's only copy |
 
 The round-5 rule was re-derived and pinned as a 4×3 grid — AGENTS.md's axis

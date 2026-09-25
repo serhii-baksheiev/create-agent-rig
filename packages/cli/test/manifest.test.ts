@@ -195,6 +195,15 @@ describe('the install manifest — the evidence upgrade reads', () => {
         parseManifest(JSON.stringify({ ...sample(), kept: { [key]: sha256('x') } })),
       ).toBeNull();
     });
+
+    // RP-256 slice 2: `regions` is keyed the same way as `files`/`kept` — a
+    // rendered-rulebook body spliced into a user-owned AGENTS.md — so it
+    // shares the same path-key validator.
+    it('voids the manifest when it is a `regions` key', () => {
+      expect(
+        parseManifest(JSON.stringify({ ...sample(), regions: { [key]: sha256('x') } })),
+      ).toBeNull();
+    });
   });
 
   it('writes to .claude/.rig-manifest.json and reads back what it wrote', async () => {
@@ -255,6 +264,57 @@ describe('kept — provenance for a file init found on disk and left alone (RP-1
     const serialisedEmpty = serializeManifest(emptyKept);
     expect(serialisedEmpty).not.toContain('"kept"');
     expect(serialisedEmpty).toBe(noKeptField);
+  });
+});
+
+// RP-256 slice 2: `regions` is the manifest's evidence for a rendered
+// rulebook body spliced into a user-owned AGENTS.md through one bounded
+// managed region — additive, like `kept`, and keyed the same way. A clean
+// install writes no `regions` key at all; only a region-mode AGENTS.md gets
+// one entry, `'AGENTS.md'` → sha256 of the region body alone (never
+// including the marker lines themselves).
+describe('regions — provenance for a rendered rulebook body spliced into a user-owned AGENTS.md (RP-256 slice 2)', () => {
+  it('accepts a manifest with no `regions` field at all, exactly like every manifest on disk today', () => {
+    expect(parseManifest(JSON.stringify(sample()))).toEqual(sample());
+  });
+
+  it('parses `regions` when present, keyed the same way as `files`/`kept`', () => {
+    const withRegions = { ...sample(), regions: { 'AGENTS.md': sha256('the region body') } };
+    const parsed = parseManifest(JSON.stringify(withRegions));
+    expect((parsed as unknown as { regions?: Record<string, string> } | null)?.regions).toEqual({
+      'AGENTS.md': sha256('the region body'),
+    });
+  });
+
+  it('voids a manifest whose `regions` is present but not a string record', () => {
+    const hostile = (regions: unknown) => parseManifest(JSON.stringify({ ...sample(), regions }));
+    expect(hostile('nope')).toBeNull();
+    expect(hostile(['AGENTS.md'])).toBeNull();
+    expect(hostile({ 'AGENTS.md': 1 })).toBeNull();
+    expect(hostile({ 'AGENTS.md': null })).toBeNull();
+  });
+
+  it('serialises `regions` with sorted paths, and round-trips through parseManifest', () => {
+    const withRegions = {
+      ...sample(),
+      regions: { 'z.md': sha256('z'), 'AGENTS.md': sha256('a') },
+    };
+    const serialised = serializeManifest(withRegions as unknown as RigManifest);
+    const regionsBlock = /"regions":\s*\{([\s\S]*?)\}/.exec(serialised)?.[1] ?? '';
+    expect(regionsBlock, serialised).toContain('"AGENTS.md"');
+    expect(regionsBlock.indexOf('"AGENTS.md"')).toBeLessThan(regionsBlock.indexOf('"z.md"'));
+    expect(parseManifest(serialised)).toEqual(withRegions);
+  });
+
+  it('omits the `regions` key entirely when nothing is region-tracked — a clean install serialises byte-identical to today', () => {
+    const noRegionsField = serializeManifest(sample());
+    expect(noRegionsField).not.toContain('"regions"');
+
+    // Explicitly empty (`{}`), not merely absent — the serialiser omits it too.
+    const emptyRegions = { ...sample(), regions: {} };
+    const serialisedEmpty = serializeManifest(emptyRegions as unknown as RigManifest);
+    expect(serialisedEmpty).not.toContain('"regions"');
+    expect(serialisedEmpty).toBe(noRegionsField);
   });
 });
 

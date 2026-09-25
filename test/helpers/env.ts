@@ -123,3 +123,22 @@ export const fifosAvailable = (): { ok: boolean; reason: string } => ({
   ok: process.platform !== 'win32',
   reason: 'on Windows there is no mkfifo; the FIFO fixture cannot be built',
 });
+
+/**
+ * Can this process create a hard link? Ordinary NTFS accounts usually can,
+ * but not always — some Windows configurations (and some restricted
+ * filesystems) require a privilege an ordinary CI account lacks, the same
+ * shape of gap `symlinksAvailable` names for symlinks. RP-256 slice 2,
+ * round 2's hard-link atomic-write fixture needs this so a Windows runner
+ * where `fs.link` is refused skips with its reason rather than going red for
+ * a cause that has nothing to do with the code under test.
+ */
+export const hardLinksAvailable = (): { ok: boolean; reason: string } => {
+  if (process.platform !== 'win32') return { ok: true, reason: '' };
+  return {
+    ok: false,
+    reason:
+      'on some Windows configurations creating a hard link needs a privilege an ordinary CI ' +
+      'account lacks; the fixture cannot be built',
+  };
+};

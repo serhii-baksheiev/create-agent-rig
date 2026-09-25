@@ -66,7 +66,10 @@ Also: create-agent-rig init [--dry-run] [--layer workflow]
   Install the process layer (rules, gates, stop rules — no architecture
   assumptions) into the CURRENT existing repo. A pre-existing CLAUDE.md is
   kept, and the shim installs nested at .claude/CLAUDE.md instead; a
-  pre-existing AGENTS.md is still refused outright.
+  pre-existing AGENTS.md is kept too — the rulebook is appended after it in
+  one bounded, marked region, rather than refused. Only markers already
+  there that init cannot safely merge with (a prior region, or a malformed
+  fragment of one) are refused.
   --layer workflow also installs the experimental workflow layer: an
   autonomous, cooperative multi-session queue/loop/PR-lifecycle mechanism,
   never required by Lean Core. Without it, only the core layer is installed.
@@ -405,6 +408,9 @@ async function runInit(rawArgs: string[]): Promise<number> {
       (result.skipped.length ? `, kept ${result.skipped.length} existing` : '') +
       '.\n',
   );
+  for (const warning of result.warnings ?? []) {
+    process.stdout.write(`\n!  ${warning}\n`);
+  }
 
   // A kept harness config silently disables that harness's enforcement: the
   // hooks sit on disk and are never called, while the rules claim they are.
@@ -747,6 +753,30 @@ async function runUpgrade(rawArgs: string[]): Promise<number> {
   );
   if (adoptsShimThisRun) {
     process.stdout.write('CLAUDE.md now imports AGENTS.md.\n');
+  }
+  // RP-256 slice 2: the plan said `update`, but the apply-time re-check found
+  // the region no longer matches what the plan vouched for — refused, never
+  // written, and the manifest's own `regions` entry was reverted to the OLD
+  // hash rather than left vouching for bytes this run never wrote (see
+  // `applyUpgrade`'s own comment on `revertAgentsRegionHash`). Same FIELD
+  // `uninstall` reports the identical concept through
+  // (`changedSincePlanning`, `.claude/rules/invariants.md`'s "one spelling of
+  // a fact") — but its own `CHANGED_SINCE_PLANNING_REASON` text says
+  // "planned to be removed", which is not true of an update, so this prints
+  // its own, upgrade-accurate wording rather than reusing that string.
+  // Round 2, code-reviewer advisory A3: this must not promise a refresh —
+  // re-running `upgrade` only refreshes cleanly when the edit landed OUTSIDE
+  // the region (the plan-time body hash still matches); an edit INSIDE the
+  // region makes the very next plan report an ordinary `conflict` instead,
+  // which does not write either. The wording says what is known to be true
+  // either way: nothing was written this run, and a re-run will report
+  // whichever of those two is now the case.
+  for (const rel of result.changedSincePlanning ?? []) {
+    process.stdout.write(
+      `\n!  ${rel} — changed since planning: its managed region no longer matches what the ` +
+        'plan vouched for, so it was left untouched. Re-run `create-agent-rig upgrade` to see ' +
+        'its current status.\n',
+    );
   }
 
   // The subsystem manifest is machine-scoped and written by `setup`; an

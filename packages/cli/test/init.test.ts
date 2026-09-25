@@ -26,6 +26,7 @@ import type { HashHistory } from '../src/lib/history.js';
 import { readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
 import { fifosAvailable, skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
+import { REGION_BEGIN } from '../../../test/helpers/agents-md-region.js';
 
 const emptyHistory: HashHistory = { versions: [], files: {} };
 
@@ -98,49 +99,104 @@ describe('initProject — the install', () => {
     ).rejects.toThrow();
   });
 
-  // RP-256 slice 1: an AGENTS.md refusal is the one MAPS refusal left in this
-  // slice (CLAUDE.md now coexists — see "initProject — CLAUDE.md
-  // coexistence" below). The old blanket-refusal message suggested `upgrade`
-  // unconditionally, which loops straight into upgrade's own "no rig found,
-  // run init" refusal when nothing has been installed yet (the bug this
-  // ticket exists to close) — so the message must not do that while there is
-  // no rig manifest on disk, and it must actually name AGENTS.md, with the
-  // grammatically correct article ("an", not "a", before the vowel sound).
-  it('refuses to clobber an existing AGENTS.md, without looping into the upgrade refusal', async () => {
+  // RP-256 slice 2 (owner decision, superseding slice 1's blanket AGENTS.md
+  // refusal — see the coordinator's ruling: "an existing AGENTS.md no longer
+  // prevents install" is now the mandated acceptance criterion, not merely a
+  // proposal). Split in two, mirroring the two things the old single test
+  // used to pin: a plain pre-existing AGENTS.md is no longer clobbered — its
+  // bytes survive byte-for-byte as the managed region's prefix, and install
+  // succeeds — while the one refusal that remains is markers already in the
+  // file that init cannot safely merge with (foreign or malformed). The
+  // fuller region contract (CRLF, no-trailing-newline, the manifest's
+  // `regions` hash, the 32 KiB warning, every malformed-marker shape) lives
+  // in `agents-md-region-init.test.ts`; this pins the same contract in place
+  // of the test it replaces, next to the refusal it is now paired with.
+  it('a plain existing AGENTS.md is not clobbered — its bytes survive as the region prefix, and install succeeds', async () => {
     await writeFile(path.join(repo, 'AGENTS.md'), '# mine');
+
+    const result = await initProject(repo, {});
+
+    const onDisk = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(onDisk.startsWith('# mine')).toBe(true);
+    expect(onDisk).toContain(REGION_BEGIN);
+    expect(result.written).toContain('AGENTS.md');
+    await expect(readManifest(repo)).resolves.not.toBeNull();
+  });
+
+  // The original test's "without looping into the upgrade refusal" pin
+  // survives here unchanged in spirit: the one refusal left over an
+  // AGENTS.md that was never installed by this rig must still never suggest
+  // `upgrade`, which would loop straight into upgrade's own "no rig found,
+  // run init" refusal.
+  it('an AGENTS.md with malformed or foreign markers is still refused, writing nothing, without looping into the upgrade refusal', async () => {
+    const hostile = `# mine\n${REGION_BEGIN}\nunterminated\n`;
+    await writeFile(path.join(repo, 'AGENTS.md'), hostile);
+
     let caught: unknown;
     try {
       await initProject(repo, {});
     } catch (error) {
       caught = error;
     }
+
     expect(caught).toBeInstanceOf(InitError);
     const message = (caught as Error).message;
-    expect(message).toMatch(/already has an AGENTS\.md/);
     expect(message).not.toMatch(/create-agent-rig upgrade/);
-    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe('# mine');
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(hostile);
     await expect(readManifest(repo)).resolves.toBeNull();
   });
 
-  // The MAPS loop used to check CLAUDE.md before AGENTS.md and throw on the
-  // first hit — so when BOTH already existed, the message blamed CLAUDE.md
-  // even though slice 1 no longer refuses over CLAUDE.md alone. The message
-  // must name the file that actually blocks the run.
-  it('when both CLAUDE.md and AGENTS.md already exist, blames AGENTS.md — not the coexisting CLAUDE.md', async () => {
-    await writeFile(path.join(repo, 'CLAUDE.md'), '# host rules\n');
+  // RP-256 slice 2 (owner decision): with both a user CLAUDE.md and a user
+  // AGENTS.md already present, install now succeeds on both — CLAUDE.md is
+  // kept exactly as slice 1 already does when it is the only pre-existing
+  // file (see "initProject — CLAUDE.md coexistence" below), and AGENTS.md
+  // gets its managed region exactly as it does when it is the only
+  // pre-existing file (the test above).
+  it('when both CLAUDE.md and AGENTS.md already exist, both coexist: CLAUDE.md is kept, the nested shim installs, and AGENTS.md gets its region', async () => {
+    const userClaude = '# host rules\n';
+    await writeFile(path.join(repo, 'CLAUDE.md'), userClaude);
     await writeFile(path.join(repo, 'AGENTS.md'), '# host agents doc\n');
+
+    const result = await initProject(repo, {});
+
+    expect(result.written).toContain('.claude/CLAUDE.md');
+    expect(result.written).toContain('AGENTS.md');
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(userClaude);
+    const shim = await readFile(path.join(repo, '.claude', 'CLAUDE.md'), 'utf8');
+    expect(shim.split(/\r?\n/, 1)[0]).toBe('@../AGENTS.md');
+    const onDisk = await readFile(path.join(repo, 'AGENTS.md'), 'utf8');
+    expect(onDisk.startsWith('# host agents doc\n')).toBe(true);
+    expect(onDisk).toContain(REGION_BEGIN);
+
+    const manifest = await readManifest(repo);
+    expect(manifest?.kept?.['CLAUDE.md']).toBe(sha256(userClaude));
+  });
+
+  // The original test's "blames AGENTS.md, not CLAUDE.md" intent survives on
+  // the one refusal that remains: a malformed AGENTS.md marker, with a
+  // coexisting CLAUDE.md present too. The MAPS loop used to check CLAUDE.md
+  // before AGENTS.md and throw on the first hit — the message must still
+  // name the file that actually blocks the run, not the coexisting CLAUDE.md
+  // slice 1 already lets through.
+  it('when both exist and AGENTS.md carries a malformed marker, the refusal names AGENTS.md — not the coexisting CLAUDE.md', async () => {
+    const userClaude = '# host rules\n';
+    await writeFile(path.join(repo, 'CLAUDE.md'), userClaude);
+    const hostile = `# host agents doc\n${REGION_BEGIN}\nunterminated\n`;
+    await writeFile(path.join(repo, 'AGENTS.md'), hostile);
+
     let caught: unknown;
     try {
       await initProject(repo, {});
     } catch (error) {
       caught = error;
     }
+
     expect(caught).toBeInstanceOf(InitError);
     const message = (caught as Error).message;
     expect(message).toMatch(/AGENTS\.md/);
     expect(message).not.toMatch(/already has a CLAUDE\.md/);
-    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules\n');
-    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe('# host agents doc\n');
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe(userClaude);
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(hostile);
     await expect(readFile(path.join(repo, '.claude', 'CLAUDE.md'))).rejects.toThrow();
     await expect(readManifest(repo)).resolves.toBeNull();
   });
