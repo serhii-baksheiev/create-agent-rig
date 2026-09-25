@@ -32,7 +32,14 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 //     Codex dispatch — RP-227 gave Codex its own rollout-based capture
 //     (`readCodexRolloutUsage`, `test/template/dispatch-usage-codex.test.ts`),
 //     and this file's own boundary test is "does not apply the Claude
-//     transcript reader to a Codex dispatch …" below.
+//     transcript reader to a Codex dispatch …" below;
+//   - RP-227 round 2 (security-scanner-r1.md A5) applied the Codex path's
+//     fixed `UNC_PATH_RE` (`/^[\\/]{2}/`) to the Claude path too, checked
+//     BEFORE the basename binding: any `agent_transcript_path` whose leading
+//     two characters are each `\` or `/`, in any mix, is
+//     `usageUnavailable: 'transcript-path-unc'` before anything is opened —
+//     even a path whose basename would otherwise satisfy
+//     `agent-<agent_id>.jsonl`.
 //
 // The reader, `token-report.mjs` (RP-228, merged into this branch), consumes
 // exactly `usage: { evidenceSource, requests, inputTokens, outputTokens,
@@ -530,6 +537,74 @@ describe('record-dispatch.mjs — usage is unavailable when the transcript canno
     const events = await readEvents(runDir);
     const data = (events[0]?.data ?? {}) as Record<string, unknown>;
     expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+});
+
+describe('record-dispatch.mjs — a UNC-shaped agent_transcript_path is refused before the basename check (RP-227 round 2, security-scanner-r1.md A5)', () => {
+  // Each path below carries a basename that would otherwise satisfy
+  // `agent-<agent_id>.jsonl` for its own dispatch's agent_id — the UNC
+  // refusal must fire first, so the basename never gets a chance to matter.
+  // None of these hosts/shares exist on this machine: if the UNC check were
+  // ever bypassed, the next thing that would run is a real filesystem call
+  // (`lstatSync`) against a path this test never created, so the discovered
+  // reason code would differ from `transcript-path-unc` — that difference is
+  // exactly what the throwaway mutant below is used to prove.
+
+  it('reports usageUnavailable: transcript-path-unc for a UNC-shaped agent_transcript_path (leading "//") — never opens anything', async () => {
+    const agentId = 'unc-double-forward';
+    const result = await runHook(
+      JSON.stringify(
+        dispatch({
+          agent_id: agentId,
+          agent_transcript_path: `//host/share/agent-${agentId}.jsonl`,
+        }),
+      ),
+      env(),
+      ['--harness=claude'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('transcript-path-unc');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('reports usageUnavailable: transcript-path-unc for a mixed-separator UNC-shaped agent_transcript_path (leading "/\\\\") — never opens anything', async () => {
+    const agentId = 'unc-mixed-forward-back';
+    const result = await runHook(
+      JSON.stringify(
+        dispatch({
+          agent_id: agentId,
+          agent_transcript_path: `/\\host\\share\\agent-${agentId}.jsonl`,
+        }),
+      ),
+      env(),
+      ['--harness=claude'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('transcript-path-unc');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('reports usageUnavailable: transcript-path-unc for a mixed-separator UNC-shaped agent_transcript_path (leading "\\\\/") — never opens anything', async () => {
+    const agentId = 'unc-mixed-back-forward';
+    const result = await runHook(
+      JSON.stringify(
+        dispatch({
+          agent_id: agentId,
+          agent_transcript_path: `\\/host/share/agent-${agentId}.jsonl`,
+        }),
+      ),
+      env(),
+      ['--harness=claude'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('transcript-path-unc');
     expect('usage' in data).toBe(false);
   });
 });

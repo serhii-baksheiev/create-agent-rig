@@ -59,6 +59,34 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 // {})`, `now` defaulting to `Date.now`, mirroring RP-226's
 // `readClaudeTranscriptUsage(file, { now })` so the 3 s bound is
 // deterministic here too.
+//
+// ROUND 2 (review of PR #333, head 3b82189) — code-reviewer-r1.md B1/B2,
+// security-scanner-r1.md B1:
+//
+//   - B1: identity is taken from the FIRST `session_meta` record, never the
+//     last. A Codex child spawned with forked context writes TWO
+//     `session_meta` records — the child's own (ordinal 0, carrying
+//     `forked_from_id`/`parent_thread_id`), then a second record naming the
+//     PARENT. Confirmed by reading one real forked rollout on this machine,
+//     read-only: `~/.codex/sessions/2026/09/23/
+//     rollout-2026-09-23T16-59-32-01a0ce59-....jsonl` — its first
+//     `session_meta.payload.id` is the child id and carries
+//     `forked_from_id`/`parent_thread_id` naming the parent; its second
+//     `session_meta.payload.id` is the parent id with neither field. A
+//     rollout whose first `session_meta` does not name `agent_id` is
+//     `rollout-identity-mismatch` even when a later one does;
+//   - B2: a matched `token_usage_record` whose `thread_token_usage` is
+//     absent, `null`, `{}`, or not an object is `usageUnavailable:
+//     'no-usage-counters'` — never `{ usage: { evidenceSource } }` with no
+//     counters, which reads as "measured" to any caller checking `'usage' in
+//     data`;
+//   - security B1: `UNC_PATH_RE` must also refuse a MIXED-separator leading
+//     pair — `/\host\share\...` and `\/host/share/...` — not just `\\` and
+//     `//`. On Windows both are UNC paths (`\\?\UNC\...`) that the
+//     unfixed regex let through to `lstatSync`/`openSync`; on POSIX (where
+//     this suite actually runs) the first is merely absolute-and-unmatched
+//     and the second fails the absolute check entirely — both must still
+//     resolve to `rollout-path-unc`, with nothing opened, on every platform.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -173,6 +201,69 @@ function tokenUsageLine({
   if (threadTokenUsage !== undefined) payload.thread_token_usage = threadTokenUsage;
   if (content !== undefined) payload.content = content;
   return JSON.stringify({ type: 'token_usage_record', payload });
+}
+
+/**
+ * `token_usage_record` builder that accepts an arbitrary `thread_token_usage`
+ * value (including `null`, `{}`, or a non-object) — `tokenUsageLine`'s typed
+ * `Record<string, number>` can't express those shapes, and round 2's B2 cases
+ * need exactly them. `JSON.stringify` drops an `undefined`-valued key on its
+ * own, so passing `undefined` here reproduces the "field absent entirely"
+ * case without any extra branching; `null`/`{}`/a non-object are written
+ * verbatim.
+ */
+function tokenUsageLineRaw(threadId: string, threadTokenUsage: unknown): string {
+  const payload: Record<string, unknown> = {
+    thread_id: threadId,
+    thread_token_usage: threadTokenUsage,
+  };
+  return JSON.stringify({ type: 'token_usage_record', payload });
+}
+
+/**
+ * One JSONL line shaped like a FORKED CHILD's own `session_meta` record — the
+ * FIRST of the two such records a forked child rollout carries. Shape
+ * confirmed by reading one real forked rollout on this machine, read-only
+ * (round 2, code-reviewer-r1.md B1):
+ * `~/.codex/sessions/2026/09/23/rollout-2026-09-23T16-59-32-01a0ce59-....jsonl`
+ * — ordinal 0's `session_meta.payload` carries the child's own `id` plus
+ * `forked_from_id`/`parent_thread_id` naming the parent, and
+ * `thread_source: 'subagent'`.
+ */
+function forkedChildSessionMetaLine(id: string, parentId: string): string {
+  return JSON.stringify({
+    type: 'session_meta',
+    payload: {
+      id,
+      forked_from_id: parentId,
+      parent_thread_id: parentId,
+      timestamp: '2026-09-25T00:00:00.000Z',
+      cwd: '/work',
+      originator: 'codex_exec',
+      cli_version: '0.156.1',
+      thread_source: 'subagent',
+    },
+  });
+}
+
+/**
+ * One JSONL line shaped like the SECOND `session_meta` record of a forked
+ * child rollout — the PARENT's own record (same real rollout as above,
+ * ordinal 1: `payload.id` is the parent id, neither `forked_from_id` nor
+ * `parent_thread_id` is present, and `thread_source: 'user'`).
+ */
+function forkedParentSessionMetaLine(parentId: string): string {
+  return JSON.stringify({
+    type: 'session_meta',
+    payload: {
+      id: parentId,
+      timestamp: '2026-09-25T00:00:00.000Z',
+      cwd: '/work',
+      originator: 'codex_exec',
+      cli_version: '0.156.1',
+      thread_source: 'user',
+    },
+  });
 }
 
 let rolloutDir: string;
@@ -411,6 +502,151 @@ describe('record-dispatch.mjs — Codex usage identity: session_meta.payload.id 
     expect(data.usageUnavailable).toBe('no-usage-records');
     expect('usage' in data).toBe(false);
   });
+
+  // Round 2 — code-reviewer-r1.md B1. A forked child rollout carries TWO
+  // session_meta records (real shape read from
+  // ~/.codex/sessions/2026/09/23/rollout-2026-09-23T16-59-32-01a0ce59-....jsonl,
+  // read-only, on this machine): the child's own FIRST, the parent's SECOND.
+  // Identity must be taken from the FIRST.
+  it("identifies a forked child rollout from its FIRST session_meta record (the child's own, carrying forked_from_id/parent_thread_id) — not the parent's second record", async () => {
+    const childId = 'forked-child-first-wins';
+    const parentId = 'forked-parent-of-first-wins';
+    const file = await writeRollout('rollout.jsonl', [
+      forkedChildSessionMetaLine(childId, parentId),
+      forkedParentSessionMetaLine(parentId),
+      tokenUsageLine({
+        threadId: childId,
+        threadTokenUsage: { input_tokens: 70, output_tokens: 30 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: childId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    const usage = data.usage as Record<string, unknown> | undefined;
+    expect(usage?.inputTokens).toBe(70);
+    expect(usage?.outputTokens).toBe(30);
+    expect('usageUnavailable' in data).toBe(false);
+  });
+
+  it('reports usageUnavailable with rollout-identity-mismatch when the FIRST session_meta does not match agent_id, even when a LATER session_meta does', async () => {
+    const agentId = 'first-must-match';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine('a-different-thread-entirely'),
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 888888, output_tokens: 888888 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('rollout-identity-mismatch');
+    expect('usage' in data).toBe(false);
+    const bytes = await eventsFileBytes(runDir);
+    expect(bytes).not.toContain('888888');
+  });
+});
+
+describe('record-dispatch.mjs — a matched token_usage_record with no usable thread_token_usage is usageUnavailable, never a counterless usage (RP-227 round 2, code-reviewer-r1.md B2)', () => {
+  it('reports usageUnavailable (no usage key at all) when the matched token_usage_record has no thread_token_usage field', async () => {
+    const agentId = 'b2-absent';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLineRaw(agentId, undefined),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('reports usageUnavailable (no usage key at all) when thread_token_usage is null', async () => {
+    const agentId = 'b2-null';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLineRaw(agentId, null),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('reports usageUnavailable (no usage key at all) when thread_token_usage is an empty object', async () => {
+    const agentId = 'b2-empty-object';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLineRaw(agentId, {}),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('reports usageUnavailable (no usage key at all) when thread_token_usage is not an object (a string)', async () => {
+    const agentId = 'b2-non-object';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLineRaw(agentId, 'not-an-object'),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('pins the specific reason code no-usage-counters (distinct from no-usage-records, which means "never matched at all")', async () => {
+    const agentId = 'b2-specific-code';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLineRaw(agentId, {}),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('no-usage-counters');
+  });
 });
 
 describe('record-dispatch.mjs — Codex rollout path is refused before anything is opened (RP-227)', () => {
@@ -459,6 +695,50 @@ describe('record-dispatch.mjs — Codex rollout path is refused before anything 
         dispatch({
           agent_id: 'unc-path',
           agent_transcript_path: '//codex-host/share/rollout.jsonl',
+        }),
+      ),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('rollout-path-unc');
+    expect('usage' in data).toBe(false);
+  });
+
+  // Round 2 — security-scanner-r1.md B1. Win32 treats "/" and "\" as the
+  // same separator, so a MIXED leading pair is UNC-shaped too, and on
+  // Windows the unfixed regex let it through to lstatSync/openSync (proven
+  // there against a real \\wsl$ share: the hook read over SMB and journalled
+  // usage). Pinned here as a reason-code assertion that runs on every
+  // platform — a real host would need to exist for the bypass to leak
+  // content, but the wrong reason code alone already proves the path was
+  // NOT refused at the UNC check.
+  it('reports usageUnavailable with rollout-path-unc for a mixed-separator UNC path (leading "/\\\\") — never opens anything', async () => {
+    const result = await runHook(
+      JSON.stringify(
+        dispatch({
+          agent_id: 'unc-mixed-forward-back',
+          agent_transcript_path: '/\\attacker.example\\share\\r.jsonl',
+        }),
+      ),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('rollout-path-unc');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('reports usageUnavailable with rollout-path-unc for a mixed-separator UNC path (leading "\\\\/") — never opens anything', async () => {
+    const result = await runHook(
+      JSON.stringify(
+        dispatch({
+          agent_id: 'unc-mixed-back-forward',
+          agent_transcript_path: '\\/attacker.example/share/r.jsonl',
         }),
       ),
       env(),
