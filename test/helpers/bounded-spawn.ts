@@ -9,9 +9,9 @@ import { spawn } from 'node:child_process';
  * `'close'` event: a grandchild that inherits the child's piped stdio (a
  * PowerShell wrapper spawning a node helper, for instance) can hold those
  * pipes open long after the child itself has exited, and `'close'` does not
- * fire until every stdio stream is closed. On timeout it kills the whole
- * process tree it can reach and rejects — but the tree-kill's reach is not
- * total, and the timer settle is what covers the gap:
+ * fire until every stdio stream is closed. On timeout it kills the process
+ * tree it can reach and rejects — but the tree-kill's reach is not total,
+ * and the timer settle is what covers the gap:
  * - on Windows, `taskkill /PID <pid> /T /F` walks the tree from `<pid>` by
  *   parent pid. If that parent has already exited — the wrapper spawned a
  *   grandchild and returned before the bound fired — `taskkill` can no
@@ -26,6 +26,27 @@ import { spawn } from 'node:child_process';
  * › "rejects on its own timer even when an escaped, detached grandchild
  * still holds the pipes" pins exactly this on POSIX, where it can be
  * constructed deterministically.
+ *
+ * A kill is only ever sent for a pid this call still owns (RP-264 round 3,
+ * security-scanner B1/A1/A2). Once Node reports the child's own exit
+ * (`child.exitCode` or `child.signalCode` no longer `null`), that pid is
+ * released back to the OS and may already name an unrelated process by the
+ * time the timer fires — a `taskkill /PID <reused> /T /F` on Windows, or a
+ * single-pid `SIGKILL` on POSIX, would then hit whatever now holds it, not
+ * the child this call spawned. So every path that signals one specific pid —
+ * Windows' `taskkill`, and the POSIX fallback used when the group signal
+ * itself fails — checks `pid > 0` and that the child is still running first,
+ * and sends nothing at all otherwise; this call still settles and rejects on
+ * its own timer regardless. The one exception is POSIX's primary signal,
+ * `process.kill(-pid, …)`: it targets the process *group*, not the single
+ * pid, and the kernel keeps a group's id reserved for as long as any member
+ * of it is still alive — which a plain grandchild (not itself further
+ * detached) always is at this point, by construction. `test/template/
+ * bounded-spawn.test.ts` › "kills a grandchild that holds inherited stdio
+ * pipes open, on POSIX" pins that this group signal still lands even though
+ * the direct child has already exited; › "boundedSpawn: never signals a pid
+ * it no longer owns" pins the still-running gate through the `killTree` test
+ * seam below, which only ever stands in for a single-pid send.
  */
 
 const WIN32 = process.platform === 'win32';
@@ -39,6 +60,15 @@ export interface BoundedSpawnOptions {
   /** Written to the child's stdin and then closed, when given. */
   input?: string;
   timeoutMs: number;
+  /**
+   * Test seam: stands in for a single-pid kill send (Windows' `taskkill`, or
+   * the POSIX fallback) — never for the POSIX group signal, which has no
+   * per-pid risk to seam around. Defaults to the real one. Called with the
+   * child's own pid, and only while this call still owns it: `pid > 0` and
+   * the child not yet reported exited (`child.exitCode === null &&
+   * child.signalCode === null`) — see the header and the timeout handler.
+   */
+  killTree?: (pid: number) => void | Promise<void>;
 }
 
 export interface BoundedSpawnResult {
@@ -55,50 +85,63 @@ export interface BoundedSpawnResult {
  * resolve once that attempt is done — bounded by its own short timeout, so a
  * `taskkill` that itself hangs cannot hold the caller past
  * `TASKKILL_TIMEOUT_MS`. The caller's own overall wait is therefore never
- * more than its configured bound plus this one.
+ * more than its configured bound plus this one: the guard resolves the wait
+ * itself the moment it fires, rather than waiting on the killed process's
+ * own exit event.
  */
 const killTreeWindows = (pid: number): Promise<void> =>
   new Promise((resolveKill) => {
+    let settledKill = false;
+    const finish = (): void => {
+      if (settledKill) return;
+      settledKill = true;
+      clearTimeout(guard);
+      resolveKill();
+    };
     let killer;
     try {
       killer = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' });
     } catch {
-      resolveKill();
+      finish();
       return;
     }
     const guard = setTimeout(() => {
       killer.kill();
+      finish();
     }, TASKKILL_TIMEOUT_MS);
-    const done = (): void => {
-      clearTimeout(guard);
-      resolveKill();
-    };
-    killer.on('exit', done);
-    killer.on('error', done);
+    killer.on('exit', finish);
+    killer.on('error', finish);
   });
 
 /**
- * Kill `pid`'s whole process tree, resolving once the attempt is done. On
- * POSIX the child is spawned detached (its own process group), so a negative
- * pid signals the group — the child and any grandchild it spawned without
- * further detaching; that send is synchronous, so this resolves at once. On
- * Windows, `taskkill /T` walks the tree by parent pid instead, and this
- * resolves only once that invocation exits or is itself force-killed.
+ * The real tree-kill: on POSIX, `process.kill(-pid, 'SIGKILL')` signals the
+ * whole process group the child was spawned into (its own, since it is
+ * spawned `detached: true`), reaching any grandchild it spawned without
+ * further detaching. That send is synchronous, so this resolves at once. If
+ * it throws — the group itself is already gone — `single` (true only while
+ * the child is still running, per the timeout handler) decides whether a
+ * fallback single-pid signal is worth the reused-pid risk described in the
+ * header; when it would not be, nothing further is sent. On Windows,
+ * `taskkill /T` walks the tree by parent pid instead — a single-pid
+ * operation throughout, so it runs only while `single` holds, and this
+ * resolves only once that invocation exits, errors, or is force-killed by
+ * its own guard.
  */
-const killTree = (pid: number): Promise<void> => {
+const defaultKillTree = (pid: number, single: boolean): void | Promise<void> => {
   if (WIN32) {
-    return killTreeWindows(pid);
+    return single ? killTreeWindows(pid) : undefined;
   }
   try {
     process.kill(-pid, 'SIGKILL');
   } catch {
-    try {
-      process.kill(pid, 'SIGKILL');
-    } catch {
-      // already gone
+    if (single) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
     }
   }
-  return Promise.resolve();
 };
 
 export function boundedSpawn(
@@ -107,7 +150,7 @@ export function boundedSpawn(
   args: string[],
   options: BoundedSpawnOptions,
 ): Promise<BoundedSpawnResult> {
-  const { cwd, env, input, timeoutMs } = options;
+  const { cwd, env, input, timeoutMs, killTree } = options;
   const start = Date.now();
 
   return new Promise((resolve, reject) => {
@@ -118,7 +161,7 @@ export function boundedSpawn(
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       // Only meaningful on POSIX: gives the child its own process group so
-      // `killTree` can signal it (and anything it spawned) as a unit.
+      // the real tree-kill can signal it (and anything it spawned) as a unit.
       detached: !WIN32,
     });
 
@@ -138,7 +181,20 @@ export function boundedSpawn(
       if (settled) return;
       settled = true;
       const pid = child.pid;
-      const treeKilled = pid !== undefined ? killTree(pid) : Promise.resolve();
+      const owned = pid !== undefined && pid > 0;
+      // Once Node has reported the child's own exit, its pid is released
+      // back to the OS and may already name something else by the time this
+      // fires — see the header. A single-pid send (the test seam, the
+      // Windows path, and the POSIX fallback) must never run past that
+      // point; the POSIX group signal may, and is sent unconditionally
+      // below by `defaultKillTree` when no seam replaces it.
+      const running = child.exitCode === null && child.signalCode === null;
+      let treeKilled: Promise<void>;
+      if (killTree) {
+        treeKilled = owned && running ? Promise.resolve(killTree(pid)) : Promise.resolve();
+      } else {
+        treeKilled = owned ? Promise.resolve(defaultKillTree(pid, running)) : Promise.resolve();
+      }
       void treeKilled.finally(() => {
         // A grandchild holding the inherited stdio open would otherwise keep
         // these streams (and the data they are still buffering) alive past

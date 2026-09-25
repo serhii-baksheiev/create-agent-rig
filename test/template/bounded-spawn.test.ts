@@ -24,8 +24,8 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * for the child's stdio streams to close, because a plain `execFile` timeout
  * waits for `'close'`, and a grandchild holding the inherited pipes (the
  * tests below) keeps that event from ever firing. On timeout it kills the
- * whole process tree and rejects with an Error whose message is exactly
- * `child <label> timed out after <timeoutMs> ms`.
+ * process tree it can reach and rejects with an Error whose message is
+ * exactly `child <label> timed out after <timeoutMs> ms`.
  */
 
 async function waitForPid(file: string, timeoutMs = 1000): Promise<number | undefined> {
@@ -108,9 +108,10 @@ describe('boundedSpawn: names a stalled child instead of letting the case timeou
     let grandchildPid: number | undefined;
     try {
       // RP-264 round 2, A2: a 300 ms bound left too little room for two node
-      // startups plus the pid write under load (the reviewer measured an 8x
-      // slowdown that this exact race went red under) — 1500 ms keeps that
-      // margin while the elapsed ceiling below still proves the wrapper does
+      // startups plus the pid write under load — the reviewer warned this
+      // race COULD go red under the 8x slowdown RP-264's own diagnosis
+      // measured, not that they had observed this test fail — 1500 ms keeps
+      // that margin while the elapsed ceiling below still proves the wrapper does
       // not wait for the grandchild's held-open pipe (which would otherwise
       // never close, since the grandchild loops forever).
       const boundMs = 1_500;
@@ -226,5 +227,113 @@ describe('boundedSpawn: names a stalled child instead of letting the case timeou
       }
       await removeFixture(scratch);
     }
+  });
+});
+
+// RP-264 round 3 (security-scanner HOLD, B1): the timer fires whenever
+// 'close' has not — including the exact case the helper's own header names,
+// where the direct child has already exited and an escaped grandchild still
+// holds the pipes. Node releases an exited child's pid, and the OS is free
+// to reuse it. A tree-kill sent after that point does not reach the child it
+// meant to kill: on win32, `taskkill /PID <pid> /T /F` force-kills whatever
+// process now HAS that pid, and its whole tree; on POSIX, the positive-pid
+// fallback (`bounded-spawn.ts:96`) signals a reaped pid.
+//
+// Required contract this pins: the tree-kill runs only while the child is
+// still running (`child.exitCode === null && child.signalCode === null`),
+// and only for `pid > 0`. When the child has already exited, the helper
+// sends no kill at all, but still rejects on its own timer with the named
+// timeout — the settle-on-timer property is untouched by this fix.
+//
+// Observed through a test seam rather than an OS-dependent probe, per this
+// repo's own convention against mocking or patching module internals
+// (`.claude/rules/node-ts.md`): `BoundedSpawnOptions` gains an optional
+//
+//   killTree?: (pid: number) => void | Promise<void>
+//
+// called with the child's own pid in place of the real tree-kill, and only
+// under the same running-and-positive-pid condition the real kill must now
+// carry. This is the Green step's seam to add — `BoundedSpawnOptions` does
+// not declare it yet, so `tsc` refuses every call below that passes one:
+// `error TS2353: Object literal may only specify known properties, and
+// 'killTree' does not exist in type 'BoundedSpawnOptions'`. Both tests below
+// therefore fail to typecheck today; at the (type-erased) vitest-runtime
+// level, only the second currently fails outright — the first's "no call"
+// expectation holds vacuously while the seam is unwired, and becomes a real
+// regression guard only once the Green step wires it under the running
+// check.
+describe('boundedSpawn: never signals a pid it no longer owns', () => {
+  it('sends no kill when the direct child has already exited before the timer fires', async (ctx) => {
+    skipUnless(ctx, posixProcessGroupsAvailable().ok, posixProcessGroupsAvailable().reason);
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'rp264-bounded-spawn-reaped-'));
+    const pidFile = path.join(scratch, 'grandchild.pid');
+    // Same escape mechanism as the "escaped, detached grandchild" test above:
+    // the grandchild inherits the root's piped stdio and outlives it, so
+    // 'close' cannot fire — but here the point is not the grandchild's own
+    // fate, it is that the ROOT (the direct child `boundedSpawn` itself
+    // spawned) is long gone, reaped, and its pid free to reuse by the time
+    // the 300 ms timer fires.
+    const grandchildScript =
+      "const fs = require('node:fs');" +
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));` +
+      'setTimeout(() => {}, 5000);';
+    const rootScript =
+      "const { spawn } = require('node:child_process');" +
+      `spawn(process.execPath, ['-e', ${JSON.stringify(grandchildScript)}], { stdio: 'inherit', detached: true });` +
+      'process.exit(0);';
+
+    const calls: number[] = [];
+    const boundMs = 300;
+    let grandchildPid: number | undefined;
+    try {
+      let rejected: Error | undefined;
+      try {
+        await boundedSpawn('reaped', process.execPath, ['-e', rootScript], {
+          timeoutMs: boundMs,
+          killTree: (pid: number) => {
+            calls.push(pid);
+          },
+        });
+      } catch (error) {
+        rejected = error as Error;
+      }
+
+      expect(rejected).toBeDefined();
+      expect(rejected?.message).toBe(`child reaped timed out after ${boundMs} ms`);
+      expect(
+        calls,
+        'a kill was sent for a pid the child no longer owns — Node may already have reused it',
+      ).toEqual([]);
+
+      grandchildPid = await waitForPid(pidFile);
+    } finally {
+      if (grandchildPid !== undefined && isAlive(grandchildPid)) {
+        process.kill(grandchildPid, 'SIGKILL');
+      }
+      await removeFixture(scratch);
+    }
+  });
+
+  it('kills the direct child once, by its own pid, when the child itself outlives the bound', async () => {
+    const calls: number[] = [];
+    const boundMs = 300;
+
+    let rejected: Error | undefined;
+    try {
+      await boundedSpawn('slow', process.execPath, ['-e', 'setTimeout(() => {}, 5000);'], {
+        timeoutMs: boundMs,
+        killTree: (pid: number) => {
+          calls.push(pid);
+        },
+      });
+    } catch (error) {
+      rejected = error as Error;
+    }
+
+    expect(rejected).toBeDefined();
+    expect(rejected?.message).toBe(`child slow timed out after ${boundMs} ms`);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toBeGreaterThan(0);
   });
 });
