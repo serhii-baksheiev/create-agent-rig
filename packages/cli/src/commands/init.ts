@@ -14,6 +14,7 @@ import {
 } from '../lib/manifest.js';
 import type { Layer, RigManifest, RigProject } from '../lib/manifest.js';
 import { resolveWritableInside } from '../lib/safe-path.js';
+import { isSeedOncePath, priorSeedHash, SEED_ONCE } from '../lib/seed-once.js';
 import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { agentOsUniversalDir } from '../templates.js';
@@ -434,6 +435,16 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       // never overwrite a file init did not write (a user's own copy)
       return { rel, verdict: 'skipped' as const };
     }
+    // A seed-once path (RP-257) absent from disk but already recorded — in
+    // either manifest bucket, `kept` (this release's shape) or `files` (a
+    // pre-RP-257 manifest) — as having been seeded before is a DELETION, not
+    // a gap to heal: PLAN.md stopped being an ordinary RIG file the moment it
+    // first shipped, so a plain `init` re-run must not resurrect it, exactly
+    // as `upgrade`'s own `deleted` verdict never restores one either.
+    // {@link priorSeedHash} is the one place both callers read this.
+    if (isSeedOncePath(rel) && priorSeedHash(previous, rel) !== undefined) {
+      return { rel, verdict: 'seed-gone' as const };
+    }
     if (options.dryRun) return { rel, verdict: 'planned' as const };
     await mkdir(path.dirname(dest), { recursive: true });
     const checked = await resolveWritableInside(repoDir, rel);
@@ -444,7 +455,18 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     return { rel, verdict: 'written' as const };
   });
   const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);
-  const skipped = actions.filter(({ verdict }) => verdict === 'skipped').map(({ rel }) => rel);
+  // `seed-gone` reports as skipped to the caller — nothing was written — but
+  // is deliberately kept OUT of the `skipped` array `recordInstall` reads:
+  // that array's own handling of a skipped path re-hashes whatever is
+  // CURRENTLY on disk, which for a seed-gone path is nothing at all, and
+  // would erase the very record that makes this deletion permanent. See
+  // `recordInstall`'s seed-once migration pass, which is what actually
+  // carries a seed-gone path's manifest entry forward unchanged.
+  const skippedExisting = actions
+    .filter(({ verdict }) => verdict === 'skipped')
+    .map(({ rel }) => rel);
+  const seedGone = actions.filter(({ verdict }) => verdict === 'seed-gone').map(({ rel }) => rel);
+  const skipped = [...skippedExisting, ...seedGone];
 
   if (!options.dryRun) {
     // RP-256 slice 1: on a `nested` placement, root CLAUDE.md is the user's
@@ -474,7 +496,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     await recordInstall(
       repoDir,
       written,
-      skipped,
+      skippedExisting,
       contents,
       layers,
       options.project,
@@ -655,17 +677,52 @@ async function recordInstall(
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
+  // A seed-once path (RP-257) is never tracked in `files`, whatever it was
+  // written under before — `files` is byte-owned, diffed and rewritten by
+  // `upgrade`, and a seed-once path is none of those things from the moment
+  // it first lands. It goes into `kept` instead, below.
+  const ordinaryWritten = written.filter((rel) => !isSeedOncePath(rel));
+  const seedOnceWritten = written.filter((rel) => isSeedOncePath(rel));
   const files = { ...(previous?.files ?? {}) };
-  for (const rel of written) files[rel] = sha256(contents.get(rel) ?? '');
+  for (const rel of ordinaryWritten) files[rel] = sha256(contents.get(rel) ?? '');
   const kept = { ...(previous?.kept ?? {}), ...(extraKept ?? {}) };
-  for (const rel of written) delete kept[rel];
+  for (const rel of ordinaryWritten) delete kept[rel];
+  // The first (and only) time a seed-once path is actually written, its hash
+  // goes straight to `kept` — never a `files` detour, so there is no window
+  // where a fresh install and a fully-migrated one look different.
+  for (const rel of seedOnceWritten) kept[rel] = sha256(contents.get(rel) ?? '');
   for (const rel of skipped) {
+    if (isSeedOncePath(rel)) {
+      // Present on disk, never written by this run: refresh `kept` to the
+      // CURRENT bytes, whatever they are — a seed-once path is tracked, never
+      // compared (RP-257). Unlike an ordinary kept file, a seed-once entry is
+      // never deleted here for being absent: a missing seed-once path never
+      // reaches `skipped` at all (see `initProject`'s `seed-gone` verdict),
+      // so `readRegularFile` returning `null` here would only mean a genuine
+      // race (removed between the `exists` check and this read) — left as a
+      // stale-but-harmless record rather than silently un-seeding the path.
+      const found = await readRegularFile(path.join(repoDir, rel));
+      if (found !== null) kept[rel] = sha256(found);
+      continue;
+    }
     if (files[rel] !== undefined) continue; // the rig wrote it once; still its bytes to vouch for
     const found = await readRegularFile(path.join(repoDir, rel));
     if (found === null) delete kept[rel];
     else kept[rel] = sha256(found);
   }
   for (const rel of dropKept ?? []) delete kept[rel];
+  // A seed-once path this run neither wrote nor found on disk (deleted after
+  // being seeded — `initProject`'s `seed-gone` verdict, which never reaches
+  // `written` or `skipped` at all) is untouched by both loops above, so
+  // whatever the previous manifest recorded for it carries forward exactly
+  // as-is — UNLESS that record is still the pre-RP-257 shape (`files`, never
+  // `kept`), which this pass migrates on every run, deleted or not, so an old
+  // manifest converges the moment `init` next touches it.
+  for (const rel of SEED_ONCE) {
+    if (files[rel] === undefined) continue;
+    if (kept[rel] === undefined) kept[rel] = files[rel];
+    delete files[rel];
+  }
   const manifest: RigManifest = {
     version: await packageVersion(),
     kind: previous?.kind ?? 'init',

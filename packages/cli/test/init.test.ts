@@ -21,9 +21,13 @@ import {
   planInit,
   projectNameFor,
 } from '../src/commands/init.js';
+import { applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
+import type { HashHistory } from '../src/lib/history.js';
 import { readManifest, sha256 } from '../src/lib/manifest.js';
 import { fifosAvailable, skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
+
+const emptyHistory: HashHistory = { versions: [], files: {} };
 
 let repo: string;
 
@@ -226,7 +230,7 @@ describe('initProject — CLAUDE.md coexistence (RP-256 slice 1)', () => {
   // Explicit regression pin: nothing about a CLEAN repo's install may change
   // because a DIFFERENT repo now takes the nested path — no `.claude/CLAUDE.md`
   // appears, and the manifest gets no `kept` entry at all, exactly as before.
-  it('a clean repo (no pre-existing CLAUDE.md) is installed exactly as before: no nested shim, no `kept`', async () => {
+  it('a clean repo (no pre-existing CLAUDE.md) is installed exactly as before: no nested shim, no CLAUDE.md `kept`', async () => {
     const result = await initProject(repo, {});
 
     expect(result.written).toContain('CLAUDE.md');
@@ -236,7 +240,12 @@ describe('initProject — CLAUDE.md coexistence (RP-256 slice 1)', () => {
     const manifest = await readManifest(repo);
     expect(manifest?.files['CLAUDE.md']).toBeTruthy();
     expect(manifest?.files['.claude/CLAUDE.md']).toBeUndefined();
-    expect(manifest?.kept).toBeUndefined();
+    expect(manifest?.kept?.['CLAUDE.md']).toBeUndefined();
+    expect(manifest?.kept?.['.claude/CLAUDE.md']).toBeUndefined();
+    // RP-257: `PLAN.md` is a seed-once path — it ships with Core, so it is
+    // always `kept` from the first `init`, independently of the nested-shim
+    // `kept` entries this test is actually about.
+    expect(Object.keys(manifest?.kept ?? {})).toEqual(['PLAN.md']);
   });
 
   // The one case still refused in this slice: a pre-existing `.claude/CLAUDE.md`
@@ -1075,5 +1084,34 @@ describe('initProject — a rig it already owns', () => {
 
     expect(second.skipped).toContain('CLAUDE.md');
     expect(second.skipped).toContain('AGENTS.md');
+  });
+});
+
+// RP-257: PLAN.md is the live Agent/Operator queue — the template header says
+// so ("Keep entries one line each ... Delete done items"), and it is the one
+// payload path a rig is designed to have edited by hand from the moment it is
+// installed. It ships once, from `init --layer workflow`, exactly like every
+// other payload file — but unlike every other payload file it must never be
+// healed back onto disk once the user has removed it: a missing PLAN.md is a
+// deliberate deletion of the user's own queue, not a rig file that fell out
+// of place. Doctor's and upgrade's halves of this same contract are pinned
+// in doctor.test.ts and upgrade.test.ts respectively.
+describe('initProject / planUpgrade — PLAN.md is seed-once, not byte-owned (RP-257)', () => {
+  it('seeds PLAN.md with the template content on a clean install, and never recreates it once the user deletes it — not via upgrade, not via a plain init re-run', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const seeded = await readFile(path.join(repo, 'PLAN.md'), 'utf8');
+    expect(seeded).toContain('## Agent queue');
+
+    await rm(path.join(repo, 'PLAN.md'));
+
+    // upgrade must not restore a queue the user deliberately deleted
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    await applyUpgrade(repo, plan);
+    await expect(readFile(path.join(repo, 'PLAN.md'))).rejects.toThrow();
+
+    // neither must a plain `init` re-run over the same rig — it heals a
+    // missing RIG file, and PLAN.md stopped being one the moment it shipped
+    await initProject(repo, {});
+    await expect(readFile(path.join(repo, 'PLAN.md'))).rejects.toThrow();
   });
 });

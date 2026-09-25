@@ -187,6 +187,49 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     await expect(read(STOP_FLAG)).rejects.toThrow();
   });
 
+  // RP-257: PLAN.md is the live Agent/Operator queue, seeded once by
+  // `init --layer workflow` and explicitly the user's own document from that
+  // point on (the template header itself: "Keep entries one line each ...
+  // Delete done items"). Diffing it against the manifest-recorded install hash
+  // the way every other manifest-tracked path is diffed makes an ordinary
+  // queue edit a `conflict`, and makes a pristine-but-outdated queue (never
+  // touched, but a newer release shipped different template text) an `update`
+  // that silently overwrites whatever real entries it holds. Neither may
+  // happen: PLAN.md is never planned as `conflict`, `update` or `wiring`, and
+  // its on-disk bytes are never rewritten by `applyUpgrade`, in either case.
+  describe('PLAN.md is seed-once, not byte-owned (RP-257)', () => {
+    it('never overwrites an edited PLAN.md, and never plans it as conflict, update or wiring', async () => {
+      await initProject(repo, { withWorkflow: true });
+      const edited = `${await read('PLAN.md')}\n- add a GET /notes/:id route through every layer (TDD)\n`;
+      await write('PLAN.md', edited);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(['conflict', 'update', 'wiring']).not.toContain(verdictFor(plan, 'PLAN.md'));
+
+      await applyUpgrade(repo, plan);
+      expect(await read('PLAN.md')).toBe(edited);
+    });
+
+    it('never overwrites a pristine, never-touched PLAN.md with a newer release template, and never plans it as conflict, update or wiring', async () => {
+      await initProject(repo, { withWorkflow: true });
+      const shipped = await read('PLAN.md');
+      // simulate: an OLDER release installed this different text, and the
+      // user never touched it since — `pretendInstalled` records it as what
+      // THIS release's on-disk bytes were recorded against, exactly like the
+      // RP-186 fixture above does for CLAUDE.md/AGENTS.md.
+      const olderTemplate = `${shipped}\n<!-- an older template revision, never edited by the user -->\n`;
+      await pretendInstalled('PLAN.md', olderTemplate);
+
+      const plan = await planUpgrade(repo, { history: emptyHistory });
+      expect(['conflict', 'update', 'wiring']).not.toContain(verdictFor(plan, 'PLAN.md'));
+
+      await applyUpgrade(repo, plan);
+      // the newer release's template is never silently written over a queue
+      // that might already hold real, unfinished entries
+      expect(await read('PLAN.md')).toBe(olderTemplate);
+    });
+  });
+
   // RP-186's own migration gate. A rig installed before RP-186 has a
   // byte-identical CLAUDE.md/AGENTS.md pair recorded in its manifest — the old
   // "publish the same text as AGENTS.md" model this ticket replaces.
@@ -1879,18 +1922,22 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // more (104→105) when RP-228 added .claude/scripts/token-report.mjs, both
   // workflow-layer only — the core-only figure stayed 62 for the same
   // reason.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 105 manifest entries to 62', async () => {
+  // RP-257: `PLAN.md` is a seed-once path (`lib/seed-once.ts`) — `init`
+  // records it under `files[]` one fewer path than before, in `kept[]`
+  // instead, so both counts below are one lower than the chronicle above
+  // would otherwise give (105/62 manifest entries, either way).
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 104 manifest entries to 61', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(105);
+    expect(Object.keys(before!.files).length).toBe(104);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(62);
+    expect(Object.keys(after!.files).length).toBe(61);
   });
 });
 

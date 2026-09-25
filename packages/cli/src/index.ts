@@ -440,6 +440,7 @@ const MARK: Record<UpgradeVerdict, string> = {
   wiring: '!',
   unchanged: '·',
   retired: 'x',
+  seeded: '=',
 };
 
 /**
@@ -478,7 +479,15 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
 
   lines.push('');
 
-  for (const verdict of ['update', 'new', 'deleted', 'retired', 'conflict', 'wiring'] as const) {
+  for (const verdict of [
+    'update',
+    'new',
+    'deleted',
+    'retired',
+    'conflict',
+    'wiring',
+    'seeded',
+  ] as const) {
     for (const action of of(verdict)) {
       lines.push(
         `  ${MARK[verdict]} ${action.rel}` + (action.reason ? `  — ${action.reason}` : ''),
@@ -494,11 +503,11 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     }
   }
 
-  // Every one of `UpgradeVerdict`'s seven members is accounted for here.
-  // `wiring`, `deleted` and `retired` each print their own line and were in
-  // none of the buckets, so a reader counted lines and was told a smaller
-  // number. (`unchanged` is counted and prints nothing — the sum is over
-  // actions, not over printed lines.) The three appear only when they
+  // Every one of `UpgradeVerdict`'s eight members is accounted for here.
+  // `wiring`, `deleted`, `retired` and `seeded` each print their own line and
+  // were in none of the buckets, so a reader counted lines and was told a
+  // smaller number. (`unchanged` is counted and prints nothing — the sum is
+  // over actions, not over printed lines.) The four appear only when they
   // occurred, so a plan without them renders exactly as it always has. Pinned
   // by, in cli-report.test.ts, "renders a plan with no wiring action exactly
   // as it does today".
@@ -511,6 +520,7 @@ function renderUpgradePlan(repoDir: string, plan: UpgradePlan): string {
     ['deleted', (n: number) => `${n} you removed (left removed)`],
     ['retired', (n: number) => `${n} no longer shipped (now yours)`],
     ['wiring', (n: number) => `${n} wiring handed over`],
+    ['seeded', (n: number) => `${n} yours (seeded once)`],
   ] as const;
   const extra = occasional
     .map(([verdict, phrase]) => [of(verdict).length, phrase] as const)
