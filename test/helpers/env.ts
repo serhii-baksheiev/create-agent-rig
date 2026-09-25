@@ -142,3 +142,30 @@ export const hardLinksAvailable = (): { ok: boolean; reason: string } => {
       'account lacks; the fixture cannot be built',
   };
 };
+
+/**
+ * Can a child's own death by a POSIX signal be observed as a null exit code
+ * paired with the signal's name? Windows has no real signals — a
+ * self-terminated child there does not reliably reproduce the POSIX
+ * null-code-plus-signal shape a `boundedSpawn` signal-death test needs
+ * (RP-264 round 2, B1).
+ */
+export const posixSignalDeathAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason:
+    'on Windows there are no real signals; a child that terminates itself does not reliably ' +
+    'reproduce the POSIX null-code-plus-signal shape this reproduction needs',
+});
+
+/**
+ * Can this process rely on POSIX process groups — `detached: true` plus a
+ * negative-pid signal — to kill a child and anything it spawned, as one
+ * unit? Windows has no equivalent process-group semantics; the Windows-only
+ * `codex.test.ts` case exercises `taskkill /T` separately (RP-264 round 2, B2).
+ */
+export const posixProcessGroupsAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason:
+    'POSIX process groups (detached + a negative-pid signal) have no Windows equivalent; ' +
+    'the Windows-only codex.test.ts case exercises taskkill /T separately',
+});
