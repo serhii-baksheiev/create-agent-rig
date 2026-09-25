@@ -121,6 +121,20 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   and points at `git remote set-head origin --auto` or `--base <ref>`, and
   still fails closed the same way (RP-239 A3).
 
+- **`uninstall` no longer treats a user-owned `kept` path as a reason to keep
+  the manifest.** A `kept` entry (e.g. a pre-existing root `CLAUDE.md` `init`
+  found already in place and left alone) was never the rig's to begin with —
+  `uninstall` only ever vouched for its bytes — yet `wouldDeleteManifest`
+  counted it the same as any other `preserved` verdict, so a repository whose
+  only preserved path was a kept file finished uninstall still reporting the
+  rig as installed. Such a path is still listed as `preserved` with the same
+  `'user-owned (kept by init)'` reason and its bytes are still left
+  untouched; it just no longer keeps the manifest alive on its own, and the
+  run now reports `outcome: "uninstalled"` in that case. A hook preserved
+  because a _kept_ wiring file still references it is unaffected — that is a
+  rig-owned file preserved for a different reason, and it still keeps the
+  manifest exactly as before (RP-260).
+
 ## 1.0.1
 
 **1.0.1 is a patch on the 1.0 line.** It closes guard gaps an unattended run
