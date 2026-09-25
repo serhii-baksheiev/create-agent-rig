@@ -273,14 +273,23 @@ pinned by a byte injected into the PREFIX instead, outside the region, where
 the body hash still matches. A lossy decode there would rewrite the prefix
 with U+FFFD; the strict one leaves the file byte-identical and reports it
 changed since planning. Reverting `upgrade.ts`'s or `uninstall.ts`'s
-apply-time decode to `toString('utf8')` turns that prefix test red. All of
-this is pinned by `packages/cli/test/agents-md-region-upgrade.test.ts`'s describe
-block "planUpgrade / applyUpgrade — a non-UTF-8 byte in the region file is
+apply-time decode to `toString('utf8')` turns that prefix test red. The
+plan-time tests and the body-injection tests are pinned by
+`packages/cli/test/agents-md-region-upgrade.test.ts`'s describe block
+"planUpgrade / applyUpgrade — a non-UTF-8 byte in the region file is
 refused, never corrupted (round 3, blocker 2)" and
 `packages/cli/test/agents-md-region-uninstall.test.ts`'s describe block
 "planUninstall / applyUninstall — a non-UTF-8 byte in the region file is
-refused, never corrupted (round 3, blocker 2)" (absent in a generated rig,
-same reason as above).
+refused, never corrupted (round 3, blocker 2)". The discriminating
+prefix-injection tests are
+`packages/cli/test/agents-md-region-upgrade.test.ts` (absent in a generated
+rig) › "apply time: a
+Latin-1 byte (0xe9) injected into the PREFIX (outside the region) between
+plan and apply leaves the file byte-identical, and is reported changed since
+planning" (in the describe block "applyUpgrade — AGENTS.md region
+re-verified at apply time (data-loss guard, owner design)") and its
+counterpart in the uninstall describe block named above (all absent in a
+generated rig, same reason as above).
 
 **Round 2 (security-scanner A1): every write to the user's own AGENTS.md is
 atomic, and a hard link is replaced rather than written through.** `init`'s
