@@ -172,17 +172,20 @@ describe('create-agent-rig init (into an existing repo)', () => {
     await expect(readFile(path.join(repo, 'AGENTS.md'), 'utf8')).resolves.toBeTruthy();
   });
 
-  // code-reviewer round 1 advisory A5 (PR #324): `init`'s own `--help` usage
-  // still says "Refuses to clobber CLAUDE.md or AGENTS.md" — true before this
-  // slice, false now that a pre-existing CLAUDE.md is kept and the shim goes
-  // to `.claude/CLAUDE.md` instead. AGENTS.md is still refused outright, and
-  // the usage text must keep saying so.
-  it('--help says a pre-existing CLAUDE.md is kept nested, not that init refuses to clobber it, and still refuses AGENTS.md', async () => {
+  // RP-256 slice 2 (owner decision, superseding this test's old "and still
+  // refuses AGENTS.md" half): `init`'s own `--help` usage says "a
+  // pre-existing AGENTS.md is still refused outright" — true before this
+  // slice, false now that a pre-existing AGENTS.md coexists (its bytes
+  // become the managed region's prefix), exactly like CLAUDE.md already
+  // does. The "not the old blanket CLAUDE.md wording" half of the original
+  // assertion survives unchanged.
+  it('--help says a pre-existing CLAUDE.md is kept nested, and does not claim a pre-existing AGENTS.md is refused', async () => {
     const result = await runInit(['--help']);
     const text = `${result.stdout}${result.stderr}`;
     expect(text).not.toMatch(/Refuses to clobber CLAUDE\.md or AGENTS\.md/);
     expect(text).toMatch(/\.claude\/CLAUDE\.md/);
     expect(text).toMatch(/AGENTS\.md/);
+    expect(text).not.toMatch(/AGENTS\.md is still refused outright/);
   });
 });
 

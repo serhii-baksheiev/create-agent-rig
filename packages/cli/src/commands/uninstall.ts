@@ -6,6 +6,13 @@ import { hookFilesReferencedIn } from '../lib/init-settings.js';
 import { ALL_LAYERS, MANIFEST_REL, parseManifest, sha256 } from '../lib/manifest.js';
 import type { RigManifest } from '../lib/manifest.js';
 import { MAX_PATH_SEGMENTS, exceedsMaxPathSegments, resolveInside } from '../lib/safe-path.js';
+import { readBoundedFileInRepo } from '../lib/bounded-file.js';
+import {
+  decodeStrictUtf8,
+  locateRegion,
+  MAX_AGENTS_MD_REGION_BYTES,
+} from '../lib/agents-md-region.js';
+import { atomicWriteInRepo } from '../lib/atomic-write.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class UninstallError extends Error {}
@@ -37,6 +44,15 @@ export interface UninstallAction {
    * `planUninstall`) to opt out of that check on purpose.
    */
   recordedHash?: string;
+  /**
+   * RP-256 slice 2: true only on `AGENTS.md`'s own `remove` verdict when the
+   * manifest tracks it as a managed region rather than a whole file —
+   * `applyUninstall` reads this to STRIP the region (write the user's own
+   * prefix back) instead of unlinking the file outright, and `recordedHash`
+   * means something different here too: the region BODY's hash (never the
+   * marker lines), not the whole file's.
+   */
+  region?: boolean;
   /**
    * True only for a `preserved` action born from a `manifest.kept` entry
    * (RP-260) — a path `init` found already in place and only ever vouched
@@ -1147,6 +1163,75 @@ export async function planUninstall(
     actions.push({ rel, verdict: 'preserved', reason: 'user-owned (kept by init)', kept: true });
   }
 
+  // RP-256 slice 2: a managed region is neither a whole rig-owned file (the
+  // `files` loop above) nor a whole user-owned one (`kept`) — it is a mix,
+  // so it gets its own verdict, decided the same way as an ordinary file:
+  // intact and unedited (the region body's hash still matches what the
+  // manifest vouches for) is `remove` (meaning STRIP, not delete — see
+  // {@link UninstallAction.region}); anything else — missing, malformed, or
+  // edited since — is `preserved`, and the user's bytes are left exactly as
+  // they are. Read through the same FIFO-safe, bounded, containment-checked
+  // mechanics `init.ts`/`upgrade.ts` use for this very file
+  // ({@link readBoundedFileInRepo}).
+  for (const rel of Object.keys(manifest.regions ?? {}).sort()) {
+    const recordedHash = manifest.regions![rel]!;
+    if (rel !== 'AGENTS.md') {
+      // No other path is ever region-tracked today; a manifest naming one is
+      // either from a future release or hand-edited — either way, safest as
+      // an ordinary preserved path rather than guessed at.
+      actions.push({
+        rel,
+        verdict: 'preserved',
+        reason: 'a managed region this release does not recognise',
+      });
+      continue;
+    }
+    if (exceedsMaxPathSegments(rel)) {
+      actions.push({
+        rel,
+        verdict: 'preserved',
+        reason: `more than ${MAX_PATH_SEGMENTS} path segments — refused without being resolved on disk at all`,
+      });
+      continue;
+    }
+    const status = await regularFileStatus(repoDir, rel);
+    if (status === 'absent') {
+      actions.push({ rel, verdict: 'absent' });
+      continue;
+    }
+    if (status === 'unsafe') {
+      actions.push({ rel, verdict: 'preserved', reason: NOT_A_REGULAR_FILE_REASON });
+      continue;
+    }
+    const current = await readBoundedFileInRepo(
+      repoDir,
+      onDisk(repoDir, rel),
+      MAX_AGENTS_MD_REGION_BYTES,
+    );
+    // Round 2, code-reviewer B4 / security-scanner B2: strict decode, not a
+    // lossy `Buffer#toString('utf8')` — non-UTF-8 bytes are treated the same
+    // as a malformed region.
+    const decoded = current === null ? null : decodeStrictUtf8(current);
+    const located = decoded === null ? null : locateRegion(decoded);
+    if (located === null || sha256(located.body) !== recordedHash) {
+      actions.push({
+        rel,
+        verdict: 'preserved',
+        reason:
+          current === null
+            ? 'too large, not a plain file, or resolves outside the repo — the managed region ' +
+              'cannot be verified; left untouched'
+            : decoded === null
+              ? 'AGENTS.md is not valid UTF-8 — the managed region cannot be verified; left untouched'
+              : located === null
+                ? 'the managed region markers are missing or malformed — left untouched'
+                : 'the managed region was edited since it was installed — treated as yours',
+      });
+      continue;
+    }
+    actions.push({ rel, verdict: 'remove', recordedHash, region: true });
+  }
+
   // Round 4, blocker 2 (CLI-UX): removing one of CLAUDE.md/AGENTS.md while
   // the other is not a clean removal — preserved as the user's own edit, or
   // already gone — is exactly the moment the rulebook could end up with no
@@ -1181,15 +1266,39 @@ export async function planUninstall(
   };
   const notACleanRemoval = (a: UninstallAction | undefined): boolean =>
     a === undefined || a.verdict === 'preserved' || a.verdict === 'absent';
+  // RP-256 slice 2: a `'remove'` verdict on AGENTS.md is not always a clean
+  // disappearance the way it always was pre-slice-2 — `region: true` means
+  // STRIP the managed region, never delete the file (`uninstall.ts`'s own
+  // per-file loop, `planUninstall`'s region pass above). `notACleanRemoval`
+  // deliberately still reads ANY `'remove'` as clean (slice 1's own pairing
+  // stays correct for the ordinary whole-file case), so this is a THIRD,
+  // separate condition: the shim genuinely vanishes while AGENTS.md survives
+  // with its rulebook content gone — neither "already gone" nor "exists and
+  // is yours" (both are false of a stripped-but-present file) describes it,
+  // so it gets its own wording rather than reusing `siblingState`.
+  const agentsRegionSurvivesStripped =
+    agentsAction?.verdict === 'remove' && agentsAction.region === true;
   if (claudeAction?.verdict === 'remove' && notACleanRemoval(agentsAction)) {
     claudeAction.note =
       `this is the rig's own ${claudeMapRel} — removing it leaves AGENTS.md, which ` +
       `${await siblingState(agentsAction, 'AGENTS.md')}, as the only rulebook copy`;
+  } else if (claudeAction?.verdict === 'remove' && agentsRegionSurvivesStripped) {
+    claudeAction.note =
+      `this is the rig's own ${claudeMapRel} — removing it while AGENTS.md's own managed ` +
+      'region is stripped in this same run leaves no readable rulebook copy anywhere; ' +
+      'AGENTS.md itself is kept, with the region gone';
   }
-  if (agentsAction?.verdict === 'remove' && notACleanRemoval(claudeAction)) {
-    agentsAction.note =
-      `this is the rig's own AGENTS.md — removing it leaves ${claudeMapRel}, which ` +
-      `${await siblingState(claudeAction, claudeMapRel)}, as the only rulebook copy`;
+  if (agentsAction !== undefined && agentsAction.verdict === 'remove') {
+    if (notACleanRemoval(claudeAction)) {
+      agentsAction.note =
+        `this is the rig's own AGENTS.md — removing it leaves ${claudeMapRel}, which ` +
+        `${await siblingState(claudeAction, claudeMapRel)}, as the only rulebook copy`;
+    } else if (agentsRegionSurvivesStripped && claudeAction?.verdict === 'remove') {
+      agentsAction.note =
+        `this run strips the AGENTS.md managed region — with the rig's own ${claudeMapRel} ` +
+        'also being removed, no readable rulebook copy is left anywhere; AGENTS.md itself is ' +
+        'kept, with the region gone';
+    }
   }
 
   // Round 4, blocker 1 (round 5: shares `renderedAgentsMd` with `upgrade.ts`
@@ -1464,7 +1573,7 @@ export async function applyUninstall(
     unverifiedBecause?: string;
   }> = [];
   for (let i = 0; i < toRemove.length; i++) {
-    const { rel, recordedHash } = toRemove[i]!;
+    const { rel, recordedHash, region } = toRemove[i]!;
 
     const protectingWiring = applyTimeProtectedHooks.get(rel);
     if (protectingWiring !== undefined) {
@@ -1562,6 +1671,51 @@ export async function applyUninstall(
       // prevent. (`wiringBytes` is still used at plan time, in `planUninstall`
       // above — there it IS the immediate read, since nothing runs between it
       // and that file's own verdict.)
+      if (region === true) {
+        // RP-256 slice 2: this "remove" means STRIP the managed region, never
+        // delete the file — re-verified the same way the plan itself checked
+        // it (the confirmation-prompt window is exactly where a hand edit
+        // could land), against the region BODY's hash, not the whole file's.
+        const dest = onDisk(repoDir, rel);
+        const currentStat = await lstat(dest).catch(() => null);
+        const current = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
+        // Round 2, code-reviewer B4 / security-scanner B2: strict decode —
+        // bytes that are not valid UTF-8 cannot be safely re-composed as a
+        // string, so they are treated the same as a malformed region:
+        // refused, reported changed-since-planning, never rewritten.
+        const decoded = current === null ? null : decodeStrictUtf8(current);
+        const located = decoded === null ? null : locateRegion(decoded);
+        if (
+          located === null ||
+          recordedHash === undefined ||
+          sha256(located.body) !== recordedHash
+        ) {
+          changedSincePlanning.push(rel);
+          continue;
+        }
+        // Round 2, code-reviewer B1 / security-scanner B1: `located.suffix`
+        // — content appended AFTER the end marker's own line — survives the
+        // strip too, concatenated directly onto the prefix with no
+        // separator inserted (mirrors `stripRegion` in `agents-md-region.ts`).
+        const restored = `${located.userBytes}${located.suffix}`;
+        // Round 2, security-scanner A1: atomic — a temp file in the same
+        // directory, then a rename, so a hard-linked AGENTS.md is replaced
+        // rather than written through, and the original file's own mode is
+        // preserved rather than defaulted.
+        const result = await atomicWriteInRepo(
+          repoDir,
+          rel,
+          Buffer.from(restored, 'utf8'),
+          currentStat !== null ? currentStat.mode & 0o777 : 0o644,
+        );
+        if (!result.ok) {
+          throw new Error(
+            `refusing to strip the managed region from "${rel}": it resolves outside ${repoDir} or through a symlink`,
+          );
+        }
+        removed.push(rel);
+        continue;
+      }
       if (recordedHash !== undefined) {
         const current = await readFile(onDisk(repoDir, rel));
         if (sha256(current) !== recordedHash) {

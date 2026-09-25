@@ -20,6 +20,14 @@ import { isSeedOncePath, priorSeedHash } from '../lib/seed-once.js';
 import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { packageVersion } from '../lib/version.js';
+import { readBoundedFileInRepo } from '../lib/bounded-file.js';
+import {
+  composeRegion,
+  decodeStrictUtf8,
+  locateRegion,
+  MAX_AGENTS_MD_REGION_BYTES,
+} from '../lib/agents-md-region.js';
+import { atomicWriteInRepo } from '../lib/atomic-write.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class UpgradeError extends Error {}
@@ -68,6 +76,18 @@ export interface UpgradeAction {
   reason?: string;
   /** Where the new version lives, so the diff can be done by hand. */
   templatePath?: string | null;
+  /**
+   * RP-256 slice 2: set only on AGENTS.md's own `update` verdict when the
+   * manifest tracks it as a managed region — the region BODY's hash the
+   * plan-time check vouched for (never the whole file's). `applyUpgrade`
+   * re-reads AGENTS.md immediately before writing it and re-checks this
+   * value against the region it finds THEN, exactly the way
+   * `UninstallAction.recordedHash` already does for `uninstall` — the
+   * confirmation-prompt window is exactly where a hand edit could land, and
+   * baking plan-time content in blind would silently lose it (owner design,
+   * RP-256 comment 20585, "re-verified at apply time").
+   */
+  recordedHash?: string;
   /**
    * True only on CLAUDE.md's own action, and only when the held-back
    * coupling below fired. Round 4 advisory: a caller (`index.ts`) reads
@@ -159,6 +179,17 @@ export interface UpgradeResult {
   written: string[];
   /** Whether `cleanup` actually removed the leftover rescue file — it re-checks it first. */
   removedRescue: boolean;
+  /**
+   * RP-256 slice 2: paths whose `update`-verdict write `applyUpgrade`
+   * refused because its apply-time re-check found the bytes no longer match
+   * what the plan vouched for — the same concept
+   * `ApplyUninstallResult.changedSincePlanning` already names, kept to the
+   * same spelling on purpose (`.claude/rules/invariants.md`, "one spelling
+   * of a fact"). Today only ever `['AGENTS.md']`, and only when the
+   * manifest tracks it as a managed region. Absent (never an empty array)
+   * when nothing changed since planning.
+   */
+  changedSincePlanning?: string[];
 }
 
 const SETTINGS = '.claude/settings.json';
@@ -457,6 +488,137 @@ async function readRescueFile(
 }
 
 /**
+ * RP-256 slice 2 — what is actually sitting at `AGENTS.md` when the
+ * manifest tracks it as a managed region rather than a whole file: `absent`
+ * (deleted since install), `non-file` (a directory or other non-regular
+ * entry sits there now), `unsafe` (unreadable within {@link
+ * MAX_AGENTS_MD_REGION_BYTES}, or the path resolves outside `repoDir`
+ * through a symlink), or a plain file's bytes — read through the same
+ * FIFO-safe, bounded, containment-checked mechanics `init.ts` uses for the
+ * very same file ({@link readBoundedFileInRepo}, `../lib/bounded-file.js`).
+ */
+async function readAgentsMdForRegion(
+  repoDir: string,
+): Promise<
+  { kind: 'absent' } | { kind: 'non-file' } | { kind: 'unsafe' } | { kind: 'file'; bytes: Buffer }
+> {
+  const dest = onDisk(repoDir, 'AGENTS.md');
+  let stat;
+  try {
+    stat = await lstat(dest);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { kind: 'absent' };
+    return { kind: 'unsafe' };
+  }
+  if (!stat.isFile()) return { kind: 'non-file' };
+  const bytes = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
+  if (bytes === null) return { kind: 'unsafe' };
+  return { kind: 'file', bytes };
+}
+
+/**
+ * RP-256 slice 2 — what an upgrade does with a region-tracked `AGENTS.md`:
+ * never planned as a whole file (see `planUpgrade`'s own header note on
+ * skipping it from the generic per-file loop). An unedited region (its
+ * body's hash still matches `recordedHash`) is refreshed to this release's
+ * current rendering — `unchanged` when that rendering has not moved either.
+ * Anything else — the markers gone or malformed, the body edited since
+ * install, the file itself missing or not a plain file — is `conflict`:
+ * reported, never written, and the manifest's `regions` entry carries the
+ * OLD hash forward unchanged, exactly like an ordinary file `conflict`
+ * leaves the user's bytes as theirs.
+ */
+async function planAgentsMdRegion(
+  repoDir: string,
+  recordedHash: string,
+  project: RigProject,
+  layers: readonly Layer[],
+): Promise<{
+  action: UpgradeAction;
+  nextHash: string;
+  currentBytes: Buffer | null;
+  /** The whole-file bytes to write on an `update` verdict; `undefined` otherwise. */
+  content?: string;
+}> {
+  const current = await readAgentsMdForRegion(repoDir);
+  if (current.kind !== 'file') {
+    return {
+      action: {
+        rel: 'AGENTS.md',
+        verdict: 'conflict',
+        reason:
+          current.kind === 'absent'
+            ? 'installed as a managed region, and the file is gone — not restored'
+            : 'a directory or other non-regular entry exists where AGENTS.md belongs — the ' +
+              'managed region cannot be verified; left untouched',
+      },
+      nextHash: recordedHash,
+      currentBytes: null,
+    };
+  }
+  // Round 2, code-reviewer B4 / security-scanner B2: decoded strictly, not
+  // with a lossy `Buffer#toString('utf8')` — a file that is not valid UTF-8
+  // is treated exactly like a malformed region: reported, never rewritten.
+  const decoded = decodeStrictUtf8(current.bytes);
+  if (decoded === null) {
+    return {
+      action: {
+        rel: 'AGENTS.md',
+        verdict: 'conflict',
+        reason:
+          'AGENTS.md is not valid UTF-8 — the managed region cannot be verified; left untouched',
+      },
+      nextHash: recordedHash,
+      currentBytes: current.bytes,
+    };
+  }
+  const located = locateRegion(decoded);
+  if (located === null || sha256(located.body) !== recordedHash) {
+    return {
+      action: {
+        rel: 'AGENTS.md',
+        verdict: 'conflict',
+        reason:
+          located === null
+            ? 'the managed region markers are missing or malformed since it was installed — left untouched'
+            : 'the managed region was edited since it was installed — the rig no longer manages ' +
+              'it; it is now yours',
+      },
+      nextHash: recordedHash,
+      currentBytes: current.bytes,
+    };
+  }
+  const newBody = (await renderedAgentsMd(project, layers)) ?? '';
+  if (located.body === newBody) {
+    return {
+      action: { rel: 'AGENTS.md', verdict: 'unchanged' },
+      nextHash: recordedHash,
+      currentBytes: current.bytes,
+    };
+  }
+  return {
+    action: {
+      rel: 'AGENTS.md',
+      verdict: 'update',
+      reason: 'the managed region refreshed to this release — your own content is preserved',
+      // RP-256 slice 2: the OLD hash this plan-time check just vouched the
+      // region against — `applyUpgrade` re-reads the file and re-checks this
+      // SAME value immediately before writing, never trusting this plan-time
+      // read across the confirmation-prompt window.
+      recordedHash,
+    },
+    nextHash: sha256(newBody),
+    currentBytes: current.bytes,
+    // Round 2, code-reviewer B1 / security-scanner B1: `located.suffix`
+    // carries through — see `applyUpgrade`'s own re-read-and-splice for why
+    // this plan-time copy is not what actually gets written (it is rebuilt
+    // from a fresh re-read immediately before the write); kept here so a
+    // caller inspecting the plan alone still sees the correct shape.
+    content: composeRegion(located.userBytes, newBody, located.suffix),
+  };
+}
+
+/**
  * What a rig with no manifest looks like it is, from the files it has.
  *
  * RP-177 ships only one payload, but a pre-0.10 rig may still carry files that
@@ -629,6 +791,13 @@ export async function planUpgrade(
   // below exactly like a path RP-177 retired outright: never written, never
   // deleted, simply no longer this plan's to manage.
   const files = await initInstallSet(repoDir, project, layers, claudePlacement);
+  // RP-256 slice 2: a region-tracked AGENTS.md is never planned as a whole
+  // file — its manifest entry lives under `regions`, not `files`, precisely
+  // because the bytes on disk are a mix of the user's own and this rig's.
+  // Excluded from the generic per-file loop below; handled on its own,
+  // after that loop, by `planAgentsMdRegion`.
+  const agentsMdRegionTracked = manifest?.regions?.['AGENTS.md'] !== undefined;
+  const filesForLoop = agentsMdRegionTracked ? files.filter((f) => f.rel !== 'AGENTS.md') : files;
   // Blocker A's second half, and round 5's correction to it: even an
   // ADOPTED bootstrapped opt-in layer must never manufacture a file it did
   // not find, but "does not create it" is not the same thing as "forgets it
@@ -664,6 +833,10 @@ export async function planUpgrade(
   const actions: UpgradeAction[] = [];
   const contents = new Map<string, string>();
   const nextFiles: Record<string, string> = {};
+  // RP-256 slice 2: carries `manifest.regions` forward untouched by default —
+  // the one entry it tracks today (`'AGENTS.md'`) is overwritten below by
+  // `planAgentsMdRegion`'s own verdict, never left stale.
+  const nextRegions: Record<string, string> = { ...(manifest?.regions ?? {}) };
   let wiring: string | null = null;
   const wiringByPath = new Map<string, string>();
   // Only ever consulted by the CLAUDE.md/AGENTS.md coupling below, which runs
@@ -675,8 +848,12 @@ export async function planUpgrade(
   // loop — none of the verdicts this loop can reach (`conflict`, `update`,
   // `wiring`, and the `deleted`/`new` branches' own manifest bookkeeping)
   // fit a file that is written at most once and never byte-compared again.
+  // Disjoint from the region-tracked exclusion above: a seed-once path
+  // (PLAN.md) is never a region-tracked one (AGENTS.md), but both are
+  // excluded from this loop on the same principle — neither is an ordinary
+  // rig-owned file this loop's ordinary verdicts fit.
   const seedOnceKept: Record<string, string> = {};
-  for (const file of files) {
+  for (const file of filesForLoop) {
     if (isSeedOncePath(file.rel)) continue;
     const currentFile = await readIfPresent(repoDir, file.rel);
     if (currentFile.kind === 'non-file') {
@@ -847,6 +1024,20 @@ export async function planUpgrade(
     }
   }
 
+  // RP-256 slice 2: the region-tracked AGENTS.md's own verdict, decided
+  // entirely apart from the generic per-file loop above (it never saw this
+  // path — see `filesForLoop`). Pushed into `actions` here so the CLAUDE.md
+  // coupling immediately below (and any caller reading `plan.actions`) finds
+  // it exactly where it would have looked for an ordinary AGENTS.md action.
+  const recordedAgentsRegionHash = manifest?.regions?.['AGENTS.md'];
+  if (agentsMdRegionTracked && recordedAgentsRegionHash !== undefined) {
+    const region = await planAgentsMdRegion(repoDir, recordedAgentsRegionHash, project, layers);
+    actions.push(region.action);
+    nextRegions['AGENTS.md'] = region.nextHash;
+    if (region.currentBytes !== null) currentBytesByRel.set('AGENTS.md', region.currentBytes);
+    if (region.content !== undefined) contents.set('AGENTS.md', region.content);
+  }
+
   // The seed-once pass (RP-257) skipped above — one path today, `PLAN.md` —
   // decided entirely on its own terms: never a diff against what this
   // release would write, only "has this ever been seeded, and is it there
@@ -956,6 +1147,11 @@ export async function planUpgrade(
   const claudeAction = actions.find((a) => a.rel === 'CLAUDE.md');
   const agentsAction = actions.find((a) => a.rel === 'AGENTS.md');
   const agentsUnreadable = ((): boolean => {
+    // RP-256 slice 2: the AGENTS.md.rig-new rescue is a whole-file remedy for
+    // a whole-file layout — it has no meaning once AGENTS.md is a mix of user
+    // and rig bytes (its own `mv` remedy would destroy the user's prefix), so
+    // this layout never holds CLAUDE.md back over it at all.
+    if (agentsMdRegionTracked) return false;
     if (agentsAction === undefined) return true; // no rulebook to speak of at all
     if (agentsAction.verdict === 'deleted') return true;
     // `update` / `unchanged` / `new`: this release's OWN canonical AGENTS.md
@@ -1110,6 +1306,7 @@ export async function planUpgrade(
       layers,
       files: nextFiles,
       ...(Object.keys(nextKept).length > 0 ? { kept: nextKept } : {}),
+      ...(Object.keys(nextRegions).length > 0 ? { regions: nextRegions } : {}),
     },
   };
 }
@@ -1170,9 +1367,71 @@ export async function applyUpgrade(
   // writeFile, so both pre-existing and newly-visible symlink components are
   // refused.
   const destinations = await preflightWritable(repoDir, plan);
+  const changedSincePlanning: string[] = [];
+  // RP-256 slice 2: once a region write is refused as changed-since-planning,
+  // the manifest this run is about to write must not go on vouching for the
+  // NEW body it never actually wrote — reverted to the OLD (still-accurate)
+  // hash the moment that happens, immediately below.
+  let revertAgentsRegionHash: string | undefined;
 
   for (const action of plan.actions) {
     if (action.verdict !== 'update' && action.verdict !== 'new') continue;
+
+    // RP-256 slice 2 (owner design, RP-256 comment 20585, "re-verified at
+    // apply time"): a region-tracked AGENTS.md is never written from the
+    // plan's own (already stale by the time this runs) bytes — re-read the
+    // file now, re-locate the region, and re-check ITS body against the SAME
+    // hash the plan-time check used, exactly the way `applyUninstall`'s own
+    // `region === true` branch already re-verifies before stripping. Only
+    // `update` ever carries `recordedHash` (`planAgentsMdRegion`'s only
+    // branch that sets it), so this never touches an ordinary file.
+    if (action.rel === 'AGENTS.md' && action.recordedHash !== undefined) {
+      // Round 2, security-scanner A2: rendered BEFORE the re-read, not after
+      // — the rendered body depends only on the project/layers this
+      // manifest already carries forward, never on the file this block is
+      // about to re-read, so there is no reason to await template I/O
+      // between the re-verify and the write. Doing it first shrinks the
+      // window an edit could land in to exactly the re-read-to-write gap,
+      // the same size `uninstall.ts`'s own region-strip branch already has.
+      const newBody = (await renderedAgentsMd(plan.manifest.project, plan.manifest.layers)) ?? '';
+      const dest = destinations.get('AGENTS.md')!;
+      const currentStat = await lstat(dest).catch(() => null);
+      const currentBytes = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
+      // Round 2, code-reviewer B4 / security-scanner B2: decoded strictly —
+      // a file that is not valid UTF-8 can never be safely re-composed as a
+      // string, so it is treated exactly like a malformed or edited region:
+      // refused, never written, reported changed-since-planning.
+      const currentText = currentBytes === null ? null : decodeStrictUtf8(currentBytes);
+      const located = currentText === null ? null : locateRegion(currentText);
+      if (located === null || sha256(located.body) !== action.recordedHash) {
+        changedSincePlanning.push('AGENTS.md');
+        revertAgentsRegionHash = action.recordedHash;
+        continue;
+      }
+      // Round 2, code-reviewer B1 / security-scanner B1: `located.suffix`
+      // carries through byte-for-byte — content the user appended AFTER the
+      // end marker's own line is outside the managed region, exactly like
+      // their prefix, and a refresh must not silently drop it.
+      const composed = composeRegion(located.userBytes, newBody, located.suffix);
+      // Round 2, security-scanner A1: atomic — a temp file in the same
+      // directory, then a rename, so a hard-linked AGENTS.md is replaced
+      // rather than written through to whatever else it names, and the
+      // original file's own mode is preserved rather than defaulted.
+      const result = await atomicWriteInRepo(
+        repoDir,
+        'AGENTS.md',
+        Buffer.from(composed, 'utf8'),
+        currentStat !== null ? currentStat.mode & 0o777 : 0o644,
+      );
+      if (!result.ok) {
+        throw new UpgradeError(
+          `Refusing to write "AGENTS.md" through a symlink or outside ${repoDir}.`,
+        );
+      }
+      written.push('AGENTS.md');
+      continue;
+    }
+
     const content = plan.contents.get(action.rel);
     // Never a silent empty file: a missing entry is a defect in the plan, and
     // truncating somebody's rule file is the worst way to report one.
@@ -1222,6 +1481,23 @@ export async function applyUpgrade(
     }
   }
 
-  await writeManifest(repoDir, plan.manifest);
-  return { written, removedRescue };
+  // RP-256 slice 2: `plan.manifest.regions` was built at PLAN time on the
+  // assumption the region write above would succeed — when the apply-time
+  // re-check refused it instead, the manifest must go on vouching for the
+  // bytes that are ACTUALLY on disk (the old, unedited body), never the new
+  // one this run never wrote. A fresh object, not a mutation of `plan.manifest`
+  // itself: the plan a caller already holds must not change out from under it.
+  const manifestToWrite =
+    revertAgentsRegionHash !== undefined && plan.manifest.regions !== undefined
+      ? {
+          ...plan.manifest,
+          regions: { ...plan.manifest.regions, 'AGENTS.md': revertAgentsRegionHash },
+        }
+      : plan.manifest;
+  await writeManifest(repoDir, manifestToWrite);
+  return {
+    written,
+    removedRescue,
+    ...(changedSincePlanning.length > 0 ? { changedSincePlanning } : {}),
+  };
 }

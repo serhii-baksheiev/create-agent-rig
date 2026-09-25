@@ -1,5 +1,4 @@
-import { constants } from 'node:fs';
-import { access, lstat, mkdir, open, readFile, realpath, writeFile } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { settingsForInstalledHooks } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
@@ -19,6 +18,31 @@ import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { agentOsUniversalDir } from '../templates.js';
 import { packageVersion } from '../lib/version.js';
+import { readBoundedFileInRepo } from '../lib/bounded-file.js';
+import {
+  composeRegion,
+  decodeStrictUtf8,
+  hasAnyMarker,
+  MAX_AGENTS_MD_REGION_BYTES,
+} from '../lib/agents-md-region.js';
+import { atomicWriteInRepo } from '../lib/atomic-write.js';
+
+/**
+ * Codex's documented combined-budget default (round 2, prose-reviewer
+ * blocker 1): `project_doc_max_bytes`, 32 KiB, is the total Codex stops
+ * ADDING AGENTS.md files at once it reaches — not a per-file cap — per
+ * Codex's own docs (learn.chatgpt.com/docs/agent-configuration/agents-md,
+ * redirected from developers.openai.com/codex/guides/agents-md, read
+ * 2026-09-25): "stops adding files once the combined size reaches the limit
+ * defined by `project_doc_max_bytes` (32 KiB by default)". Configurable, and
+ * a budget across every AGENTS.md Codex reads for a project — not specific
+ * to this one file. The warning below fires on this one file alone already
+ * exceeding that DEFAULT combined budget, which is a fair (if conservative)
+ * proxy: a file this large leaves no room for any other AGENTS.md Codex
+ * would otherwise also read, even before the rest of the combined total is
+ * considered.
+ */
+const CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES = 32768;
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class InitError extends Error {}
@@ -101,6 +125,13 @@ export interface InitResult {
   written: string[];
   skipped: string[];
   plannedCount: number;
+  /**
+   * Non-fatal notices the CLI prints after a successful install — today,
+   * only the AGENTS.md managed region landing over Codex's default combined
+   * AGENTS.md budget (`project_doc_max_bytes`, 32 KiB) on its own
+   * (RP-256 slice 2). Always present, empty when there is nothing to say.
+   */
+  warnings: string[];
 }
 
 const SETTINGS = '.claude/settings.json';
@@ -386,14 +417,17 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   }
 
   // Refuse to clobber whichever CLAUDE.md slot this run actually plans to
-  // write (root, or nested at `.claude/CLAUDE.md`), and AGENTS.md — init
-  // edits someone's working repository (brief §4, non-negotiable). RP-256
-  // slice 1: a pre-existing ROOT CLAUDE.md no longer reaches this loop at
-  // all once placement is `nested` — it is not in `files`, so it is never
-  // this rig's to overwrite in the first place; see `recordInstall` below for
-  // where it is recorded instead.
-  for (const map of mapsFor(placement)) {
-    const dest = destinations.get(map);
+  // write (root, or nested at `.claude/CLAUDE.md`) — init edits someone's
+  // working repository (brief §4, non-negotiable). RP-256 slice 1: a
+  // pre-existing ROOT CLAUDE.md no longer reaches this loop at all once
+  // placement is `nested` — it is not in `files`, so it is never this rig's
+  // to overwrite in the first place; see `recordInstall` below for where it
+  // is recorded instead. RP-256 slice 2: AGENTS.md is no longer refused
+  // here at all — a plain pre-existing one now coexists (see the region
+  // block below); only the CLAUDE.md slot still refuses outright.
+  const claudeMap = mapsFor(placement)[0];
+  {
+    const dest = destinations.get(claudeMap);
     if (dest !== undefined && (await exists(dest))) {
       // code-review round 1 advisory A8/blocker B1 (PR #324): a DIRECTORY at
       // a map's path is not the user's file to leave in place the way a
@@ -407,38 +441,142 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       // compare.
       if ((await lstat(dest).catch(() => null))?.isDirectory()) {
         throw new InitError(
-          `This repo already has a directory at ${map}. Refusing to write into it. Move or remove that directory, then run create-agent-rig init again.`,
+          `This repo already has a directory at ${claudeMap}. Refusing to write into it. Move or remove that directory, then run create-agent-rig init again.`,
         );
       }
       // A map this rig wrote and that still matches its manifest is safe to
       // skip on an idempotent re-run. An unrecorded or edited map remains the
       // user's guidance and is still refused.
       if (
-        previous?.files[map] !== undefined &&
-        sha256(await readFile(dest)) === previous.files[map]
+        previous?.files[claudeMap] !== undefined &&
+        sha256(await readFile(dest)) === previous.files[claudeMap]
       ) {
-        continue;
+        // idempotent re-run — nothing to refuse
+      } else {
+        // Suggesting `upgrade` only makes sense once there is a rig for it to
+        // refresh. With no manifest at all, that suggestion loops straight
+        // into upgrade's OWN "no rig found, run init" refusal.
+        const remedy =
+          previous !== null
+            ? 'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.'
+            : 'Merge the agent-os map in by hand.';
+        throw new InitError(
+          `This repo already has a ${claudeMap}. Refusing to overwrite it. ${remedy}`,
+        );
       }
-      // "AGENTS.md" starts with a vowel SOUND ("a" said as a letter, /eɪ/);
-      // "CLAUDE.md" (root or nested) does not — so the article is picked per
-      // file rather than hardcoded to "an", which read as "an CLAUDE.md".
-      const article = /^[aeiou]/i.test(map) ? 'an' : 'a';
-      // Suggesting `upgrade` only makes sense once there is a rig for it to
-      // refresh. With no manifest at all, that suggestion loops straight
-      // into upgrade's OWN "no rig found, run init" refusal — the bug this
-      // slice closes for AGENTS.md's refusal in particular.
-      const remedy =
-        previous !== null
-          ? 'Merge the agent-os map in by hand, or run create-agent-rig upgrade to refresh a rig.'
-          : 'Merge the agent-os map in by hand.';
-      throw new InitError(
-        `This repo already has ${article} ${map}. Refusing to overwrite it. ${remedy}`,
-      );
+    }
+  }
+
+  // RP-256 slice 2: a plain pre-existing AGENTS.md coexists — its bytes
+  // become the managed region's prefix (composed below, once the rendered
+  // body is available). The one refusal that remains is markers already
+  // there that init cannot safely merge with: a well-formed region from
+  // elsewhere, or a malformed/foreign fragment of one (an unterminated
+  // begin, a stray end, two begins). Never suggests `upgrade` — there is no
+  // rig installed yet for it to refresh.
+  //
+  // Round 2, code-reviewer B2/B3: a pre-existing AGENTS.md this run's OWN
+  // manifest already vouches for — either as a whole rig-owned file
+  // (`previous.files[AGENTS.md]`, the pre-slice-2 shape) or as an already
+  // region-tracked one (`previous.regions[AGENTS.md]`) — is never routed
+  // through the foreign-file marker check at all. A whole-file entry keeps
+  // the EXACT pre-slice-2 behaviour: unedited is left alone, edited is
+  // refused outright. A region entry is always left alone, edited or not —
+  // idempotent, like any other `kept` path — never refused, never
+  // duplicated: `regions` is not `recordInstall`'s to touch this run
+  // (`extraRegions` stays `undefined`), so `previous.regions` is carried
+  // forward unchanged by that function's own default.
+  // Round 3, code-reviewer blocker 1: a region-tracked AGENTS.md the user
+  // DELETED, then `init` re-run — the marker-check block below only ever
+  // runs `if (await exists(dest))`, so a deleted path skips it entirely and
+  // falls straight into the ordinary write loop, which writes the whole
+  // rendered rulebook (there is no existing prefix to splice into). That
+  // write is exactly right — this IS a clean-repo install of AGENTS.md now.
+  // What is not right, without this flag, is `previous.regions['AGENTS.md']`
+  // being carried forward stale: `dropStaleRegion` names the path whose
+  // `regions` entry `recordInstall` must drop this run, so the fresh
+  // whole-file write is recorded in `files` (never `regions`, never both).
+  let dropStaleRegion: string[] | undefined;
+  let existingAgentsBytes: Buffer | null = null;
+  let existingAgentsText: string | null = null;
+  let existingAgentsMode: number | null = null;
+  {
+    const dest = destinations.get(AGENTS_MAP)!;
+    if (!(await exists(dest)) && previous?.regions?.[AGENTS_MAP] !== undefined) {
+      dropStaleRegion = [AGENTS_MAP];
+    }
+    if (await exists(dest)) {
+      const stat = await lstat(dest).catch(() => null);
+      if (stat?.isDirectory()) {
+        throw new InitError(
+          `This repo already has a directory at ${AGENTS_MAP}. Refusing to write into it. Move or remove that directory, then run create-agent-rig init again.`,
+        );
+      }
+      const bytes = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
+      if (bytes === null) {
+        throw new InitError(
+          `Refusing to read "${AGENTS_MAP}": not a plain file this rig can safely merge with ` +
+            `(too large, not a regular file, or it resolves outside ${repoDir}). Move or remove ` +
+            'it, then run create-agent-rig init again.',
+        );
+      }
+      const wholeFileHash = previous?.files[AGENTS_MAP];
+      const regionHash = previous?.regions?.[AGENTS_MAP];
+      if (wholeFileHash !== undefined) {
+        // Round 2, B3: this rig's OWN whole-file AGENTS.md (from before
+        // slice 2, or from a clean install this same release did) — unedited
+        // is the ordinary idempotent "already installed" case (left in
+        // `files` below, generic loop reports it `skipped`); edited is
+        // refused exactly as every release before this slice already did.
+        // Never routed into the foreign-marker check: a rig's own rendered
+        // rulebook carries no region markers at all, so that check would
+        // silently accept it and append a SECOND copy of the rulebook.
+        if (sha256(bytes) !== wholeFileHash) {
+          throw new InitError(
+            `This repo already has an ${AGENTS_MAP}. Refusing to overwrite it. Merge the agent-os ` +
+              'map in by hand, or run create-agent-rig upgrade to refresh a rig.',
+          );
+        }
+      } else if (regionHash !== undefined) {
+        // Round 2, B2: already region-tracked by THIS rig's own manifest —
+        // always left alone, whether the region is still exactly what was
+        // installed or the user has since edited inside it. Nothing to
+        // refuse, nothing to append: `existingAgentsBytes` stays unset, so
+        // AGENTS.md stays in the ordinary write loop below and is reported
+        // `skipped` (the file already exists), exactly like any other
+        // untouched or user-edited rig-tracked path.
+      } else {
+        // Genuinely foreign: neither manifest bucket names this path.
+        const text = decodeStrictUtf8(bytes);
+        if (text === null) {
+          throw new InitError(
+            `Refusing to merge "${AGENTS_MAP}": its bytes are not valid UTF-8, so this rig cannot ` +
+              'safely read it as text without risking corruption. Save it as UTF-8, then run ' +
+              'create-agent-rig init again.',
+          );
+        }
+        if (hasAnyMarker(text)) {
+          throw new InitError(
+            `This repo's ${AGENTS_MAP} already carries create-agent-rig region markers that init ` +
+              'cannot safely merge with. Resolve them by hand, then run create-agent-rig init again.',
+          );
+        }
+        existingAgentsBytes = bytes;
+        existingAgentsText = text;
+        existingAgentsMode = stat !== null ? stat.mode & 0o777 : null;
+      }
     }
   }
 
   const contents = await initFileContents(repoDir, options.project, layers, placement);
-  const actions = await mapConcurrent(files, 16, async (rel) => {
+  // RP-256 slice 2: once a pre-existing AGENTS.md has passed the marker
+  // check above, it is no longer this loop's ordinary "exists → skipped"
+  // path — it gets a managed region appended instead, handled separately
+  // right after this loop so the append (and its own dry-run/warning
+  // handling) has the rendered body available.
+  const filesToWrite =
+    existingAgentsBytes !== null ? files.filter((rel) => rel !== AGENTS_MAP) : files;
+  const actions = await mapConcurrent(filesToWrite, 16, async (rel) => {
     const dest = destinations.get(rel)!;
     if (await exists(dest)) {
       // never overwrite a file init did not write (a user's own copy)
@@ -464,6 +602,9 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     return { rel, verdict: 'written' as const };
   });
   const written = actions.filter(({ verdict }) => verdict === 'written').map(({ rel }) => rel);
+  const skippedExisting = actions
+    .filter(({ verdict }) => verdict === 'skipped')
+    .map(({ rel }) => rel);
   // `seed-gone` reports as skipped to the caller — nothing was written — but
   // is deliberately kept OUT of the `skipped` array `recordInstall` reads:
   // that array's own handling of a skipped path re-hashes whatever is
@@ -471,9 +612,6 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // would erase the very record that makes this deletion permanent. See
   // `recordInstall`'s seed-once migration pass, which is what actually
   // carries a seed-gone path's manifest entry forward unchanged.
-  const skippedExisting = actions
-    .filter(({ verdict }) => verdict === 'skipped')
-    .map(({ rel }) => rel);
   const seedGone = actions.filter(({ verdict }) => verdict === 'seed-gone').map(({ rel }) => rel);
   // code-reviewer round 1 (PR #332) blocker 3: a seed-gone path is not on
   // disk at all — it is a deliberate deletion this run is refusing to heal,
@@ -488,6 +626,45 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // seed-gone path — a plain `init` never plants one (see the loop above),
   // so it is not among the files THIS run would actually write either.
   const plannedCount = files.length - seedGone.length;
+  const warnings: string[] = [];
+
+  // RP-256 slice 2: the append itself. `existingAgentsBytes` is only ever
+  // set once the marker check above has already let this run through, so
+  // there is nothing left to refuse here — only compose, warn if the result
+  // is large, and (outside a dry run) write it and record it. Round 2,
+  // security-scanner B1/A1: written atomically (a temp file in the same
+  // directory, then a rename), so a hard link at AGENTS.md is replaced —
+  // never written through to whatever else it names — and the original
+  // file's own mode is preserved rather than defaulted.
+  let regionBodyHash: string | undefined;
+  if (existingAgentsBytes !== null && existingAgentsText !== null) {
+    const body = contents.get(AGENTS_MAP) ?? '';
+    const composed = composeRegion(existingAgentsText, body);
+    regionBodyHash = sha256(body);
+    const composedSize = Buffer.byteLength(composed, 'utf8');
+    if (composedSize > CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES) {
+      warnings.push(
+        `${AGENTS_MAP} is now ${composedSize} bytes, over Codex's default combined AGENTS.md ` +
+          `budget of ${CODEX_DEFAULT_PROJECT_DOC_MAX_BYTES} bytes (32 KiB, \`project_doc_max_bytes\`) ` +
+          'on its own. The install still succeeded — Codex may stop reading before the rest of ' +
+          'this file, or before any other AGENTS.md it would otherwise also read.',
+      );
+    }
+    if (!options.dryRun) {
+      const result = await atomicWriteInRepo(
+        repoDir,
+        AGENTS_MAP,
+        Buffer.from(composed, 'utf8'),
+        existingAgentsMode ?? 0o644,
+      );
+      if (!result.ok) {
+        throw new InitError(
+          `Refusing to write "${AGENTS_MAP}" through a symlink or outside ${repoDir}.`,
+        );
+      }
+      written.push(AGENTS_MAP);
+    }
+  }
 
   if (!options.dryRun) {
     // RP-256 slice 1: on a `nested` placement, root CLAUDE.md is the user's
@@ -514,6 +691,13 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     // computed at all" (a `root` placement, where dropping it would erase a
     // kept entry this run has no opinion on).
     const dropKept = placement === 'nested' && keptRootClaude === null ? [ROOT_CLAUDE] : undefined;
+    // RP-256 slice 2: the region body's hash, recorded under `regions`
+    // rather than `files` — AGENTS.md on disk is a mix of the user's own
+    // bytes and this rig's, so neither existing bucket describes it.
+    // `undefined` unless this run actually appended a region (a clean repo,
+    // or a dry run, never sets `regionBodyHash`).
+    const extraRegions =
+      regionBodyHash !== undefined ? { [AGENTS_MAP]: regionBodyHash } : undefined;
     await recordInstall(
       repoDir,
       written,
@@ -523,10 +707,12 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       options.project,
       extraKept,
       dropKept,
+      extraRegions,
+      dropStaleRegion,
     );
   }
 
-  return { written, skipped, plannedCount };
+  return { written, skipped, plannedCount, warnings };
 }
 
 /**
@@ -596,41 +782,15 @@ const MAX_KEPT_BYTES = 1024 * 1024;
  * `null` for anything else: a directory, a missing path, a non-regular
  * target, a target over the cap, a target outside the repo, or a target
  * this process cannot read.
+ *
+ * The FIFO-safe, bounded-read, containment-checked mechanics live in
+ * {@link readBoundedFileInRepo} (`../lib/bounded-file.js`), shared with the
+ * AGENTS.md managed-region reads RP-256 slice 2 adds below — one
+ * implementation, not two that could drift apart (`.claude/rules/
+ * invariants.md`, "one spelling of a fact").
  */
 async function readKeptRootClaudeMd(repoDir: string, abs: string): Promise<Buffer | null> {
-  const flags = constants.O_RDONLY | (process.platform === 'win32' ? 0 : constants.O_NONBLOCK);
-  let handle: Awaited<ReturnType<typeof open>>;
-  try {
-    handle = await open(abs, flags);
-  } catch {
-    return null;
-  }
-  try {
-    const info = await handle.stat();
-    if (!info.isFile() || info.size > MAX_KEPT_BYTES) return null;
-    let repoReal: string;
-    let targetReal: string;
-    try {
-      repoReal = await realpath(repoDir);
-      targetReal = await realpath(abs);
-    } catch {
-      return null;
-    }
-    if (targetReal !== repoReal && !targetReal.startsWith(repoReal + path.sep)) return null;
-    const bytes = Buffer.alloc(MAX_KEPT_BYTES + 1);
-    let offset = 0;
-    while (offset < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, offset, bytes.length - offset, null);
-      if (bytesRead === 0) break;
-      offset += bytesRead;
-    }
-    if (offset > MAX_KEPT_BYTES) return null;
-    return bytes.subarray(0, offset);
-  } catch {
-    return null;
-  } finally {
-    await handle.close().catch(() => undefined);
-  }
+  return readBoundedFileInRepo(repoDir, abs, MAX_KEPT_BYTES);
 }
 
 /**
@@ -695,14 +855,49 @@ async function recordInstall(
   // is stale) — and, exactly because they never reach `written`/`skipped`
   // either, the loops below cannot discover that on their own.
   dropKept?: readonly string[],
+  // RP-256 slice 2: evidence for a region SPLICED into a user-owned file —
+  // `written` already carries `'AGENTS.md'` on an append (so the CLI's
+  // "Installed N files" count and any wiring-disclosure logic still see it),
+  // but its bytes are a mix of the user's own and this rig's, so neither
+  // `files` nor `kept` describes it; the generic loops below explicitly skip
+  // it and this is where it is recorded instead.
+  extraRegions?: Record<string, string>,
+  // Round 3, code-reviewer blocker 1: the opposite finding to `extraRegions`
+  // — a path `previous.regions` still names but THIS run found the region no
+  // longer applies to (the file was deleted, and the generic loop below just
+  // wrote a fresh WHOLE-file rulebook in its place, a clean-repo install in
+  // every sense). Named here, not re-derived: by the time this function
+  // runs, the file already exists again (this run just wrote it), so a
+  // filesystem check here could never tell "still region-tracked" apart from
+  // "freshly whole-file-written" — only `initProject`, which saw the file's
+  // state BEFORE its own writes, knows which one happened.
+  dropRegions?: readonly string[],
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
+  // Round 2: a path ALREADY region-tracked by a previous run (carried
+  // forward via `previous?.regions`, not only one this run itself just
+  // appended via `extraRegions`) must stay excluded from `files`/`kept`
+  // bookkeeping too — B2's "always left alone, idempotent" behaviour skips
+  // it in the generic write loop, which otherwise reads as "the rig saw it
+  // and left it" and would start tracking it under `kept` as well, on top
+  // of `regions`. Round 3: a path THIS run drops from `regions` (see
+  // `dropRegions` above) is excluded from this set too — it just became an
+  // ordinary whole-file write, and `files` is where that belongs.
+  const regionTrackedPaths = new Set([
+    ...Object.keys(previous?.regions ?? {}).filter((rel) => !(dropRegions ?? []).includes(rel)),
+    ...Object.keys(extraRegions ?? {}),
+  ]);
   // A seed-once path (RP-257) is never tracked in `files`, whatever it was
   // written under before — `files` is byte-owned, diffed and rewritten by
   // `upgrade`, and a seed-once path is none of those things from the moment
-  // it first lands. It goes into `kept` instead, below.
-  const ordinaryWritten = written.filter((rel) => !isSeedOncePath(rel));
+  // it first lands. It goes into `kept` instead, below. Disjoint from region
+  // tracking above: a path is never both (SEED_ONCE names PLAN.md alone,
+  // region tracking names AGENTS.md alone), but both are excluded from
+  // `ordinaryWritten` on the same principle — neither belongs in `files`.
+  const ordinaryWritten = written.filter(
+    (rel) => !isSeedOncePath(rel) && !regionTrackedPaths.has(rel),
+  );
   const seedOnceWritten = written.filter((rel) => isSeedOncePath(rel));
   const files = { ...(previous?.files ?? {}) };
   for (const rel of ordinaryWritten) files[rel] = sha256(contents.get(rel) ?? '');
@@ -726,12 +921,15 @@ async function recordInstall(
       if (found !== null) kept[rel] = sha256(found);
       continue;
     }
-    if (files[rel] !== undefined) continue; // the rig wrote it once; still its bytes to vouch for
+    if (files[rel] !== undefined || regionTrackedPaths.has(rel)) continue; // the rig already vouches for it elsewhere
     const found = await readRegularFile(path.join(repoDir, rel));
     if (found === null) delete kept[rel];
     else kept[rel] = sha256(found);
   }
   for (const rel of dropKept ?? []) delete kept[rel];
+  const regions = { ...(previous?.regions ?? {}) };
+  for (const rel of dropRegions ?? []) delete regions[rel];
+  Object.assign(regions, extraRegions ?? {});
   // A seed-once path this run neither wrote nor found on disk (deleted after
   // being seeded — `initProject`'s `seed-gone` verdict, which never reaches
   // `written` or `skipped` at all) is untouched by both loops above, so
@@ -760,6 +958,7 @@ async function recordInstall(
     layers: [...layers],
     files,
     ...(Object.keys(kept).length > 0 ? { kept } : {}),
+    ...(Object.keys(regions).length > 0 ? { regions } : {}),
   };
   await writeManifest(repoDir, manifest);
 }
