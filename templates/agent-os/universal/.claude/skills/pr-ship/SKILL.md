@@ -238,7 +238,12 @@ blockers.
 3. **The project's own checks.** Run the full check suite the project defines
    (see its README / package scripts). Any failure is an instant HOLD — never
    argue with a red check, never rerun flakiness to green
-   (`.claude/rules/workflow.md`).
+   (`.claude/rules/workflow.md`). Run each **required** check through
+   `.claude/scripts/check-run.mjs` — `node .claude/scripts/check-run.mjs
+   --name <check> -- <command>` — so a red one leaves durable, redacted
+   evidence (the failing test identities, a bounded tail, the full log) in
+   the run directory instead of only this session's own terminal
+   scrollback.
 4. **Reviewer fan-out.** The lane from step 2 sets the **floor**:
 
    - `model` → launch the `code-reviewer` agent on the diff, always;

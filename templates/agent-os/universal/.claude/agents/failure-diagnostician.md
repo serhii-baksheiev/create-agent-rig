@@ -55,6 +55,15 @@ worth reading before you reproduce anything by hand — a prior `REGRESSION`,
 or an earlier run's own trace. Their absence is the normal Core path, not a
 gap: read them when present, reproduce directly when not.
 
+A run directory's journal may also carry a `check-result` event
+(`.claude/scripts/check-run.mjs`) for the check you were asked about, or a
+continuation note may carry the `failed-check:` line built from one —
+either names the failing test identity and a bounded tail without the
+original process output. Read it before you reproduce: a failure it captured
+but you cannot reproduce is a different answer (`INCONCLUSIVE`, evidence
+captured but not reproducible now) from one where no such evidence exists at
+all (`INCONCLUSIVE`, failure details unavailable) — say which.
+
 ## The answer
 
 End your report with **exactly one** fenced `json` block of the shared shape

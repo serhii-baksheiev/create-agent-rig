@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-290",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "7d01b7d9b60e0890d039e71ba5ef1046de22906686b2885e3e47757250b5e5d9",
+      "targetSha": "94ca4ea7899687a13049385027dac73dd86fe0f8"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  }
+}

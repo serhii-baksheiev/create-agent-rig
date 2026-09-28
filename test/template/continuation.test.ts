@@ -1551,6 +1551,202 @@ describe('continuation.mjs CLI', () => {
   });
 });
 
+// --- the failed-check line (RP-290) -----------------------------------------
+//
+// RP-290 — "[RIG 1.1][EVIDENCE] Persist required-check failure identity so a
+// fresh diagnostician can answer it". `.claude/scripts/check-run.mjs` (a new
+// script, `test/template/check-run.test.ts`, absent in a generated rig)
+// appends a `check-result` run-journal event for every required check it
+// runs. When RIG_RUN_DIR is declared and the journal holds one whose
+// `outcome` is `fail`, the CLI's composed note gains one more line —
+// `failed-check: <name> exit <code>; tests: <id1>, <id2>…` — built from the
+// LATEST `check-result` record for that check name. A latest record that is a
+// `pass` adds no line. These tests seed the journal directly with
+// `run-journal.mjs`'s own `recordEvent` (the same shape `check-run.mjs` is
+// specified to write), independent of `check-run.mjs` itself, which does not
+// exist yet — that is `check-run.test.ts`'s concern, not this file's.
+//
+// Every test below is expected to fail against the current `continuation.mjs`:
+// it does not read `check-result` events or print a `failed-check:` line at
+// all yet.
+
+describe('continuation.mjs CLI — the failed-check line built from a check-run.mjs check-result record', () => {
+  const BRANCH = 'feat/rp-290-failed-check-line';
+
+  const freshRepo = async (): Promise<{ repoDir: string; headSha: string }> => {
+    const repoDir = await mkdtemp(path.join(tmpdir(), 'continuation-repo-'));
+    await git(['init', '-q'], repoDir);
+    await git(['checkout', '-q', '-b', BRANCH], repoDir);
+    await writeFile(path.join(repoDir, 'a.txt'), 'x\n');
+    await git(['add', '-A'], repoDir);
+    await git(['commit', '-q', '-m', 'init'], repoDir);
+    return { repoDir, headSha: await git(['rev-parse', 'HEAD'], repoDir) };
+  };
+
+  const recordCheckResult = async (
+    runDir: string,
+    fields: {
+      name: string;
+      outcome: 'pass' | 'fail';
+      exitCode: number;
+      failedTests?: string[];
+      tail?: string;
+      now: string;
+    },
+  ) => {
+    const { recordEvent } = (await load('run-journal.mjs')) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+    };
+    const data: Record<string, unknown> = {
+      schema: 1,
+      name: fields.name,
+      command: `pnpm test:${fields.name}`,
+      outcome: fields.outcome,
+      exitCode: fields.exitCode,
+      signal: null,
+      timedOut: false,
+      failedTests: fields.failedTests ?? [],
+      log: `checks/${fields.name}-1.log`,
+    };
+    if (fields.outcome === 'fail' && fields.tail !== undefined) data.tail = fields.tail;
+    return recordEvent({ runDir, kind: 'check-result', data, now: fields.now });
+  };
+
+  it('adds a failed-check line built from the latest failing check-result record, with a repo-relative test identity intact', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'fail',
+      exitCode: 1,
+      failedTests: ['test/e2e/uninstall.test.ts > uninstall > kept was removed'],
+      tail: 'AssertionError: expected 1 to be 0',
+      now: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).toContain(
+      'failed-check: unit exit 1; tests: test/e2e/uninstall.test.ts > uninstall > kept was removed',
+    );
+  });
+
+  it('joins multiple failing test identities from the same check-result record with ", "', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'fail',
+      exitCode: 1,
+      failedTests: ['test/a.test.ts > s > one', 'test/b.test.ts > s > two'],
+      tail: 'boom',
+      now: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.stdout).toContain(
+      'failed-check: unit exit 1; tests: test/a.test.ts > s > one, test/b.test.ts > s > two',
+    );
+  });
+
+  it('uses the LATEST check-result record for a check name — a later pass drops the earlier failure line', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'fail',
+      exitCode: 1,
+      failedTests: ['test/a.test.ts > s > one'],
+      tail: 'boom',
+      now: '2026-01-01T00:00:01.000Z',
+    });
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'pass',
+      exitCode: 0,
+      now: '2026-01-01T00:00:02.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).not.toContain('failed-check:');
+  });
+
+  it('uses the LATEST check-result record for a check name — a later failure replaces an earlier pass', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'pass',
+      exitCode: 0,
+      now: '2026-01-01T00:00:01.000Z',
+    });
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'fail',
+      exitCode: 1,
+      failedTests: ['test/a.test.ts > s > one'],
+      tail: 'boom',
+      now: '2026-01-01T00:00:02.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.stdout).toContain('failed-check: unit exit 1; tests: test/a.test.ts > s > one');
+  });
+
+  it('does not add a failed-check line when the run directory carries no check-result events at all — unchanged from before RP-290', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    // An empty, existing run directory — declared, but nothing recorded.
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).not.toContain('failed-check:');
+  });
+
+  it('never turns a repo-relative test identity inside the failed-check line into [path]', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'fail',
+      exitCode: 1,
+      failedTests: ['test/e2e/uninstall.test.ts > uninstall > kept was removed'],
+      tail: 'boom',
+      now: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    const line = result.stdout.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, result.out).toBeDefined();
+    expect(line).not.toContain('[path]');
+    expect(line).toContain('test/e2e/uninstall.test.ts > uninstall > kept was removed');
+  });
+});
+
 // --- wired into the workflow layer -----------------------------------------
 
 describe('continuation.mjs is wired into the workflow layer', () => {

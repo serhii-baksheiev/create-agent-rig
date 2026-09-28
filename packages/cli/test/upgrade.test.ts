@@ -2053,18 +2053,20 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // records it under `files[]` one fewer path than before, in `kept[]`
   // instead, so both counts below are one lower than the chronicle above
   // would otherwise give (105/62 manifest entries, either way).
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 104 manifest entries to 61', async () => {
+  // RP-290: `.claude/scripts/check-run.mjs` joined the process layer, so both
+  // figures moved by one (104→105, 61→62).
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 105 manifest entries to 62', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(104);
+    expect(Object.keys(before!.files).length).toBe(105);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(61);
+    expect(Object.keys(after!.files).length).toBe(62);
   });
 });
 
