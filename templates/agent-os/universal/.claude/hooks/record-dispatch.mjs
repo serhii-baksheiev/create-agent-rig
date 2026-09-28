@@ -17,6 +17,28 @@
 // else this hook writes nothing at all: a run nobody declared is not a run
 // this hook may invent one for.
 //
+// RP-287 — that silence is indistinguishable from a genuinely attended
+// session with nothing armed anywhere, and the RP-231 pilot lost ~15
+// dispatches to exactly that: the controller was started in one checkout
+// while the loop's run/flag lived in another. So when neither `RIG_RUN_DIR`
+// nor an own-scoped flag resolves a run directory, this hook takes ONE extra,
+// still-bounded look — a single `readdirSync` of each `homesOf` candidate's
+// `.claude` directory (never a file open, never a content read), matched only
+// against the checkout-scoped flag basename shape
+// (`<FLAG_BASENAME-prefix>-<16 hex>-loop-UNATTENDED`, derived from
+// `unattended-flag.mjs`'s own exported `FLAG_BASENAME` rather than a second
+// copy of the prefix), with the entries examined capped. Finding one that is
+// not among this checkout's own candidate paths means ANOTHER checkout's flag
+// is armed, and this hook writes ONE bounded (<=512 chars) `record-dispatch:`
+// line to stderr naming the root it checked (`CLAUDE_PROJECT_DIR`, or `cwd`)
+// — never the other checkout's `runDir` or flag content, and never more than
+// that one line. Still exits 0, stdout stays empty, and nothing is written to
+// any journal; any error inside this probe is swallowed, exactly like every
+// other failure mode in this observe-only hook. See dispatch-journal.test.ts
+// (absent in a generated rig) › "prints exactly one bounded stderr notice
+// naming the checked root, and writes nothing, when the armed flag belongs to
+// a DIFFERENT checkout".
+//
 // The record is bounded by ONE allowlist, `DISPATCH_FIELDS`: every key is
 // filtered through it immediately before the write, so a field added to the
 // payload handling but not to the list never reaches the journal. It is
@@ -312,6 +334,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
+  readdirSync,
   readSync,
   realpathSync,
 } from 'node:fs';
@@ -320,7 +343,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readHookInput } from './lib/hook-input.mjs';
 import { recordEvent } from '../scripts/run-journal.mjs';
-import { readUnattended } from '../scripts/unattended-flag.mjs';
+import { FLAG_BASENAME, readUnattended, unattendedFlags } from '../scripts/unattended-flag.mjs';
+import { homesOf } from '../scripts/stop-flag.mjs';
 
 /** The one allowlist a record's `data` may carry — see the header. */
 export const DISPATCH_FIELDS = Object.freeze([
@@ -384,6 +408,81 @@ function resolveRunDir(env) {
     return flag.runDir;
   }
   return null;
+}
+
+// RP-287 — a checkout with no armed flag of its own, next to ANOTHER
+// checkout's armed one, is not silence. See the header for the full design;
+// this is the bounded probe and the one-line notice it may print.
+
+/** How many `readdirSync` entries this probe examines per `homesOf` candidate — bounded, never unbounded work. */
+const MAX_HOME_ENTRIES_EXAMINED = 1024;
+
+/** The longest stderr notice this probe ever writes — bounded, per the header. */
+const MAX_NOTICE_LENGTH = 512;
+
+/** `-loop-UNATTENDED` — the fixed suffix `scopedBasename` in `unattended-flag.mjs` inserts an id before. */
+const SCOPED_FLAG_SUFFIX = '-loop-UNATTENDED';
+
+const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The checkout-scoped flag basename shape — `<prefix>-<16 hex>-loop-UNATTENDED`
+ * — derived from `unattended-flag.mjs`'s own exported `FLAG_BASENAME` rather
+ * than a second copy of the prefix (`invariants.md`, "one spelling of a
+ * fact"). Matches only that exact shape: neither the unscoped kill switch
+ * (`…-loop-STOP`) nor an unrelated file in the same directory.
+ */
+const SCOPED_FLAG_BASENAME_RE = (() => {
+  const prefix = FLAG_BASENAME.endsWith(SCOPED_FLAG_SUFFIX)
+    ? FLAG_BASENAME.slice(0, -SCOPED_FLAG_SUFFIX.length)
+    : FLAG_BASENAME;
+  return new RegExp(`^${escapeRegExp(prefix)}-[0-9a-f]{16}${escapeRegExp(SCOPED_FLAG_SUFFIX)}$`);
+})();
+
+/**
+ * Whether a checkout-scoped unattended flag OTHER than this checkout's own is
+ * present — one `readdirSync` per `homesOf` candidate's `.claude` directory
+ * (never a file open, never a content read), matched only against
+ * `SCOPED_FLAG_BASENAME_RE`, with entries examined capped at
+ * `MAX_HOME_ENTRIES_EXAMINED`. Never reports which other checkout it saw.
+ */
+function anotherCheckoutFlagIsPresent(env) {
+  const own = new Set(unattendedFlags(env));
+  for (const home of homesOf(env)) {
+    const dir = path.join(home, '.claude');
+    let entries;
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of entries.slice(0, MAX_HOME_ENTRIES_EXAMINED)) {
+      if (!SCOPED_FLAG_BASENAME_RE.test(name)) continue;
+      if (own.has(path.join(dir, name))) continue;
+      return true;
+    }
+  }
+  return false;
+}
+
+/** `CLAUDE_PROJECT_DIR` when declared, else `process.cwd()` — the root this hook checked, and the only thing the notice ever names. */
+function checkedRootOf(env) {
+  const declared = typeof env.CLAUDE_PROJECT_DIR === 'string' ? env.CLAUDE_PROJECT_DIR.trim() : '';
+  return declared !== '' ? declared : process.cwd();
+}
+
+/**
+ * The one bounded (<=512 chars) `record-dispatch:` stderr line this hook ever
+ * writes — naming only the root it checked, never another checkout's runDir
+ * or flag content.
+ */
+function writeMismatchNotice(env) {
+  const root = checkedRootOf(env);
+  const message =
+    `record-dispatch: no unattended flag is armed for this checkout (${root}); ` +
+    'dispatch was not recorded. Start the controller from the checkout whose own run directory it declares.';
+  const bounded = message.length > MAX_NOTICE_LENGTH ? message.slice(0, MAX_NOTICE_LENGTH) : message;
+  process.stderr.write(`${bounded}\n`);
 }
 
 /** `'claude'`/`'codex'` from an explicit `--harness=` flag; never guessed, and never anything else. */
@@ -837,7 +936,15 @@ function main() {
     if (typeof agentId !== 'string') return 0;
 
     const runDir = resolveRunDir(process.env);
-    if (!runDir) return 0;
+    if (!runDir) {
+      try {
+        if (anotherCheckoutFlagIsPresent(process.env)) writeMismatchNotice(process.env);
+      } catch {
+        // RP-287's probe is observe-only too: a broken check must never
+        // block or crash this hook.
+      }
+      return 0;
+    }
 
     const harness = harnessOf(process.argv.slice(2));
     const kind = eventName === 'SubagentStart' ? 'dispatch-start' : 'dispatch-end';

@@ -334,6 +334,118 @@ describe('record-dispatch.mjs — where the run directory comes from', () => {
   });
 });
 
+// RP-287 — the RP-231 pilot measured this exact shape: the Claude controller
+// session was started in checkout A while the loop's run/flag lived in
+// checkout B. The hook found no flag scoped to A (`resolveRunDir` found
+// neither `RIG_RUN_DIR` nor an armed flag for A) and silently wrote nothing
+// for ~15 subagents — indistinguishable from a genuinely attended session
+// with nothing armed anywhere (the existing "no flag armed" tests above,
+// which must stay silent). The fix this file pins: a checkout sitting next
+// to someone ELSE's armed unattended flag is not silence — it is a bounded,
+// single-line stderr notice naming the root this hook checked, never the
+// other checkout's runDir or flag contents.
+describe('record-dispatch.mjs — a checkout with no armed flag of its own, while ANOTHER checkout has one, is not silence (RP-287)', () => {
+  it('prints exactly one bounded stderr notice naming the checked root, and writes nothing, when the armed flag belongs to a DIFFERENT checkout', async () => {
+    const checkoutA = await mkdtemp(path.join(tmpdir(), 'record-dispatch-checkout-a-'));
+    const checkoutB = await mkdtemp(path.join(tmpdir(), 'record-dispatch-checkout-b-'));
+    const runDirB = await mkdtemp(path.join(tmpdir(), 'record-dispatch-rundir-b-'));
+    const realCheckoutA = await realpath(checkoutA);
+    const expectedFlagPathB = expectedRealHomeFlagPath(await realpath(checkoutB));
+    const { writeUnattended, clearUnattended } = (await import(unattendedFlagUrl)) as {
+      writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
+      clearUnattended(env: NodeJS.ProcessEnv): string[];
+    };
+    const envB = isolatedEnv({ CLAUDE_PROJECT_DIR: checkoutB });
+    const envA = isolatedEnv({ CLAUDE_PROJECT_DIR: checkoutA });
+    try {
+      writeUnattended({ item: 'RP-225', runDir: runDirB, allow: [] }, envB);
+
+      const result = await runHook(JSON.stringify(dispatch({})), envA, ['--harness=claude']);
+
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('');
+
+      const lines = result.stderr.split('\n').filter((line) => line.length > 0);
+      expect(lines, result.stderr).toHaveLength(1);
+      const notice = lines[0] ?? '';
+      expect(notice.length).toBeLessThanOrEqual(512);
+      expect(notice.startsWith('record-dispatch:')).toBe(true);
+      expect(notice.includes(checkoutA) || notice.includes(realCheckoutA)).toBe(true);
+      expect(notice).not.toContain(runDirB);
+
+      expect(await eventsFileBytes(runDirB)).toBe('');
+    } finally {
+      clearUnattended(envB);
+      await removeFixture(checkoutA);
+      await removeFixture(checkoutB);
+      await removeFixture(runDirB);
+    }
+    expect(existsSync(expectedFlagPathB)).toBe(false);
+  });
+
+  it('emits no stderr notice when the armed unattended flag matches CLAUDE_PROJECT_DIR (the same run still records)', async () => {
+    const project = await mkdtemp(path.join(tmpdir(), 'record-dispatch-project-notice-match-'));
+    const expectedFlagPath = expectedRealHomeFlagPath(await realpath(project));
+    const { writeUnattended, clearUnattended } = (await import(unattendedFlagUrl)) as {
+      writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
+      clearUnattended(env: NodeJS.ProcessEnv): string[];
+    };
+    const env = isolatedEnv({ CLAUDE_PROJECT_DIR: project });
+    try {
+      writeUnattended({ item: 'RP-225', runDir, allow: [] }, env);
+
+      const result = await runHook(JSON.stringify(dispatch({})), env, ['--harness=claude']);
+
+      expect(result.code).toBe(0);
+      expect(result.stderr).toBe('');
+      const events = await readEvents(runDir);
+      expect(events).toHaveLength(1);
+    } finally {
+      clearUnattended(env);
+      await removeFixture(project);
+    }
+    expect(existsSync(expectedFlagPath)).toBe(false);
+  });
+
+  it('an unrelated file in <home>/.claude (the STOP flag, or a random file) never triggers the mismatch notice', async () => {
+    const claudeHomeDir = path.join(home, '.claude');
+    await mkdir(claudeHomeDir, { recursive: true });
+    await writeFile(path.join(claudeHomeDir, '__PROJECT_NAME__-loop-STOP'), '');
+    await writeFile(path.join(claudeHomeDir, 'some-unrelated-file.json'), '{}');
+    const project = await mkdtemp(path.join(tmpdir(), 'record-dispatch-project-unrelated-'));
+    try {
+      const result = await runHook(
+        JSON.stringify(dispatch({})),
+        isolatedEnv({ CLAUDE_PROJECT_DIR: project }),
+        ['--harness=claude'],
+      );
+      expect(result.code).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    } finally {
+      await removeFixture(project);
+    }
+  });
+});
+
+describe('record-dispatch.mjs — the loop skill names the risk this hook cannot see for itself (RP-287)', () => {
+  it('SKILL.md §1 states the session must start from the checkout whose run directory it declares, or dispatch evidence is lost', async () => {
+    const skillPath = path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'skills',
+      'loop',
+      'SKILL.md',
+    );
+    const text = await readFile(skillPath, 'utf8');
+    expect(text).toMatch(/started from the checkout/);
+    expect(text).toMatch(/record-dispatch/);
+  });
+});
+
 describe('record-dispatch.mjs — start/end pairing and the event it writes', () => {
   it('records a dispatch-start event on SubagentStart, keyed by agentRef', async () => {
     const result = await runHook(
