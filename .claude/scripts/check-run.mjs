@@ -38,16 +38,18 @@
 // --- A command that never starts at all ------------------------------------
 //
 // A missing/unrunnable command (ENOENT, EACCES, EINVAL — including a
-// synchronous throw from `spawn` itself) is recorded as outcome
-// `'spawn-error'`, never `'fail'`: a fresh reader must be able to tell "the
-// command was misconfigured" from "the command ran and its test failed",
-// which is a different fix in a different place. `spawn-error` carries no
-// `tail` and no `failedTests` — nothing ran to produce either — and exits
-// 127 for an ENOENT-shaped failure, 1 otherwise. Exactly one stderr line
-// names the failure's `code` only, never a dump of the environment or the
-// full error object. See `check-run.test.ts` (absent in a generated rig) ›
-// "exits non-zero and prints a stderr line naming the spawn failure" and ›
-// "records outcome 'spawn-error' in the journal — never 'fail' — with no
+// synchronous throw from `spawn` itself, or from this process's own
+// pre-spawn refusal of an unsafe cmd.exe argument — "Windows batch shims"
+// below) is recorded as outcome `'spawn-error'`, never `'fail'`: a fresh
+// reader must be able to tell "the command was misconfigured" from "the
+// command ran and its test failed", which is a different fix in a different
+// place. `spawn-error` carries no `tail` and no `failedTests` — nothing ran
+// to produce either — and exits 127 for an ENOENT-shaped failure, 1
+// otherwise. Exactly one stderr line names the failure's `code` only (or, for
+// the cmd.exe refusal, its own self-contained reason), never a dump of the
+// environment or the full error object. See `check-run.test.ts` (absent in a generated rig)
+// › "exits non-zero and prints a stderr line naming the spawn failure" and
+// › "records outcome 'spawn-error' in the journal — never 'fail' — with no
 // failedTests and no tail".
 //
 // --- Windows batch shims ----------------------------------------------------
@@ -57,15 +59,22 @@
 // (or PATH+PATHEXT resolves it to) a `.cmd`/`.bat` file, this spawns
 // `cmd.exe /d /s /c "<quoted command line>"` with `windowsVerbatimArguments:
 // true` instead, escaping every argument (including the batch file path
-// itself): wrap in quotes with backslash doubling ahead of an embedded
-// quote, then caret-escape the cmd metacharacters `()%!^"<>&|` ONCE — see
-// `escapeCmdArgument`'s own comment for why a second pass is wrong here even
-// though it is the shape a literal reading of `cross-spawn`'s "double-escape
-// for a batch file" suggests. Zero new dependencies — the escaping is the
-// handful of lines below, not a package. A `.exe`/`.com` command is never
-// routed through `cmd.exe`. See › "Windows .cmd shims are run without shell
-// interpolation of the argument" (skipped off Windows — `onlyOnWindows()` —
-// there is nothing to measure elsewhere).
+// itself): wrap in quotes with backslash doubling ahead of an embedded quote,
+// then caret-escape the cmd metacharacters `()%!^"<>&|` — ONCE for the batch
+// file's own PATH, TWICE for every argument that follows it, matching
+// `cross-spawn`'s own shape for a `%*`-forwarding shim (the ordinary form of
+// an npm/pnpm-installed `.cmd`) — see `escapeCmdArgument`'s own comment for
+// why the argument needs the second pass the batch file's PATH does not.
+// Zero new dependencies — the escaping is the handful of lines below, not a
+// package. An argument containing a double quote, CR or LF is refused BEFORE
+// cmd.exe is ever spawned instead — no escaping makes such an argument safe
+// on a cmd.exe command line — see `CmdArgumentRefusedError` and ›
+// "refuses `x"&<marker.cmd>` without ever running marker.cmd" and its two
+// siblings (skipped off Windows). A `.exe`/`.com` command is never routed
+// through `cmd.exe`. See › "Windows .cmd shims are run without shell
+// interpolation of the argument" and › "a cmd.exe-routed argument with no
+// quote/CR/LF still arrives literally through the %* shim" (both skipped
+// off Windows — `onlyOnWindows()` — there is nothing to measure elsewhere).
 //
 // --- Bounds ---------------------------------------------------------------
 //
@@ -150,9 +159,28 @@
 // only the direct child — a check command that itself spawns a worker
 // process (an ordinary shape for a test runner) is killed along with it,
 // rather than orphaned. On win32, where there is no process-group signal,
-// the same kill is `taskkill /pid <pid> /T /F` (bounded by its own timeout).
-// See › "a grandchild process spawned by the checked command is no longer
-// alive after check-run returns".
+// the same kill is `taskkill /pid <pid> /T /F`, resolved by its ABSOLUTE
+// path under `%SystemRoot%\System32` rather than a bare PATH lookup of the
+// name (bounded by its own timeout). See › "a grandchild process spawned by
+// the checked command is no longer alive after check-run returns".
+//
+// --- An interrupt sent to check-run itself, not its process group ----------
+//
+// The checked command sits in its OWN process group (`detached: true` on
+// POSIX, above) precisely so a `--timeout` kill can target its whole tree —
+// which also means Node's default `SIGINT`/`SIGTERM`/`SIGHUP` handling
+// (immediate teardown of THIS process, `finally` never runs) would leave the
+// checked command running unattended, and its capture temp files behind, the
+// moment an operator hits Ctrl-C on a required check. So, for the duration of
+// the child's run only, this process installs its own handler for those
+// three signals on POSIX (`SIGINT`/`SIGBREAK` on win32, which has no
+// SIGTERM/SIGHUP to catch) that does exactly what a timeout does — kill the
+// child's whole tree — plus closes and removes this run's own capture files,
+// removes the handlers, and exits with the POSIX `128 + signal number`
+// convention. See › "kills the checked command and removes its own capture
+// files, rather than dying immediately and leaking both" (POSIX-only — there
+// is no Windows equivalent of a signal delivered to a single pid rather than
+// its process group to measure).
 //
 // --- Temp capture files ------------------------------------------------------
 //
@@ -319,31 +347,64 @@ const parseArgs = (argv) => {
   };
 };
 
+// A small, FIXED-size rolling window (characters, not bytes — the header it
+// exists to catch is short ASCII) kept for the CURRENT pending line only,
+// regardless of whether that line is still under `LINE_MAX_BYTES` or has
+// already gone over it. It is what lets a BEGIN header sitting at the very
+// END of an over-long line still be seen once the line closes — see
+// `check-run.test.ts` (absent in a generated rig) › "still redacts the body
+// and END line that follow it, while a line after END survives" — without
+// holding the whole discarded line: `tail` is re-sliced to this many
+// characters on every append, so its own cost is O(1) per chunk, not O(line
+// length).
+const OVERFLOW_TAIL_CHARS = 256;
+
 /**
  * A streaming line splitter: feed chunks, get complete lines as they close.
  * Bounded per the module header — at most `LINE_MAX_BYTES` of a PENDING
  * (not-yet-terminated) line is ever held; a chunk is scanned once with
  * `indexOf`, never by re-splitting the whole accumulated buffer, so the cost
- * is linear in the input rather than quadratic.
+ * is linear in the input rather than quadratic. `onLine` is called with the
+ * finalized line text and a `{ overLimit, tail }` record — `tail` is the last
+ * `OVERFLOW_TAIL_CHARS` characters of the line'S OWN RAW CONTENT, kept even
+ * when `overLimit` is true and the line text itself has already been replaced
+ * by the fixed marker, precisely so a caller can still check what the
+ * discarded END of an over-long line looked like (see `OVERFLOW_TAIL_CHARS`
+ * above) without this feeder knowing anything about PEM blocks or secrets
+ * itself.
  */
 const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
   let pending = '';
   let pendingBytes = 0;
   let overLimit = false;
+  let tail = '';
 
-  const resetPending = () => {
+  const resetLine = () => {
     pending = '';
     pendingBytes = 0;
+    overLimit = false;
+    tail = '';
+  };
+
+  const appendSegment = (segment) => {
+    if (segment.length > 0) tail = (tail + segment).slice(-OVERFLOW_TAIL_CHARS);
+    if (overLimit) return;
+    pending += segment;
+    pendingBytes += Buffer.byteLength(segment, 'utf8');
+    if (pendingBytes > lineMaxBytes) {
+      overLimit = true;
+      pending = '';
+      pendingBytes = 0;
+    }
   };
 
   const closeLine = () => {
     if (overLimit) {
-      onLine(`[redacted: line over ${lineMaxBytes} bytes]`);
+      onLine(`[redacted: line over ${lineMaxBytes} bytes]`, { overLimit: true, tail });
     } else {
-      onLine(pending);
+      onLine(pending, { overLimit: false, tail });
     }
-    overLimit = false;
-    resetPending();
+    resetLine();
   };
 
   return {
@@ -352,23 +413,10 @@ const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
       for (;;) {
         const newlineIndex = chunkText.indexOf('\n', start);
         if (newlineIndex === -1) {
-          if (!overLimit) {
-            const rest = chunkText.slice(start);
-            pending += rest;
-            pendingBytes += Buffer.byteLength(rest, 'utf8');
-            if (pendingBytes > lineMaxBytes) {
-              overLimit = true;
-              resetPending();
-            }
-          }
+          appendSegment(chunkText.slice(start));
           return;
         }
-        if (!overLimit) {
-          const segment = chunkText.slice(start, newlineIndex);
-          pending += segment;
-          pendingBytes += Buffer.byteLength(segment, 'utf8');
-          if (pendingBytes > lineMaxBytes) overLimit = true;
-        }
+        appendSegment(chunkText.slice(start, newlineIndex));
         closeLine();
         start = newlineIndex + 1;
       }
@@ -449,24 +497,53 @@ const resolveBatchFile = (command) => {
 // unescaped would swallow whatever follows it.
 const CMD_META_CHARS = /([()%!^"<>&|])/g;
 
+// A double quote, CR or LF embedded in an argument is exactly the shape a
+// `cmd.exe /c "<command line>"` command line cannot be made unconditionally
+// safe against by escaping alone: an embedded quote can terminate the
+// caret-escaped token early regardless of how many caret passes precede it,
+// and a raw CR/LF is cmd.exe's own command separator — no quoting survives
+// it, because cmd.exe splits the command line into separate commands on a
+// literal line break before caret-escaping is ever considered. Such an
+// argument is refused BEFORE cmd.exe is ever spawned, rather than trusting
+// an escape to hold — see `check-run.test.ts` (absent in a generated rig) ›
+// "refuses `x"&<marker.cmd>` without ever running marker.cmd" and its two
+// siblings.
+const CMD_UNSAFE_ARG_PATTERN = /["\r\n]/;
+
+/** Thrown by `spawnForCommand` to refuse an argument `escapeCmdArgument` cannot make safe — never actually spawns cmd.exe. */
+class CmdArgumentRefusedError extends Error {
+  constructor() {
+    super(
+      'check-run: refusing to spawn cmd.exe — an argument to this Windows .cmd/.bat command ' +
+        'contains a double quote, CR or LF, which cannot be passed safely through cmd.exe',
+    );
+    this.code = 'CMD_ARG_REFUSED';
+  }
+}
+
 /**
  * Quote-wrap an argument for a cmd.exe command line, then caret-escape cmd's
- * metacharacters ONCE. Measured against a real `cmd.exe` (see
- * `check-run.test.ts`, absent in a generated rig, "Windows .cmd shims are run
- * without shell interpolation of the argument", plus a direct win32 probe
- * this change was verified against): re-running the SAME caret-escape pass a
- * second time — the shape a "double-escape for a batch file" reading of
- * `cross-spawn` suggests — escalates the carets it just inserted (`^"`
- * becomes `^^^"`) and cmd.exe then refuses the whole line with "The
- * filename, directory name, or volume label syntax is incorrect." One pass
- * is what a real `.cmd` shim accepts.
+ * metacharacters — once for the batch file's own PATH, TWICE for every
+ * argument that follows it. This is `cross-spawn`'s own shape for a
+ * `%*`-forwarding batch shim (the ordinary form of an npm/pnpm-installed
+ * `.cmd`): the shim's `%*` re-exposes the argument to a SECOND round of
+ * cmd.exe parsing when it forwards it on to the program it wraps, and only
+ * an argument escaped twice survives that second round unchanged — verified
+ * against a real `.cmd` shim built exactly that way, plus a direct win32
+ * probe this change was verified against, including `pnpm --version`
+ * through a real `%*`-forwarding shim. See `check-run.test.ts` (absent in a generated rig)
+ * › "a cmd.exe-routed argument with no quote/CR/LF still arrives literally
+ * through the %* shim". The batch file's own PATH is never forwarded
+ * through `%*` a second time, so it keeps the single pass an ordinary
+ * `cmd.exe /c "<command line>"` line needs.
  */
-const escapeCmdArgument = (value) => {
+const escapeCmdArgument = (value, doubleEscapeMetaChars = false) => {
   let arg = String(value);
   arg = arg.replace(/(\\*)"/g, '$1$1\\"');
   arg = arg.replace(/(\\*)$/, '$1$1');
   arg = `"${arg}"`;
   arg = arg.replace(CMD_META_CHARS, '^$1');
+  if (doubleEscapeMetaChars) arg = arg.replace(CMD_META_CHARS, '^$1');
   return arg;
 };
 
@@ -476,7 +553,12 @@ const spawnForCommand = (command, cwd, stdoutFd, stderrFd) => {
   const batchFile = resolveBatchFile(command[0]);
   if (batchFile) {
     const argv = [batchFile, ...command.slice(1)];
-    const shellCommand = argv.map((arg) => escapeCmdArgument(arg)).join(' ');
+    if (argv.some((arg) => CMD_UNSAFE_ARG_PATTERN.test(String(arg)))) {
+      throw new CmdArgumentRefusedError();
+    }
+    const shellCommand = argv
+      .map((arg, index) => escapeCmdArgument(arg, index > 0))
+      .join(' ');
     const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
     return spawn(comspec, ['/d', '/s', '/c', `"${shellCommand}"`], {
       cwd,
@@ -491,12 +573,23 @@ const spawnForCommand = (command, cwd, stdoutFd, stderrFd) => {
   });
 };
 
+// Resolved by ABSOLUTE path, not by PATH lookup of the bare `taskkill` name —
+// a PATH that has been tampered with (an attacker-controlled directory ahead
+// of `System32`) could otherwise substitute a different program for the one
+// this process means to run with elevated intent (killing a whole process
+// tree). `SystemRoot` is the OS's own environment variable for its install
+// directory; `C:\Windows` is the fallback only an environment with that
+// variable stripped would ever need.
+const TASKKILL_PATH = WIN32
+  ? path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'taskkill.exe')
+  : null;
+
 /** Kill the WHOLE process tree rooted at `child`, not only the direct child — see the module header. */
 const killChildTree = (child) => {
   if (!child || !child.pid) return;
   if (WIN32) {
     try {
-      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { timeout: 5000 });
+      spawnSync(TASKKILL_PATH, ['/pid', String(child.pid), '/T', '/F'], { timeout: 5000 });
     } catch {
       // Best-effort: the process may already be gone.
     }
@@ -508,6 +601,26 @@ const killChildTree = (child) => {
     }
   }
 };
+
+// Signals this process treats as "stop the check now" instead of Node's
+// default action, which would tear THIS process down immediately — the
+// `finally` cleanup below would never run, and the checked command (spawned
+// `detached: true` on POSIX, its OWN process group, exactly so a `--timeout`
+// kill can target its whole tree) would never see the signal at all, since a
+// signal aimed only at this process's own pid does not propagate to a
+// different process group on its own. See `check-run.test.ts` (absent in a generated rig)
+// › "kills the checked command and removes its own capture files, rather
+// than dying immediately and leaking both".
+const POSIX_INTERRUPT_SIGNALS = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+// SIGBREAK is win32's console-close/Ctrl-Break analogue to POSIX SIGINT;
+// win32 has no SIGTERM/SIGHUP to catch.
+const WIN32_INTERRUPT_SIGNALS = ['SIGINT', 'SIGBREAK'];
+const INTERRUPT_SIGNALS = WIN32 ? WIN32_INTERRUPT_SIGNALS : POSIX_INTERRUPT_SIGNALS;
+
+// The POSIX `128 + signal number` exit-code convention. SIGBREAK carries no
+// POSIX number of its own; Node's own `os.constants.signals.SIGBREAK` (21) is
+// reused so win32 follows the same formula rather than a second one.
+const SIGNAL_EXIT_CODES = { SIGHUP: 129, SIGINT: 130, SIGTERM: 143, SIGBREAK: 149 };
 
 const NOT_RECORDED_NOTICE =
   'check-run: the result was not recorded — no run directory (RIG_RUN_DIR) is declared\n';
@@ -541,17 +654,41 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
   /** One `processLine` per stream, each with its OWN "inside a PEM block" state. */
   const makeProcessLine = () => {
     let inPemBlock = false;
-    return (rawLine) => {
-      const relativized = relativize(stripAnsi(rawLine));
+    return (rawLine, meta) => {
+      const overLimit = Boolean(meta && meta.overLimit);
       let finalLine;
-      if (inPemBlock) {
-        finalLine = REDACTED_LINE;
-        if (PRIVATE_KEY_END_PATTERN.test(relativized)) inPemBlock = false;
-      } else if (PRIVATE_KEY_HEADER_PATTERN.test(relativized)) {
-        inPemBlock = true;
-        finalLine = REDACTED_LINE;
+      if (overLimit) {
+        // The line text itself is already the fixed `[redacted: line over …
+        // bytes]` marker — `LINE_MAX_BYTES` applies ahead of and independent
+        // from this PEM/credential logic (module header's "Bounds"), so there
+        // is no raw body left to scan here. Only the feeder's small rolling
+        // `tail` (the line's own last `OVERFLOW_TAIL_CHARS` characters, kept
+        // even though the line overflowed) is inspected, so a BEGIN or END
+        // header sitting at the very end of an over-long line still updates
+        // the state machine — see › "still redacts the body and END line
+        // that follow it, while a line after END survives".
+        finalLine = rawLine;
+        const tailText = stripAnsi(meta.tail ?? '');
+        if (inPemBlock) {
+          if (PRIVATE_KEY_END_PATTERN.test(tailText)) inPemBlock = false;
+        } else if (PRIVATE_KEY_HEADER_PATTERN.test(tailText)) {
+          inPemBlock = !PRIVATE_KEY_END_PATTERN.test(tailText);
+        }
       } else {
-        finalLine = findSecretValues(relativized).length > 0 ? REDACTED_LINE : relativized;
+        const relativized = relativize(stripAnsi(rawLine));
+        if (inPemBlock) {
+          finalLine = REDACTED_LINE;
+          if (PRIVATE_KEY_END_PATTERN.test(relativized)) inPemBlock = false;
+        } else if (PRIVATE_KEY_HEADER_PATTERN.test(relativized)) {
+          finalLine = REDACTED_LINE;
+          // A line whose BEGIN and END markers both sit on the SAME line
+          // must not leave the block armed for the lines that follow — see ›
+          // "redacts the one-line key, and does not swallow the FAIL
+          // identity on the line that follows it".
+          inPemBlock = !PRIVATE_KEY_END_PATTERN.test(relativized);
+        } else {
+          finalLine = findSecretValues(relativized).length > 0 ? REDACTED_LINE : relativized;
+        }
       }
 
       logBuffer.push(`${finalLine}\n`);
@@ -598,11 +735,53 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
         }, timeoutSeconds * 1000);
       }
 
+      // Install for the duration of the child's run only, and removed on
+      // every exit from it (below, and inside the handler itself) — never
+      // left registered once there is nothing left to interrupt.
+      let interruptHandlers = [];
+      const removeInterruptHandlers = () => {
+        for (const [signalName, handler] of interruptHandlers) {
+          process.removeListener(signalName, handler);
+        }
+        interruptHandlers = [];
+      };
+      const onInterrupt = (signalName) => {
+        removeInterruptHandlers();
+        if (timer) clearTimeout(timer);
+        killChildTree(child);
+        for (const fd of [stdoutFd, stderrFd]) {
+          if (fd !== null) {
+            try {
+              closeSync(fd);
+            } catch {
+              // Already closed or never opened.
+            }
+          }
+        }
+        stdoutFd = null;
+        stderrFd = null;
+        for (const capturePath of [stdoutCapturePath, stderrCapturePath]) {
+          try {
+            unlinkSync(capturePath);
+          } catch {
+            // Best-effort: a leftover temp file here is harmless — its name
+            // is unique and nothing else ever reads it.
+          }
+        }
+        process.exit(SIGNAL_EXIT_CODES[signalName] ?? 1);
+      };
+      interruptHandlers = INTERRUPT_SIGNALS.map((signalName) => {
+        const handler = () => onInterrupt(signalName);
+        process.on(signalName, handler);
+        return [signalName, handler];
+      });
+
       [exitCode, signal, spawnError] = await new Promise((resolve) => {
         child.on('error', (error) => resolve([null, null, error]));
         child.on('close', (code, sig) => resolve([code, sig, null]));
       });
       if (timer) clearTimeout(timer);
+      removeInterruptHandlers();
     }
 
     if (stdoutFd !== null) {
@@ -645,8 +824,13 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
 
   if (spawnError) {
     const code = spawnError.code === 'ENOENT' ? 127 : 1;
+    // A refused cmd.exe argument already carries its own full explanation
+    // (and the word "cmd.exe" a fresh reader can search for) — the generic
+    // "spawn failed … — <code>" line would only repeat it as a bare code.
     process.stderr.write(
-      `check-run: spawn failed for check "${name}" — ${spawnError.code ?? 'unknown error'}\n`,
+      spawnError.code === 'CMD_ARG_REFUSED'
+        ? `${spawnError.message}\n`
+        : `check-run: spawn failed for check "${name}" — ${spawnError.code ?? 'unknown error'}\n`,
     );
     recordOrNotify({
       schema: 1,

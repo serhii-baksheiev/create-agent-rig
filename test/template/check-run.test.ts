@@ -1,11 +1,28 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { GITHUB_PAT, pemHeader } from './secrets-fixtures.js';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
+
+/**
+ * The opposite of `onlyOnWindows()`: behaviour that exists only off Windows.
+ * A SIGINT delivered to ONE pid, and the process-group semantics that make
+ * that meaningful, are POSIX signal delivery — there is no Windows analogue
+ * (`CreateProcess` has nothing like `process.kill(pid, 'SIGINT')` targeting a
+ * single process apart from its group), so this test is measured only where
+ * the capability genuinely exists — same shape as `onlyOnWindows()`, kept
+ * local to this file rather than added to `env.ts` because nothing else here
+ * needs it yet.
+ */
+const onlyOnPosix = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason:
+    'SIGINT delivered to a single pid (not its process group) is POSIX signal delivery; there is no Windows equivalent to measure',
+});
 
 // RP-290 — "[RIG 1.1][EVIDENCE] Persist required-check failure identity so a
 // fresh diagnostician can answer it".
@@ -177,8 +194,27 @@ const runnerCommand = (runnerPath: string, config: Record<string, unknown>): str
   JSON.stringify(config),
 ];
 
-const freshRunDir = async (): Promise<string> => mkdtemp(path.join(tmpdir(), 'check-run-'));
-const freshCwd = async (): Promise<string> => mkdtemp(path.join(tmpdir(), 'check-run-cwd-'));
+// Test hygiene (RP-290 review round 2) — every mkdtemp fixture directory this
+// file creates is tracked here and removed in the afterEach below, so a run
+// of this file does not leak a `check-run-*`/`check-run-cwd-*`/
+// `check-run-capture-*` directory into the OS temp dir per test. Reset after
+// each test (not accumulated for the whole file) so cleanup happens promptly
+// even in a file this size.
+let createdTempDirs: string[] = [];
+const trackedMkdtemp = async (prefix: string): Promise<string> => {
+  const dir = await mkdtemp(prefix);
+  createdTempDirs.push(dir);
+  return dir;
+};
+
+afterEach(async () => {
+  const dirs = createdTempDirs;
+  createdTempDirs = [];
+  await Promise.all(dirs.map((dir) => removeFixture(dir)));
+});
+
+const freshRunDir = async (): Promise<string> => trackedMkdtemp(path.join(tmpdir(), 'check-run-'));
+const freshCwd = async (): Promise<string> => trackedMkdtemp(path.join(tmpdir(), 'check-run-cwd-'));
 
 const loadRunJournal = async () =>
   (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
@@ -807,7 +843,7 @@ describe('a command that cannot be started at all', () => {
 
   it('leaves no check-run capture temp file behind after a spawn-error run', async () => {
     const cwd = await freshCwd();
-    const captureTmpDir = await mkdtemp(path.join(tmpdir(), 'check-run-capture-'));
+    const captureTmpDir = await trackedMkdtemp(path.join(tmpdir(), 'check-run-capture-'));
     const missing = `no-such-command-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
     await runCheckRun(['--name', 'unit', '--', missing], {
@@ -824,7 +860,7 @@ describe('temp capture files do not leak after an ordinary failing run', () => {
   it('leaves no check-run capture temp file behind after a normal failing run', async () => {
     const cwd = await freshCwd();
     const runDir = await freshRunDir();
-    const captureTmpDir = await mkdtemp(path.join(tmpdir(), 'check-run-capture-'));
+    const captureTmpDir = await trackedMkdtemp(path.join(tmpdir(), 'check-run-capture-'));
     const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
 
     await runCheckRun(
@@ -879,6 +915,170 @@ describe('Windows .cmd shims are run without shell interpolation of the argument
     const record = await latestCheckResult(runDir);
     expect(record!.data.outcome).toBe('fail');
     expect(record!.data.exitCode).toBe(3);
+  });
+});
+
+// --- Windows .cmd shims: a `%*`-forwarding shim, for the two suites below --
+//
+// A single fixture shape backs both suites: `fwd.cmd` (a `.cmd` shim that
+// forwards its own argv verbatim, via `%*`, to a Node script) plus `argv.js`
+// (a Node script that writes `JSON.stringify(process.argv.slice(2))` to a
+// FIXED path baked into its own source at fixture-creation time — never
+// passed as one of the forwarded arguments, since the whole point of `%*` is
+// that check-run's own argument is the only thing that reaches it). Building
+// this once here, rather than duplicating fake.cmd's shape, is what lets the
+// refusal suite below assert "argv.js never ran" simply by asserting the
+// marker its OWN `marker.cmd` writes never appears, with nothing about the
+// fixture itself in question.
+
+/** A `.cmd` shim that forwards every argument it receives, verbatim, to `argvJsPath` via `%*`. */
+const fwdCmdSource = (argvJsPath: string): string =>
+  `@echo off\r\n"${process.execPath}" "${argvJsPath}" %*\r\n`;
+
+/** Writes its own forwarded argv to `argvJsonPath` (baked in, never one of the forwarded args) and exits 3. */
+const argvJsSource = (argvJsonPath: string): string => `
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(argvJsonPath)}, JSON.stringify(process.argv.slice(2)));
+process.exit(3);
+`;
+
+/** A `.cmd` that writes `pwned.txt` next to itself — the tell that an injected argument ran as a second command. */
+const MARKER_CMD_SOURCE = '@echo off\r\necho pwned> "%~dp0pwned.txt"\r\n';
+
+// vitest 5's `it.each` never passes a `TestContext` to the row callback
+// (measured against this suite's own vitest — array-of-arrays and
+// array-of-scalars rows alike leave the trailing param `undefined`), so the
+// `ctx.skip(reason)` shape `skipUnless` needs is unavailable inside `.each`.
+// Each case below is therefore its own named `it(...)`, matching the shape
+// `skipUnless` is used in everywhere else in this file, rather than a
+// parametrised table.
+
+/** Runs one "refuses this argument" case; shared by every case in the describe block below. */
+const expectCmdRefusal = async (
+  ctx: Parameters<typeof skipUnless>[0],
+  weirdArgFor: (marker: string) => string,
+): Promise<void> => {
+  skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+  const cwd = await freshCwd();
+  const runDir = await freshRunDir();
+  const argvJsonPath = path.join(cwd, 'argv.json');
+  const argvJsPath = await writeFixture(cwd, 'argv.js', argvJsSource(argvJsonPath));
+  const fwdPath = await writeFixture(cwd, 'fwd.cmd', fwdCmdSource(argvJsPath));
+  const markerPath = await writeFixture(cwd, 'marker.cmd', MARKER_CMD_SOURCE);
+  const pwnedPath = path.join(cwd, 'pwned.txt');
+  const weirdArg = weirdArgFor(markerPath);
+
+  const result = await runCheckRun(['--name', 'cmdshim-refuse', '--', fwdPath, weirdArg], {
+    cwd,
+    env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+  });
+
+  expect(result.code, result.out).not.toBe(0);
+
+  let pwnedExists = true;
+  try {
+    await readFile(pwnedPath);
+  } catch {
+    pwnedExists = false;
+  }
+  expect(pwnedExists, 'marker.cmd ran — the injected argument was not refused').toBe(false);
+
+  let argvJsonExists = true;
+  try {
+    await readFile(argvJsonPath);
+  } catch {
+    argvJsonExists = false;
+  }
+  expect(
+    argvJsonExists,
+    'argv.js ran — check-run spawned cmd.exe instead of refusing the argument first',
+  ).toBe(false);
+
+  const cmdLines = result.stderr.split('\n').filter((line) => /cmd\.exe/i.test(line));
+  expect(cmdLines, result.out).toHaveLength(1);
+
+  const record = await latestCheckResult(runDir);
+  expect(record, 'no check-result event was recorded').toBeDefined();
+  expect(record!.data.outcome).toBe('spawn-error');
+  expect(record!.data.failedTests).toEqual([]);
+  expect(record!.data).not.toHaveProperty('tail');
+};
+
+describe('a cmd.exe-routed argument containing a double quote, CR or LF is refused before spawning (RP-290 round 2)', () => {
+  // RP-290 review round 2 — round 1's `escapeCmdArgument` single-pass
+  // caret-escape handles ordinary shell metacharacters, but an EMBEDDED
+  // double quote (or a raw CR/LF, which cmd.exe treats as a command
+  // separator no quoting survives) is exactly the shape a cmd.exe command
+  // line cannot be made unconditionally safe against by escaping alone. The
+  // design decision this suite pins: check-run refuses such an argument
+  // BEFORE ever spawning cmd.exe, rather than trusting the escape to hold —
+  // exits non-zero, prints exactly one stderr line naming cmd.exe, and
+  // journals outcome 'spawn-error' (never 'fail') with no `tail`, the same
+  // "nothing ran" shape the missing-command spawn-error case already uses.
+  it('refuses `x"&<marker.cmd>` without ever running marker.cmd', async (ctx) => {
+    await expectCmdRefusal(ctx, (marker) => `x"&${marker}`);
+  });
+
+  it('refuses `a"|<marker.cmd>` without ever running marker.cmd', async (ctx) => {
+    await expectCmdRefusal(ctx, (marker) => `a"|${marker}`);
+  });
+
+  it('refuses `x"&<marker.cmd>&"y` without ever running marker.cmd', async (ctx) => {
+    await expectCmdRefusal(ctx, (marker) => `x"&${marker}&"y`);
+  });
+});
+
+/** Runs one "arrives literally" case; shared by every case in the describe block below. */
+const expectLiteralPassthrough = async (
+  ctx: Parameters<typeof skipUnless>[0],
+  arg: string,
+): Promise<void> => {
+  skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+  const cwd = await freshCwd();
+  const runDir = await freshRunDir();
+  const argvJsonPath = path.join(cwd, 'argv.json');
+  const argvJsPath = await writeFixture(cwd, 'argv.js', argvJsSource(argvJsonPath));
+  const fwdPath = await writeFixture(cwd, 'fwd.cmd', fwdCmdSource(argvJsPath));
+
+  const result = await runCheckRun(['--name', 'cmdshim-literal', '--', fwdPath, arg], {
+    cwd,
+    env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+  });
+
+  expect(result.code, result.out).toBe(3);
+  const argvJson = JSON.parse(await readFile(argvJsonPath, 'utf8')) as string[];
+  expect(argvJson).toEqual([arg]);
+};
+
+describe('a cmd.exe-routed argument with no quote/CR/LF still arrives literally through the %* shim', () => {
+  // The refusal above must not become a blanket refusal of every cmd.exe
+  // metacharacter — ordinary shell-metacharacter-shaped arguments (the ones
+  // round 1's escaping already targets) still have to reach the child
+  // UNCHANGED, including an argument that is the empty string.
+  it('passes `a b&c` through unchanged, and the exit code still passes through', async (ctx) => {
+    await expectLiteralPassthrough(ctx, 'a b&c');
+  });
+
+  it('passes `%PATH%` through unchanged, and the exit code still passes through', async (ctx) => {
+    await expectLiteralPassthrough(ctx, '%PATH%');
+  });
+
+  it('passes `!PATH!` through unchanged, and the exit code still passes through', async (ctx) => {
+    await expectLiteralPassthrough(ctx, '!PATH!');
+  });
+
+  it('passes `^caret` through unchanged, and the exit code still passes through', async (ctx) => {
+    await expectLiteralPassthrough(ctx, '^caret');
+  });
+
+  it('passes a trailing backslash through unchanged, and the exit code still passes through', async (ctx) => {
+    await expectLiteralPassthrough(ctx, 'trail\\');
+  });
+
+  it('passes the empty string through unchanged, and the exit code still passes through', async (ctx) => {
+    await expectLiteralPassthrough(ctx, '');
   });
 });
 
@@ -961,6 +1161,123 @@ describe('a PEM private-key block spans multiple lines and must be redacted as a
         bodyLine,
       );
     }
+  });
+});
+
+// --- a PEM header sitting at the very end of an over-length line ------------
+//
+// RP-290 review round 2 — the PEM state machine reads the ALREADY-PROCESSED
+// line: `LINE_MAX_BYTES` (64 KiB) truncates a still-pending line to
+// `[redacted: line over 65536 bytes]` BEFORE the PEM header check ever runs
+// over it, ahead of and independent from the PEM/credential logic per the
+// module header's "Bounds". A header sitting at the very END of a line that
+// was already over that cap therefore never gets seen — `inPemBlock` never
+// arms — and the body/END lines that follow go through completely
+// unprotected. Built INSIDE the child (never passed through argv) for the
+// same reason `LONG_LINE_RUNNER_SOURCE` is — see that fixture's own comment.
+
+/** One line of `prefixBytes` 'x' immediately followed by `header` (no newline between them), then each of `afterLines` as its own line. */
+const PEM_AT_LINE_END_RUNNER_SOURCE = `
+const config = JSON.parse(process.argv[2] ?? '{}');
+const prefixBytes = Number(config.prefixBytes ?? 0);
+process.stdout.write('x'.repeat(prefixBytes) + config.header + '\\n');
+for (const line of config.afterLines ?? []) {
+  process.stdout.write(\`\${line}\\n\`);
+}
+process.exit(Number(config.exitCode ?? 0));
+`;
+
+describe('a PEM header sitting at the very end of a line already over the 64 KiB line cap', () => {
+  const BODY_LINES = [
+    'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN',
+    'OPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN',
+  ];
+  const END_LINE = '-----END RSA PRIVATE KEY-----';
+
+  it(
+    'still redacts the body and END line that follow it, while a line after END survives',
+    { timeout: 20_000 },
+    async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'pem-at-line-end-runner.mjs',
+        PEM_AT_LINE_END_RUNNER_SOURCE,
+      );
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            prefixBytes: 70 * 1024,
+            header: pemHeader(),
+            afterLines: [...BODY_LINES, END_LINE, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+      const tail = record!.data.tail ?? '';
+
+      for (const bodyLine of BODY_LINES) {
+        expect(logContent, 'key body leaked into the log').not.toContain(bodyLine);
+        expect(tail, 'key body leaked into the tail').not.toContain(bodyLine);
+      }
+      expect(logContent, 'END line leaked into the log').not.toContain(END_LINE);
+      expect(tail, 'END line leaked into the tail').not.toContain(END_LINE);
+
+      expect(logContent, 'text after END did not survive in the log').toContain('after-ok');
+      expect(tail, 'text after END did not survive in the tail').toContain('after-ok');
+    },
+  );
+});
+
+// --- a PEM block whose BEGIN and END sit on the SAME line --------------------
+//
+// RP-290 review round 2 — the per-line state machine only checks for the END
+// marker INSIDE the `if (inPemBlock)` branch; a line whose BEGIN and END both
+// match arrives with `inPemBlock` still false, so it takes the `else if
+// (PRIVATE_KEY_HEADER_PATTERN...)` branch instead, which arms `inPemBlock`
+// but never checks for END on that same line. The block never closes —
+// every line from here to the end of the stream, including the failing
+// test's own identity line, is swallowed as "still inside the key".
+
+describe('a PEM block whose BEGIN and END markers sit on the SAME line', () => {
+  it('redacts the one-line key, and does not swallow the FAIL identity on the line that follows it', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    const oneLineKey = JSON.stringify(`${pemHeader()}\nAAAA\n-----END RSA PRIVATE KEY-----`);
+
+    await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, {
+          lines: [oneLineKey, ' FAIL  test/z.test.ts > s > t'],
+          exitCode: 1,
+        }),
+      ],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+
+    const record = await latestCheckResult(runDir);
+    const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+
+    expect(logContent, 'the one-line key leaked into the log').not.toContain(oneLineKey);
+    expect(
+      record!.data.failedTests,
+      'the FAIL identity on the line after the one-line key was swallowed',
+    ).toContain('test/z.test.ts > s > t');
   });
 });
 
@@ -1119,6 +1436,130 @@ describe('--timeout kills the whole process tree, not only the direct child', ()
         alive = isAlive();
       }
       expect(alive, `grandchild pid ${grandchildPid} is still alive`).toBe(false);
+    },
+  );
+});
+
+// --- an interrupt sent to check-run itself, not its process group ----------
+//
+// RP-290 review round 2 — check-run installs no `SIGINT` handler today, so
+// Node's own default action applies: the process is torn down immediately by
+// the kernel, the `finally` block that removes the capture temp files never
+// runs, and — because the checked command is spawned `detached: true` (its
+// OWN process group, exactly so a `--timeout` kill can target the whole tree
+// without also targeting check-run's own callers) — a SIGINT sent to check-run
+// alone never reaches that child at all. An operator hitting Ctrl-C on a
+// required check would leave the check still running to completion in the
+// background and a temp file behind. Fixed shape: check-run installs its own
+// `SIGINT` handler, kills the checked command's whole tree the same way
+// `--timeout` already does, cleans up its capture files, and exits — well
+// under the ~6s the fixture below would otherwise still be running for.
+
+/**
+ * Writes its own pid to `pidFile` immediately (the poll below needs it before
+ * the interrupt is even sent), then after ~6s writes `markerFile` and exits
+ * cleanly — the fixture never reaches that write if it is killed first.
+ */
+const SIGINT_FIXTURE_SOURCE = `
+import { writeFileSync } from 'node:fs';
+const pidFile = process.argv[2];
+const markerFile = process.argv[3];
+writeFileSync(pidFile, String(process.pid));
+setTimeout(() => {
+  writeFileSync(markerFile, 'done');
+  process.exit(0);
+}, 6000);
+`;
+
+describe('an interrupt (SIGINT) delivered to check-run itself, not its process group', () => {
+  it(
+    'kills the checked command and removes its own capture files, rather than dying immediately and leaking both',
+    { timeout: 20_000 },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnPosix().ok, onlyOnPosix().reason);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const captureTmpDir = await trackedMkdtemp(path.join(tmpdir(), 'check-run-capture-'));
+      const fixturePath = await writeFixture(cwd, 'sigint-fixture.mjs', SIGINT_FIXTURE_SOURCE);
+      const pidFile = path.join(cwd, 'checked-command.pid');
+      const markerFile = path.join(cwd, 'marker.txt');
+
+      const spawnStart = Date.now();
+      const checkRunProcess = spawn(
+        process.execPath,
+        [CHECK_RUN, '--name', 'unit', '--', process.execPath, fixturePath, pidFile, markerFile],
+        {
+          cwd,
+          env: hermeticEnv({
+            RIG_RUN_DIR: runDir,
+            TMPDIR: captureTmpDir,
+            TEMP: captureTmpDir,
+            TMP: captureTmpDir,
+          }),
+        },
+      );
+
+      // The checked command writes its own pid almost immediately; poll
+      // briefly rather than assuming it has already landed on disk.
+      let pidText = '';
+      for (let i = 0; i < 30 && pidText === ''; i += 1) {
+        try {
+          pidText = (await readFile(pidFile, 'utf8')).trim();
+        } catch {
+          // not written yet
+        }
+        if (pidText === '') await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(pidText, 'the checked command never wrote its pid file').not.toBe('');
+      const checkedCommandPid = Number(pidText);
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // check-run's OWN pid, never the negative/group form — the whole point
+      // is that check-run itself must propagate the kill to its child's tree,
+      // because the child sits in a DIFFERENT process group and a SIGINT
+      // aimed only at check-run would never reach it on its own.
+      process.kill(checkRunProcess.pid!, 'SIGINT');
+
+      const killedAt = Date.now();
+      await new Promise<void>((resolve) => checkRunProcess.on('close', () => resolve()));
+      const exitElapsedMs = Date.now() - killedAt;
+      expect(exitElapsedMs, 'check-run did not exit within ~3s of being interrupted').toBeLessThan(
+        3000,
+      );
+
+      // Wait out the fixture's own ~6s delay (measuring from the ORIGINAL
+      // spawn, not from the interrupt) before checking the marker never
+      // appeared — a marker written after check-run already exited would
+      // prove the checked command kept running unattended.
+      const remainingMs = 7000 - (Date.now() - spawnStart);
+      if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+
+      let markerWritten = true;
+      try {
+        await readFile(markerFile, 'utf8');
+      } catch {
+        markerWritten = false;
+      }
+      expect(
+        markerWritten,
+        'the checked command finished and wrote its marker — it kept running after the interrupt',
+      ).toBe(false);
+
+      const isAlive = (): boolean => {
+        try {
+          process.kill(checkedCommandPid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      expect(isAlive(), `checked command pid ${checkedCommandPid} is still alive`).toBe(false);
+
+      const leftover = (await readdir(captureTmpDir)).filter((name) =>
+        name.startsWith('check-run-'),
+      );
+      expect(leftover, leftover.join(', ')).toEqual([]);
     },
   );
 });
