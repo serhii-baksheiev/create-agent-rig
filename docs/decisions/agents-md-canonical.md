@@ -354,7 +354,11 @@ and uninstall" and "preserves mode 600 exactly under umask 0o022, through
 init, upgrade and uninstall" — the `664` case is the one that actually
 distinguishes `fchmod` from the umask-filtered creation mode alone; `600` is
 unaffected by `umask 022` either way, and is kept as the parallel case
-regardless (absent in a generated rig, same reason as above).
+regardless (absent in a generated rig, same reason as above). The RP-268
+self-masking is pinned separately, by `packages/cli/test/atomic-write.test.ts`'s
+test "never lets setuid, setgid or the sticky bit reach the written file,
+even when the caller passes them" (absent in a generated rig, same reason as
+above).
 
 **Round 3 advisory (code-reviewer A3): a Windows rename over a file another
 process holds open, without `FILE_SHARE_DELETE`, can fail where the in-place

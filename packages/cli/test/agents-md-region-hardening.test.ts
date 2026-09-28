@@ -153,6 +153,10 @@ describe('AD2 — initProject re-verifies AGENTS.md immediately before the regio
     }
 
     expect(caught).toBeInstanceOf(InitError);
+    // The refusal must not advise re-running `init`: with the rig files
+    // already on disk and no manifest, a re-run records them as the user's
+    // own (`kept`) — code-reviewer round 2, measured.
+    expect((caught as Error).message).not.toMatch(/init again/);
     const onDisk = await readFile(agentsMdPath(), 'utf8');
     // The edit must survive — never silently overwritten by a write composed
     // from the stale, plan-time bytes.

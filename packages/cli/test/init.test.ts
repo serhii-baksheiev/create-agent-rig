@@ -105,7 +105,7 @@ describe('initProject — the install', () => {
   // proposal). Split in two, mirroring the two things the old single test
   // used to pin: a plain pre-existing AGENTS.md is no longer clobbered — its
   // bytes survive byte-for-byte as the managed region's prefix, and install
-  // succeeds — while the one refusal that remains is markers already in the
+  // succeeds — while the refusal its contents decide is markers already in the
   // file that init cannot safely merge with (foreign or malformed). The
   // fuller region contract (CRLF, no-trailing-newline, the manifest's
   // `regions` hash, the 32 KiB warning, every malformed-marker shape) lives
@@ -173,7 +173,7 @@ describe('initProject — the install', () => {
   });
 
   // The original test's "blames AGENTS.md, not CLAUDE.md" intent survives on
-  // the one refusal that remains: a malformed AGENTS.md marker, with a
+  // the refusal its contents decide: a malformed AGENTS.md marker, with a
   // coexisting CLAUDE.md present too. The MAPS loop used to check CLAUDE.md
   // before AGENTS.md and throw on the first hit — the message must still
   // name the file that actually blocks the run, not the coexisting CLAUDE.md

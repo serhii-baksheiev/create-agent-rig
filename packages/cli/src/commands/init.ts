@@ -673,7 +673,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       if (currentBytes === null || !currentBytes.equals(existingAgentsBytes)) {
         throw new InitError(
           `This repo's ${AGENTS_MAP} changed after create-agent-rig read it. Refusing to ` +
-            'overwrite the edit — run create-agent-rig init again.',
+            'overwrite the edit.',
         );
       }
       let result;
