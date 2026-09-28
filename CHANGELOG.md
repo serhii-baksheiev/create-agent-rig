@@ -219,6 +219,14 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   rig-owned file preserved for a different reason, and it still keeps the
   manifest exactly as before (RP-260).
 
+- **`record-dispatch` no longer loses dispatch evidence silently when the
+  controller session was started in a different checkout.** When the hook
+  finds no run directory for its own checkout while another checkout's
+  unattended flag is armed, it now prints one `record-dispatch:` line on
+  stderr naming the checkout it checked; it still records nothing and
+  exits 0. The `loop` skill states that a session must be started from
+  the checkout whose run directory it declares (RP-287).
+
 ## 1.0.1
 
 **1.0.1 is a patch on the 1.0 line.** It closes guard gaps an unattended run

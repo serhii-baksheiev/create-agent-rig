@@ -135,6 +135,25 @@ export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
 mkdir -p "$RIG_RUN_DIR"
 ```
 
+🔴 **The session must be started from the checkout whose run directory it
+declares.** The controller and the loop's own `RIG_RUN_DIR`/unattended flag
+have to live in the SAME checkout — a controller-session pilot run measured
+what happens otherwise: started from a different checkout, `record-dispatch` (§7) finds
+no flag scoped to ITS OWN root, and every dispatch for the whole run goes
+unrecorded, silently. It is not entirely silent any more: when another
+checkout's flag is armed in the SAME home, `record-dispatch` prints one
+bounded `record-dispatch:` stderr line naming the root it checked — never a
+tool-call refusal, never the other checkout's run directory — see
+dispatch-journal.test.ts (absent in a generated rig) › "prints exactly one
+bounded stderr notice naming the checked root, and writes nothing, when the
+armed flag belongs to a DIFFERENT checkout". This notice is a same-home
+diagnostic, not a cross-machine one: a flag armed in a DIFFERENT home — a WSL
+checkout's flag, unseen by a Windows controller sharing no home directory
+with it — stays silent, same as no flag at all. The requirement itself is
+pinned separately, in the same file › "SKILL.md §1 states the session must
+start from the checkout whose run directory it declares, or dispatch
+evidence is lost".
+
 ⚠ **That export reaches the commands THIS shell runs and nothing else.** A
 `PreToolUse` hook is spawned by the harness with the harness's own environment,
 never with a variable the session exported — pinned in the generator's
