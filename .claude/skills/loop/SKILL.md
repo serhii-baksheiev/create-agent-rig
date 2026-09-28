@@ -334,6 +334,24 @@ in a generated rig — › "holds a re-scope item and says a human rewrites it" 
 › "refuses an obsolete item and says a human closes it with a comment naming the
 evidence".
 
+🔴 **`frozen` and `later` join the deferral vocabulary** — `lifecycleOf`
+reads either exactly like `parked`: cause `deferred`, no lifecycle inferred.
+Pinned in the
+generator's `test/template/queue-scope.test.ts` — absent in a generated rig —
+› "reads frozen and later as parked, without setting a lifecycle".
+
+**An adapter-neutral `scope` option narrows selection to a release or a
+lane** — `"scope": {"labels": [...]}` in `.claude/queue.json`'s `options`, or
+the same key on a `boards.<name>` entry. An item missing any one of the listed
+labels is out of play as `out-of-scope`, never held: a scope with no eligible
+item ends the run as `queue-empty`, never `nothing-selectable`. A malformed
+scope refuses selection outright rather than running unscoped. Pinned in the
+generator's `test/template/queue-scope.test.ts` — absent in a generated rig —
+› "rejects a more attractive off-scope candidate and selects the in-scope one
+instead", › "ends a queue where only off-scope items are eligible as
+queue-empty, never nothing-selectable", and › "a malformed `options.scope`
+exits non-zero, selects nothing, and names scope on stderr".
+
 **For a `trigger-auto` item, record the declaration** — it has to outlive the
 turn it was made in, or the next selection holds the item back again:
 

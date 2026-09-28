@@ -353,8 +353,14 @@ describe('boards in queue.json', () => {
 describe('the generator dogfoods the switch', () => {
   it('this repo declares AR and RP, and the selector path is ignored everywhere a state file is', async () => {
     const own = JSON.parse(await readFile(path.join(repoRoot, '.claude', 'queue.json'), 'utf8'));
-    expect(Object.keys(own.boards)).toEqual(['AR', 'RP']);
+    expect(Object.keys(own.boards)).toEqual(['AR', 'RP', 'RP-1.1.0']);
     expect(own.boards.RP).toEqual({ project: 'RP', owner: 'rig' });
+    // RP-273: the RP board narrowed to one release, for a release-scoped run.
+    expect(own.boards['RP-1.1.0']).toEqual({
+      project: 'RP',
+      owner: 'rig',
+      scope: { labels: ['rel-1.1.0'] },
+    });
     expect(own.options.project).toBeUndefined();
     // RP-186: the gitignore prose lives in AGENTS.md now (the canonical
     // rulebook) — CLAUDE.md is a short shim and carries none of it.

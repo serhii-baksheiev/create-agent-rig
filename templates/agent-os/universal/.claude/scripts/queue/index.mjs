@@ -780,31 +780,46 @@ if (invokedDirectly()) {
   const currentActor =
     typeof adapter.currentActor === 'function' ? await adapter.currentActor() : null;
 
-  const result = selectNext(tickets, {
-    // The state file wins: it is what a close actually recorded. A tier left in
-    // the config is a hand-written hint at best, and it is the composed file, so
-    // it cannot be the live value.
-    lastCompletedTier: state.lastCompletedTier ?? config.lastCompletedTier ?? null,
-    // Same precedence, for the same reason as the tier above: `queue.json` is
-    // composed by the sync script and drift-checked, so declaring a trigger
-    // fired there means editing a generated file — and the declaration is a
-    // fact about THIS run, not about the rig's configuration.
-    //
-    // The config keeps working as a fallback rather than being dropped: nothing
-    // in this repository or its templates ever writes the key, but a rig owner
-    // who hand-added one would otherwise find their auto-trigger items silently
-    // unselectable, and an item that stops being offered announces itself
-    // nowhere.
-    //
-    // Replacement, not a merge: a per-key merge would make a stale config entry
-    // impossible to retract, so "not this time" would again require editing the
-    // generated file this move exists to get out of.
-    triggersFired: runState.triggersFired ?? config.triggersFired ?? null,
-    // This checkout's name, for the owner marker (AR-132). Absent means the
-    // checkout cannot confirm a match, and an owned item is held.
-    owner: config.options?.owner ?? null,
-    currentActor,
-  });
+  // RP-273: `options.scope` — already board-overlaid by `resolveBoard`, so
+  // `boards.<name>.scope` reaches here the same way `options.scope` does. A
+  // malformed scope is refused loudly, naming `scope`, rather than silently
+  // running unscoped: see the `catch` around this call.
+  const scope = config.options?.scope ?? null;
+  let result;
+  try {
+    result = selectNext(tickets, {
+      // The state file wins: it is what a close actually recorded. A tier left
+      // in the config is a hand-written hint at best, and it is the composed
+      // file, so it cannot be the live value.
+      lastCompletedTier: state.lastCompletedTier ?? config.lastCompletedTier ?? null,
+      // Same precedence, for the same reason as the tier above: `queue.json` is
+      // composed by the sync script and drift-checked, so declaring a trigger
+      // fired there means editing a generated file — and the declaration is a
+      // fact about THIS run, not about the rig's configuration.
+      //
+      // The config keeps working as a fallback rather than being dropped:
+      // nothing in this repository or its templates ever writes the key, but a
+      // rig owner who hand-added one would otherwise find their auto-trigger
+      // items silently unselectable, and an item that stops being offered
+      // announces itself nowhere.
+      //
+      // Replacement, not a merge: a per-key merge would make a stale config
+      // entry impossible to retract, so "not this time" would again require
+      // editing the generated file this move exists to get out of.
+      triggersFired: runState.triggersFired ?? config.triggersFired ?? null,
+      // This checkout's name, for the owner marker (AR-132). Absent means the
+      // checkout cannot confirm a match, and an owned item is held.
+      owner: config.options?.owner ?? null,
+      currentActor,
+      scope,
+    });
+  } catch (error) {
+    // RP-273: a malformed scope throws inside `selectNext`, naming `scope` —
+    // refused rather than silently running unscoped. One line on stderr, no
+    // stack trace, nothing selected.
+    process.stderr.write(`queue: selection refused — ${error.message}\n`);
+    process.exit(1);
+  }
   // The skipped records travel with the count: without them "nothing left" and
   // "everything left is held back" both print as an empty queue, and only one of
   // the two means the queue needs refilling.

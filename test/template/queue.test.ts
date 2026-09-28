@@ -1500,6 +1500,9 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
       'escalated',
       // AR-144: out of play until a human closes it with the evidence.
       'obsolete',
+      // RP-273: an out-of-scope item is not this run's to do at all, not
+      // takeable work waiting on a human — see `test/template/queue-scope.test.ts`.
+      'out-of-scope',
     ]);
   });
 

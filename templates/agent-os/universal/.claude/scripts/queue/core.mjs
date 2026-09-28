@@ -114,6 +114,11 @@ export const SKIP_CAUSES = Object.freeze([
   // while the current actor is unknown — is held, never taken; see
   // `assigneeMismatchOf` below.
   'assigned',
+  // RP-273: a `scope: { labels }` option that an item does not carry every one
+  // of. Deliberately NOT in `HOLDING_CAUSES` — an out-of-scope item is not this
+  // run's to do at all, not takeable work waiting on a human, so a scope with no
+  // eligible item ends the run as `queue-empty`, never `nothing-selectable`.
+  'out-of-scope',
 ]);
 
 /**
@@ -220,6 +225,16 @@ export const ownerOfLabels = (labels) => {
 export const LIFECYCLE_LABELS = Object.freeze(['keep-core', 're-scope', 'obsolete']);
 
 /**
+ * The deferral vocabulary (RP-273): `parked`, `frozen` and `later` all read as
+ * the same scheduling hold — valid work deliberately not active now, cause
+ * `deferred` — and none of the three is inferred from anything else. `frozen`
+ * and `later` were added after a queue pilot selected an item carrying both,
+ * neither of which the lifecycle vocabulary recognised at the time, so
+ * neither held it.
+ */
+export const DEFERRAL_LABELS = Object.freeze(['parked', 'frozen', 'later']);
+
+/**
  * Read the lifecycle and the scheduling flag out of a label list — one
  * function for every tracker adapter, so the semantics live above the seam.
  *
@@ -232,7 +247,7 @@ export const lifecycleOf = (labels) => {
   const list = Array.isArray(labels) ? labels : [];
   let lifecycle = null;
   for (const label of LIFECYCLE_LABELS) if (list.includes(label)) lifecycle = label;
-  return { lifecycle, parked: list.includes('parked') };
+  return { lifecycle, parked: DEFERRAL_LABELS.some((label) => list.includes(label)) };
 };
 
 /** The lifecycle labels an item carries, for the contradiction check. */
@@ -294,6 +309,30 @@ const assigneeMismatchOf = (ticket, currentActor) => {
 };
 
 /**
+ * Validate an adapter-neutral `scope: { labels: string[] }` option (RP-273).
+ *
+ * `null`/`undefined` means unscoped — read exactly as the key being absent.
+ * Anything else must be `{ labels: [...] }`, a non-empty array of non-empty
+ * strings; a malformed scope throws, naming `scope`, rather than silently
+ * running unscoped — a scope typo that ran wide is worse than a run that
+ * refuses to start.
+ */
+export const validateScope = (scope) => {
+  if (scope === null || scope === undefined) return null;
+  const malformed = () =>
+    new Error(
+      `options.scope must be null/undefined (unscoped) or { labels: string[] } with at ` +
+        `least one non-empty label — got ${JSON.stringify(scope)}. Selection refuses ` +
+        'rather than running unscoped on a scope it cannot read.',
+    );
+  if (typeof scope !== 'object' || Array.isArray(scope)) throw malformed();
+  const labels = scope.labels;
+  if (!Array.isArray(labels) || labels.length === 0) throw malformed();
+  if (!labels.every((label) => typeof label === 'string' && label.length > 0)) throw malformed();
+  return { labels };
+};
+
+/**
  * Is this item takeable, and if not, why not?
  *
  * The filters run in order and every rejection carries a reason: an unexplained
@@ -303,7 +342,7 @@ const assigneeMismatchOf = (ticket, currentActor) => {
  */
 export const selectionOf = (
   ticket,
-  { triggersFired = null, owner = null, currentActor = null } = {},
+  { triggersFired = null, owner = null, currentActor = null, scope = null } = {},
 ) => {
   const reasons = [];
   const causes = [];
@@ -315,6 +354,20 @@ export const selectionOf = (
     reasons.push(why);
     if (!causes.includes(cause)) causes.push(cause);
   };
+
+  // RP-273: a scope an item does not carry every listed label for is out of
+  // play, not merely held — see `SKIP_CAUSES`'s note on `out-of-scope`. `scope`
+  // is expected already-validated here (`selectNext` validates once, up front);
+  // `selectionOf`'s own direct callers (tests) pass it well-formed.
+  if (scope && Array.isArray(scope.labels) && scope.labels.length > 0) {
+    const missing = scope.labels.filter((label) => !labels.includes(label));
+    if (missing.length > 0) {
+      reject(
+        'out-of-scope',
+        `out of scope: missing ${missing.join(', ')} (scope.labels: ${scope.labels.join(', ')})`,
+      );
+    }
+  }
 
   if (ticket.state === 'closed') reject('closed', 'already closed');
   if (ticket.state === 'in-progress') {
@@ -806,13 +859,22 @@ export const gateRoundVerdict = (rounds, max = DEFAULT_MAX_GATE_ROUNDS) => {
  */
 export const selectNext = (
   tickets,
-  { lastCompletedTier = null, triggersFired = null, owner = null, currentActor = null } = {},
+  {
+    lastCompletedTier = null,
+    triggersFired = null,
+    owner = null,
+    currentActor = null,
+    scope = null,
+  } = {},
 ) => {
+  // Validated once, up front, so a malformed scope throws even against an
+  // empty ticket list rather than surfacing only once something is offered.
+  const validatedScope = validateScope(scope);
   const skipped = [];
   const candidates = [];
 
   for (const ticket of tickets) {
-    const selection = selectionOf(ticket, { triggersFired, owner, currentActor });
+    const selection = selectionOf(ticket, { triggersFired, owner, currentActor, scope: validatedScope });
     if (!selection.eligible) {
       skipped.push({
         id: ticket.id,
