@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { GITHUB_PAT } from './secrets-fixtures.js';
+import { GITHUB_PAT, pemHeader } from './secrets-fixtures.js';
+import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 
 // RP-290 — "[RIG 1.1][EVIDENCE] Persist required-check failure identity so a
 // fresh diagnostician can answer it".
@@ -121,6 +122,47 @@ const ECHO_ARGS_SOURCE = `
 process.stdout.write(JSON.stringify(process.argv.slice(2)));
 process.stdout.write('\\n');
 process.exit(0);
+`;
+
+/**
+ * A fixture that produces exactly one line whose byte length the caller
+ * controls, ending in a caller-supplied suffix — built INSIDE the child
+ * rather than passed through argv, because a multi-megabyte argv value risks
+ * an OS argument-length limit the test has no business tripping.
+ */
+const LONG_LINE_RUNNER_SOURCE = `
+const config = JSON.parse(process.argv[2] ?? '{}');
+const bytes = Number(config.longLineBytes ?? 0);
+const suffix = config.longLineSuffix ?? '';
+const prefixLen = Math.max(0, bytes - Buffer.byteLength(suffix, 'utf8'));
+process.stdout.write('x'.repeat(prefixLen) + suffix + '\\n');
+process.exit(Number(config.exitCode ?? 0));
+`;
+
+/**
+ * A grandchild the timeout-kills-the-tree fixture spawns: writes its own pid
+ * to `argv[2]` immediately, then sleeps well past any timeout the test uses.
+ */
+const GRANDCHILD_SOURCE = `
+import { writeFileSync } from 'node:fs';
+const pidFile = process.argv[2];
+writeFileSync(pidFile, String(process.pid));
+setTimeout(() => {}, 30000);
+`;
+
+/**
+ * The direct child check-run spawns for the timeout-kills-the-tree fixture:
+ * spawns the grandchild above (detached from check-run's own knowledge — it
+ * never appears in check-run's own child handle) and then also sleeps, so
+ * killing only the DIRECT child leaves the grandchild orphaned unless
+ * check-run kills the whole tree.
+ */
+const PARENT_SOURCE = `
+import { spawn } from 'node:child_process';
+const grandchildPath = process.argv[2];
+const pidFile = process.argv[3];
+spawn(process.execPath, [grandchildPath, pidFile], { stdio: 'ignore' });
+setTimeout(() => {}, 30000);
 `;
 
 const writeFixture = async (dir: string, name: string, source: string): Promise<string> => {
@@ -465,6 +507,9 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
       { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
     );
     const record = await latestCheckResult(runDir);
+    // Non-vacuity: an empty array also satisfies "at most 50" — assert there
+    // really are entries, or the bound below proves nothing.
+    expect(record!.data.failedTests.length).toBeGreaterThan(0);
     expect(record!.data.failedTests.length).toBeLessThanOrEqual(50);
   });
 
@@ -486,6 +531,10 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
       { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
     );
     const record = await latestCheckResult(runDir);
+    // Non-vacuity: an empty array also satisfies "every entry <= 300 chars"
+    // vacuously — assert there really is an entry, or the loop below proves
+    // nothing.
+    expect(record!.data.failedTests.length).toBeGreaterThan(0);
     for (const entry of record!.data.failedTests) {
       expect(entry.length).toBeLessThanOrEqual(300);
     }
@@ -662,27 +711,416 @@ describe('--timeout classifies a hung command as a timed-out failure', () => {
 });
 
 // --- non-vacuity: the evidence exists only because check-run wrote it -------
+//
+// RP-290 review round 1 — the previous version of this block never ran
+// check-run.mjs at all: it recorded an unrelated `branch-created` event by
+// hand and asserted no `check-result` turned up, which is true of ANY run
+// directory that never saw a check-run invocation, whether or not check-run
+// itself still records evidence correctly. It could not go red if the
+// recording call were deleted from check-run.mjs. The pair below fixes that:
+// the SAME fixture, run the SAME way, once WITHOUT check-run (plain spawn)
+// and once THROUGH check-run — so removing check-run's own recordEvent call
+// makes the second test fail while the first stays green, which is what
+// makes the first test's "no evidence" meaningful rather than tautological.
 
 describe('non-vacuity — this evidence exists only because check-run wrote it', () => {
-  it('a plain run journal with no check-run invocation carries no check-result evidence at all', async () => {
+  const FIXTURE_LINES = [' FAIL  test/e2e/uninstall.test.ts > uninstall > kept was removed'];
+
+  it('running the fixture directly (no check-run, RIG_RUN_DIR set) leaves the run journal with no check-result evidence', async () => {
+    const cwd = await freshCwd();
     const runDir = await freshRunDir();
-    const { recordEvent } = await loadRunJournal();
-    // An ordinary, unrelated event — never check-run.mjs.
-    recordEvent({
-      runDir,
-      kind: 'branch-created',
-      data: { branch: 'feat/rp-290-x' },
-      now: new Date(2026, 0, 1).toISOString(),
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+
+    await new Promise<void>((resolve) => {
+      execFile(
+        process.execPath,
+        [runnerPath, JSON.stringify({ lines: FIXTURE_LINES, exitCode: 1 })],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+        () => resolve(),
+      );
     });
+
     const record = await latestCheckResult(runDir);
     expect(record).toBeUndefined();
 
     const { readRun } = await loadRunJournal();
     const { events } = readRun({ runDir });
     const serialised = JSON.stringify(events);
-    expect(serialised).not.toContain('AssertionError');
     expect(serialised).not.toContain('kept was removed');
   });
+
+  it('the SAME fixture run through check-run.mjs (RIG_RUN_DIR set) DOES carry check-result evidence — the paired case that makes the test above meaningful', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+
+    await runCheckRun(
+      ['--name', 'unit', '--', ...runnerCommand(runnerPath, { lines: FIXTURE_LINES, exitCode: 1 })],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+
+    const record = await latestCheckResult(runDir);
+    expect(record, 'no check-result event was recorded').toBeDefined();
+    expect(record!.data.outcome).toBe('fail');
+    expect(record!.data.failedTests).toContain(
+      'test/e2e/uninstall.test.ts > uninstall > kept was removed',
+    );
+  });
+});
+
+// --- spawn errors: a command that cannot be started at all ------------------
+//
+// RP-290 review round 1 blocker 1 — a command that fails to even START (a
+// missing executable) is currently indistinguishable, in the recorded
+// evidence, from a command that ran and exited non-zero: both land as
+// outcome 'fail'. A fresh diagnostician reading only the journal cannot tell
+// "the test failed" from "the check command was misconfigured/missing" —
+// which is a different fix in a different place.
+
+describe('a command that cannot be started at all', () => {
+  it('exits non-zero and prints a stderr line naming the spawn failure', async () => {
+    const cwd = await freshCwd();
+    const missing = `no-such-command-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const result = await runCheckRun(['--name', 'probe', '--', missing], { cwd });
+
+    expect(result.code).not.toBe(0);
+    const spawnLines = result.stderr.split('\n').filter((line) => /spawn/i.test(line));
+    expect(spawnLines, result.out).not.toHaveLength(0);
+  });
+
+  it("records outcome 'spawn-error' in the journal — never 'fail' — with no failedTests and no tail", async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const missing = `no-such-command-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    await runCheckRun(['--name', 'unit', '--', missing], {
+      cwd,
+      env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+    });
+
+    const record = await latestCheckResult(runDir);
+    expect(record, 'no check-result event was recorded').toBeDefined();
+    expect(record!.data.outcome).toBe('spawn-error');
+    expect(record!.data.failedTests).toEqual([]);
+    expect(record!.data).not.toHaveProperty('tail');
+  });
+
+  it('leaves no check-run capture temp file behind after a spawn-error run', async () => {
+    const cwd = await freshCwd();
+    const captureTmpDir = await mkdtemp(path.join(tmpdir(), 'check-run-capture-'));
+    const missing = `no-such-command-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    await runCheckRun(['--name', 'unit', '--', missing], {
+      cwd,
+      env: hermeticEnv({ TMPDIR: captureTmpDir, TEMP: captureTmpDir, TMP: captureTmpDir }),
+    });
+
+    const leftover = (await readdir(captureTmpDir)).filter((name) => name.startsWith('check-run-'));
+    expect(leftover, leftover.join(', ')).toEqual([]);
+  });
+});
+
+describe('temp capture files do not leak after an ordinary failing run', () => {
+  it('leaves no check-run capture temp file behind after a normal failing run', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const captureTmpDir = await mkdtemp(path.join(tmpdir(), 'check-run-capture-'));
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+
+    await runCheckRun(
+      ['--name', 'unit', '--', ...runnerCommand(runnerPath, { lines: ['boom'], exitCode: 1 })],
+      {
+        cwd,
+        env: hermeticEnv({
+          RIG_RUN_DIR: runDir,
+          TMPDIR: captureTmpDir,
+          TEMP: captureTmpDir,
+          TMP: captureTmpDir,
+        }),
+      },
+    );
+
+    const leftover = (await readdir(captureTmpDir)).filter((name) => name.startsWith('check-run-'));
+    expect(leftover, leftover.join(', ')).toEqual([]);
+  });
+});
+
+// --- Windows .cmd shims: no shell interpolation of an argument --------------
+//
+// RP-290 review round 1 — a `.cmd`/`.bat` command on Windows is spawned by
+// Node through `cmd.exe` even without `shell: true`; an argument containing a
+// shell metacharacter (`&`) has to survive as ONE literal argument rather
+// than being read as a second command. This can only be measured on Windows
+// itself — `onlyOnWindows()` is the named, reason-carrying skip
+// `platform-skips.test.ts` requires in place of a bare platform check.
+
+describe('Windows .cmd shims are run without shell interpolation of the argument', () => {
+  it('passes an argument containing a space and & through a .cmd shim literally, and exits with its code', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const cmdPath = path.join(cwd, 'fake.cmd');
+    await writeFile(cmdPath, '@echo off\r\necho %1\r\nexit /b 3\r\n');
+    const weirdArg = 'a b&c';
+
+    const result = await runCheckRun(['--name', 'cmdshim', '--', cmdPath, weirdArg], {
+      cwd,
+      env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+    });
+
+    expect(result.code).toBe(3);
+    expect(result.stdout).toContain(weirdArg);
+    // Nothing after the `&` ran as a second command (e.g. `c` interpreted as
+    // its own command line) — cmd.exe's own "not recognized" message is the
+    // tell if the argument leaked out of its quoting.
+    expect(result.stdout).not.toMatch(/is not recognized as an internal or external command/i);
+
+    const record = await latestCheckResult(runDir);
+    expect(record!.data.outcome).toBe('fail');
+    expect(record!.data.exitCode).toBe(3);
+  });
+});
+
+// --- a PEM private-key block spans multiple lines ----------------------------
+//
+// RP-290 review round 1 — `findSecretValues` (and the `private-key-block`
+// pattern it carries) is applied PER LINE, and only the BEGIN line matches
+// that pattern's shape. Today's per-line redaction therefore replaces only
+// the BEGIN line with `[redacted]` and lets the base64 KEY BODY and the END
+// line — the actual key material — straight through to both the tail and the
+// log file on disk. check-run needs to track "inside an unterminated PEM
+// block" across lines and redact the whole span, the same whole-unit rule
+// `continuation.mjs` already applies to a single field (see that module's
+// header, "Limits").
+
+describe('a PEM private-key block spans multiple lines and must be redacted as a whole', () => {
+  const PEM_BODY_LINES = [
+    'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN',
+    'OPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN',
+    'OPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLzz',
+  ];
+  const PEM_END = '-----END RSA PRIVATE KEY-----';
+
+  it('redacts the body and END line of a terminated PEM block, while a line after END survives', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    const afterLine = 'ordinary text after the key block';
+
+    await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, {
+          lines: [pemHeader(), ...PEM_BODY_LINES, PEM_END, afterLine],
+          exitCode: 1,
+        }),
+      ],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+
+    const record = await latestCheckResult(runDir);
+    const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+    const tail = record!.data.tail ?? '';
+
+    for (const bodyLine of PEM_BODY_LINES) {
+      expect(logContent, 'key body leaked into the log').not.toContain(bodyLine);
+      expect(tail, 'key body leaked into the tail').not.toContain(bodyLine);
+    }
+    expect(logContent, 'END line leaked into the log').not.toContain(PEM_END);
+    expect(tail, 'END line leaked into the tail').not.toContain(PEM_END);
+
+    expect(logContent, 'text after END did not survive in the log').toContain(afterLine);
+    expect(tail, 'text after END did not survive in the tail').toContain(afterLine);
+  });
+
+  it('redacts everything after an UNTERMINATED BEGIN block, to the end of the output', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+
+    await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, {
+          lines: [pemHeader(), ...PEM_BODY_LINES],
+          exitCode: 1,
+        }),
+      ],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+
+    const record = await latestCheckResult(runDir);
+    const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+    for (const bodyLine of PEM_BODY_LINES) {
+      expect(logContent, 'key body leaked into the log with no END line at all').not.toContain(
+        bodyLine,
+      );
+    }
+  });
+});
+
+// --- a single line longer than the credential scan limit ---------------------
+//
+// RP-290 review round 1 — `findSecretValues` reads at most `DEFAULT_SCAN_LIMIT`
+// (2 MiB) of the text it is given (`lib/secrets.mjs`'s own stated bound). A
+// single output line longer than that, ending in a credential-shaped value
+// past the 2 MiB mark, is invisible to the per-line secret scan today — the
+// line passes through untouched, credential included. check-run needs its
+// own length bound on a single line, independent of the credential scan,
+// that replaces an over-long line with a marker rather than trusting the
+// scan to have seen all of it.
+
+describe('a single line longer than the credential scan limit', () => {
+  it(
+    'replaces an over-long line ending in a credential with a marker, never the credential, and finishes quickly',
+    { timeout: 20_000 },
+    async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(cwd, 'long-line-runner.mjs', LONG_LINE_RUNNER_SOURCE);
+      const start = Date.now();
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            longLineBytes: 3 * 1024 * 1024,
+            longLineSuffix: GITHUB_PAT,
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const elapsedMs = Date.now() - start;
+      expect(elapsedMs).toBeLessThan(20_000);
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+      const tail = record!.data.tail ?? '';
+
+      expect(logContent, 'credential leaked into the log').not.toContain(GITHUB_PAT);
+      expect(tail, 'credential leaked into the tail').not.toContain(GITHUB_PAT);
+      expect(logContent).toMatch(/\[redacted: line over \d+ bytes\]/);
+    },
+  );
+});
+
+// --- a tail whose final line is itself very long -----------------------------
+//
+// RP-290 review round 1 — `buildTail` trims by shifting WHOLE lines off the
+// front until the joined text fits `TAIL_MAX_BYTES`. When the last surviving
+// line is itself longer than `TAIL_MAX_BYTES`, that shift-loop removes it
+// too — the only line left — and the tail comes back EMPTY, discarding the
+// one line a reader needed most (the assertion). The fix has to trim WITHIN
+// a line that is itself over the cap, not just drop it.
+
+describe('a tail whose final line is itself longer than the tail byte cap', () => {
+  it('keeps the tail non-empty, within the byte cap, and ending with the tail of the long assertion line', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    const longAssertion = `AssertionError: ${'x'.repeat(9000)}`;
+
+    await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, {
+          lines: [' FAIL  test/a.test.ts > s > t', longAssertion],
+          exitCode: 1,
+        }),
+      ],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+
+    const record = await latestCheckResult(runDir);
+    const tail = record!.data.tail ?? '';
+
+    expect(tail.length, 'the tail came back empty').toBeGreaterThan(0);
+    expect(Buffer.byteLength(tail, 'utf8')).toBeLessThanOrEqual(8192);
+    expect(tail.endsWith(longAssertion.slice(-100)), tail.slice(-120)).toBe(true);
+  });
+});
+
+// --- --timeout kills the whole process tree, not only the direct child -----
+//
+// RP-290 review round 1 — `child.kill('SIGKILL')` on timeout kills only the
+// DIRECT child check-run spawned. A check command that itself spawns a
+// worker/child process (a test runner spawning workers is the ordinary
+// shape) leaves that descendant running as an orphan once the direct child
+// is gone — exactly the shape a hung worker process leaks across runs.
+
+describe('--timeout kills the whole process tree, not only the direct child', () => {
+  it(
+    'a grandchild process spawned by the checked command is no longer alive after check-run returns',
+    { timeout: 20_000 },
+    async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const grandchildPath = await writeFixture(cwd, 'grandchild.mjs', GRANDCHILD_SOURCE);
+      const parentPath = await writeFixture(cwd, 'parent.mjs', PARENT_SOURCE);
+      const pidFile = path.join(cwd, 'grandchild.pid');
+
+      const start = Date.now();
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--timeout',
+          '1',
+          '--',
+          process.execPath,
+          parentPath,
+          grandchildPath,
+          pidFile,
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const elapsedMs = Date.now() - start;
+      expect(elapsedMs).toBeLessThan(15_000);
+
+      // The grandchild writes its own pid almost immediately; poll briefly
+      // rather than assuming it has already landed on disk.
+      let pidText = '';
+      for (let i = 0; i < 30 && pidText === ''; i += 1) {
+        try {
+          pidText = (await readFile(pidFile, 'utf8')).trim();
+        } catch {
+          // not written yet
+        }
+        if (pidText === '') await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(pidText, 'the grandchild never wrote its pid file').not.toBe('');
+      const grandchildPid = Number(pidText);
+
+      const isAlive = (): boolean => {
+        try {
+          process.kill(grandchildPid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      // Allow up to ~3s of polling after check-run has already returned.
+      let alive = isAlive();
+      for (let i = 0; i < 30 && alive; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        alive = isAlive();
+      }
+      expect(alive, `grandchild pid ${grandchildPid} is still alive`).toBe(false);
+    },
+  );
 });
 
 // --- wired into Core ---------------------------------------------------------

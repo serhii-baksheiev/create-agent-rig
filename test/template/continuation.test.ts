@@ -1745,6 +1745,38 @@ describe('continuation.mjs CLI — the failed-check line built from a check-run.
     expect(line).not.toContain('[path]');
     expect(line).toContain('test/e2e/uninstall.test.ts > uninstall > kept was removed');
   });
+
+  it('adds NO failed-check line for a spawn-error record — RP-290 review round 1: a command that never started is not a test failure', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    const { recordEvent } = (await load('run-journal.mjs')) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+    };
+    await recordEvent({
+      runDir,
+      kind: 'check-result',
+      data: {
+        schema: 1,
+        name: 'unit',
+        command: 'pnpm test:unit',
+        outcome: 'spawn-error',
+        exitCode: null,
+        signal: null,
+        timedOut: false,
+        failedTests: [],
+        log: 'checks/unit-1.log',
+      },
+      now: '2026-01-01T00:00:00.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).not.toContain('failed-check:');
+  });
 });
 
 // --- wired into the workflow layer -----------------------------------------

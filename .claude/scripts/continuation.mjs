@@ -26,10 +26,19 @@
 // (`check-run.mjs`) whose LATEST record for a check name is a failure, the
 // note gains one more line per such name — `failed-check: <name> exit
 // <code>; tests: <id1>, <id2>…` — so a fresh reader has the failing test
-// identity without the original process output. A later pass for the same
-// name drops its line; no `check-result` events at all leaves the note
-// byte-identical to before RP-290. See `test/template/continuation.test.ts`
-// (absent in a generated rig), the block on the `failed-check` line, by name.
+// identity without the original process output. See
+// `test/template/continuation.test.ts` (absent in a generated rig) ›
+// "adds a failed-check line built from the latest failing check-result
+// record, with a repo-relative test identity intact". A later pass for the
+// same name drops its line — › "uses the LATEST check-result record for a
+// check name — a later pass drops the earlier failure line". No
+// `check-result` events at all leaves the note byte-identical to before
+// RP-290 — › "does not add a failed-check line when the run directory
+// carries no check-result events at all — unchanged from before RP-290". A
+// `spawn-error` record (the command never started) is never treated as a
+// test failure — › "adds NO failed-check line for a spawn-error record —
+// RP-290 review round 1: a command that never started is not a test
+// failure".
 //
 // It NEVER records: a transcript, a prompt, source code, or a credential.
 // EVERY string field this composes — `ticket`, `branch`, `pr`, `headSha`,

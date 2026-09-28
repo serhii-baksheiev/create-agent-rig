@@ -2054,7 +2054,7 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // instead, so both counts below are one lower than the chronicle above
   // would otherwise give (105/62 manifest entries, either way).
   // RP-290: `.claude/scripts/check-run.mjs` joined the process layer, so both
-  // figures moved by one (104→105, 61→62).
+  // figures moved by one (104→105, 61→62; 106/63 entries counting `kept[]`).
   it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 105 manifest entries to 62', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
