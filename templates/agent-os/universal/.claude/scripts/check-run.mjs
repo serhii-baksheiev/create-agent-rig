@@ -58,13 +58,16 @@
 // OS itself routes it through `cmd.exe` — so on win32, when `command[0]` is
 // (or PATH+PATHEXT resolves it to) a `.cmd`/`.bat` file, this spawns
 // `cmd.exe /d /s /c "<quoted command line>"` with `windowsVerbatimArguments:
-// true` instead, escaping every argument (including the batch file path
-// itself): wrap in quotes with backslash doubling ahead of an embedded quote,
-// then caret-escape the cmd metacharacters `()%!^"<>&|` — ONCE for the batch
-// file's own PATH, TWICE for every argument that follows it, matching
-// `cross-spawn`'s own shape for a `%*`-forwarding shim (the ordinary form of
-// an npm/pnpm-installed `.cmd`) — see `escapeCmdArgument`'s own comment for
-// why the argument needs the second pass the batch file's PATH does not.
+// true` instead. The batch file's own resolved PATH and every argument that
+// follows it are escaped by two DIFFERENT functions, because a quoted token
+// and an unquoted one need different treatment: an argument is quote-wrapped
+// (backslash-doubling ahead of an embedded quote) and then caret-escaped the
+// cmd metacharacters `()%!^"<>&|` TWICE, matching `cross-spawn`'s own shape
+// for a `%*`-forwarding shim (the ordinary form of an npm/pnpm-installed
+// `.cmd`) — see `escapeCmdArgument`'s own comment for why it needs the
+// second pass the PATH does not. The PATH is never quoted at all — it is
+// caret-escaped ONCE, over the same metacharacters plus SPACE and TAB — see
+// `escapeCmdBatchPath`'s own comment for why a quoted PATH is unsafe here.
 // Zero new dependencies — the escaping is the handful of lines below, not a
 // package. An argument containing a double quote, CR or LF is refused BEFORE
 // cmd.exe is ever spawned instead — no escaping makes such an argument safe
@@ -72,9 +75,11 @@
 // "refuses `x"&<marker.cmd>` without ever running marker.cmd" and its two
 // siblings (skipped off Windows). A `.exe`/`.com` command is never routed
 // through `cmd.exe`. See › "Windows .cmd shims are run without shell
-// interpolation of the argument" and › "a cmd.exe-routed argument with no
-// quote/CR/LF still arrives literally through the %* shim" (both skipped
-// off Windows — `onlyOnWindows()` — there is nothing to measure elsewhere).
+// interpolation of the argument", › "a cmd.exe-routed argument with no
+// quote/CR/LF still arrives literally through the %* shim" and › "a
+// cmd.exe-routed batch file whose own resolved PATH contains a space" (all
+// three skipped off Windows — `onlyOnWindows()` — there is nothing to
+// measure elsewhere).
 //
 // --- Bounds ---------------------------------------------------------------
 //
@@ -523,8 +528,7 @@ class CmdArgumentRefusedError extends Error {
 
 /**
  * Quote-wrap an argument for a cmd.exe command line, then caret-escape cmd's
- * metacharacters — once for the batch file's own PATH, TWICE for every
- * argument that follows it. This is `cross-spawn`'s own shape for a
+ * metacharacters TWICE. This is `cross-spawn`'s own shape for a
  * `%*`-forwarding batch shim (the ordinary form of an npm/pnpm-installed
  * `.cmd`): the shim's `%*` re-exposes the argument to a SECOND round of
  * cmd.exe parsing when it forwards it on to the program it wraps, and only
@@ -533,9 +537,10 @@ class CmdArgumentRefusedError extends Error {
  * probe this change was verified against, including `pnpm --version`
  * through a real `%*`-forwarding shim. See `check-run.test.ts` (absent in a generated rig)
  * › "a cmd.exe-routed argument with no quote/CR/LF still arrives literally
- * through the %* shim". The batch file's own PATH is never forwarded
- * through `%*` a second time, so it keeps the single pass an ordinary
- * `cmd.exe /c "<command line>"` line needs.
+ * through the %* shim". The batch file's own resolved PATH is never an
+ * argument and is never forwarded through `%*` a second time — it is
+ * escaped by `escapeCmdBatchPath` below instead, which needs no quoting at
+ * all (see its own comment for why a quoted PATH is unsafe here).
  */
 const escapeCmdArgument = (value, doubleEscapeMetaChars = false) => {
   let arg = String(value);
@@ -547,6 +552,42 @@ const escapeCmdArgument = (value, doubleEscapeMetaChars = false) => {
   return arg;
 };
 
+// A double quote, CR or LF cannot appear in a Windows path at all — unlike an
+// argument, which can carry one and needs `escapeCmdArgument`'s own
+// quote-doubling step — so the batch file's own resolved PATH never needs
+// that step. `\t`/` ` are added to the metacharacter class below because,
+// unlike an argument, this token is never wrapped in quotes: see
+// `escapeCmdBatchPath`'s own comment for why.
+const CMD_PATH_META_CHARS = /([()%!^"<>&|\t ])/g;
+
+/**
+ * Caret-escape every cmd.exe metacharacter, plus space and tab, in the batch
+ * file's own resolved PATH — no surrounding quotes.
+ *
+ * code-reviewer, reproduced on win32 (RP-290) — the PATH used to be quote-wrapped exactly like an
+ * argument (`escapeCmdArgument`) and then have those very quotes
+ * caret-escaped along with every other metacharacter (`^"…^"`, because `"`
+ * is itself in `CMD_META_CHARS`); a caret-escaped quote is not a real quote
+ * delimiter to cmd.exe, so it never suppressed cmd.exe's own word-splitting
+ * on a SPACE, and a resolved PATH such as `C:\Program Files\nodejs\npm.cmd`
+ * split into two command-line tokens — cmd.exe reported the first fragment
+ * "is not recognized", and the checked command never ran, journalled `fail`
+ * regardless of what it would have reported. A bare space is not one of
+ * `CMD_META_CHARS`, so no amount of caret-escaping that set alone touches
+ * it. Caret-escaping the space (and tab) directly removes the need for a
+ * delimiter-suppressing quote in the first place: a caret suppresses
+ * cmd.exe's special reading of the ONE character that follows it, whatever
+ * that character is, independent of quoting — which is exactly what a real
+ * quote delimiter stops being able to do once its own quote character is
+ * itself caret-escaped. `%` and `!` are caret-escaped the same way an
+ * argument's are, so a PATH segment such as `50%x` or `a!b` is not read as
+ * an environment-variable or delayed-expansion reference either — proved
+ * together with the space case on a real win32 host: see
+ * `check-run.test.ts` (absent in a generated rig) › "a cmd.exe-routed batch
+ * file whose own resolved PATH contains a space".
+ */
+const escapeCmdBatchPath = (value) => String(value).replace(CMD_PATH_META_CHARS, '^$1');
+
 /** Spawn `command` — routed through `cmd.exe` when it is a win32 batch shim, plain argv spawn otherwise. */
 const spawnForCommand = (command, cwd, stdoutFd, stderrFd) => {
   const stdio = ['inherit', stdoutFd, stderrFd];
@@ -557,7 +598,7 @@ const spawnForCommand = (command, cwd, stdoutFd, stderrFd) => {
       throw new CmdArgumentRefusedError();
     }
     const shellCommand = argv
-      .map((arg, index) => escapeCmdArgument(arg, index > 0))
+      .map((arg, index) => (index === 0 ? escapeCmdBatchPath(arg) : escapeCmdArgument(arg, true)))
       .join(' ');
     const comspec = process.env.ComSpec ?? process.env.COMSPEC ?? 'cmd.exe';
     return spawn(comspec, ['/d', '/s', '/c', `"${shellCommand}"`], {

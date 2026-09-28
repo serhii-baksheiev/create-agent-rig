@@ -1082,6 +1082,97 @@ describe('a cmd.exe-routed argument with no quote/CR/LF still arrives literally 
   });
 });
 
+// --- Windows .cmd shims: the batch file's own resolved PATH has a space -----
+//
+// code-reviewer, reproduced on win32 (RP-290) — `escapeCmdArgument` wraps the
+// batch file's own PATH in quotes and then CARET-ESCAPES those quotes
+// (`^"…^"`) rather than leaving them as real cmd.exe quote delimiters. A
+// caret-escaped quote does not suppress cmd.exe's own whitespace
+// word-splitting, so a resolved `.cmd`/`.bat` PATH containing a SPACE (e.g.
+// `C:\Program Files\nodejs\npm.cmd`) is split into two command-line tokens at
+// that space, and cmd.exe reports the first fragment "is not recognized as an
+// internal or external command" — the checked command never runs, and the run
+// is journalled `outcome: 'fail'` regardless. This is a defect distinct from
+// the metacharacter escaping above: a bare space is not one of
+// `CMD_META_CHARS`, so no amount of caret-escaping that set touches it. Two
+// cases exercise the same defect through the two ways `resolveBatchFile`
+// arrives at a spaced path: `command[0]` supplied already-absolute, and
+// `command[0]` supplied bare and resolved through a PATH entry that itself
+// contains a space.
+
+describe('a cmd.exe-routed batch file whose own resolved PATH contains a space', () => {
+  /**
+   * Writes its own forwarded argv to `argvJsonPath` and exits 0 — unlike
+   * `argvJsSource` above (which exits 3, the marker for "the wrapped program
+   * ran"), a CLEAN exit is needed here so the journalled `outcome` is
+   * `'pass'`: the assertion this pair of tests makes is that the run reaches
+   * the wrapped program at all, and `'pass'` is the only outcome that cannot
+   * also be produced by cmd.exe's own "not recognized" failure.
+   */
+  const argvJsExitZeroSource = (argvJsonPath: string): string => `
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(argvJsonPath)}, JSON.stringify(process.argv.slice(2)));
+process.exit(0);
+`;
+
+  const SPACE_ARGS = ['a b&c', '%PATH%'];
+
+  it('runs the shim by its ABSOLUTE path when that path contains a space', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+    const parentDir = await freshCwd();
+    const spacedDir = path.join(parentDir, 'check run space');
+    await mkdir(spacedDir, { recursive: true });
+    const runDir = await freshRunDir();
+    const argvJsonPath = path.join(spacedDir, 'argv.json');
+    const argvJsPath = await writeFixture(spacedDir, 'argv.js', argvJsExitZeroSource(argvJsonPath));
+    const fwdPath = await writeFixture(spacedDir, 'fwd.cmd', fwdCmdSource(argvJsPath));
+
+    const result = await runCheckRun(
+      ['--name', 'cmdshim-space-abs', '--', fwdPath, ...SPACE_ARGS],
+      { cwd: parentDir, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+
+    expect(result.code, result.out).toBe(0);
+    const argvJson = JSON.parse(await readFile(argvJsonPath, 'utf8')) as string[];
+    expect(argvJson).toEqual(SPACE_ARGS);
+
+    const record = await latestCheckResult(runDir);
+    expect(record!.data.outcome).toBe('pass');
+  });
+
+  it('runs the shim by its BARE NAME, resolved through a PATH entry that contains a space', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+    const parentDir = await freshCwd();
+    const spacedDir = path.join(parentDir, 'check run space');
+    await mkdir(spacedDir, { recursive: true });
+    const runDir = await freshRunDir();
+    const argvJsonPath = path.join(spacedDir, 'argv.json');
+    const argvJsPath = await writeFixture(spacedDir, 'argv.js', argvJsExitZeroSource(argvJsonPath));
+    await writeFixture(spacedDir, 'fwd.cmd', fwdCmdSource(argvJsPath));
+
+    const env = hermeticEnv({ RIG_RUN_DIR: runDir });
+    const existingPath = env.PATH ?? env.Path ?? env.path ?? '';
+    delete env.PATH;
+    delete env.Path;
+    delete env.path;
+    env.PATH = `${spacedDir}${path.delimiter}${existingPath}`;
+
+    const result = await runCheckRun(
+      ['--name', 'cmdshim-space-bare', '--', 'fwd.cmd', ...SPACE_ARGS],
+      { cwd: parentDir, env },
+    );
+
+    expect(result.code, result.out).toBe(0);
+    const argvJson = JSON.parse(await readFile(argvJsonPath, 'utf8')) as string[];
+    expect(argvJson).toEqual(SPACE_ARGS);
+
+    const record = await latestCheckResult(runDir);
+    expect(record!.data.outcome).toBe('pass');
+  });
+});
+
 // --- a PEM private-key block spans multiple lines ----------------------------
 //
 // RP-290 review round 1 — `findSecretValues` (and the `private-key-block`
