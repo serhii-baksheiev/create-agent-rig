@@ -86,6 +86,14 @@ export interface InitOptions {
    * or `--layer workflow` already recorded.
    */
   withWorkflow?: boolean;
+  /**
+   * RP-268 AD2 test-only seam: invoked once this run has decided to append a
+   * managed region to a genuinely foreign AGENTS.md, immediately before the
+   * re-read that verifies nothing has changed since the plan-time read. Real
+   * runs never pass it — it exists so a test can land an edit in exactly the
+   * window the re-verification exists to catch.
+   */
+  onAgentsRegionWritePending?: () => Promise<void> | void;
 }
 
 interface Manifest {
@@ -651,12 +659,37 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       );
     }
     if (!options.dryRun) {
-      const result = await atomicWriteInRepo(
-        repoDir,
-        AGENTS_MAP,
-        Buffer.from(composed, 'utf8'),
-        existingAgentsMode ?? 0o644,
-      );
+      // RP-268 AD2: `existingAgentsBytes` was read at plan time, well before
+      // this write — re-verify nothing changed in between immediately
+      // before writing, mirroring `upgrade.ts`'s own re-verification at
+      // apply time (upgrade.ts:1397-1410). `onAgentsRegionWritePending`
+      // fires right before the re-read so a test can land an edit in
+      // exactly that window; real callers never pass it.
+      await options.onAgentsRegionWritePending?.();
+      const dest = destinations.get(AGENTS_MAP)!;
+      const currentBytes = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
+      if (currentBytes === null || !currentBytes.equals(existingAgentsBytes)) {
+        throw new InitError(
+          `This repo's ${AGENTS_MAP} changed after create-agent-rig read it. Refusing to ` +
+            'overwrite the edit — run create-agent-rig init again.',
+        );
+      }
+      let result;
+      try {
+        result = await atomicWriteInRepo(
+          repoDir,
+          AGENTS_MAP,
+          Buffer.from(composed, 'utf8'),
+          existingAgentsMode ?? 0o644,
+        );
+      } catch (error) {
+        // RP-268 AD1: an EACCES (or similar) from the temp-file create/
+        // write surfaces here as a raw Node fs error — wrapped so
+        // index.ts's typed-error handler formats it, not a raw stack trace.
+        throw new InitError(
+          `Refusing to write "${AGENTS_MAP}": ${(error as NodeJS.ErrnoException).message}`,
+        );
+      }
       if (!result.ok) {
         throw new InitError(
           `Refusing to write "${AGENTS_MAP}" through a symlink or outside ${repoDir}.`,
@@ -903,6 +936,13 @@ async function recordInstall(
   for (const rel of ordinaryWritten) files[rel] = sha256(contents.get(rel) ?? '');
   const kept = { ...(previous?.kept ?? {}), ...(extraKept ?? {}) };
   for (const rel of ordinaryWritten) delete kept[rel];
+  // RP-268 A1: `ordinaryWritten` excludes every region-tracked path (region
+  // bookkeeping is `regions`' job below, not `files`'/`kept`'s), so a
+  // region-appended AGENTS.md never cleared a stale `kept['AGENTS.md']`
+  // entry a hand-edited manifest left behind. `extraRegions` names exactly
+  // the paths THIS run appended a fresh region to — clear their `kept`
+  // entry the same as any other freshly-written path.
+  for (const rel of Object.keys(extraRegions ?? {})) delete kept[rel];
   // The first (and only) time a seed-once path is actually written, its hash
   // goes straight to `kept` — never a `files` detour, so there is no window
   // where a fresh install and a fully-migrated one look different.

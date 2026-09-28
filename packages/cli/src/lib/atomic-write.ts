@@ -26,11 +26,16 @@ export type AtomicWriteResult = { ok: true; dest: string } | { ok: false; reason
  * observe too; `rename` never does, because it only ever repoints the one
  * directory entry this call was asked to write.
  *
- * `mode` is the EXACT permission bits (`0o000`-`0o777`) the renamed result
- * ends up with — the caller's job to pass the ORIGINAL file's own `mode &
- * 0o777` when one exists, so an atomic rewrite never silently changes a
- * user's own file's permissions. Defaults to `0o644` for a destination that
- * does not exist yet.
+ * `mode` is the permission bits the renamed result ends up with, masked to
+ * `& 0o777` by this function itself (RP-268 AD3) before either use below —
+ * never trusting the caller to have already dropped setuid, setgid or the
+ * sticky bit. The caller's job is still to pass the ORIGINAL file's own
+ * `mode` when one exists, so an atomic rewrite never silently changes a
+ * user's own file's permissions; this function's own masking is a
+ * defensive backstop against a caller (present or future) that passes a
+ * wider value, not a reason for a caller to skip masking its own read of
+ * `stat().mode`. Defaults to `0o644` for a destination that does not exist
+ * yet.
  *
  * Round 3, code-reviewer blocker 3: `open(temporary, 'wx', mode)` alone does
  * NOT guarantee this — `open(2)`'s creation mode is ANDed with `~umask` by
@@ -41,13 +46,11 @@ export type AtomicWriteResult = { ok: true; dest: string } | { ok: false; reason
  * explicitly, straight after the write, BEFORE the rename — `fchmod(2)`
  * (what `FileHandle#chmod` calls) sets the mode bits given, verbatim, and is
  * never filtered by the umask, which only ever applies to a file's CREATION
- * mode. This never WIDENS what the original file had: `mode` is only ever
- * the caller's own `& 0o777` mask of the original `stat().mode`, so setuid,
- * setgid and the sticky bit (bits above `0o777`) are never read from the
- * original file in the first place, and this function never sets them
- * either — dropped, not "preserved as 0", and never reintroduced by a wider
- * default when the caller passes none (the `0o644` default carries none of
- * them).
+ * mode. This never WIDENS what the original file had: the `& 0o777` masking
+ * above drops setuid, setgid and the sticky bit (bits above `0o777`)
+ * whatever the caller passed, so this function never sets them either —
+ * dropped, not "preserved as 0", and never reintroduced by a wider default
+ * when the caller passes none (the `0o644` default carries none of them).
  *
  * A residual race remains between the third `resolveWritableInside` check
  * and the `rename` itself — a check-then-act sequence over the filesystem
@@ -71,6 +74,10 @@ export async function atomicWriteInRepo(
   bytes: Buffer,
   mode: number = 0o644,
 ): Promise<AtomicWriteResult> {
+  // RP-268 AD3: masked here, defensively, rather than trusting every caller
+  // to have already dropped setuid/setgid/sticky before calling in — see
+  // this function's own doc comment above.
+  const safeMode = mode & 0o777;
   let dest = await resolveWritableInside(repoDir, rel);
   if (dest === null) return { ok: false, reason: 'unsafe' };
   await mkdir(path.dirname(dest), { recursive: true });
@@ -82,14 +89,14 @@ export async function atomicWriteInRepo(
   );
   let created = false;
   try {
-    const handle = await open(temporary, 'wx', mode);
+    const handle = await open(temporary, 'wx', safeMode);
     created = true;
     try {
       await handle.writeFile(bytes);
       // Round 3, code-reviewer blocker 3: `fchmod`, not merely the creation
       // mode above — see this function's own doc comment for why the
       // creation mode alone is not enough under a non-empty umask.
-      await handle.chmod(mode);
+      await handle.chmod(safeMode);
     } finally {
       await handle.close();
     }
