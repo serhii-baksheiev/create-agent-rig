@@ -1417,12 +1417,22 @@ export async function applyUpgrade(
       // directory, then a rename, so a hard-linked AGENTS.md is replaced
       // rather than written through to whatever else it names, and the
       // original file's own mode is preserved rather than defaulted.
-      const result = await atomicWriteInRepo(
-        repoDir,
-        'AGENTS.md',
-        Buffer.from(composed, 'utf8'),
-        currentStat !== null ? currentStat.mode & 0o777 : 0o644,
-      );
+      let result;
+      try {
+        result = await atomicWriteInRepo(
+          repoDir,
+          'AGENTS.md',
+          Buffer.from(composed, 'utf8'),
+          currentStat !== null ? currentStat.mode & 0o777 : 0o644,
+        );
+      } catch (error) {
+        // RP-268 AD1: an EACCES (or similar) from the temp-file create/
+        // write surfaces here as a raw Node fs error — wrapped so
+        // index.ts's typed-error handler formats it, not a raw stack trace.
+        throw new UpgradeError(
+          `Refusing to write "AGENTS.md": ${(error as NodeJS.ErrnoException).message}`,
+        );
+      }
       if (!result.ok) {
         throw new UpgradeError(
           `Refusing to write "AGENTS.md" through a symlink or outside ${repoDir}.`,

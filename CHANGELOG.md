@@ -112,10 +112,11 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   already uses for the identical concept). `uninstall` strips only the
   region and always keeps the file, and its CLAUDE.md/AGENTS.md pairing note
   now also fires truthfully when a region strip, not a whole-file removal,
-  leaves no readable rulebook anywhere. The one refusal that remains is
+  leaves no readable rulebook anywhere. The refusal its contents decide is
   markers `init` cannot safely merge with — a region already there (that
   THIS rig's own manifest does not already vouch for), or a malformed
-  fragment of one. A combined file over Codex's default combined AGENTS.md
+  fragment of one; the file changing before the region write is refused
+  too (RP-268, under Fixed). A combined file over Codex's default combined AGENTS.md
   budget (`project_doc_max_bytes`, 32 KiB by default) is a warning, not a
   refusal, when this one file alone already exceeds it (see
   `docs/decisions/agents-md-canonical.md`, "AGENTS.md coexistence — the
@@ -185,6 +186,17 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   overwrite (RP-257).
 
 ### Fixed
+
+- **The AGENTS.md region writes are hardened (RP-268).** `init` re-reads a
+  foreign AGENTS.md immediately before appending the region and refuses —
+  non-zero exit, the edited file left as it is, no manifest written, the
+  rig files this run already installed left on disk — when it changed since
+  `init` first read it, instead of overwriting the edit. An errno failure
+  from the region write (EACCES on an unwritable repo root) is reported as
+  `init`'s or `upgrade`'s own error message, not a raw Node stack. The
+  atomic write masks the mode to `0o777` itself, so setuid, setgid and the
+  sticky bit never reach the written file whatever a caller passes. A
+  region append also clears a stale `kept['AGENTS.md']` manifest entry.
 
 - **`decision-router` diagnoses a missing `origin/HEAD` instead of printing
   git's raw `fatal:` transcript.** A fresh `git init` checkout with no remote
