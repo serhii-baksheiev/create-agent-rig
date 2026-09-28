@@ -115,16 +115,14 @@ describe("AD1 — an EACCES writing the AGENTS.md region is reported as the comm
 /**
  * AD2 — `initProject` reads AGENTS.md once, at "plan time" (early in the
  * function, well before the write), and composes the region write from
- * those same bytes. Nothing re-reads the file immediately before the write
- * the way `applyUpgrade` already does (`upgrade.ts`'s own re-verification,
- * pinned in `agents-md-region-upgrade.test.ts`'s "AGENTS.md region
- * re-verified at apply time" describe block) — so an edit landing in that
- * window is silently overwritten.
+ * those same bytes. Before RP-268 nothing re-read the file immediately
+ * before the write the way `applyUpgrade` does (`upgrade.ts`'s own
+ * re-verification, pinned in `agents-md-region-upgrade.test.ts`'s "AGENTS.md
+ * region re-verified at apply time" describe block) — so an edit landing in
+ * that window was silently overwritten.
  *
- * **The seam this fix must add** (none exists today, so this test exercises
- * it against a shape production does not implement yet — the extra option
- * below is simply ignored by `initProject` as it stands, which is exactly
- * why this test is red now): an `InitOptions` field, e.g.
+ * **The seam this test drives** (RP-268 added it for exactly this window):
+ * an `InitOptions` field,
  *
  *   onAgentsRegionWritePending?: () => Promise<void> | void
  *
@@ -163,6 +161,10 @@ describe('AD2 — initProject re-verifies AGENTS.md immediately before the regio
     // after the region write in `initProject`, and a refusal must not vouch
     // for content it never actually wrote.
     await expect(access(manifestPath())).rejects.toThrow();
+    // What the refusal leaves behind, pinned because the contract states it:
+    // the rig files this run already installed before the region write stay
+    // on disk — the same shape as the symlink and unwritable-root refusals.
+    await expect(access(path.join(repo, 'CLAUDE.md'))).resolves.toBeUndefined();
   });
 });
 

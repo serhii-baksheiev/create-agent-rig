@@ -477,11 +477,12 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
 
   // RP-256 slice 2: a plain pre-existing AGENTS.md coexists — its bytes
   // become the managed region's prefix (composed below, once the rendered
-  // body is available). The one refusal that remains is markers already
+  // body is available). The refusal decided here is markers already
   // there that init cannot safely merge with: a well-formed region from
   // elsewhere, or a malformed/foreign fragment of one (an unterminated
-  // begin, a stray end, two begins). Never suggests `upgrade` — there is no
-  // rig installed yet for it to refresh.
+  // begin, a stray end, two begins); the file changing between this read
+  // and the region write is refused later, at the write (RP-268). Never
+  // suggests `upgrade` — there is no rig installed yet for it to refresh.
   //
   // Round 2, code-reviewer B2/B3: a pre-existing AGENTS.md this run's OWN
   // manifest already vouches for — either as a whole rig-owned file
@@ -638,8 +639,9 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
 
   // RP-256 slice 2: the append itself. `existingAgentsBytes` is only ever
   // set once the marker check above has already let this run through, so
-  // there is nothing left to refuse here — only compose, warn if the result
-  // is large, and (outside a dry run) write it and record it. Round 2,
+  // the only refusal left here is RP-268's re-verification below — compose,
+  // warn if the result is large, and (outside a dry run) re-verify, write
+  // it and record it. Round 2,
   // security-scanner B1/A1: written atomically (a temp file in the same
   // directory, then a rename), so a hard link at AGENTS.md is replaced —
   // never written through to whatever else it names — and the original
@@ -661,8 +663,8 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     if (!options.dryRun) {
       // RP-268 AD2: `existingAgentsBytes` was read at plan time, well before
       // this write — re-verify nothing changed in between immediately
-      // before writing, mirroring `upgrade.ts`'s own re-verification at
-      // apply time (upgrade.ts:1397-1410). `onAgentsRegionWritePending`
+      // before writing, mirroring `applyUpgrade`'s own re-verification at
+      // apply time. `onAgentsRegionWritePending`
       // fires right before the re-read so a test can land an edit in
       // exactly that window; real callers never pass it.
       await options.onAgentsRegionWritePending?.();

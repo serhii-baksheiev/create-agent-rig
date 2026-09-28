@@ -7,19 +7,14 @@ import { modeBitsExist, skipUnless } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 /**
- * RP-268 AD3 — `atomic-write.ts`'s own doc comment (lines 44-50) promises
- * that this function "never WIDENS what the original file had" and "never
- * sets [setuid, setgid or sticky bits] either", but that promise currently
- * holds ONLY because every caller in this codebase already passes `stat().
- * mode & 0o777` — `atomicWriteInRepo` itself forwards whatever `mode` it is
- * given, unmasked, straight to both `open(temporary, 'wx', mode)` (the
- * creation mode, itself further filtered by the umask) and the unfiltered
- * `handle.chmod(mode)` right after. A caller that passes a mode carrying
- * setuid/setgid/sticky bits — by a future bug elsewhere in this codebase, or
- * directly here — currently has them land on the written file, contradicting
- * the function's own documented contract. The fix this test is red for:
- * `atomicWriteInRepo` masks `mode` to `& 0o777` itself, defensively, rather
- * than trusting every caller to have already done so.
+ * RP-268 AD3 — `atomic-write.ts`'s doc comment promises that this function
+ * "never WIDENS what the original file had" and never sets setuid, setgid or
+ * the sticky bit. Before RP-268 that held ONLY because every caller passed
+ * `stat().mode & 0o777`: `atomicWriteInRepo` forwarded whatever `mode` it was
+ * given, unmasked, to both `open(temporary, 'wx', mode)` and the unfiltered
+ * `handle.chmod(mode)`, so a caller passing those bits had them land on the
+ * written file. These tests pin the fix: `atomicWriteInRepo` masks `mode` to
+ * `& 0o777` itself, rather than trusting every caller to have done so.
  */
 
 let repo: string;
