@@ -23,6 +23,11 @@ export default defineConfig({
           name: 'unit',
           include: ['packages/*/test/**/*.test.ts'],
           setupFiles: ['test/setup-env.ts'],
+          // RP-271: nothing stops a future unit test from arming the
+          // checkout-scoped unattended flag the way template's
+          // queue-board.test.ts does — see the global setup itself for why
+          // this has to be a run-wide backstop rather than a per-test check.
+          globalSetup: ['test/helpers/unattended-flag-leak-audit.ts'],
           // The figure ci.yml passes this lane as --testTimeout. The full
           // `pnpm test` of e2e.yml cannot pass that flag (it would override the
           // e2e project's figure below), so without this the unit project alone
@@ -37,6 +42,10 @@ export default defineConfig({
           include: ['test/template/**/*.test.ts'],
           exclude: [...configDefaults.exclude],
           setupFiles: ['test/setup-env.ts'],
+          // RP-271: this is the project that currently arms the
+          // checkout-scoped unattended flag (queue-board.test.ts) — see the
+          // global setup itself for what it audits and its stated limit.
+          globalSetup: ['test/helpers/unattended-flag-leak-audit.ts'],
           // The figure ci.yml passes as --testTimeout (test/template/vitest-timeouts.test.ts
           // pins the two equal). Tests here spawn stub `gh` subprocesses, and under a
           // full parallel `pnpm test` with e2e beside them (before e2e had a group of

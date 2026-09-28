@@ -191,16 +191,18 @@ describe('boards in queue.json', () => {
     const env = { HOME: home, CLAUDE_PROJECT_DIR: dir };
     writeUnattended({ item: 'AR-BOARD', runDir: '/runs/board', allow: [] }, env);
 
-    const report = await runCli(['board', '--json', '--config', configPath], dir, env);
-    expect(report.code, report.out).toBe(0);
-    expect(JSON.parse(report.stdout)).toMatchObject({ board: 'AR', boards: ['AR', 'RP'] });
+    try {
+      const report = await runCli(['board', '--json', '--config', configPath], dir, env);
+      expect(report.code, report.out).toBe(0);
+      expect(JSON.parse(report.stdout)).toMatchObject({ board: 'AR', boards: ['AR', 'RP'] });
 
-    const switched = await runCli(['board', 'RP', '--config', configPath], dir, env);
-    expect(switched.code, switched.out).not.toBe(0);
-    expect(switched.out).toMatch(/unattended/i);
-    await expect(readFile(boardPathFor(configPath), 'utf8')).rejects.toThrow();
-
-    clearUnattended(env);
+      const switched = await runCli(['board', 'RP', '--config', configPath], dir, env);
+      expect(switched.code, switched.out).not.toBe(0);
+      expect(switched.out).toMatch(/unattended/i);
+      await expect(readFile(boardPathFor(configPath), 'utf8')).rejects.toThrow();
+    } finally {
+      clearUnattended(env);
+    }
   });
 
   it('finds the checkout-scoped flag from cwd when CLAUDE_PROJECT_DIR is absent', async () => {
@@ -212,14 +214,16 @@ describe('boards in queue.json', () => {
     const scopedEnv = { HOME: home, CLAUDE_PROJECT_DIR: dir };
     writeUnattended({ item: 'AR-BOARD-CWD', runDir: '/runs/board', allow: [] }, scopedEnv);
 
-    const switched = await runCli(['board', 'RP', '--config', configPath], dir, {
-      HOME: home,
-      CLAUDE_PROJECT_DIR: '',
-    });
-    expect(switched.code, switched.out).not.toBe(0);
-    expect(switched.out).toMatch(/unattended/i);
-
-    clearUnattended(scopedEnv);
+    try {
+      const switched = await runCli(['board', 'RP', '--config', configPath], dir, {
+        HOME: home,
+        CLAUDE_PROJECT_DIR: '',
+      });
+      expect(switched.code, switched.out).not.toBe(0);
+      expect(switched.out).toMatch(/unattended/i);
+    } finally {
+      clearUnattended(scopedEnv);
+    }
   });
 
   it('refuses a cross-cwd switch when the checkout targeted by --config is unattended', async () => {
@@ -236,14 +240,16 @@ describe('boards in queue.json', () => {
     const targetEnv = { HOME: home, CLAUDE_PROJECT_DIR: target };
     writeUnattended({ item: 'AR-TARGET', runDir: '/runs/target', allow: [] }, targetEnv);
 
-    const switched = await runCli(['board', 'RP', '--config', configPath], caller, {
-      HOME: home,
-      CLAUDE_PROJECT_DIR: '',
-    });
-    expect(switched.code, switched.out).not.toBe(0);
-    expect(switched.out).toMatch(/unattended/i);
-
-    clearUnattended(targetEnv);
+    try {
+      const switched = await runCli(['board', 'RP', '--config', configPath], caller, {
+        HOME: home,
+        CLAUDE_PROJECT_DIR: '',
+      });
+      expect(switched.code, switched.out).not.toBe(0);
+      expect(switched.out).toMatch(/unattended/i);
+    } finally {
+      clearUnattended(targetEnv);
+    }
   });
 
   it('resolves a symlinked config directory before checking the target unattended state', async () => {
@@ -298,15 +304,17 @@ describe('boards in queue.json', () => {
     const targetEnv = { HOME: targetHome, CLAUDE_PROJECT_DIR: target };
     writeUnattended({ item: 'AR-TARGET-HOME', runDir: '/runs/target', allow: [] }, targetEnv);
 
-    const switched = await runCli(['board', 'RP', '--config', configPath], caller, {
-      HOME: callerHome,
-      CLAUDE_PROJECT_DIR: caller,
-    });
-    expect(switched.code, switched.out).not.toBe(0);
-    expect(switched.out).toMatch(/unattended/i);
-    await expect(readFile(boardPathFor(configPath), 'utf8')).rejects.toThrow();
-
-    clearUnattended(targetEnv);
+    try {
+      const switched = await runCli(['board', 'RP', '--config', configPath], caller, {
+        HOME: callerHome,
+        CLAUDE_PROJECT_DIR: caller,
+      });
+      expect(switched.code, switched.out).not.toBe(0);
+      expect(switched.out).toMatch(/unattended/i);
+      await expect(readFile(boardPathFor(configPath), 'utf8')).rejects.toThrow();
+    } finally {
+      clearUnattended(targetEnv);
+    }
   });
 
   it('refuses a cross-checkout switch when the calling checkout is unattended', async () => {
@@ -323,14 +331,16 @@ describe('boards in queue.json', () => {
     const callerEnv = { HOME: home, CLAUDE_PROJECT_DIR: caller };
     writeUnattended({ item: 'AR-CALLER', runDir: '/runs/caller', allow: [] }, callerEnv);
 
-    const switched = await runCli(['board', 'RP', '--config', configPath], caller, {
-      HOME: home,
-      CLAUDE_PROJECT_DIR: caller,
-    });
-    expect(switched.code, switched.out).not.toBe(0);
-    expect(switched.out).toMatch(/unattended/i);
-
-    clearUnattended(callerEnv);
+    try {
+      const switched = await runCli(['board', 'RP', '--config', configPath], caller, {
+        HOME: home,
+        CLAUDE_PROJECT_DIR: caller,
+      });
+      expect(switched.code, switched.out).not.toBe(0);
+      expect(switched.out).toMatch(/unattended/i);
+    } finally {
+      clearUnattended(callerEnv);
+    }
   });
 
   it('`board <name>` refuses an undeclared board and writes nothing', async () => {
