@@ -1295,6 +1295,124 @@ describe('a cmd.exe-routed batch path containing a cmd token separator runs only
   });
 });
 
+// --- Windows .cmd shims: an allowlist-refused character in the batch path ---
+//
+// security-scanner, reproduced on win32 at 585465a (RP-290) — U+180E
+// (MONGOLIAN VOWEL SEPARATOR) is a cmd.exe/`iswspace` token separator but is
+// NOT matched by JS `\s` (it lost its Unicode whitespace property in Unicode
+// 6.3, and the credential/path scanning in this codebase is JS-regex-based),
+// so a batch path under `tools<U+180E>v2` split at that character exactly the
+// way the comma/semicolon/equals/NBSP cases above already do, and the planted
+// sibling `tools.cmd` ran in its place while the run was still journalled
+// `pass`. Chasing this one character with another entry in a deny-list is the
+// same defect shape as every case above it, so the fix moves to an ALLOWLIST
+// on the cmd.exe batch-path route instead: every character of the resolved
+// path must be printable ASCII, a Unicode letter/mark/number (`\p{L}\p{M}\p{N}`),
+// JS `\s`, or U+0085 (NEL) — anything else is refused BEFORE check-run ever
+// spawns cmd.exe, with outcome `spawn-error` (never `pass` or `fail`), no
+// `tail`, and neither the named file nor any decoy sibling ever runs. U+200B
+// (ZERO WIDTH SPACE, also Cf and also outside JS `\s`) is included below
+// specifically because it is not the character the defect was demonstrated
+// with — an allowlist refuses it on the same general ground, where a patch
+// aimed only at U+180E would not.
+//
+// Special characters are built with `String.fromCodePoint` in the test source
+// itself (never as a literal invisible character), matching this file's own
+// `NBSP_DIR_NAME` convention just above and avoiding an eslint
+// `no-irregular-whitespace` violation.
+
+const U180E_DIR_NAME = `tools${String.fromCodePoint(0x180e)}v2`;
+const U200B_DIR_NAME = `tools${String.fromCodePoint(0x200b)}v2`;
+
+/**
+ * Runs one "refused before spawning" case for `dirName` on the cmd.exe
+ * batch-path route: builds the same target/decoy fixture pair
+ * `expectOnlyTargetRuns` uses, but asserts the ALLOWLIST refusal shape
+ * instead — neither the named `lint.cmd` NOR the decoy `tools.cmd` ever
+ * runs, check-run exits non-zero, prints exactly one stderr line naming
+ * cmd.exe, and the run is journalled `spawn-error` (never `pass` or `fail`)
+ * with no `tail` — the same "nothing ran" shape the missing-command and
+ * cmd-argument-refusal spawn-error cases already use.
+ */
+const expectBatchPathRefused = async (
+  ctx: Parameters<typeof skipUnless>[0],
+  dirName: string,
+  invoke: 'absolute' | 'relative',
+): Promise<void> => {
+  skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+  const tmp = await freshCwd();
+  const runDir = await freshRunDir();
+  const targetDir = path.join(tmp, dirName);
+  await mkdir(targetDir, { recursive: true });
+  const targetRanPath = path.join(tmp, 'target-ran');
+  const decoyRanPath = path.join(tmp, 'decoy-ran');
+  await writeFixture(targetDir, 'lint.cmd', LINT_CMD_SOURCE(targetRanPath));
+  await writeFixture(tmp, 'tools.cmd', DECOY_CMD_SOURCE(decoyRanPath));
+
+  const lintPath =
+    invoke === 'absolute' ? path.join(targetDir, 'lint.cmd') : path.join(dirName, 'lint.cmd');
+
+  const result = await runCheckRun(['--name', 'lint-path-refuse', '--', lintPath], {
+    cwd: tmp,
+    env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+  });
+
+  expect(result.code, result.out).not.toBe(0);
+
+  let targetRan = true;
+  try {
+    await readFile(targetRanPath);
+  } catch {
+    targetRan = false;
+  }
+  expect(targetRan, 'lint.cmd ran — the unsafe path was not refused before spawning').toBe(false);
+
+  let decoyRan = true;
+  try {
+    await readFile(decoyRanPath);
+  } catch {
+    decoyRan = false;
+  }
+  expect(
+    decoyRan,
+    'the decoy tools.cmd ran — the unsafe path was not refused before spawning',
+  ).toBe(false);
+
+  const cmdLines = result.stderr.split('\n').filter((line) => /cmd\.exe/i.test(line));
+  expect(cmdLines, result.out).toHaveLength(1);
+
+  const record = await latestCheckResult(runDir);
+  expect(record, 'no check-result event was recorded').toBeDefined();
+  expect(record!.data.outcome).toBe('spawn-error');
+  expect(record!.data.failedTests).toEqual([]);
+  expect(record!.data).not.toHaveProperty('tail');
+};
+
+describe('a cmd.exe-routed batch path containing a character outside the allowlist is refused before spawning', () => {
+  it('refuses the ABSOLUTE path under a U+180E (MONGOLIAN VOWEL SEPARATOR) character, without running lint.cmd or the decoy', async (ctx) => {
+    await expectBatchPathRefused(ctx, U180E_DIR_NAME, 'absolute');
+  });
+
+  it('refuses the RELATIVE path under a U+180E (MONGOLIAN VOWEL SEPARATOR) character, without running lint.cmd or the decoy', async (ctx) => {
+    await expectBatchPathRefused(ctx, U180E_DIR_NAME, 'relative');
+  });
+
+  it('refuses the ABSOLUTE path under a U+200B (ZERO WIDTH SPACE) character, without running lint.cmd or the decoy', async (ctx) => {
+    await expectBatchPathRefused(ctx, U200B_DIR_NAME, 'absolute');
+  });
+});
+
+describe('a cmd.exe-routed batch path containing ordinary non-English letters is not refused by the allowlist', () => {
+  // The allowlist above must not become a blanket refusal of every non-ASCII
+  // character — an accented Latin letter and Cyrillic letters are `\p{L}`
+  // and must still reach the named file, exactly as the plain-ASCII cases in
+  // "a cmd.exe-routed batch path containing a cmd token separator" do.
+  it('runs only lint.cmd, not decoy tools.cmd, by its ABSOLUTE path under "tëst-дир"', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, 'tëst-дир', 'absolute');
+  });
+});
+
 // --- a PEM private-key block spans multiple lines ----------------------------
 //
 // RP-290 review round 1 — `findSecretValues` (and the `private-key-block`

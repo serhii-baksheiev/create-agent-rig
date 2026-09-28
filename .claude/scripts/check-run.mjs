@@ -609,12 +609,60 @@ const CMD_PATH_META_CHARS = /([()%!^"<>&|;,=\s\u0085])/gu;
  */
 const escapeCmdBatchPath = (value) => String(value).replace(CMD_PATH_META_CHARS, '^$1');
 
+// security-scanner, reproduced on win32 at 585465a (RP-290) — U+180E
+// (MONGOLIAN VOWEL SEPARATOR) is one of cmd.exe's own token separators
+// (cmd.exe follows the C runtime's `iswspace`, whose Unicode "space"
+// category is a moving target the win32 CRT decides, not something JS can
+// enumerate reliably from ECMAScript's own `\s` — U+180E in particular WAS
+// Unicode-whitespace and lost that property in Unicode 6.3, yet cmd.exe kept
+// splitting on it) but is NOT matched by `CMD_PATH_META_CHARS`'s `\s`, so a
+// batch path under `tools<U+180E>v2` still split into two cmd.exe tokens the
+// same way the comma/semicolon/equals/NBSP cases above already did, and a
+// planted sibling `tools.cmd` ran in the named file's place. Chasing this one
+// character with another deny-list entry repeats the exact defect shape
+// already fixed twice above, so the batch path is ALLOWLISTED instead
+// (fail-closed): every character of the resolved, absolute path must be
+// printable ASCII, a Unicode letter/mark/number, JS `\s`, or U+0085 (NEL) —
+// anything else is refused BEFORE cmd.exe is ever spawned, journalled
+// `spawn-error` with no `tail`, and neither the named file nor any decoy
+// sibling ever runs. See `check-run.test.ts` (absent in a generated rig) ›
+// "a cmd.exe-routed batch path containing a character outside the allowlist
+// is refused before spawning" and, for the allowlist's own lower bound — an
+// accented Latin letter or a Cyrillic letter must still reach the named file
+// — › "a cmd.exe-routed batch path containing ordinary non-English letters
+// is not refused by the allowlist".
+const CMD_PATH_ALLOWED_CHAR = /^[ -~\p{L}\p{M}\p{N}\s\u0085]$/u;
+
+/** The code point of the first character in `value` outside `CMD_PATH_ALLOWED_CHAR`, or `null` if every character is allowed. */
+const findDisallowedCodePoint = (value) => {
+  for (const character of String(value)) {
+    if (!CMD_PATH_ALLOWED_CHAR.test(character)) return character.codePointAt(0);
+  }
+  return null;
+};
+
+/** Thrown by `spawnForCommand` to refuse a batch path `CMD_PATH_ALLOWED_CHAR` does not allow — never actually spawns cmd.exe. */
+class CmdPathRefusedError extends Error {
+  constructor(codePoint) {
+    const hex = codePoint.toString(16).toUpperCase().padStart(4, '0');
+    super(
+      `check-run: refusing to spawn cmd.exe — this Windows .cmd/.bat command's own resolved ` +
+        `path contains a character (U+${hex}) that cannot be passed safely through cmd.exe`,
+    );
+    this.code = 'CMD_PATH_REFUSED';
+  }
+}
+
 /** Spawn `command` — routed through `cmd.exe` when it is a win32 batch shim, plain argv spawn otherwise. */
 const spawnForCommand = (command, cwd, stdoutFd, stderrFd) => {
   const stdio = ['inherit', stdoutFd, stderrFd];
   const resolvedBatchFile = resolveBatchFile(command[0]);
   const batchFile = resolvedBatchFile ? path.resolve(cwd, resolvedBatchFile) : null;
   if (batchFile) {
+    const disallowedCodePoint = findDisallowedCodePoint(batchFile);
+    if (disallowedCodePoint !== null) {
+      throw new CmdPathRefusedError(disallowedCodePoint);
+    }
     const argv = [batchFile, ...command.slice(1)];
     if (argv.some((arg) => CMD_UNSAFE_ARG_PATTERN.test(String(arg)))) {
       throw new CmdArgumentRefusedError();
@@ -887,11 +935,12 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
 
   if (spawnError) {
     const code = spawnError.code === 'ENOENT' ? 127 : 1;
-    // A refused cmd.exe argument already carries its own full explanation
-    // (and the word "cmd.exe" a fresh reader can search for) — the generic
-    // "spawn failed … — <code>" line would only repeat it as a bare code.
+    // A refused cmd.exe argument or batch path already carries its own full
+    // explanation (and the word "cmd.exe" a fresh reader can search for) —
+    // the generic "spawn failed … — <code>" line would only repeat it as a
+    // bare code.
     process.stderr.write(
-      spawnError.code === 'CMD_ARG_REFUSED'
+      spawnError.code === 'CMD_ARG_REFUSED' || spawnError.code === 'CMD_PATH_REFUSED'
         ? `${spawnError.message}\n`
         : `check-run: spawn failed for check "${name}" — ${spawnError.code ?? 'unknown error'}\n`,
     );
