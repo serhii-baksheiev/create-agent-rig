@@ -223,8 +223,9 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   controller session was started in a different checkout.** When the hook
   finds no run directory for its own checkout while another checkout's
   unattended flag is armed, it now prints one `record-dispatch:` line on
-  stderr naming the checkout it checked; it still records nothing and exits 0. The `loop` skill states that a session must be started from the
-  checkout whose run directory it declares (RP-287).
+  stderr naming the checkout it checked; it still records nothing and
+  exits 0. The `loop` skill states that a session must be started from
+  the checkout whose run directory it declares (RP-287).
 
 ## 1.0.1
 

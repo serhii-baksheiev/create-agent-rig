@@ -22,22 +22,33 @@
 // dispatches to exactly that: the controller was started in one checkout
 // while the loop's run/flag lived in another. So when neither `RIG_RUN_DIR`
 // nor an own-scoped flag resolves a run directory, this hook takes ONE extra,
-// still-bounded look — a single `readdirSync` of each `homesOf` candidate's
-// `.claude` directory (never a file open, never a content read), matched only
-// against the checkout-scoped flag basename shape
+// still-bounded look — a counted `opendirSync`/`readSync` walk (never
+// `readdirSync`'s unbounded array) of ONE directory, `<env-home>/.claude`,
+// where `<env-home>` is the home `env.HOME`/`env.USERPROFILE` itself declares
+// (never a file open, never a content read), matched only against the
+// checkout-scoped flag basename shape
 // (`<FLAG_BASENAME-prefix>-<16 hex>-loop-UNATTENDED`, derived from
 // `unattended-flag.mjs`'s own exported `FLAG_BASENAME` rather than a second
-// copy of the prefix), with the entries examined capped. Finding one that is
-// not among this checkout's own candidate paths means ANOTHER checkout's flag
-// is armed, and this hook writes ONE bounded (<=512 chars) `record-dispatch:`
-// line to stderr naming the root it checked (`CLAUDE_PROJECT_DIR`, or `cwd`)
-// — never the other checkout's `runDir` or flag content, and never more than
-// that one line. Still exits 0, stdout stays empty, and nothing is written to
-// any journal; any error inside this probe is swallowed, exactly like every
-// other failure mode in this observe-only hook. See dispatch-journal.test.ts
-// (absent in a generated rig) › "prints exactly one bounded stderr notice
-// naming the checked root, and writes nothing, when the armed flag belongs to
-// a DIFFERENT checkout".
+// copy of the prefix), with the entries examined capped. This probe
+// deliberately does NOT reuse `stop-flag.mjs`'s `homesOf` — that helper's
+// second candidate is always the real, OS-level `userInfo().homedir`,
+// ignoring `env` entirely, which is exactly right for the security-relevant
+// brake it backs but wrong for this diagnostic: a parallel test worker or a
+// live loop mirroring a scoped flag into the real machine home (RP-263) would
+// make this probe fire at random on a checkout that shares no home with
+// either. `env` declaring neither `HOME` nor `USERPROFILE` means this probe
+// scans nothing, rather than guessing a real home no caller declared. Finding
+// an entry that is not among this checkout's own candidate paths means
+// ANOTHER checkout's flag is armed in the SAME home, and this hook writes ONE
+// bounded (<=512 chars) `record-dispatch:` line to stderr naming the root it
+// checked (`CLAUDE_PROJECT_DIR`, or `cwd`, with any control character
+// replaced so the line stays one line) — never the other checkout's `runDir`
+// or flag content, and never more than that one line. Still exits 0, stdout
+// stays empty, and nothing is written to any journal; any error inside this
+// probe is swallowed, exactly like every other failure mode in this
+// observe-only hook. See dispatch-journal.test.ts (absent in a generated rig)
+// › "prints exactly one bounded stderr notice naming the checked root, and
+// writes nothing, when the armed flag belongs to a DIFFERENT checkout".
 //
 // The record is bounded by ONE allowlist, `DISPATCH_FIELDS`: every key is
 // filtered through it immediately before the write, so a field added to the
@@ -334,7 +345,7 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readdirSync,
+  opendirSync,
   readSync,
   realpathSync,
 } from 'node:fs';
@@ -344,7 +355,6 @@ import { fileURLToPath } from 'node:url';
 import { readHookInput } from './lib/hook-input.mjs';
 import { recordEvent } from '../scripts/run-journal.mjs';
 import { FLAG_BASENAME, readUnattended, unattendedFlags } from '../scripts/unattended-flag.mjs';
-import { homesOf } from '../scripts/stop-flag.mjs';
 
 /** The one allowlist a record's `data` may carry — see the header. */
 export const DISPATCH_FIELDS = Object.freeze([
@@ -414,16 +424,36 @@ function resolveRunDir(env) {
 // checkout's armed one, is not silence. See the header for the full design;
 // this is the bounded probe and the one-line notice it may print.
 
-/** How many `readdirSync` entries this probe examines per `homesOf` candidate — bounded, never unbounded work. */
+/** How many directory entries this probe examines — bounded, never unbounded work. */
 const MAX_HOME_ENTRIES_EXAMINED = 1024;
 
 /** The longest stderr notice this probe ever writes — bounded, per the header. */
 const MAX_NOTICE_LENGTH = 512;
 
+/** Any ASCII control character (including ESC, `\x1b`) — stripped from the checked root before it is ever formatted into the notice, so the notice always stays one line. */
+// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/g;
+
 /** `-loop-UNATTENDED` — the fixed suffix `scopedBasename` in `unattended-flag.mjs` inserts an id before. */
 const SCOPED_FLAG_SUFFIX = '-loop-UNATTENDED';
 
 const escapeRegExp = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * The one home this probe ever looks at: `env.HOME` (POSIX) or
+ * `env.USERPROFILE` (Windows), whichever `stop-flag.mjs`'s own `homesOf`
+ * would derive its env-based candidate from — trimmed, and `null` when `env`
+ * declares neither. Deliberately never falls through to `os.homedir()` or
+ * `os.userInfo().homedir`: both ignore `env` and can resolve the real machine
+ * home even when the caller declared an isolated one, which is exactly the
+ * source of the flakiness this probe must not have (see the header).
+ */
+function envHomeOf(env) {
+  const home = typeof env.HOME === 'string' ? env.HOME.trim() : '';
+  if (home !== '') return home;
+  const userProfile = typeof env.USERPROFILE === 'string' ? env.USERPROFILE.trim() : '';
+  return userProfile !== '' ? userProfile : null;
+}
 
 /**
  * The checkout-scoped flag basename shape — `<prefix>-<16 hex>-loop-UNATTENDED`
@@ -441,28 +471,43 @@ const SCOPED_FLAG_BASENAME_RE = (() => {
 
 /**
  * Whether a checkout-scoped unattended flag OTHER than this checkout's own is
- * present — one `readdirSync` per `homesOf` candidate's `.claude` directory
- * (never a file open, never a content read), matched only against
+ * present in `envHomeOf(env)`'s `.claude` directory — a counted
+ * `opendirSync`/`readSync` walk (never a file open, never a content read,
+ * never an unbounded `readdirSync` array), matched only against
  * `SCOPED_FLAG_BASENAME_RE`, with entries examined capped at
- * `MAX_HOME_ENTRIES_EXAMINED`. Never reports which other checkout it saw.
+ * `MAX_HOME_ENTRIES_EXAMINED` and the directory handle always closed via
+ * `closeSync` in `finally`. `env` declaring no home means nothing is scanned.
+ * Never reports which other checkout it saw.
  */
 function anotherCheckoutFlagIsPresent(env) {
+  const home = envHomeOf(env);
+  if (home === null) return false;
   const own = new Set(unattendedFlags(env));
-  for (const home of homesOf(env)) {
-    const dir = path.join(home, '.claude');
-    let entries;
-    try {
-      entries = readdirSync(dir);
-    } catch {
-      continue;
+  const dir = path.join(home, '.claude');
+  let handle;
+  try {
+    handle = opendirSync(dir);
+  } catch {
+    return false;
+  }
+  try {
+    let examined = 0;
+    let entry = handle.readSync();
+    while (entry !== null && examined < MAX_HOME_ENTRIES_EXAMINED) {
+      examined += 1;
+      if (SCOPED_FLAG_BASENAME_RE.test(entry.name) && !own.has(path.join(dir, entry.name))) {
+        return true;
+      }
+      entry = handle.readSync();
     }
-    for (const name of entries.slice(0, MAX_HOME_ENTRIES_EXAMINED)) {
-      if (!SCOPED_FLAG_BASENAME_RE.test(name)) continue;
-      if (own.has(path.join(dir, name))) continue;
-      return true;
+    return false;
+  } finally {
+    try {
+      handle.closeSync();
+    } catch {
+      // nothing left to release
     }
   }
-  return false;
 }
 
 /** `CLAUDE_PROJECT_DIR` when declared, else `process.cwd()` — the root this hook checked, and the only thing the notice ever names. */
@@ -474,10 +519,12 @@ function checkedRootOf(env) {
 /**
  * The one bounded (<=512 chars) `record-dispatch:` stderr line this hook ever
  * writes — naming only the root it checked, never another checkout's runDir
- * or flag content.
+ * or flag content. The root is sanitised first: any ASCII control character
+ * (including ESC) becomes `?`, so a root path carrying one can never split
+ * this into more than the one line the tests require.
  */
 function writeMismatchNotice(env) {
-  const root = checkedRootOf(env);
+  const root = checkedRootOf(env).replace(CONTROL_CHARS_RE, '?');
   const message =
     `record-dispatch: no unattended flag is armed for this checkout (${root}); ` +
     'dispatch was not recorded. Start the controller from the checkout whose own run directory it declares.';
