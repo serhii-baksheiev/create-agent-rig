@@ -555,14 +555,19 @@ const escapeCmdArgument = (value, doubleEscapeMetaChars = false) => {
 // A double quote, CR or LF cannot appear in a Windows path at all — unlike an
 // argument, which can carry one and needs `escapeCmdArgument`'s own
 // quote-doubling step — so the batch file's own resolved PATH never needs
-// that step. `\t`/` ` are added to the metacharacter class below because,
-// unlike an argument, this token is never wrapped in quotes: see
-// `escapeCmdBatchPath`'s own comment for why.
-const CMD_PATH_META_CHARS = /([()%!^"<>&|\t ])/g;
+// that step. Besides cmd's bracket/percent/caret/quote/angle/amp/pipe set,
+// this class also carries every OTHER character cmd.exe splits a command
+// line's tokens on: `;`, `,`, `=`, and whitespace — ordinary ASCII space/tab
+// alongside every Unicode space JS's `u`-flagged `\s` matches (U+00A0,
+// U+1680, U+2000–U+200A, U+202F, U+205F, U+3000) plus `\u0085` (NEL), which
+// `\s` does not cover. Unlike an argument, this token is never wrapped in
+// quotes: see `escapeCmdBatchPath`'s own comment for why.
+const CMD_PATH_META_CHARS = /([()%!^"<>&|;,=\s\u0085])/gu;
 
 /**
- * Caret-escape every cmd.exe metacharacter, plus space and tab, in the batch
- * file's own resolved PATH — no surrounding quotes.
+ * Caret-escape every cmd.exe metacharacter, plus every cmd.exe token
+ * separator, in the batch file's own resolved, ABSOLUTE PATH — no
+ * surrounding quotes.
  *
  * code-reviewer, reproduced on win32 (RP-290) — the PATH used to be quote-wrapped exactly like an
  * argument (`escapeCmdArgument`) and then have those very quotes
@@ -585,13 +590,30 @@ const CMD_PATH_META_CHARS = /([()%!^"<>&|\t ])/g;
  * together with the space case on a real win32 host: see
  * `check-run.test.ts` (absent in a generated rig) › "a cmd.exe-routed batch
  * file whose own resolved PATH contains a space".
+ *
+ * security-scanner, reproduced on win32 (RP-290 post-cap) — `;`, `,`, `=`
+ * and Unicode whitespace (e.g. U+00A0) are ALSO cmd.exe token separators,
+ * exactly like the ASCII space above, and were not in this escape set: a
+ * directory such as `tools,v2` split at the `,` into two tokens, cmd.exe ran
+ * whatever the truncated first token happened to name (a planted sibling
+ * `tools.cmd`), and the checked `lint.cmd` never ran at all — journalled
+ * `pass` regardless. Caret alone cannot fix this for a RELATIVE token: cmd.exe
+ * still receives the raw literal path with no case that widens it to the
+ * caller's own `cwd`, so `spawnForCommand` resolves the batch file to an
+ * absolute path with `path.resolve` before this function ever escapes it —
+ * a relative token split at a separator is a truncated fragment of the wrong
+ * base directory regardless of escaping, while an absolute path has no `cwd`
+ * left to resolve against. See
+ * `check-run.test.ts` (absent in a generated rig) › "a cmd.exe-routed batch
+ * path containing a cmd token separator runs only the named file".
  */
 const escapeCmdBatchPath = (value) => String(value).replace(CMD_PATH_META_CHARS, '^$1');
 
 /** Spawn `command` — routed through `cmd.exe` when it is a win32 batch shim, plain argv spawn otherwise. */
 const spawnForCommand = (command, cwd, stdoutFd, stderrFd) => {
   const stdio = ['inherit', stdoutFd, stderrFd];
-  const batchFile = resolveBatchFile(command[0]);
+  const resolvedBatchFile = resolveBatchFile(command[0]);
+  const batchFile = resolvedBatchFile ? path.resolve(cwd, resolvedBatchFile) : null;
   if (batchFile) {
     const argv = [batchFile, ...command.slice(1)];
     if (argv.some((arg) => CMD_UNSAFE_ARG_PATTERN.test(String(arg)))) {

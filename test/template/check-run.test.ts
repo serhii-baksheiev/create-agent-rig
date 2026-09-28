@@ -1173,6 +1173,128 @@ process.exit(0);
   });
 });
 
+// --- Windows .cmd shims: a cmd token separator inside the batch path itself -
+//
+// RP-290 (security-scanner, win32, 11bcbbe) — on the cmd.exe route the BATCH
+// FILE PATH TOKEN itself (not one of the checked command's own ARGUMENTS,
+// which the suites above already cover) is split by cmd.exe at `,` `;` `=`
+// and Unicode whitespace (e.g. U+00A0) exactly as ordinary
+// argument-separating whitespace. A directory name containing one of these
+// characters resolves to a truncated first token that a planted sibling
+// `tools.cmd` can satisfy instead of the file actually named — and the run
+// is journalled `pass` even though the named file never ran. Demonstrated:
+// an absolute `<dir>\tools,v2\lint.cmd` ran a planted `<dir>\tools.cmd`, and
+// a relative `echo;x\lint.cmd` ran cmd's own builtin echo.
+
+/** Writes `marker.cmd`-shaped output ("target") to a FIXED, baked-in absolute path and exits 0. */
+const LINT_CMD_SOURCE = (markerPath: string): string =>
+  `@echo off\r\necho target> "${markerPath}"\r\nexit /b 0\r\n`;
+
+/** The planted sibling `tools.cmd` a cmd.exe token split could run instead of the named file. */
+const DECOY_CMD_SOURCE = (markerPath: string): string =>
+  `@echo off\r\necho decoy> "${markerPath}"\r\nexit /b 0\r\n`;
+
+// The fourth separator category is Unicode whitespace, not the ordinary
+// ASCII space (0x20) — an ASCII space is already caret-escaped by
+// `CMD_PATH_META_CHARS` (`escapeCmdBatchPath`'s own comment, "a cmd.exe-routed
+// batch file whose own resolved PATH contains a space"), so a directory name
+// built from a plain space does not reproduce this defect: verified directly
+// against 11bcbbe (`tools v2` absolute: target ran, decoy did not, outcome
+// 'pass' — already correct). U+00A0 (NO-BREAK SPACE) is not in that
+// character class and reproduces the same decoy-execution defect the comma/
+// semicolon/equals cases do — verified the same way (`tools<U+00A0>v2`
+// absolute: the decoy ran, journalled 'pass').
+const NBSP_DIR_NAME = `tools${String.fromCodePoint(0xa0)}v2`;
+
+/**
+ * Runs one "only the named lint.cmd ran" case for `dirName`, invoking it
+ * either by its ABSOLUTE path or by a RELATIVE path with `cwd` set to the
+ * shared parent — the two ways `resolveBatchFile`/the cmd.exe command line
+ * arrives at the same directory token.
+ */
+const expectOnlyTargetRuns = async (
+  ctx: Parameters<typeof skipUnless>[0],
+  dirName: string,
+  invoke: 'absolute' | 'relative',
+): Promise<void> => {
+  skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+  const tmp = await freshCwd();
+  const runDir = await freshRunDir();
+  const targetDir = path.join(tmp, dirName);
+  await mkdir(targetDir, { recursive: true });
+  const targetRanPath = path.join(tmp, 'target-ran');
+  const decoyRanPath = path.join(tmp, 'decoy-ran');
+  await writeFixture(targetDir, 'lint.cmd', LINT_CMD_SOURCE(targetRanPath));
+  await writeFixture(tmp, 'tools.cmd', DECOY_CMD_SOURCE(decoyRanPath));
+
+  const lintPath =
+    invoke === 'absolute' ? path.join(targetDir, 'lint.cmd') : path.join(dirName, 'lint.cmd');
+
+  const result = await runCheckRun(['--name', 'lint-token-sep', '--', lintPath], {
+    cwd: tmp,
+    env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+  });
+
+  let targetRan = true;
+  try {
+    await readFile(targetRanPath);
+  } catch {
+    targetRan = false;
+  }
+  expect(targetRan, 'lint.cmd never ran — the named file was not the one invoked').toBe(true);
+
+  let decoyRan = true;
+  try {
+    await readFile(decoyRanPath);
+  } catch {
+    decoyRan = false;
+  }
+  expect(
+    decoyRan,
+    'the decoy tools.cmd ran instead of the named lint.cmd — the path token was split at a separator',
+  ).toBe(false);
+
+  expect(result.code, result.out).toBe(0);
+
+  const record = await latestCheckResult(runDir);
+  expect(record!.data.outcome).toBe('pass');
+};
+
+describe('a cmd.exe-routed batch path containing a cmd token separator runs only the named file', () => {
+  it('runs only lint.cmd, not decoy tools.cmd, by its ABSOLUTE path under "tools,v2"', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, 'tools,v2', 'absolute');
+  });
+
+  it('runs only lint.cmd, not decoy tools.cmd, by its RELATIVE path under "tools,v2"', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, 'tools,v2', 'relative');
+  });
+
+  it('runs only lint.cmd, not decoy tools.cmd, by its ABSOLUTE path under "tools;v2"', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, 'tools;v2', 'absolute');
+  });
+
+  it('runs only lint.cmd, not decoy tools.cmd, by its RELATIVE path under "tools;v2"', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, 'tools;v2', 'relative');
+  });
+
+  it('runs only lint.cmd, not decoy tools.cmd, by its ABSOLUTE path under "tools=v2"', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, 'tools=v2', 'absolute');
+  });
+
+  it('runs only lint.cmd, not decoy tools.cmd, by its RELATIVE path under "tools=v2"', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, 'tools=v2', 'relative');
+  });
+
+  it('runs only lint.cmd, not decoy tools.cmd, by its ABSOLUTE path under a U+00A0 (NBSP) separator', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, NBSP_DIR_NAME, 'absolute');
+  });
+
+  it('runs only lint.cmd, not decoy tools.cmd, by its RELATIVE path under a U+00A0 (NBSP) separator', async (ctx) => {
+    await expectOnlyTargetRuns(ctx, NBSP_DIR_NAME, 'relative');
+  });
+});
+
 // --- a PEM private-key block spans multiple lines ----------------------------
 //
 // RP-290 review round 1 — `findSecretValues` (and the `private-key-block`
