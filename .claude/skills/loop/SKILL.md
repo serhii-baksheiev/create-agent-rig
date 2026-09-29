@@ -873,7 +873,9 @@ When a required check was run through `.claude/scripts/check-run.mjs` (§3 of
 `pr-ship`) and its latest record for a name is a failure, the composed note
 automatically carries a `failed-check: <name> exit <code>; tests: <id1>,
 <id2>…` line — the failing test identity, not just this session's memory of
-it.
+it. A check that never exited on its own reads differently in that same
+position: `timed out` when `--timeout` killed it, or `killed by <SIGNAL>`
+when a signal ended it without a timeout.
 
 A session resuming from a continuation note checks out the note's `branch:`
 line by its own name — `git checkout <branch>` (no `-b`, no rename). When

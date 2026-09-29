@@ -38,7 +38,15 @@
 // `spawn-error` record (the command never started) is never treated as a
 // test failure — › "adds NO failed-check line for a spawn-error record —
 // RP-290 review round 1: a command that never started is not a test
-// failure".
+// failure". RP-295 (RP-290 review follow-up, item C.3): a later `spawn-error`
+// record for a check name never overwrites a PRIOR `fail` (or `pass`) record
+// for the same name — only another `fail` or a `pass` may replace an
+// existing entry, so a real failure's own identity is never silently lost
+// behind a `spawn-error` that carries no `failedTests` of its own to replace
+// it with. See `readFailedChecks`, below, and `continuation.test.ts` (absent
+// in a generated rig) › "a later spawn-error for a check name does not hide
+// an earlier fail for the same name — the failing identity must not be
+// lost".
 //
 // It NEVER records: a transcript, a prompt, source code, or a credential.
 // EVERY string field this composes — `ticket`, `branch`, `pr`, `headSha`,
@@ -781,35 +789,77 @@ const composeCappedTextField = (value) => truncateField(composeFreeTextField(val
 
 /**
  * Cap the WHOLE note — a backstop for a field this module does not cap on
- * its own. RP-295 (RP-290 review follow-up, item C.1) — `prefixText` (the ten
- * fixed `ticket`/`stop`/.../`remaining` lines) and `failedCheckText` (zero or
- * more `failed-check:` lines) are capped SEPARATELY here: the old version cut
- * one joined string from the front, so a note over `NOTE_CAP` lost whatever
- * sat at the very END — the failed-check block, appended last, ahead of
- * everything else that is only ever `unknown` or capped free text
- * (`diagnosis`/`remaining`, `FIELD_CAP` each). The failed-check block is the
- * highest-value content this note carries, so it is now the one thing that
- * survives intact: `prefixText` is truncated to whatever budget remains
- * after reserving room for the full `failedCheckText` and the truncation
- * suffix. See `continuation.test.ts` (absent in a generated rig) › "keeps a
- * failed-check line intact, ahead of the whole-note cap, even when
- * diagnosis/remaining filler alone nearly fills the note".
+ * its own. RP-295 (RP-290 review follow-up, item C.1) split one joined
+ * string's front-truncation (which lost whatever sat at the very END — the
+ * failed-check block, the highest-value content this note carries) into two
+ * separately-capped parts, `prefixText`/`failedCheckText`. RP-295 gate round
+ * 2 (reviewer, reproduced on head a861085) found THAT split still had no
+ * floor under `prefixText`'s own budget: reserving room for the WHOLE
+ * `failedCheckText` first could leave `prefixText`'s slice short enough to
+ * cut into `identityText` itself — the `rig-continuation v1` marker,
+ * `ticket:` and `stop:` lines a fresh reader needs just to know what the note
+ * is even about.
+ *
+ * The priority this now encodes, in order, per `.claude/rules/autonomy.md`'s
+ * escalation format and `invariants.md`'s bounded-work rule: `identityText`
+ * is a fixed, NEVER-truncated floor; the failed-check block is reserved
+ * next, in full when it fits, or truncated (with the existing suffix)
+ * instead of ever touching identity when it alone would not otherwise fit;
+ * whatever remains — always `>= 0` — goes to `restText` (the
+ * branch/pr/head/gate-rounds/verdict/diagnosis/remaining lines), truncated
+ * from the end the same way when it overflows what identity and the
+ * failed-check block left behind. The result is always `<= NOTE_CAP`,
+ * computed as three bounded slice-and-concatenate steps — never a second
+ * pass over the whole note. See `continuation.test.ts` (absent in a
+ * generated rig) › "keeps the version marker, ticket and stop lines intact
+ * even when a ~1975-character failed-check block leaves almost no budget for
+ * the prefix", › "keeps the version marker, ticket and stop lines intact
+ * with a ~1900-character failed-check block", and › "keeps a failed-check
+ * line intact, ahead of the whole-note cap, even when diagnosis/remaining
+ * filler alone nearly fills the note".
  */
-const capNote = (prefixText, failedCheckText) => {
+const capNote = (identityText, restText, failedCheckText) => {
+  const prefixText = restText ? `${identityText}\n${restText}` : identityText;
   const full = failedCheckText ? `${prefixText}\n${failedCheckText}` : prefixText;
   if (full.length <= NOTE_CAP) return full;
 
-  const reserved = failedCheckText ? failedCheckText.length + 1 : 0;
-  const budget = NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length - reserved;
-  if (budget < 0) {
-    // The failed-check block alone, plus the suffix, is already over
-    // NOTE_CAP — bounded the same way any other over-cap case here is: fall
-    // back to truncating the WHOLE joined note from the front, never an
-    // unbounded write.
-    return `${full.slice(0, NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length)}${NOTE_TRUNCATION_SUFFIX}`;
+  // `identityText` is the protected floor — never sliced, whatever remains.
+  let remaining = NOTE_CAP - identityText.length;
+
+  let failedCheckOut = '';
+  if (failedCheckText) {
+    const withSeparator = 1 + failedCheckText.length;
+    if (withSeparator <= remaining) {
+      failedCheckOut = `\n${failedCheckText}`;
+      remaining -= withSeparator;
+    } else {
+      const budget = remaining - 1 - NOTE_TRUNCATION_SUFFIX.length;
+      if (budget >= 0) {
+        failedCheckOut = `\n${failedCheckText.slice(0, budget)}${NOTE_TRUNCATION_SUFFIX}`;
+      }
+      // else: not even room for a newline + the truncation suffix after
+      // identity — bounded fallback: no failed-check block at all, rather
+      // than an unbounded write or a cut into identity.
+      remaining = 0;
+    }
   }
-  const truncatedPrefix = `${prefixText.slice(0, budget)}${NOTE_TRUNCATION_SUFFIX}`;
-  return failedCheckText ? `${truncatedPrefix}\n${failedCheckText}` : truncatedPrefix;
+
+  let restOut = '';
+  if (restText && remaining > 0) {
+    const withSeparator = 1 + restText.length;
+    if (withSeparator <= remaining) {
+      restOut = `\n${restText}`;
+    } else {
+      const budget = remaining - 1 - NOTE_TRUNCATION_SUFFIX.length;
+      if (budget >= 0) {
+        restOut = `\n${restText.slice(0, budget)}${NOTE_TRUNCATION_SUFFIX}`;
+      }
+      // else: no room even for a newline + the suffix — drop the rest of the
+      // prefix entirely rather than exceed NOTE_CAP.
+    }
+  }
+
+  return `${identityText}${restOut}${failedCheckOut}`;
 };
 
 /**
@@ -961,10 +1011,10 @@ export const composeNote = ({
     );
   }
 
-  const prefixLines = [
-    'rig-continuation v1',
-    `ticket: ${composeTextField(ticket)}`,
-    `stop: ${stop}`,
+  // Split from the rest of the prefix so `capNote` can protect it as a fixed
+  // floor — see that function's own comment.
+  const identityLines = ['rig-continuation v1', `ticket: ${composeTextField(ticket)}`, `stop: ${stop}`];
+  const restLines = [
     `branch: ${composeTextField(branch)}`,
     `pr: ${composeTextField(pr)}`,
     `head: ${composeTextField(headSha)}`,
@@ -975,7 +1025,7 @@ export const composeNote = ({
   ];
   const failedCheckText = renderFailedCheckLines(failedChecks).join('\n');
 
-  return capNote(prefixLines.join('\n'), failedCheckText);
+  return capNote(identityLines.join('\n'), restLines.join('\n'), failedCheckText);
 };
 
 /**

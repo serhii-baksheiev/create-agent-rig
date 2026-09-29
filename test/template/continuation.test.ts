@@ -2513,6 +2513,108 @@ describe('continuation.mjs CLI — the failed-check line built from a check-run.
     );
   });
 
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — `SIGNAL_NAME_PATTERN`
+  // (`/^SIG[A-Z0-9]{1,12}$/`) is the allowlist `describeCheckOutcome` holds a
+  // `signal` value to before ever rendering "killed by <SIGNAL>" verbatim into
+  // the note. A `signal` value shaped like an injection attempt — an embedded
+  // newline carrying a forged-looking line, or a lowercase spelling — must
+  // fail that allowlist and fall back to the bare "exit <code>" rendering
+  // instead, exactly as `describeCheckOutcome`'s own comment already intends.
+  // This pins that fallback with an independent oracle (the note must
+  // literally not contain a forged/injected line), rather than trusting the
+  // same regex the production code itself uses.
+  it('never renders "killed by" with an injected value when signal carries an embedded newline', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        {
+          name: 'unit',
+          exitCode: 1,
+          signal: 'SIGTERM\nforged: line',
+          timedOut: false,
+          failedTests: [],
+        },
+      ],
+    });
+    expect(note, 'an injected "forged: line" survived into the note').not.toContain('forged: line');
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `an unvalidated signal value still rendered "killed by": ${line}`).not.toMatch(
+      /killed by/i,
+    );
+  });
+
+  it('never renders "killed by" for a lowercase signal spelling ("sigterm")', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        { name: 'unit', exitCode: 1, signal: 'sigterm', timedOut: false, failedTests: [] },
+      ],
+    });
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `a lowercase signal spelling still rendered "killed by": ${line}`).not.toMatch(
+      /killed by/i,
+    );
+  });
+
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — `capNote`
+  // reserves room for the WHOLE `failedCheckText` ahead of `prefixText` (see
+  // its own comment), but places no floor under `prefixText`'s own budget: a
+  // `failedCheckText` large enough to consume nearly the whole `NOTE_CAP`
+  // leaves `budget` too small to keep even the note's own identifying header
+  // — the `rig-continuation v1` marker line, `ticket:`, and `stop:` — intact.
+  // A fresh reader who has only this note, and no other context, needs those
+  // three lines to even know what the note is about and why it stopped.
+  it('keeps the version marker, ticket and stop lines intact even when a ~1975-character failed-check block leaves almost no budget for the prefix', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // "failed-check: unit exit 1; tests: " is 34 characters; a 1941-character
+    // id brings the one failed-check line to 1975 characters.
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'd'.repeat(3000),
+      remaining: 'r'.repeat(3000),
+      failedChecks: [{ name: 'unit', exitCode: 1, failedTests: ['z'.repeat(1941)] }],
+    });
+    expect(note.length).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away by the whole-note cap').toContain(
+      'rig-continuation v1',
+    );
+    expect(note, 'the ticket line was cut away by the whole-note cap').toContain('ticket: RP-1');
+    expect(note, 'the stop line was cut away by the whole-note cap').toContain('stop: escalation');
+  });
+
+  it('keeps the version marker, ticket and stop lines intact with a ~1900-character failed-check block', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // 34 + 1866 = 1900 characters for the one failed-check line.
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'd'.repeat(3000),
+      remaining: 'r'.repeat(3000),
+      failedChecks: [{ name: 'unit', exitCode: 1, failedTests: ['z'.repeat(1866)] }],
+    });
+    expect(note.length).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away by the whole-note cap').toContain(
+      'rig-continuation v1',
+    );
+    expect(note, 'the ticket line was cut away by the whole-note cap').toContain('ticket: RP-1');
+    expect(note, 'the stop line was cut away by the whole-note cap').toContain('stop: escalation');
+  });
+
   // RP-295 — "no test runs real check-run output through continuation end to
   // end". Every test above seeds the journal directly with `run-journal.mjs`'s
   // `recordEvent`, independent of `check-run.mjs` itself; this is the one
@@ -2568,6 +2670,50 @@ describe('continuation.mjs is wired into the workflow layer', () => {
         `loop/SKILL.md does not mention the stop kind "${kind}" near continuation.mjs`,
       ).toMatch(new RegExp(`\\b${kind}\\b`, 'i'));
     }
+  });
+
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — §6a documents
+  // the `failed-check:` line as always `failed-check: <name> exit <code>;
+  // tests: <id1>, <id2>…`, but `describeCheckOutcome` (continuation.mjs) also
+  // renders "timed out" and "killed by <SIGNAL>" in that same position for a
+  // timed-out or signal-killed check — neither form is documented, so a
+  // reader relying on §6a alone would not recognise either shape when it
+  // appears.
+  it('§6a documents both the "timed out" and "killed by <SIGNAL>" forms of the failed-check line, not only "exit <code>"', async () => {
+    const content = await readFile(skillPath('loop'), 'utf8');
+    const markerIndex = content.indexOf('failed-check: <name> exit <code>');
+    expect(markerIndex, '§6a no longer documents the failed-check line at all').toBeGreaterThan(-1);
+    const window = content.slice(Math.max(0, markerIndex - 200), markerIndex + 500);
+    expect(window, '§6a never mentions the "timed out" form of the failed-check line').toMatch(
+      /timed out/i,
+    );
+    expect(
+      window,
+      '§6a never mentions the "killed by <SIGNAL>" form of the failed-check line',
+    ).toMatch(/killed by/i);
+  });
+
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — the
+  // no-overwrite rule ("a `spawn-error` record never overwrites a PRIOR
+  // record for the same name") lives only in an inline comment beside
+  // `readFailedChecks`'s own implementation, not in the module HEADER where
+  // every other stated limit of this module is documented (see the header's
+  // own citations of `continuation.test.ts` throughout). Per
+  // `.claude/rules/invariants.md`'s "state the limits, and test them", a rule
+  // this specific belongs where a fresh reader who has only skimmed the top
+  // of the file would find it.
+  it('the module header states that a spawn-error record never overwrites a prior record for the same check name', async () => {
+    const source = await readFile(scriptPath('continuation.mjs'), 'utf8');
+    const headerEnd = source.indexOf('\nimport ');
+    expect(headerEnd, 'could not find the end of the module header (first import)').toBeGreaterThan(
+      -1,
+    );
+    const header = source.slice(0, headerEnd);
+    expect(header, 'the module header never mentions spawn-error at all').toMatch(/spawn-error/i);
+    expect(
+      header,
+      'the module header does not state that a spawn-error never overwrites a prior record for the same name',
+    ).toMatch(/overwrit/i);
   });
 
   // RP-224 round 2 — code-reviewer r1 advisory: "loose regex in the skill

@@ -345,9 +345,10 @@ const PRIVATE_KEY_END_PATTERN_GLOBAL = new RegExp(PRIVATE_KEY_END_PATTERN.source
 // than the LAST END marker's index (a line with a marker but no counterpart
 // of the other kind reads as if the missing one were at index -1). Bounded
 // the same way the rest of this module's per-line work is: `text` is always
-// one already-bounded unit — a single line (at most `LINE_MAX_BYTES`) or the
-// feeder's own `OVERFLOW_TAIL_CHARS`-bounded tail — so this single forward
-// scan costs the same as one `.test()` call. See `check-run.test.ts`
+// one already-bounded unit — a single line (at most `LINE_MAX_BYTES`) or, per
+// `makeLineFeeder`'s own comment below, the bounded `tail + segment` window
+// each incoming chunk is evaluated against as it streams in — so this single
+// forward scan costs the same as one `.test()` call. See `check-run.test.ts`
 // (absent in a generated rig) › "keeps the block armed for the second key
 // body when END and a new BEGIN sit on the SAME line".
 const lastMatchIndex = (text, globalPattern) => {
@@ -487,13 +488,12 @@ const parseArgs = (argv) => {
 // A small, FIXED-size rolling window (characters, not bytes — the header it
 // exists to catch is short ASCII) kept for the CURRENT pending line only,
 // regardless of whether that line is still under `LINE_MAX_BYTES` or has
-// already gone over it. It is what lets a BEGIN header sitting at the very
-// END of an over-long line still be seen once the line closes — see
-// `check-run.test.ts` (absent in a generated rig) › "still redacts the body
-// and END line that follow it, while a line after END survives" — without
-// holding the whole discarded line: `tail` is re-sliced to this many
-// characters on every append, so its own cost is O(1) per chunk, not O(line
-// length).
+// already gone over it. Carried across `appendSegment` calls so a marker
+// whose own bytes straddle two incoming chunks — a disk-read chunk boundary,
+// not only a line boundary — is still seen whole once BOTH halves have
+// arrived (see `appendSegment`'s own comment): `tail` is re-sliced to this
+// many characters on every append, so its own cost is O(1) per chunk, not
+// O(line length).
 const OVERFLOW_TAIL_CHARS = 256;
 
 /**
@@ -502,45 +502,69 @@ const OVERFLOW_TAIL_CHARS = 256;
  * (not-yet-terminated) line is ever held; a chunk is scanned once with
  * `indexOf`, never by re-splitting the whole accumulated buffer, so the cost
  * is linear in the input rather than quadratic. `onLine` is called with the
- * finalized line text and a `{ overLimit, tail, sawBeginHeader }` record —
- * `tail` is the last `OVERFLOW_TAIL_CHARS` characters of the line'S OWN RAW
- * CONTENT, kept even when `overLimit` is true and the line text itself has
- * already been replaced by the fixed marker, precisely so a caller can still
- * check what the discarded END of an over-long line looked like (see
- * `OVERFLOW_TAIL_CHARS` above). `sawBeginHeader` is the one piece of PEM
- * knowledge this otherwise-agnostic feeder carries — RP-295 (RP-290 review
- * follow-up, item A, second half): a BEGIN header sitting EARLY in an
- * over-length line, followed by more than `OVERFLOW_TAIL_CHARS` further
- * characters on that SAME line before it closes, is pushed entirely out of
- * the rolling `tail` window by the time the line finally closes, so a caller
- * that only ever inspects `tail` never learns the header was there at all.
- * Each raw segment is tested for `PRIVATE_KEY_HEADER_PATTERN` once, as it
- * streams in — bounded the same way the rest of this feeder's per-chunk work
- * is (one linear scan per segment, no re-scan of what came before it) — and
- * the result is OR'd into a per-line flag, reset with everything else in
- * `resetLine`. See `check-run.test.ts` (absent in a generated rig) › "still
- * arms the block, even though the small rolling tail no longer contains the
- * header once the line closes".
+ * finalized line text and a `{ overLimit, lastLineMarker }` record.
+ *
+ * `lastLineMarker` (`'begin' | 'end' | null`) is the one piece of PEM
+ * knowledge this otherwise-agnostic feeder carries, and it is what the
+ * PEM state machine in `runCheck` (below) arms/disarms from — RP-295 gate
+ * round 2 (reviewer, reproduced on head a861085): the round-1 shape
+ * (`sawBeginHeader`, a per-line bool set from testing each RAW segment
+ * against `PRIVATE_KEY_HEADER_PATTERN` alone) had three independent gaps —
+ * a header whose own bytes straddle a disk-read chunk boundary matched
+ * NEITHER half on its own; an ANSI escape code embedded inside the header
+ * broke the raw (unstripped) match even though the header, once stripped,
+ * was the exact shape `findSecretValues` would flag; and a COMPLETE
+ * BEGIN..END pair sitting early in one over-limit line, followed by enough
+ * filler to push both markers out of a small fixed-size tail, left the
+ * state machine blind to the END that had already closed the block on that
+ * SAME line. `lastLineMarker` closes all three at once: on every
+ * `appendSegment` call, BOTH patterns are matched — via `lastMatchIndex`,
+ * above — against `stripAnsi(tail + segment)`, where `tail` is this line's
+ * rolling window as it stood BEFORE this segment was appended (so a marker
+ * split across the boundary is reassembled) and `segment` is the WHOLE new
+ * chunk, however large (not the bounded `tail` alone — a complete BEGIN..END
+ * pair sitting together within ONE chunk is seen in full here, even when
+ * later filler on the same line would otherwise push both out of `tail`).
+ * Whichever marker's LAST match index in that scan is greater becomes this
+ * line's `lastLineMarker` so far; when NEITHER matches in a given segment,
+ * the value already recorded from an earlier segment of the same line is
+ * left untouched — never reset to "no marker" just because the current
+ * segment's own bounded view no longer contains it. Reset to `null` only at
+ * `resetLine`, once per line. Bounded the same way the rest of this feeder's
+ * per-chunk work is: one linear scan per segment (`lastMatchIndex` costs the
+ * same as a single `.test()` call), no re-scan of what came before it. See
+ * `check-run.test.ts` (absent in a generated rig) › "still arms the block,
+ * even though the small rolling tail no longer contains the header once the
+ * line closes", › "still arms the block, even though neither disk-read
+ * chunk contains the whole header on its own", › "still arms the block —
+ * the header shape must be checked after stripping ANSI, not on the raw
+ * segment", and › "closes the block on that same line, so a normal FAIL
+ * line and the line after it are not swallowed".
  */
 const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
   let pending = '';
   let pendingBytes = 0;
   let overLimit = false;
   let tail = '';
-  let sawBeginHeader = false;
+  let lastLineMarker = null;
 
   const resetLine = () => {
     pending = '';
     pendingBytes = 0;
     overLimit = false;
     tail = '';
-    sawBeginHeader = false;
+    lastLineMarker = null;
   };
 
   const appendSegment = (segment) => {
     if (segment.length > 0) {
+      const evalText = stripAnsi(tail + segment);
+      const beginIndex = lastMatchIndex(evalText, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
+      const endIndex = lastMatchIndex(evalText, PRIVATE_KEY_END_PATTERN_GLOBAL);
+      if (beginIndex !== -1 || endIndex !== -1) {
+        lastLineMarker = beginIndex > endIndex ? 'begin' : 'end';
+      }
       tail = (tail + segment).slice(-OVERFLOW_TAIL_CHARS);
-      if (!sawBeginHeader && PRIVATE_KEY_HEADER_PATTERN.test(segment)) sawBeginHeader = true;
     }
     if (overLimit) return;
     pending += segment;
@@ -554,9 +578,9 @@ const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
 
   const closeLine = () => {
     if (overLimit) {
-      onLine(`[redacted: line over ${lineMaxBytes} bytes]`, { overLimit: true, tail, sawBeginHeader });
+      onLine(`[redacted: line over ${lineMaxBytes} bytes]`, { overLimit: true, lastLineMarker });
     } else {
-      onLine(pending, { overLimit: false, tail, sawBeginHeader });
+      onLine(pending, { overLimit: false, lastLineMarker });
     }
     resetLine();
   };
@@ -1056,48 +1080,44 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
         // The line text itself is already the fixed `[redacted: line over …
         // bytes]` marker — `LINE_MAX_BYTES` applies ahead of and independent
         // from this PEM/credential logic (module header's "Bounds"), so there
-        // is no raw body left to scan here. The feeder's small rolling `tail`
-        // (the line's own last `OVERFLOW_TAIL_CHARS` characters) gives the
-        // ORDER of a BEGIN/END pair that both sit within it, so a header or
-        // footer at the very end of an over-long line still updates the
-        // state machine the same way the non-overLimit branch below does —
-        // see › "still redacts the body and END line that follow it, while a
-        // line after END survives". `meta.sawBeginHeader` (item A, second
-        // half — the feeder's own comment) covers a BEGIN more than
-        // `OVERFLOW_TAIL_CHARS` from the line's own end, which `tail` alone
-        // can no longer see by the time the line closes — see › "still arms
-        // the block, even though the small rolling tail no longer contains
-        // the header once the line closes".
+        // is no raw body left to scan here; only the state-machine transition
+        // below still applies to this line.
         finalLine = rawLine;
-        const tailText = stripAnsi(meta.tail ?? '');
-        const beginIndex = lastMatchIndex(tailText, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
-        const endIndex = lastMatchIndex(tailText, PRIVATE_KEY_END_PATTERN_GLOBAL);
-        if (beginIndex !== -1 || endIndex !== -1) {
-          inPemBlock = beginIndex > endIndex;
-        } else if (meta && meta.sawBeginHeader) {
-          inPemBlock = true;
-        }
       } else {
+        // A BEGIN header appearing anywhere in this line is caught by
+        // `findSecretValues` on its own (the header IS a credential shape,
+        // `lib/secrets.mjs`'s `private-key-block` pattern) — this line does
+        // not need its own separate "does it contain a BEGIN" check the way
+        // the state-machine transition below does.
         const relativized = relativize(stripAnsi(rawLine));
-        const beginIndex = lastMatchIndex(relativized, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
-        const endIndex = lastMatchIndex(relativized, PRIVATE_KEY_END_PATTERN_GLOBAL);
-        if (inPemBlock || beginIndex !== -1) {
-          finalLine = REDACTED_LINE;
-        } else {
-          finalLine = findSecretValues(relativized).length > 0 ? REDACTED_LINE : relativized;
-        }
-        // RP-295, item A — armed after this line iff the LAST BEGIN marker's
-        // index is greater than the LAST END marker's index (`lastMatchIndex`
-        // above `runCheck`'s own comment for why); a line with neither marker
-        // leaves `inPemBlock` exactly as it was entering the line. This
-        // covers END-then-new-BEGIN on the SAME line, which the old
-        // "unconditionally disarm on any END" rule missed — see ›
-        // "keeps the block armed for the second key body when END and a new
-        // BEGIN sit on the SAME line".
-        if (beginIndex !== -1 || endIndex !== -1) {
-          inPemBlock = beginIndex > endIndex;
-        }
+        finalLine = inPemBlock
+          ? REDACTED_LINE
+          : findSecretValues(relativized).length > 0
+            ? REDACTED_LINE
+            : relativized;
       }
+
+      // RP-295 gate round 2 (reviewer, reproduced on head a861085) — armed
+      // after this line iff `makeLineFeeder` reports this line's LAST marker
+      // (across every incoming chunk — chunk-boundary- and ANSI-safe, see its
+      // own comment above `makeLineFeeder`) was a BEGIN; a line with no
+      // marker at all leaves `inPemBlock` exactly as it was entering the
+      // line. This single check replaces what used to be two separate,
+      // narrower ones — a whole-line scan for the non-overLimit branch, and a
+      // small-rolling-`tail`-plus-`sawBeginHeader` fallback for the overLimit
+      // one — neither of which saw a marker split across a chunk boundary, an
+      // ANSI-interleaved header, or a complete BEGIN..END pair pushed out of
+      // a small tail by later filler on the same over-limit line. See
+      // `check-run.test.ts` (absent in a generated rig) › "keeps the block
+      // armed for the second key body when END and a new BEGIN sit on the
+      // SAME line", its over-limit variant, "still arms the block, even
+      // though neither disk-read chunk contains the whole header on its
+      // own", "still arms the block — the header shape must be checked after
+      // stripping ANSI, not on the raw segment", and "closes the block on
+      // that same line, so a normal FAIL line and the line after it are not
+      // swallowed".
+      if (meta && meta.lastLineMarker === 'begin') inPemBlock = true;
+      else if (meta && meta.lastLineMarker === 'end') inPemBlock = false;
 
       logBuffer.push(`${finalLine}\n`);
       tailLines.push(finalLine);
@@ -1159,6 +1179,7 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
     }
 
     if (child) {
+      let childClosed = false;
       let timer = null;
       if (timeoutSeconds !== null) {
         timer = setTimeout(() => {
@@ -1170,7 +1191,13 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
       const onInterrupt = (signalName) => {
         removeInterruptHandlers();
         if (timer) clearTimeout(timer);
-        killChildTree(child);
+        // RP-295 (advisory) — the child has already closed; there is no
+        // process (tree) left to kill, and `killChildTree` would either be a
+        // harmless no-op (POSIX: `process.kill(-pid, ...)` on an exited
+        // group) or, worse, target a DIFFERENT process the OS has since
+        // reused that same pid for. The capture files still get cleaned up
+        // below either way.
+        if (!childClosed) killChildTree(child);
         for (const fd of [stdoutFd, stderrFd]) {
           if (fd !== null) {
             try {
@@ -1199,8 +1226,14 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
       });
 
       [exitCode, signal, spawnError] = await new Promise((resolve) => {
-        child.on('error', (error) => resolve([null, null, error]));
-        child.on('close', (code, sig) => resolve([code, sig, null]));
+        child.on('error', (error) => {
+          childClosed = true;
+          resolve([null, null, error]);
+        });
+        child.on('close', (code, sig) => {
+          childClosed = true;
+          resolve([code, sig, null]);
+        });
       });
       if (timer) clearTimeout(timer);
       // RP-295, item B — NOT removed here. The child has closed, but the two
