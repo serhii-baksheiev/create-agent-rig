@@ -2,28 +2,29 @@ import { describe, expect, it } from 'vitest';
 import { wrapSystemError } from '../src/lib/system-error.js';
 
 /**
- * RP-289 — the "a TypeError reaches the caller unwrapped" proof, pinned as a
- * pure-function contract instead of a new production seam (coordinator
- * decision, replacing the seam-based approach this file's sibling
- * `agents-md-region-hardening.test.ts` already covers for the mode fix and
- * the `cause` fix): `init.ts`'s and `upgrade.ts`'s own `catch (error) { throw
- * new InitError/UpgradeError(...) }` blocks around `atomicWriteInRepo`
- * currently wrap ANY thrown value — a non-Error yields `message: undefined`,
- * and a genuine programming error (a `TypeError`) loses its identity and its
- * stack. `wrapSystemError` is the extracted decision the fix will route both
- * call sites through: a Node system error — an object carrying a STRING
- * `code` — is wrapped, with the original set as `cause`; anything else is
- * returned completely unchanged, same identity, so a caller can `throw`
- * whatever this returns without ever losing a non-system error's type.
+ * RP-289 — `wrapSystemError` is the shared decision `init.ts`'s and
+ * `upgrade.ts`'s own `catch (error) { throw wrapSystemError(error, ...) }`
+ * blocks around `atomicWriteInRepo` route every thrown value through: a Node
+ * system error — an object carrying a STRING `code` — is wrapped, with the
+ * original set as `cause`; anything else — a non-Error thrown value, or a
+ * genuine programming error such as a `TypeError` — is returned completely
+ * unchanged, same identity, so a caller can `throw` whatever this returns
+ * without ever losing a non-system error's type or its stack.
  *
- * `init.ts` (`commands/init.ts:692`) and `upgrade.ts` (`commands/
- * upgrade.ts:1443`) build the wrapped message BYTE-IDENTICALLY today —
- * `` `Refusing to write "AGENTS.md": ${(error as
- * NodeJS.ErrnoException).message}` `` — so this helper takes the caller's own
- * message-building `wrap` function rather than a message or a path: it only
- * ever decides WHETHER to wrap and what `cause` to attach, never how the
- * final Error is worded — the one place that wording lives stays each
- * call site, unchanged.
+ * `init.ts` and `upgrade.ts` build the wrapped message identically —
+ * `` `Refusing to write "AGENTS.md": ${message}` `` — so this helper takes
+ * the caller's own message-building `wrap` function rather than a message or
+ * a path: it only ever decides WHETHER to wrap and what `cause` to attach,
+ * never how the final Error is worded — the wording itself stays at each
+ * call site.
+ *
+ * This file is the helper's own contract, in isolation, with a hand-built
+ * `wrap`. `system-error-call-sites.test.ts` is the complementary proof that
+ * `initProject` and `applyUpgrade` actually route their real
+ * `atomicWriteInRepo` failures through this exact helper, rather than
+ * wrapping unconditionally — a mocked `atomicWriteInRepo` throwing a
+ * `TypeError` and a coded `Error` reach the caller the way this file's own
+ * cases 1 and 3 say they must.
  */
 describe('wrapSystemError', () => {
   const wrapWithAgentsMdPrefix = (message: string, options: { cause: unknown }): Error =>

@@ -24,18 +24,21 @@ import { composeRegion, sha256 } from '../../../test/helpers/agents-md-region.js
  *    AGENTS.md never clears a stale `kept['AGENTS.md']` entry a hand-edited
  *    manifest left behind.
  *
- * RP-289 — two further hardening gaps in the same code this file already
- * covers:
- *  - the write-time MODE `initProject` passes to `atomicWriteInRepo` is the
- *    one `lstat` read at PLAN time, alongside `existingAgentsBytes` — never
- *    re-read next to the AD2 re-verification above, even though AD2 already
- *    proves the BYTES are re-checked right there. A mode change landing in
- *    that same window (no content edit, so the byte check still passes) is
+ * RP-289 — two further hardening properties of the same region write:
+ *  - `initProject` re-`lstat`s AGENTS.md immediately next to the AD2
+ *    re-read above, and writes with THAT mode — never the one read at plan
+ *    time, alongside `existingAgentsBytes`. A `chmod` landing in the
+ *    re-verification window (no content edit, so AD2's own byte-for-byte
+ *    check still passes and the write proceeds) is therefore adopted, never
  *    silently discarded.
  *  - AD1's own catch block (`initProject`'s and `applyUpgrade`'s region
- *    write) wraps ANY thrown value into a bare `InitError`/`UpgradeError`
- *    message, with no `cause` — the original Node error is discarded, not
- *    merely reformatted.
+ *    write) routes every thrown value through `wrapSystemError`
+ *    (`lib/system-error.ts`): a Node system error (an object carrying a
+ *    string `code`) is wrapped as `InitError`/`UpgradeError` with the
+ *    original set as `cause`; anything else is rethrown unchanged, same
+ *    identity. `system-error.test.ts` pins that helper's own contract in
+ *    isolation; `system-error-call-sites.test.ts` pins that BOTH call sites
+ *    actually route through it, rather than wrapping unconditionally.
  */
 
 let repo: string;
@@ -186,19 +189,17 @@ describe('AD2 — initProject re-verifies AGENTS.md immediately before the regio
 });
 
 /**
- * RP-289 — `existingAgentsMode` is captured once, at PLAN time (the same
- * `lstat` that reads `existingAgentsBytes`, well before the AD2 re-read
- * above), and carried unchanged all the way to the write. AD2 already proves
- * the BYTES are re-verified immediately before the write; the MODE is not —
- * a `chmod` landing in that exact window (no content change, so AD2's own
- * byte-for-byte check still passes and the write proceeds) is silently
- * discarded, and the file is written back with the stale, plan-time mode.
- *
- * Fix direction: `lstat` AGENTS.md again immediately alongside the RP-268
- * re-read, and pass THAT stat's `mode & 0o777` to `atomicWriteInRepo` —
+ * RP-289 — `existingAgentsMode` is read once, at PLAN time (the same `lstat`
+ * that reads `existingAgentsBytes`, well before the AD2 re-read above).
+ * `initProject` does not carry that plan-time mode to the write, though:
+ * immediately alongside the RP-268 re-read it `lstat`s AGENTS.md again and
+ * passes THAT stat's `mode & 0o777` to `atomicWriteInRepo` instead —
  * mirroring what `applyUpgrade` already does at its own apply-time re-check
  * (`upgrade.ts`'s region-write branch reads `currentStat` right next to
- * `currentBytes`, both freshly, immediately before writing).
+ * `currentBytes`, both freshly, immediately before writing). A `chmod`
+ * landing in the re-verification window (no content change, so AD2's own
+ * byte-for-byte check still passes and the write proceeds) is therefore
+ * adopted, never silently discarded.
  */
 describe('RP-289 — initProject writes AGENTS.md with the write-time mode, not the plan-time one', () => {
   it('adopts a mode change landing in the re-verification window, not the mode read at plan time', async (context) => {
@@ -226,11 +227,13 @@ describe('RP-289 — initProject writes AGENTS.md with the write-time mode, not 
 /**
  * RP-289 — the AD1 catch blocks above (`initProject`'s and `applyUpgrade`'s
  * own region-write, both denied by the same `chmod 0o500` fixture AD1 uses)
- * wrap ANY thrown value into a plain `InitError`/`UpgradeError` message
- * string, dropping the original entirely — never carried forward as `cause`.
- * Fix direction: a thrown value carrying a string `code` (a Node system
- * error, exactly AD1's EACCES) is still wrapped, but the wrap sets
- * `{ cause: error }`, so the original is not lost.
+ * route the caught value through `wrapSystemError` (`lib/system-error.ts`):
+ * a thrown value carrying a string `code` (a Node system error, exactly
+ * AD1's EACCES) is wrapped as `InitError`/`UpgradeError` with
+ * `{ cause: error }`, so the original is never lost. `system-error.test.ts`
+ * covers the helper's full decision table (a `TypeError`, a non-Error value,
+ * a numeric `code`) in isolation; this pair only needs the one Node-system-
+ * error case, through the real EACCES fixture AD1 already builds.
  */
 describe('RP-289 — a Node system error wrapped as InitError/UpgradeError carries the original as `cause`', () => {
   it('initProject: the InitError from a permission-denied temp-file create carries the original EACCES as cause', async (context) => {
