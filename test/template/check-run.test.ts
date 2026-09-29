@@ -555,7 +555,7 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
       );
     });
 
-    it('strips the prefix when the runner prints the identity anchored to the LINK path, not just the realpath', async (ctx) => {
+    it('keeps an identity printed under an arbitrary symlink alias of cwd absolute — resolving it would take filesystem probes driven by runner output', async (ctx) => {
       skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
       const parentDir = await freshCwd();
       const realDir = path.join(parentDir, 'real');
@@ -577,10 +577,143 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
         { cwd: linkDir, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
       );
       const record = await latestCheckResult(runDir);
+      // The filesystem ancestor walk that used to resolve an arbitrary
+      // symlink alias of cwd (`resolveAliasedPath`) was removed: security-scanner's
+      // round on 24dc895 found it drove fs probes off untrusted runner
+      // output (a UNC-looking alias meant an SMB/NTLM connection attempt on
+      // Windows, measured 21s per id) and did unbounded work even to
+      // discover the file does not exist. The identity is now kept exactly
+      // as printed instead of being resolved to a repo-relative path.
       expect(record!.data.failedTests).toContain(
-        'test/e2e/uninstall.test.ts > uninstall > kept was removed',
+        `${linkDir}/test/e2e/uninstall.test.ts > uninstall > kept was removed`,
       );
     });
+  });
+
+  // RP-290 — the same subtraction: `resolveAliasedPath`'s ancestor walk did
+  // an `existsSync`/`realpathSync.native` per ancestor of an already-extracted
+  // failing-test identity, driven entirely by whatever the checked command's
+  // own (untrusted) output happened to print. Two costs that walk paid, now
+  // gone with it: a UNC-looking absolute path (`//host/share/...`) means a
+  // real SMB/NTLM connection attempt on Windows before `existsSync` even
+  // returns — measured 21s per id — and a very deep path walks one ancestor
+  // per path segment, unbounded by anything this process controls. Neither
+  // fixture below can demonstrate the SMB cost directly off Windows (there is
+  // no SMB stack to probe), so the assertions are honest about being a weak
+  // guard on this platform and a real one only on win32.
+  describe('does not touch the filesystem for a UNC-looking failing-test path in runner output', () => {
+    it('does not touch the filesystem for a UNC-looking failing-test path in runner output', async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+      const uncPath = '//192.0.2.1/share/a/b.test.ts';
+      const start = Date.now();
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          ...runnerCommand(runnerPath, { lines: [` FAIL  ${uncPath} > t`], exitCode: 1 }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const elapsedMs = Date.now() - start;
+      // On Linux `//192.0.2.1/...` collapses to an ordinary, nonexistent
+      // local path — this timing assertion is a weak guard here. The win32
+      // case (below) is the one where the same shape is a real UNC path and
+      // existsSync/realpathSync over it means an SMB/NTLM connection
+      // attempt — that's the real guard.
+      expect(elapsedMs).toBeLessThan(5000);
+      const record = await latestCheckResult(runDir);
+      expect(record!.data.failedTests).toContain(`${uncPath} > t`);
+    });
+
+    it('does not touch the filesystem for a backslash-form UNC-looking failing-test path (win32)', async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+      const uncPath = '\\\\192.0.2.1\\share\\a\\b.test.ts';
+      const start = Date.now();
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          ...runnerCommand(runnerPath, { lines: [` FAIL  ${uncPath} > t`], exitCode: 1 }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const elapsedMs = Date.now() - start;
+      expect(elapsedMs).toBeLessThan(5000);
+      const record = await latestCheckResult(runDir);
+      // Backslash-to-forward-slash normalization of the path portion is a
+      // SEPARATE, always-applied step (`normalizeFailedTestId`) that this
+      // change does not touch — only the fs-probing alias walk is removed —
+      // so "unchanged" here means unresolved, not un-normalized.
+      expect(record!.data.failedTests).toContain(`${uncPath.split('\\').join('/')} > t`);
+    });
+  });
+
+  /**
+   * Builds ITS OWN deep, `/a/a/a/…`-shaped absolute path from `segments`,
+   * then prints `lineCount` FAIL lines each carrying that same deep path
+   * (varied only by a trailing case index) — built INSIDE the child, for the
+   * same reason `LONG_LINE_RUNNER_SOURCE` is: `segments * lineCount` bytes of
+   * deep-path text would risk an OS argv-length limit if assembled by the
+   * caller and passed through argv instead (measured directly: passing the
+   * assembled lines through argv here hits `E2BIG`).
+   */
+  const DEEP_PATH_RUNNER_SOURCE = `
+const config = JSON.parse(process.argv[2] ?? '{}');
+const segments = Number(config.segments ?? 0);
+const lineCount = Number(config.lineCount ?? 0);
+const deepPath = '/' + Array.from({ length: segments }, () => 'a').join('/') + '/b.test.ts';
+for (let i = 0; i < lineCount; i += 1) {
+  process.stdout.write(\` FAIL  \${deepPath} > suite > case \${i}\\n\`);
+}
+process.exit(Number(config.exitCode ?? 0));
+`;
+
+  describe('bounds the cost of a very deep failing-test path', () => {
+    it(
+      'finishes quickly and records at most 50 entries, each at most 300 characters, for 50 lines each carrying a ~20 KB deep path',
+      { timeout: 20_000 },
+      async () => {
+        const cwd = await freshCwd();
+        const runDir = await freshRunDir();
+        const runnerPath = await writeFixture(cwd, 'deep-path-runner.mjs', DEEP_PATH_RUNNER_SOURCE);
+        const start = Date.now();
+        await runCheckRun(
+          [
+            '--name',
+            'unit',
+            '--',
+            process.execPath,
+            runnerPath,
+            JSON.stringify({ segments: 10_000, lineCount: 50, exitCode: 1 }),
+          ],
+          { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+        );
+        const elapsedMs = Date.now() - start;
+        // Measured ~2.9s per 10k-segment line on Windows (the ancestor walk
+        // `resolveAliasedPath` performed per already-extracted failing-test
+        // identity) — 50 such lines alone exceeds this bound there. On
+        // Linux the same walk is fast (measured well under 1s for this
+        // whole 50-line run against 24dc895), so this timing assertion is a
+        // weak guard on this platform; the bounds below (entry count, entry
+        // length) hold regardless of platform and are the non-vacuous part
+        // of this test here.
+        expect(elapsedMs).toBeLessThan(10_000);
+
+        const record = await latestCheckResult(runDir);
+        expect(record!.data.failedTests.length).toBeGreaterThan(0);
+        expect(record!.data.failedTests.length).toBeLessThanOrEqual(50);
+        for (const entry of record!.data.failedTests) {
+          expect(entry.length).toBeLessThanOrEqual(300);
+        }
+      },
+    );
   });
 
   // RP-290 — a Windows runner prints a backslash-separated identity (the

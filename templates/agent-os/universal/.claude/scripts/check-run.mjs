@@ -131,19 +131,34 @@
 // tail, the log, or a `failedTests` entry: ANSI escape codes are stripped (›
 // "strips ANSI escape codes from the identity and the tail"); an absolute
 // path under this process's own cwd, or a verified alias of it (its own
-// realpath, or a `PWD` whose realpath agrees — `buildPrefixCandidates`,
-// above `runCheck`), is rewritten repo-relative (› "converts an absolute
-// path to the repo root inside a test identity into a repo-relative one"
-// and › "strips the prefix when the runner prints the identity anchored to
-// the REALPATH"). A `failedTests` entry ALONE gets two more passes a plain
-// line does not: an alias `buildPrefixCandidates` had no way to predict is
-// resolved by walking the path's own ancestors, bounded because it only
-// ever runs on an already-recognized, already-capped failure-summary line
-// (› "strips the prefix when the runner prints the identity anchored to the
-// LINK path, not just the realpath"), and backslashes in what remains are
-// turned to forward slashes (› "a backslash-separated identity under cwd is
-// normalized to forward slashes") — both in `normalizeFailedTestId`, above
-// `runCheck`. A PER-STREAM state machine tracks whether the line sits
+// realpath, a `PWD` whose realpath agrees, or — on macOS — the same realpath
+// with its leading `/private` removed, matching the OS's own `/var`/`/tmp`/
+// `/etc` symlink convention — `buildPrefixCandidates`, above `runCheck`), is
+// rewritten repo-relative (› "converts an absolute path to the repo root
+// inside a test identity into a repo-relative one" and › "strips the prefix
+// when the runner prints the identity anchored to the REALPATH"). Every
+// candidate here is computed ONCE per check, from this process's OWN cwd and
+// environment — never from anything the checked command prints — so this
+// whole pass stays pure string work, never a filesystem probe driven by
+// runner output. A `failedTests` entry ALONE gets one more pass a plain line
+// does not: backslashes in its path portion (before the first ` > `) are
+// turned to forward slashes, unconditionally, in `normalizeFailedTestId`,
+// above `runCheck` (› "a backslash-separated identity under cwd is
+// normalized to forward slashes"). RP-290 review round 2 removed the
+// fs-based ancestor walk this same function used to fall back to for an
+// alias `buildPrefixCandidates` had no way to predict: security-scanner,
+// reproduced on win32, found it drove `existsSync`/`realpathSync.native`
+// calls off the checked command's own (untrusted) output — a UNC-looking
+// alias meant a real SMB/NTLM connection attempt (measured 21s per id), and
+// a very deep path walked one ancestor per path segment, unbounded by
+// anything this process controls. Such an alias now stays absolute, exactly
+// as printed, as a STATED LIMIT rather than a best-effort resolution: see ›
+// "keeps an identity printed under an arbitrary symlink alias of cwd
+// absolute — resolving it would take filesystem probes driven by runner
+// output", › "does not touch the filesystem for a UNC-looking failing-test
+// path in runner output" and its win32 sibling, and › "finishes quickly and
+// records at most 50 entries, each at most 300 characters, for 50 lines each
+// carrying a ~20 KB deep path". A PER-STREAM state machine tracks whether the line sits
 // inside a PEM private-key block — a line matching
 // `lib/secrets.mjs`'s own `private-key-block` shape (reused verbatim, never
 // hand-copied) starts redaction of every line through the matching END line
@@ -770,38 +785,63 @@ const computeCwdReal = (cwd) => {
   }
 };
 
+// The macOS convention this project's own candidate list special-cases:
+// `/var`, `/tmp` and `/etc` are themselves symlinks to `/private/var`,
+// `/private/tmp` and `/private/etc` — so a cwd realpath already anchored
+// under `/private/...` (what `computeCwdReal` returns there) may still be
+// printed by a checked command using the OS's own short alias instead. This
+// is a STRING rule over this process's own, already-computed `cwdReal` —
+// never a new filesystem probe — so it costs nothing extra to apply
+// unconditionally.
+const MACOS_PRIVATE_PREFIXES = ['/private/var/', '/private/tmp/', '/private/etc/'];
+
 /**
  * The prefixes a recorded value's cwd-anchored portion may be spelled with —
- * built ONCE per check, never re-derived per line (module header's
- * "Bounds"). `cwd` itself is always a candidate; `cwdReal`
- * (`realpathSync.native(cwd)`) adds a second spelling for the case where cwd
- * and its realpath are two on-disk names for the same directory (macOS's
- * `/var` → `/private/var` is the case this exists for — see
- * `check-run.test.ts`, absent in a generated rig, › "strips the prefix when
- * the runner prints the identity anchored to the REALPATH"); `process.env.PWD`
- * is added only when ITS OWN realpath agrees with `cwdReal` — an unrelated
- * inherited PWD (the ordinary case for a process that never `cd`-ed) must
- * never leak in as a candidate, while a shell that DID `cd` through a
- * symlinked alias before invoking this script leaves exactly that agreement,
- * and only that agreement, behind. Every candidate is added with BOTH a `/`
- * and a `\` trailing separator, because a runner may print `<cwd>\...` even
- * when cwd itself has no backslash in it at all — see › "a
- * backslash-separated identity under cwd is normalized to forward slashes".
- * Sorted longest first, so a more specific (often longer) candidate is tried
- * before a shorter one that could otherwise match as a false partial prefix.
+ * built ONCE per check, from this process's OWN cwd and environment only,
+ * never re-derived per line (module header's "Bounds") and never driven by
+ * anything the checked command prints. `cwd` itself is always a candidate;
+ * `cwdReal` (`realpathSync.native(cwd)`) adds a second spelling for the case
+ * where cwd and its realpath are two on-disk names for the same directory
+ * (see `check-run.test.ts`, absent in a generated rig, › "strips the prefix
+ * when the runner prints the identity anchored to the REALPATH");
+ * `process.env.PWD` is added only when ITS OWN realpath agrees with
+ * `cwdReal` — an unrelated inherited PWD (the ordinary case for a process
+ * that never `cd`-ed) must never leak in as a candidate, while a shell that
+ * DID `cd` through a symlinked alias before invoking this script leaves
+ * exactly that agreement, and only that agreement, behind; and, when
+ * `cwdReal` sits under macOS's own `/private/var`, `/private/tmp` or
+ * `/private/etc`, the same path with the leading `/private` removed is added
+ * too (`MACOS_PRIVATE_PREFIXES` above — a string rule, not a probe). Every
+ * candidate is added with BOTH a `/` and a `\` trailing separator, because a
+ * runner may print `<cwd>\...` even when cwd itself has no backslash in it at
+ * all — see › "a backslash-separated identity under cwd is normalized to
+ * forward slashes". Sorted longest first, so a more specific (often longer)
+ * candidate is tried before a shorter one that could otherwise match as a
+ * false partial prefix.
  *
- * This still misses an alias process.cwd()/PWD never carried — e.g. a
- * checked command that reports a *different* symlinked name for the same
- * directory than the one this process happened to start under. That case is
- * handled separately, only for an already-extracted failing-test identity
- * (bounded — see `resolveAliasedPath` below), never here, because THIS list
- * is consulted on every processed line and an fs call per line would violate
- * the module header's "Bounds". See › "strips the prefix when the runner
- * prints the identity anchored to the LINK path, not just the realpath".
+ * This still misses an alias `process.cwd()`/`PWD`/the macOS convention
+ * never carried — e.g. a checked command that reports a *different*
+ * symlinked name for the same directory than any of the above. RP-290
+ * review round 2 removed the fs-based ancestor walk this module used to fall
+ * back to for that case (`resolveAliasedPath`, now deleted): it drove
+ * `existsSync`/`realpathSync.native` calls off the checked command's own
+ * output, which a UNC-looking alias turned into a real SMB/NTLM connection
+ * attempt on Windows and a very deep path turned into unbounded per-segment
+ * work. Such an alias now stays absolute, exactly as printed, as a stated
+ * limit — see › "keeps an identity printed under an arbitrary symlink alias
+ * of cwd absolute — resolving it would take filesystem probes driven by
+ * runner output".
  */
 const buildPrefixCandidates = (cwd, cwdReal) => {
   const bases = new Set([cwd]);
-  if (cwdReal !== null) bases.add(cwdReal);
+  if (cwdReal !== null) {
+    bases.add(cwdReal);
+    for (const privatePrefix of MACOS_PRIVATE_PREFIXES) {
+      if (cwdReal.startsWith(privatePrefix)) {
+        bases.add(cwdReal.slice('/private'.length));
+      }
+    }
+  }
   const pwd = process.env.PWD;
   if (pwd && cwdReal !== null) {
     try {
@@ -818,64 +858,23 @@ const buildPrefixCandidates = (cwd, cwdReal) => {
   return [...prefixes].sort((a, b) => b.length - a.length);
 };
 
-// An absolute path in either POSIX (`/…`) or Windows (`C:\…`, `C:/…`,
-// `\\server\…`) spelling — the shape `resolveAliasedPath` below only ever
-// walks for.
-const ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|[\\/]{2}|[\\/])/;
-
-/**
- * A bounded fallback for a failing-test identity whose leading path still
- * looks absolute after `relativize` above found no candidate to strip — the
- * case a checked command prints a symlinked alias of this process's own cwd
- * that `buildPrefixCandidates` had no way to know about ahead of time (see
- * its own comment). Walks the path's own ancestors, starting from the full
- * path and shortening one segment at a time — bounded by the path's own
- * length, so this is fs work, but it runs at most once per candidate, and a
- * candidate exists only for an already-recognized failure-summary line,
- * itself capped at `FAILED_TESTS_MAX` per check (module header's "Bounds") —
- * never for the bulk of ordinary output. The first ancestor that exists on
- * disk decides the outcome: if ITS realpath agrees with `cwdReal`, the alias
- * is confirmed and the matched length is stripped; otherwise the path is
- * left exactly as given, since a directory that exists but is NOT this
- * process's own cwd under another name is genuinely a different place. See
- * `check-run.test.ts` (absent in a generated rig) › "strips the prefix when
- * the runner prints the identity anchored to the LINK path, not just the
- * realpath".
- */
-const resolveAliasedPath = (pathPart, cwdReal) => {
-  if (cwdReal === null || !ABSOLUTE_PATH_PATTERN.test(pathPart)) return pathPart;
-  let candidate = pathPart;
-  let previous = null;
-  while (candidate !== previous) {
-    if (existsSync(candidate)) {
-      try {
-        if (realpathSync.native(candidate) === cwdReal) {
-          return pathPart.slice(candidate.length).replace(/^[\\/]+/, '');
-        }
-      } catch {
-        // an unresolvable candidate is left exactly as given, below
-      }
-      break;
-    }
-    previous = candidate;
-    candidate = path.dirname(candidate);
-  }
-  return pathPart;
-};
-
 /**
  * Converts backslashes to forward slashes in the PATH portion only (before
- * the first ` > `) of an already-relativized failing-test identity — never
+ * the first ` > `) of an already-relativized failing-test identity —
+ * unconditionally, whether or not `relativize` (above, in `runCheck`)
+ * actually stripped a candidate prefix from this particular id — never
  * applied to the tail or log text, which stay exactly what the runner
  * printed. See `check-run.test.ts` (absent in a generated rig) › "a
- * backslash-separated identity under cwd is normalized to forward slashes".
+ * backslash-separated identity under cwd is normalized to forward slashes"
+ * and, for the unconditional case — an id that is neither stripped nor
+ * otherwise resolved — › "does not touch the filesystem for a
+ * backslash-form UNC-looking failing-test path (win32)".
  */
-const normalizeFailedTestId = (id, cwdReal) => {
+const normalizeFailedTestId = (id) => {
   const sepIndex = id.indexOf(' > ');
   const pathPart = sepIndex === -1 ? id : id.slice(0, sepIndex);
   const rest = sepIndex === -1 ? '' : id.slice(sepIndex);
-  const resolvedPathPart = resolveAliasedPath(pathPart, cwdReal);
-  return `${resolvedPathPart.split('\\').join('/')}${rest}`;
+  return `${pathPart.split('\\').join('/')}${rest}`;
 };
 
 const runCheck = async ({ name, timeoutSeconds, command }) => {
@@ -943,7 +942,7 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
       if (failedTests.length < FAILED_TESTS_MAX) {
         const id = extractFailedTestId(finalLine);
         if (id !== null) {
-          const normalizedId = normalizeFailedTestId(id, cwdReal);
+          const normalizedId = normalizeFailedTestId(id);
           failedTests.push(
             normalizedId.length > FAILED_TEST_MAX_CHARS
               ? normalizedId.slice(0, FAILED_TEST_MAX_CHARS)
