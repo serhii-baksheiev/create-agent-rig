@@ -30,7 +30,7 @@
 // side stays genuinely executed rather than merely re-read. The real
 // packages/cli/src tree and the real jira.mjs are never written to.
 
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -194,13 +194,34 @@ async function missingTrackerVarNamesVia(runDoctorFn: RunDoctorFn): Promise<stri
  * A copy that kept only `src/` resolved that walk straight past `/tmp` to
  * the filesystem root and failed with ENOENT on `/templates/...` — this
  * layout is what makes the copy behave like the real package instead.
+ *
+ * Also returns `mutRoot` itself (RP-301) — the one thing a caller needs to
+ * inspect what actually landed on disk, independent of whatever `runDoctor`
+ * later reports. `test/template/tracker-credentials-correspondence.test.ts`
+ * › "does not duplicate the templates/src payload onto disk for every
+ * mutation run" reads it to pin the copy's footprint.
  */
-async function mutatedDoctorRunDoctor(mutate: (source: string) => string): Promise<RunDoctorFn> {
+async function mutatedDoctorRunDoctor(
+  mutate: (source: string) => string,
+): Promise<{ runDoctor: RunDoctorFn; mutRoot: string }> {
   const mutRoot = await mkdtemp(path.join(tmpdir(), 'caf-doctor-mut-'));
   cleanupDirs.push(mutRoot);
   const cliRoot = path.join(mutRoot, 'packages', 'cli');
   await cp(cliSrcDir, path.join(cliRoot, 'src'), { recursive: true });
-  await cp(path.join(repoRoot, 'templates'), path.join(mutRoot, 'templates'), { recursive: true });
+  // RP-301: templates/ is never mutated by any case using this helper, so it
+  // is LINKED into the copy rather than duplicated onto disk — a directory
+  // symlink on POSIX, a Windows junction (no elevated privilege needed,
+  // unlike a directory symlink) on win32. `duplicatedBytesUnder` below
+  // measures this outcome directly; `removeFixture`'s `rm(mutRoot, {
+  // recursive: true, ... })` unlinks the symlink/junction entry it meets
+  // without following it into the real templates tree (verified against
+  // Node 22: a symlinked subdirectory survives a recursive `rm` of its
+  // parent), so cleanup never touches the real `templates/` this points at.
+  await symlink(
+    path.join(repoRoot, 'templates'),
+    path.join(mutRoot, 'templates'),
+    process.platform === 'win32' ? 'junction' : 'dir',
+  );
   await cp(path.join(repoRoot, 'package.json'), path.join(mutRoot, 'package.json'));
   const doctorPath = path.join(cliRoot, 'src', 'commands', 'doctor.ts');
   const original = await readFile(doctorPath, 'utf8');
@@ -212,8 +233,54 @@ async function mutatedDoctorRunDoctor(mutate: (source: string) => string): Promi
   const mod = (await import(pathToFileURL(doctorPath.replace(/\.ts$/, '.js')).href)) as {
     runDoctor: RunDoctorFn;
   };
-  return mod.runDoctor;
+  return { runDoctor: mod.runDoctor, mutRoot };
 }
+
+/**
+ * Total bytes of REGULAR file content actually duplicated onto disk under
+ * `root` — walked by hand (never `{ recursive: true }`) so a symlink or
+ * Windows junction stops the walk right there instead of being followed
+ * into whatever it points at: `lstat`'s own `isSymbolicLink()` never lies
+ * about a link the way following it and re-measuring the target would. A
+ * link counts as 0 duplicated bytes; a real file counts its own size; a
+ * real directory is descended into. This is the RP-301 measurement's own
+ * oracle: it says nothing about symlink vs. junction vs. any other
+ * mechanism, only how many bytes of `root`'s content were actually
+ * rewritten onto a second copy of the disk.
+ */
+async function duplicatedBytesUnder(root: string): Promise<number> {
+  const rootStat = await lstat(root);
+  if (rootStat.isSymbolicLink()) return 0;
+  if (!rootStat.isDirectory()) return rootStat.isFile() ? rootStat.size : 0;
+  let total = 0;
+  const stack = [root];
+  while (stack.length > 0) {
+    const dir = stack.pop()!;
+    const entries = await readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        stack.push(full);
+        continue;
+      }
+      if (entry.isFile()) {
+        total += (await lstat(full)).size;
+      }
+    }
+  }
+  return total;
+}
+
+// RP-301: this file's doctor-mutation case (the one that copies
+// packages/cli/src and imports the mutated copy) carries its own per-case
+// vitest timeout rather than relying on the file-wide template-project
+// budget — see test/template/vitest-timeouts.test.ts's RP-301 block for the
+// measurement and the bound this figure must satisfy (greater than that
+// file-wide budget, at most 60_000). 60_000 is chosen to match the upper
+// bound that block enforces, the same ceiling RP-162's and RP-158's own
+// per-case budgets already sit at.
+const TRACKER_CREDENTIALS_MUTATION_CASE_TIMEOUT_MS = 60_000;
 
 describe("doctor's jira tracker-credential var names correspond to jira.mjs's own requireCredentials (RP-230 follow-up)", () => {
   it('reports full correspondence today: the same three var names on both sides', async () => {
@@ -249,23 +316,53 @@ describe("doctor's jira tracker-credential var names correspond to jira.mjs's ow
     expect(correspondence(mutatedRequired, reported).unmentioned).toEqual([extraVar]);
   });
 
-  it('reports a name doctor requires that jira.mjs never required (mutation: doctor gains a name, in a /tmp copy of packages/cli/src)', async () => {
-    const required = jiraRequiredEnvNamesIn(await readFile(jiraAdapterPath, 'utf8'));
-    const extraVar = 'JIRA_WORKSPACE_ID';
+  it(
+    'reports a name doctor requires that jira.mjs never required (mutation: doctor gains a name, in a /tmp copy of packages/cli/src)',
+    { timeout: TRACKER_CREDENTIALS_MUTATION_CASE_TIMEOUT_MS },
+    async () => {
+      const required = jiraRequiredEnvNamesIn(await readFile(jiraAdapterPath, 'utf8'));
+      const extraVar = 'JIRA_WORKSPACE_ID';
 
-    const mutatedRunDoctor = await mutatedDoctorRunDoctor((source) => {
-      expect(
-        source,
-        'setup: doctor.ts no longer carries the exact TRACKER_REQUIRED_ENV jira line this test mutates',
-      ).toContain(DOCTOR_JIRA_LINE);
-      return source.replace(
-        DOCTOR_JIRA_LINE,
-        DOCTOR_JIRA_LINE.replace("'JIRA_API_TOKEN'],", `'JIRA_API_TOKEN', '${extraVar}'],`),
-      );
-    });
+      const { runDoctor: mutatedRunDoctor } = await mutatedDoctorRunDoctor((source) => {
+        expect(
+          source,
+          'setup: doctor.ts no longer carries the exact TRACKER_REQUIRED_ENV jira line this test mutates',
+        ).toContain(DOCTOR_JIRA_LINE);
+        return source.replace(
+          DOCTOR_JIRA_LINE,
+          DOCTOR_JIRA_LINE.replace("'JIRA_API_TOKEN'],", `'JIRA_API_TOKEN', '${extraVar}'],`),
+        );
+      });
 
-    const reported = await missingTrackerVarNamesVia(mutatedRunDoctor);
-    expect(reported).toContain(extraVar);
-    expect(correspondence(required, reported).unknown).toEqual([extraVar]);
+      const reported = await missingTrackerVarNamesVia(mutatedRunDoctor);
+      expect(reported).toContain(extraVar);
+      expect(correspondence(required, reported).unknown).toEqual([extraVar]);
+    },
+  );
+
+  // RP-301: acceptance run 36541622268 timed a Windows run of the mutation
+  // test above at 16,490 ms against a 15 s budget, against 1,250 / 1,272 /
+  // 1,527 / 1,333 ms on four earlier Windows runs — a runner stall (AV,
+  // disk) on a run where everything was slow (codex.test.ts alone took
+  // 18,917 ms; the whole run 1,359 s), not a regression in the mutation
+  // proof itself. A phase breakdown (3 runs each, WSL and a standalone
+  // Windows probe against this same checkout) found `cp(templates, …)`
+  // (111 files, 1,677,579 bytes) is the largest or joint-largest phase —
+  // ~317 ms (WSL) / ~587 ms (Windows) — on par with the `runDoctor` call
+  // itself (~735 ms WSL / ~592 ms Windows), while `cp(cliSrcDir, …)` (40
+  // files, 501,350 bytes) is the SMALLEST measured phase (~96 ms WSL /
+  // ~134 ms Windows). Templates content is never mutated by this test, so
+  // the honest fix is to stop duplicating it at all — a symlink (POSIX) or
+  // Windows junction (no elevated privilege needed for a directory
+  // junction, unlike a directory symlink) pointed at the real `templates`
+  // tree. `packages/cli/src` stays a real copy: a per-file symlink there
+  // would need Windows Developer Mode, and at ~130 ms it was never the
+  // dominant cost. This pins the templates outcome only, and without naming
+  // the mechanism: `duplicatedBytesUnder` treats a symlink/junction at the
+  // `templates` root as 0 bytes, whatever it is a link to.
+  it('links the templates payload rather than copying it onto disk for every mutation run', async () => {
+    const { mutRoot } = await mutatedDoctorRunDoctor((source) => `${source}\n// RP-301 probe\n`);
+    const duplicatedTemplatesBytes = await duplicatedBytesUnder(path.join(mutRoot, 'templates'));
+    expect(duplicatedTemplatesBytes).toBe(0);
   });
 });
