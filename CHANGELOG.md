@@ -192,12 +192,19 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   path) and never silently overwrites a pristine-but-outdated queue with a
   newer release's template, and a `PLAN.md` the user deleted stays deleted —
   neither `upgrade` nor a plain `init` re-run recreates it. `uninstall`
-  preserves it unconditionally, edited or not. A manifest written before this
-  change (`PLAN.md` recorded under `files`) migrates to the new shape (`kept`)
-  the next time `init` or `upgrade` runs, without a false conflict or an
-  overwrite (RP-257).
+  preserves it, edited or not. A manifest written before this change
+  (`PLAN.md` recorded under `files`) migrates to the new shape (`kept`) the
+  next time `init` or `upgrade` runs, without a false conflict or an
+  overwrite; `uninstall` does not migrate it, so on such a manifest it still
+  removes an unedited `PLAN.md` (RP-257, RP-270).
 
 ### Fixed
+
+- **A bootstrapped `upgrade` now records a deleted `PLAN.md`, so a later
+  `init` does not recreate it.** With no manifest to read, `upgrade` already
+  left a deleted `PLAN.md` deleted, but the manifest it wrote had no entry
+  for it, and the next plain `init` read the path as never seeded and wrote
+  it back. The path is now recorded under `kept` (RP-270).
 
 - **The AGENTS.md region writes are hardened (RP-268).** `init` re-reads a
   foreign AGENTS.md immediately before appending the region and refuses —

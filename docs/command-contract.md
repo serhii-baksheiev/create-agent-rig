@@ -1055,6 +1055,24 @@ whatever else it names (round 2, security-scanner A1). See
 `docs/decisions/agents-md-canonical.md`, "AGENTS.md coexistence — the
 managed region (RP-256 slice 2)".
 
+Two limits of region tracking are stated here rather than fixed (RP-270).
+First, a region whose markers the user removed wholesale, or an AGENTS.md
+converted to CRLF as a whole, is `preserved` on every plan, so it keeps the
+manifest alive on every ordinary uninstall. The region body is compared by
+hash, with no line-ending leniency. Only `--detach` releases the manifest,
+and it leaves the file as it is. Pinned by
+`packages/cli/test/agents-md-region-uninstall.test.ts` › "limit: %s —
+planned preserved (never kept) and held on every ordinary run; only --detach
+releases the manifest, leaving the file exactly as it is" (cases "markers
+removed wholesale" and "the whole file CRLF-converted"). Second, a
+region-tracked AGENTS.md that the user deleted and replaced with a new file
+that has no markers keeps its stale `regions` entry through `init`. `init`
+drops that entry only when the path is absent. Pinned by
+`packages/cli/test/agents-md-region-init.test.ts` › "limit: replacing a
+region-tracked AGENTS.md with a brand-new, unmarked file keeps the stale
+regions entry — present-but-unmarked is left alone; only an ABSENT path
+drops it".
+
 `remove` is the plan's answer, not a guarantee: a `remove`-verdict path whose
 bytes no longer match the plan's recorded hash when `applyUninstall` actually
 reaches it — the confirmation prompt is exactly the window an edit can happen
@@ -1737,8 +1755,11 @@ the degradation list is what those counters oblige:
 `uninstall --yes --json`, one file preserved for each of the three ordinary
 reasons this command reports, and two removed. Every removal that was PLANNED
 succeeded — `removed` equals `planned` — but the manifest is kept anyway: it
-still names bytes the rig did not remove, so deleting it would blind a later
-`upgrade` to every one of them:
+still names the two rule files it did not remove (one edited, one different
+only in line endings), bytes the rig owns, so deleting it would blind a later
+`upgrade` to both. The kept CLAUDE.md is
+not what holds it: a `kept` path never keeps the manifest alive on its own
+(RP-260, above):
 
 ```json
 {
@@ -1907,8 +1928,10 @@ their own list, not by content.** `PLAN.md` is the one member today
 (`packages/cli/src/lib/seed-once.ts`'s `SEED_ONCE`) — it ships with the
 process layer (every rig has it), so its `kept` entry lands in the manifest
 on the very first `init`: `kept` is no longer ever genuinely empty on a
-fresh install, only on a manifest older than RP-182 or one hand-edited to
-drop it (the "absent reads as" column above). It is the live Agent/Operator queue
+fresh install, only on a manifest older than RP-182, one hand-edited to
+drop it (the "absent reads as" column above), or one written after RP-182
+but before RP-257 by a rig with nothing else kept — `PLAN.md` was then still
+in `files`. It is the live Agent/Operator queue
 from the instant `init` writes it, meant to be hand-edited (the template's
 own header). Diffing it against the recorded install hash the way an
 ordinary `files` entry is diffed would turn the first legitimate queue edit
@@ -1921,14 +1944,24 @@ records its hash in `kept`, exactly like a file `init` found already in
 place: never compared, never rewritten, and (`uninstall`'s unconditional
 `kept` loop) always `preserved`. A path recorded this way but missing from
 disk is a deliberate deletion, not a gap to heal — neither `upgrade`
-(`deleted` verdict) nor a plain `init` re-run recreates it. `upgrade`'s own
+(`deleted` verdict) nor a plain `init` re-run recreates it. A bootstrapped
+`upgrade` (no manifest to read) that finds `PLAN.md` gone records it in
+`kept` as well, so a later plain `init` does not reseed it (RP-270) —
+`packages/cli/test/upgrade.test.ts` › "records kept[\"PLAN.md\"] in the
+manifest a bootstrapped upgrade writes, and a following plain init does not
+recreate PLAN.md". `upgrade`'s own
 verdict for a present-but-edited (or provenance-unknown) seed-once path is
 `seeded`, never `conflict`/`update`/`wiring` — see `UpgradeVerdict` in
 `packages/cli/src/commands/upgrade.ts`. A manifest written before RP-257
 still has `PLAN.md` recorded in `files` (the ordinary, byte-owned shape of
 that time); `priorSeedHash` reads either bucket, so the next `init` or
 `upgrade` recognises it as already-seeded and migrates the entry to `kept`
-rather than reading its history as "never installed". Landing this on `kept`
+rather than reading its history as "never installed". `uninstall` does not
+migrate: until an `init` or `upgrade` has run, it reads that `PLAN.md` as the
+ordinary `files` entry it was recorded as, so an unedited one is removed
+(RP-270) — `packages/cli/test/uninstall.test.ts` › "limit: an unmigrated
+pre-RP-257 manifest still lists PLAN.md in files, so an unedited PLAN.md is
+removed and an edited one is preserved as modified". Landing this on `kept`
 rather than a byte-owned `files` entry is also what keeps a plain uninstall
 whole: RP-260 excludes a `kept` path from the set of `preserved` reasons that
 keep the manifest alive, so an ordinary (non-`--detach`) uninstall still

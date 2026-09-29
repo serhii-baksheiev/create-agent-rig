@@ -210,6 +210,46 @@ describe('planUninstall — per-file verdicts', () => {
     expect(await read('PLAN.md')).toBe(edited);
   });
 
+  // The test above pins the migrated shape (PLAN.md under `kept`, written by
+  // a current `init`). This one pins the shape a manifest written BEFORE
+  // RP-257 still has on disk: PLAN.md recorded under `files`, the ordinary
+  // byte-owned entry every other rig file gets, because nothing migrates an
+  // existing manifest in place. `planUninstall`'s per-file loop has no
+  // PLAN.md special case — that lives only in the `kept` loop below it — so
+  // an unmigrated manifest's PLAN.md entry runs the plain byte-match rule
+  // ("bytes matching the recorded hash exactly is `remove`") exactly like any
+  // other pristine rig file, and an edited one is `preserved` for the
+  // ordinary `modified` reason, never the RP-257 kept-path one.
+  it('limit: an unmigrated pre-RP-257 manifest still lists PLAN.md in files, so an unedited PLAN.md is removed and an edited one is preserved as modified', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    const pristine = await read('PLAN.md');
+
+    // Hand-edit the manifest back into the pre-RP-257 shape: move PLAN.md's
+    // hash from `kept` to `files`.
+    delete manifest.kept?.['PLAN.md'];
+    manifest.files['PLAN.md'] = sha256(pristine);
+    await writeManifest(repo, manifest);
+
+    // edited — the ordinary per-file loop reports the ordinary reason.
+    const edited = `${pristine}\n- add a GET /notes/:id route through every layer (TDD)\n`;
+    await write('PLAN.md', edited);
+    const editedAction = actionFor(await planUninstall(repo), 'PLAN.md');
+    expect(editedAction?.verdict).toBe('preserved');
+    expect(editedAction?.reason).toBe('modified');
+
+    // unedited — bytes still match the unmigrated manifest's own recorded
+    // hash exactly, so it is marked for removal like any other pristine rig
+    // file, and applying the plan actually removes it.
+    await write('PLAN.md', pristine);
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, 'PLAN.md')?.verdict).toBe('remove');
+
+    await applyUninstall(repo, plan);
+    await expect(readFile(abs('PLAN.md'))).rejects.toThrow();
+  });
+
   // Ownership hashes cover exact bytes (ADR-RP-003 / RP-177): the manifest
   // comparison reads the file as bytes and hashes those bytes, never a
   // UTF-8-decoded string. A file that is not valid UTF-8 at all is the sharpest
@@ -2101,6 +2141,121 @@ describe('applyUninstall — the manifest itself changed after planning', () => 
     expect(result.remaining).toEqual([MANIFEST_REL]);
     await expect(readManifest(repo)).resolves.not.toBeNull();
   });
+});
+
+// RP-270: a `kept` entry never keeps the manifest alive on its own (RP-260),
+// so a plan whose ONLY preserved path is `kept` behaves, for every purpose
+// below, exactly like a plan with NOTHING preserved at all — `remaining`,
+// `--detach`, an on-disk-absent kept path, and a symlinked kept path had no
+// committed test proving that combination specifically (every existing
+// kept-only test — "removes every rig file and deletes the manifest when the
+// only preserved path is a kept CLAUDE.md", "a kept file that is not wiring
+// does not keep the manifest alive" — only ever exercises a kept path that is
+// a present, ordinary regular file, and only ever the plain, ordinary apply).
+describe('applyUninstall — a kept-only preserved plan behaves like an unpreserved one (RP-270)', () => {
+  it('a mid-run failure reports remaining as the files still owed plus the manifest — never the kept path itself', async () => {
+    const keptContent = '# my own workflow notes, not the rig template\n';
+    await write(WORKFLOW, keptContent); // pre-existing, so init leaves it and kept-records it
+    await installRig();
+
+    const plan = await planUninstall(repo);
+    const toRemove = plan.actions.filter((a) => a.verdict === 'remove').map((a) => a.rel);
+    expect(toRemove.length).toBeGreaterThan(0);
+    const failAt = toRemove[0]!;
+
+    const failingRemoveFile = async (target: string): Promise<void> => {
+      if (target.endsWith(failAt.split('/').join(path.sep))) {
+        throw new Error('simulated failure');
+      }
+      await rm(target);
+    };
+
+    const result = await applyUninstall(repo, plan, { removeFile: failingRemoveFile });
+
+    expect(result.manifestRemoved).toBe(false);
+    expect(result.error).toBeTruthy();
+    // the kept-only preserved path never counts toward `wouldDeleteManifest`
+    // (RP-260) — had this run succeeded, it WOULD have deleted the manifest
+    // too, so the manifest is exactly what a re-run still owes, alongside
+    // every file this run never got to
+    expect(result.remaining).toEqual([...toRemove, MANIFEST_REL]);
+    expect(result.remaining).not.toContain(WORKFLOW);
+    expect(await read(WORKFLOW)).toBe(keptContent);
+  });
+
+  it('--detach behaves identically to an ordinary run on a kept-only plan: the kept path is untouched, and the manifest is removed either way', async () => {
+    const keptContent = '# my own workflow notes, not the rig template\n';
+    await write(WORKFLOW, keptContent);
+    await installRig();
+
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, WORKFLOW);
+    expect(action?.verdict).toBe('preserved');
+    expect(action?.kept).toBe(true);
+
+    const result = await applyUninstall(repo, plan, { detach: true });
+
+    expect(result.manifestRemoved).toBe(true);
+    // `outcome` is the one thing that DOES differ from the ordinary,
+    // non-detach kept-only run (which reports "uninstalled") — --detach
+    // always reports "detached", whatever it had to leave behind
+    expect(result.outcome).toBe('detached');
+    expect(await read(WORKFLOW)).toBe(keptContent);
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  it('an on-disk-absent kept path is still reported preserved/kept, and does not block the manifest from being removed', async () => {
+    const keptContent = '# my own workflow notes, not the rig template\n';
+    await write(WORKFLOW, keptContent);
+    await installRig();
+    await rm(abs(WORKFLOW)); // the user deleted their own kept file after init
+
+    const plan = await planUninstall(repo);
+    const action = actionFor(plan, WORKFLOW);
+    expect(action?.verdict).toBe('preserved');
+    expect(action?.reason).toBe('user-owned (kept by init)');
+    expect(action?.kept).toBe(true);
+
+    const result = await applyUninstall(repo, plan);
+
+    expect(result.manifestRemoved).toBe(true);
+    expect(result.outcome).toBe('uninstalled');
+    await expect(readFile(abs(WORKFLOW))).rejects.toThrow(); // still absent — never recreated
+    await expect(readFile(abs(MANIFEST_REL))).rejects.toThrow();
+  });
+
+  onlyWhereSymlinksExist(
+    'a symlinked kept path is still reported preserved/kept, never touched, and does not block the manifest from being removed',
+    async () => {
+      const keptContent = '# my own workflow notes, not the rig template\n';
+      await write(WORKFLOW, keptContent);
+      await installRig();
+
+      const outside = await mkdtemp(path.join(tmpdir(), 'caf-uninstall-outside-'));
+      try {
+        const target = path.join(outside, 'external-workflow.md');
+        await writeFile(target, 'whatever the user points it at now\n');
+        await rm(abs(WORKFLOW));
+        await symlink(target, abs(WORKFLOW));
+
+        const plan = await planUninstall(repo);
+        const action = actionFor(plan, WORKFLOW);
+        expect(action?.verdict).toBe('preserved');
+        expect(action?.reason).toBe('user-owned (kept by init)');
+        expect(action?.kept).toBe(true);
+
+        const result = await applyUninstall(repo, plan);
+
+        expect(result.manifestRemoved).toBe(true);
+        expect(result.outcome).toBe('uninstalled');
+        expect((await lstat(abs(WORKFLOW))).isSymbolicLink()).toBe(true);
+        expect(await readFile(target, 'utf8')).toBe('whatever the user points it at now\n');
+        await expect(readFile(abs(MANIFEST_REL))).rejects.toThrow();
+      } finally {
+        await removeFixture(outside);
+      }
+    },
+  );
 });
 
 describe('applyUninstall — --detach', () => {

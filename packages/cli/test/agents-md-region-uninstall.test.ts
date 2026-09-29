@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initProject, projectNameFor } from '../src/commands/init.js';
 import { applyUninstall, planUninstall } from '../src/commands/uninstall.js';
+import { readManifest } from '../src/lib/manifest.js';
 import { agentOsUniversalDir } from '../src/templates.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 import {
@@ -172,6 +173,42 @@ describe('planUninstall — a nested rig with a region-tracked AGENTS.md, withou
     expect(note).not.toMatch(/AGENTS\.md,? which is already gone/);
     expect(note).not.toMatch(/AGENTS\.md,? which exists and is yours/);
   });
+
+  // RP-270: `installNestedRigWithRegion` above builds a manifest carrying a
+  // kept CLAUDE.md, a kept PLAN.md (seeded by the plain `initProject` call
+  // every fixture in this describe starts from — RP-257, every install) and
+  // `regions['AGENTS.md']` all at once, but nothing here had ever actually
+  // run `applyUninstall` against that combination — every other test in this
+  // block stops at `planUninstall`. The three mechanisms (RP-260's
+  // kept-does-not-hold-the-manifest exclusion, RP-256 slice 2's region
+  // strip, and the nested shim's own removal) are each covered elsewhere in
+  // isolation; this is the one place they run together.
+  it('applyUninstall on a nested rig with kept PLAN.md, kept CLAUDE.md and a tracked AGENTS.md region together: strips the region, removes the shim, preserves both kept paths, and still removes the manifest (RP-270)', async () => {
+    await installNestedRigWithRegion('# host rules\n', '# team notes\n');
+
+    const plan = await planUninstall(repo);
+    const preservedActions = plan.actions.filter((a) => a.verdict === 'preserved');
+    expect(preservedActions.map((a) => a.rel).sort()).toEqual(['CLAUDE.md', 'PLAN.md']);
+    for (const action of preservedActions) {
+      expect(action.reason, action.rel).toBe('user-owned (kept by init)');
+      expect(action.kept, action.rel).toBe(true);
+    }
+    expect(plan.actions.find((a) => a.rel === 'AGENTS.md')?.verdict).toBe('remove');
+    expect(plan.actions.find((a) => a.rel === NESTED_CLAUDE)?.verdict).toBe('remove');
+
+    const result = await applyUninstall(repo, plan);
+
+    expect(result.manifestRemoved).toBe(true);
+    expect(result.outcome).toBe('uninstalled');
+    // both kept paths survive, byte-identical
+    expect(await readFile(path.join(repo, 'CLAUDE.md'), 'utf8')).toBe('# host rules\n');
+    await expect(readFile(path.join(repo, 'PLAN.md'), 'utf8')).resolves.toBeTruthy();
+    // the region is stripped, not the file deleted — the user's own prefix
+    // survives byte-identical
+    expect(await readFile(agentsMdPath(), 'utf8')).toBe('# team notes\n');
+    await expect(readFile(path.join(repo, NESTED_CLAUDE))).rejects.toThrow();
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
 });
 
 /**
@@ -314,4 +351,69 @@ describe('planUninstall / applyUninstall — a non-UTF-8 byte in the region file
     expect(sha256(onDisk)).toBe(shaBefore);
     expect(result.changedSincePlanning ?? []).toContain('AGENTS.md');
   });
+});
+
+/**
+ * RP-270 documented limit (not fixed by this ticket): `planUninstall`'s
+ * `regions` loop (`uninstall.ts` ~1216-1230) treats "the region markers are
+ * missing or malformed" and "the region was edited" identically — both are
+ * an ordinary `preserved` action, never `kept`, so (unlike a `manifest.kept`
+ * path) it DOES count toward `wouldDeleteManifest` and keeps the manifest
+ * alive on every future plan. Two independent ways to reach "missing or
+ * malformed" are pinned here: the marker lines removed wholesale (no begin/
+ * end line left at all), and the WHOLE FILE converted to CRLF — the file
+ * still visibly HAS marker-looking lines, but `wholeLineIndexesOf`
+ * (agents-md-region.ts) requires an exact `\n` immediately after a marker to
+ * count it as a whole line, and CRLF puts a `\r` there instead, so neither
+ * marker is recognised. In both cases `locateRegion` returns `null` and the
+ * only way out (short of a hand-edit restoring valid markers) is `--detach`.
+ */
+describe('planUninstall / applyUninstall — a region-tracked AGENTS.md with its markers destroyed stays preserved forever, only --detach releases it (RP-270, documented limit)', () => {
+  const USER_PREFIX = '# team notes\n';
+
+  async function buildDestroyedRegion(mutate: (composed: string) => string): Promise<void> {
+    await installThenSimulateRegion(USER_PREFIX);
+    const composed = await readFile(agentsMdPath(), 'utf8');
+    await writeFile(agentsMdPath(), mutate(composed));
+  }
+
+  const stripMarkersWholesale = (composed: string): string =>
+    composed.replace(`${REGION_BEGIN}\n`, '').replace(`${REGION_END}\n`, '');
+  const crlfConvertWholeFile = (composed: string): string => composed.replace(/\n/g, '\r\n');
+
+  it.each([
+    ['markers removed wholesale', stripMarkersWholesale],
+    ['the whole file CRLF-converted', crlfConvertWholeFile],
+  ])(
+    'limit: %s — planned preserved (never kept) and held on every ordinary run; only --detach releases the manifest, leaving the file exactly as it is',
+    async (_label, mutate) => {
+      await buildDestroyedRegion(mutate);
+      const composedBytes = await readFile(agentsMdPath(), 'utf8');
+
+      const firstPlan = await planUninstall(repo);
+      const action = firstPlan.actions.find((a) => a.rel === 'AGENTS.md');
+      expect(action?.verdict).toBe('preserved');
+      expect(action?.reason).toMatch(/missing or malformed/);
+      // never `kept` — unlike a `manifest.kept` path, this preserved reason
+      // DOES count toward keeping the manifest alive (see `wouldDeleteManifest`)
+      expect(action?.kept).not.toBe(true);
+
+      const ordinaryResult = await applyUninstall(repo, firstPlan);
+      expect(ordinaryResult.manifestRemoved).toBe(false);
+      expect(ordinaryResult.outcome).toBe('partial');
+      await expect(readManifest(repo)).resolves.not.toBeNull();
+      // an ordinary run never forces a preserved path away — bytes untouched
+      expect(await readFile(agentsMdPath(), 'utf8')).toBe(composedBytes);
+
+      // A second, fresh plan (everything else the first run already removed
+      // is simply gone now) — still nothing but --detach releases it.
+      const secondPlan = await planUninstall(repo);
+      const detachResult = await applyUninstall(repo, secondPlan, { detach: true });
+      expect(detachResult.manifestRemoved).toBe(true);
+      expect(detachResult.outcome).toBe('detached');
+      await expect(readManifest(repo)).resolves.toBeNull();
+      // --detach never forces away a preserved path, however it got there
+      expect(await readFile(agentsMdPath(), 'utf8')).toBe(composedBytes);
+    },
+  );
 });

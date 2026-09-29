@@ -149,7 +149,10 @@ and merge yourself — Rig does no automatic merging of the documents your agent
 obey. `PLAN.md` is the one **seed-once** exception to the table above: Rig
 writes it once, on the first `init`, and it is yours from that moment —
 pristine or edited, `upgrade` never diffs or rewrites it and `uninstall`
-always preserves it, reported the same way an edited file is. The details,
+preserves it, reported the same way an edited file is. One exception: a rig
+installed before 1.1.0 records `PLAN.md` as an ordinary file until `init` or
+`upgrade` runs once, and `uninstall` on that older record removes an
+unedited `PLAN.md`. The details,
 including how line endings and hook wiring are handled, are in
 [`docs/command-contract.md`](docs/command-contract.md) and
 [`docs/decisions/raw-byte-ownership.md`](docs/decisions/raw-byte-ownership.md).
@@ -191,8 +194,9 @@ npx create-agent-rig@latest uninstall
 ```
 
 Only files whose bytes still match what Rig installed are removed. Anything
-edited is kept and listed — and `PLAN.md` always is, pristine or edited, since
-it was never Rig's to begin with once seeded. A kept file does not hold the
+edited is kept and listed — and so is `PLAN.md`, pristine or edited, since
+it was never Rig's to begin with once seeded (a pre-1.1.0 record is the
+exception above). A kept file does not hold the
 manifest back on its own; the manifest stays only while something else is
 still owned and unremoved. `--detach` removes the manifest anyway and hands
 the kept files over to you. Integration wiring is removed with `setup

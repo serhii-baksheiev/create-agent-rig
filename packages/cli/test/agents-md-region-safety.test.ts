@@ -168,13 +168,14 @@ describe('atomic write — a hard-linked AGENTS.md is never written through to i
  * deleted, then `init` re-run: `init.ts`'s marker-check block only runs
  * `if (await exists(dest))`, so a DELETED path skips it entirely and falls
  * into the ordinary write loop, which writes the whole rendered rulebook
- * (there is no `existingAgentsBytes` to splice into). `recordInstall`'s
- * `regionTrackedPaths` set still carries the STALE `previous.regions` entry
- * forward, though, and — because that set is checked before a written path
- * is recorded — the fresh whole-file write is never recorded in `files`
- * either. The manifest ends up with `regions` pointing at a body that no
- * longer exists anywhere, and no bucket at all for the bytes actually on
- * disk.
+ * (there is no `existingAgentsBytes` to splice into). Before the fix,
+ * `recordInstall`'s `regionTrackedPaths` set still carried the STALE
+ * `previous.regions` entry forward, and — because that set was checked
+ * before a written path was recorded — the fresh whole-file write was never
+ * recorded in `files` either. The manifest ended up with `regions` pointing
+ * at a body that no longer existed anywhere, and no bucket at all for the
+ * bytes actually on disk. `init` now drops the stale entry
+ * (`dropStaleRegion` in `init.ts`).
  *
  * Pinned behaviour (the coordinator's ruling): this is exactly a clean-repo
  * AGENTS.md install — `files` gets the whole-file hash, `regions` loses the
@@ -233,14 +234,15 @@ describe('initProject — a region-tracked AGENTS.md deleted by the user, then r
 });
 
 /**
- * RP-256 slice 2, round 3, blocker 3 — `atomicWriteInRepo` passes the
- * caller's requested mode straight to `open(temporary, 'wx', mode)`. Node's
- * `open` mirrors POSIX `open(2)`: the requested mode is ANDed with
- * `~umask`, so under an ordinary `umask 022` a `664` source file becomes
+ * RP-256 slice 2, round 3, blocker 3 — before the fix, `atomicWriteInRepo`
+ * passed the caller's requested mode straight to `open(temporary, 'wx',
+ * mode)`. Node's `open` mirrors POSIX `open(2)`: the requested mode is ANDed
+ * with `~umask`, so under an ordinary `umask 022` a `664` source file became
  * `644` — the group-write bit silently dropped — contradicting the
  * documented claim that "an atomic rewrite never silently changes a user's
  * own file's permissions" (`atomic-write.ts:28-33`, `docs/command-
- * contract.md:993`, `CHANGELOG.md:60`).
+ * contract.md:993`, `CHANGELOG.md:60`). It now sets the exact mode with an
+ * explicit `chmod` after the write (`atomic-write.ts`).
  *
  * The umask is set with `process.umask(0o022)` and restored in `finally` —
  * never relying on whatever the host's own umask happens to be, and never
