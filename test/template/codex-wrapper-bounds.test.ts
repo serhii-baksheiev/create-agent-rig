@@ -374,6 +374,11 @@ function runWindowsWrapper(
         resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stdout, stderr }),
     );
     if (!child.stdin) return reject(new Error('no stdin'));
+    // The large-stdin case has the wrapper exit before it reads all of its
+    // own input, so this write can fail with EOF/EPIPE. That is the scenario
+    // under test, not a harness failure: the verdict is the exit code the
+    // callback resolves with.
+    child.stdin.on('error', () => {});
     child.stdin.end(JSON.stringify(input));
   });
 }
