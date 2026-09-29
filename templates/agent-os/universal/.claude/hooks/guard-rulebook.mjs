@@ -89,18 +89,26 @@
 //     (the `appliesToAll` global refusal) aimed at such a path, not only the
 //     ordinary per-fragment case — › "guard-rulebook: a MultiEdit global
 //     refusal is not exempt from the `//`-prefix refusal (RP-244 round 3)";
-//   - the reverse direction is untested and left as a design limit: when the
-//     repository root is itself spelled as a UNC admin share
-//     (`\\host\X$\…`), the LOCAL DRIVE spelling of the same file (`X:\…`) is
-//     never placed against it — `relativeTo` strips a `//`-prefixed payload
-//     path from a `//`-rooted comparison root, not a drive-letter one from
-//     it — so such a payload path is judged normally rather than refused as
-//     unjudgeable, and a rulebook edit reaching the guard that way is not
-//     caught. Tracked as RP-246.
+//   - the reverse direction is covered too: when the repository root is
+//     itself spelled as a UNC admin share (`\\host\X$\…`), the LOCAL DRIVE
+//     spelling of the same file (`X:\…`) is also placed in `comparisonRoots`,
+//     from the pure text mapping `canonical-path.mjs` exports as
+//     `adminShareDriveSpelling` — › "guard-rulebook: an admin-share-spelled
+//     repository root must also recognise the local-drive spelling of the
+//     same payload path (RP-246)";
+//   - `protectedRelative` judges a fragment's REAL, resolved location
+//     (`canonicalPath`) before any literal spelling — a literal spelling
+//     under an allowed rulebook prefix that is itself a symlink/junction to a
+//     DIFFERENT, non-allowed rulebook prefix must never authorize the edit
+//     the resolved spelling names, so literal spellings are consulted only as
+//     additional refusal candidates once the resolved spelling failed to name
+//     any rulebook path at all — RP-246 part 2, › "guard-rulebook: a literal
+//     spelling under an allowed prefix must not authorize the different
+//     rulebook prefix it resolves to (RP-246)";
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
-import { canonicalPath } from './lib/canonical-path.mjs';
+import { adminShareDriveSpelling, canonicalPath } from './lib/canonical-path.mjs';
 import { editFragments, pathComponentOverflowFragment } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, canonicalRulebookPath, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
@@ -190,11 +198,31 @@ export const isAllowed = (rel, allow) =>
 // its own. That is not "never judged"; it is "could not be judged", and
 // `.claude/rules/invariants.md` reads the two differently: refuse it while
 // armed, the same as every other case this file cannot resolve.
+//
+// RP-246: the REAL, resolved location (`canonical`) is judged FIRST, and a
+// match there is returned immediately — never overridden by a literal
+// spelling. A literal spelling under an allowed prefix (`.claude/rules/x`)
+// that is itself a symlink/junction to a DIFFERENT, non-allowed rulebook
+// prefix (`.claude/hooks/`) used to be returned first just because it was
+// tried first, so `isAllowed` downstream saw only the harmless-looking
+// literal spelling and never the real target. Literal spellings (`filePath`,
+// `rawFilePath`) are consulted only once the canonical spelling failed to
+// name a rulebook path at all — as ADDITIONAL refusal candidates, exactly
+// what RP-60's junction-to-a-vendored-file case still needs (the canonical
+// target there sits outside the rulebook; only the lexical `rawFilePath`
+// spelling names it) — never as a way to authorize a canonical match this
+// function already refused.
 const protectedRelative = (roots, filePath, rawFilePath) => {
   const canonical = canonicalPath(filePath);
-  const candidates = [...new Set([filePath, rawFilePath, canonical].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
+  if (typeof canonical === 'string' && canonical !== '') {
+    for (const root of roots) {
+      const rel = canonicalRulebookPath(relativeTo(root, canonical));
+      if (rel !== undefined) return rel;
+    }
+  }
+  const literalCandidates = [...new Set([filePath, rawFilePath].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
     .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)));
-  for (const candidate of candidates) {
+  for (const candidate of literalCandidates) {
     const rel = canonicalRulebookPath(candidate);
     if (rel !== undefined) return rel;
   }
@@ -222,7 +250,16 @@ function main() {
 
   const selectedRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
   const root = canonicalRoot(selectedRoot);
-  const comparisonRoots = [...new Set([root, selectedRoot])];
+  // RP-246 part 1: when the checkout root is itself spelled as a Windows
+  // admin-share UNC path (`\\host\X$\…`), `canonicalRoot` above never folds
+  // it to the local-drive spelling of the same directory — seed that
+  // spelling too, mirroring the existing two-spellings pattern for
+  // `root`/`selectedRoot`, so a payload path spelled with the local drive
+  // still relativises under a comparison root.
+  const driveSpellings = [root, selectedRoot]
+    .map((candidate) => adminShareDriveSpelling(candidate))
+    .filter((value) => value !== undefined);
+  const comparisonRoots = [...new Set([root, selectedRoot, ...driveSpellings])];
   const unattendedEnv = { ...process.env, CLAUDE_PROJECT_DIR: root };
   const fragments = editFragments(input);
   const globalRefusal = fragments.find(

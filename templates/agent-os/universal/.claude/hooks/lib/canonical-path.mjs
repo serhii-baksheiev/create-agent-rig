@@ -26,6 +26,29 @@ import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import { exceedsPathComponentBound } from './edit-input.mjs';
 
+// RP-246 part 1: `realpathSync.native` never folds an admin-share UNC
+// spelling of a Windows path (`\\host\X$\rest`) to the local-drive spelling
+// of the same directory (`X:\rest`) — the two stay distinct strings forever,
+// which is why `guard-rulebook.mjs` cannot rely on `canonicalRoot` alone to
+// recognise a payload path spelled with the local drive when
+// `CLAUDE_PROJECT_DIR` itself is UNC-spelled. Pure text, no filesystem call,
+// so it is pinned directly in canonical-path.test.ts (absent in a generated
+// rig) rather than only through the win32-only guard-rulebook.test.ts
+// (absent in a generated rig) subprocess pins that exercise it.
+const ADMIN_SHARE_ROOT = /^\\\\[^\\]+\\([A-Za-z])\$(\\.*)?$/;
+
+/**
+ * The local-drive spelling of an admin-share UNC root, or `undefined` when
+ * `root` is not spelled that way (including an already-local-drive path, a
+ * plain UNC share, or a POSIX path).
+ */
+export function adminShareDriveSpelling(root) {
+  const match = ADMIN_SHARE_ROOT.exec(String(root ?? ''));
+  if (!match) return undefined;
+  const [, drive, rest] = match;
+  return `${drive.toUpperCase()}:${rest ?? '\\'}`;
+}
+
 export function canonicalPath(filePath, { realpath = realpathSync.native } = {}) {
   const resolved = resolve(filePath);
   // Checked BEFORE any `realpath` call, not merely before the walk RETURNS:

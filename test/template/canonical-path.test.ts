@@ -166,3 +166,51 @@ describe('canonicalPath: bounded work over the component count, pinned in-proces
     });
   });
 });
+
+/**
+ * RP-246 part 1 — `realpathSync.native` keeps an admin-share UNC spelling of
+ * the repository root (`\\host\X$\rest`) rather than folding it to the
+ * local-drive spelling of the same directory, so `guard-rulebook.mjs`'s
+ * `comparisonRoots` (seeded from `canonicalRoot`/`selectedRoot`) ends up
+ * holding only UNC spellings while a payload path spelled with the local
+ * drive relativises under neither one. `adminShareDriveSpelling` is the pure
+ * text mapping the guard seeds an extra comparison root from — no filesystem
+ * call, so it is pinned directly here rather than only through the win32-only
+ * subprocess pins in guard-rulebook.test.ts.
+ */
+describe('adminShareDriveSpelling: the pure admin-share-UNC-to-local-drive mapping (RP-246)', () => {
+  const load = () =>
+    import(pathToFileURL(modulePath).href) as Promise<{
+      adminShareDriveSpelling: (root: string) => string | undefined;
+    }>;
+
+  it('maps an admin-share UNC root to the local-drive spelling of the same directory', async () => {
+    const { adminShareDriveSpelling } = await load();
+    expect(adminShareDriveSpelling('\\\\HOST\\C$\\Users\\a\\b')).toBe('C:\\Users\\a\\b');
+  });
+
+  it('uppercases a lowercase drive letter', async () => {
+    const { adminShareDriveSpelling } = await load();
+    expect(adminShareDriveSpelling('\\\\host\\c$\\x')).toBe('C:\\x');
+  });
+
+  it('maps a bare admin-share root with no remainder to the drive root', async () => {
+    const { adminShareDriveSpelling } = await load();
+    expect(adminShareDriveSpelling('\\\\HOST\\C$')).toBe('C:\\');
+  });
+
+  it('returns undefined for a plain UNC share that is not an admin share', async () => {
+    const { adminShareDriveSpelling } = await load();
+    expect(adminShareDriveSpelling('\\\\host\\share\\x')).toBeUndefined();
+  });
+
+  it('returns undefined for an already-local-drive spelling', async () => {
+    const { adminShareDriveSpelling } = await load();
+    expect(adminShareDriveSpelling('C:\\Users\\a\\b')).toBeUndefined();
+  });
+
+  it('returns undefined for a POSIX path', async () => {
+    const { adminShareDriveSpelling } = await load();
+    expect(adminShareDriveSpelling('/home/a/b')).toBeUndefined();
+  });
+});

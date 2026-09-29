@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
-import { homedir, tmpdir, userInfo } from 'node:os';
+import { homedir, hostname, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -606,6 +606,64 @@ describe('guard-rulebook: apply_patch does not lose the lexical path when a guar
     } finally {
       await removeFixture(outside);
     }
+  });
+});
+
+// RP-246 (Jira 21605, security-scanner on PR #350, pre-existing on the base
+// commit `protectedRelative` resolves against): it tries the LITERAL
+// spellings (`filePath`, `rawFilePath`) before the resolved one
+// (`canonicalPath`), and returns the FIRST candidate that names ANY
+// rulebook path — so when a symlinked directory sits INSIDE one allowed
+// rulebook prefix (`.claude/rules/`) and points at a DIFFERENT, non-allowed
+// rulebook prefix (`.claude/hooks/`), the literal spelling
+// `.claude/rules/junc/evil.mjs` already names an allowed rulebook path and
+// is returned — and accepted — before the resolved, REAL target
+// (`.claude/hooks/evil.mjs`) is ever tried.
+describe('guard-rulebook: a literal spelling under an allowed prefix must not authorize the different rulebook prefix it resolves to (RP-246)', () => {
+  it('blocks a Write through .claude/rules/junc/evil.mjs when the junction resolves to the non-allowed .claude/hooks/', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await symlink(
+      path.join(root, '.claude', 'hooks'),
+      path.join(root, '.claude', 'rules', 'junc'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed(['.claude/rules/']);
+
+    // On origin/master this exits 0: the literal spelling names the
+    // ALLOWED ".claude/rules/junc/evil.mjs" and protectedRelative returns
+    // it without ever consulting the resolved, non-allowed
+    // ".claude/hooks/evil.mjs" the junction actually names.
+    const result = await run(write(path.join(root, '.claude', 'rules', 'junc', 'evil.mjs')));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks');
+  });
+
+  it('control: still allows a plain Write to an allowed .claude/rules/x.md with no symlink involved', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
+    await armed(['.claude/rules/']);
+
+    const result = await run(write(path.join(root, '.claude', 'rules', 'x.md')));
+
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('control: still allows a Write through a symlinked directory whose target is itself inside the allowed prefix', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules', 'other'), { recursive: true });
+    await symlink(
+      path.join(root, '.claude', 'rules', 'other'),
+      path.join(root, '.claude', 'rules', 'link'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed(['.claude/rules/']);
+
+    const result = await run(write(path.join(root, '.claude', 'rules', 'link', 'y.md')));
+
+    expect(result.code, result.stderr).toBe(0);
   });
 });
 
@@ -1445,6 +1503,78 @@ describe('guard-rulebook: canonicalPath fails closed when resolve() crosses the 
     await armed([]);
 
     const result = await run(write(path.join(root, 'src', 'link.md')));
+
+    expect(result.code, result.stderr).toBe(2);
+  });
+});
+
+// RP-246 part 1: `realpathSync.native` keeps an admin-share UNC spelling of
+// the repository root (`\\<host>\<drive>$\…`) rather than folding it to the
+// local drive spelling of the same directory, so `comparisonRoots` (seeded
+// from `canonicalRoot`/`selectedRoot`) ends up holding only UNC spellings.
+// A payload path spelled with the LOCAL drive (`C:\…`, the spelling most
+// tools actually use) then relativises under neither comparison root and is
+// not `//`-prefixed either, so `protectedRelative` returns `undefined` for
+// every candidate and `isUnjudgeablePath` never flags it either: the
+// fragment is silently read as "outside the rulebook, never judged" instead
+// of being refused as unjudgeable, the same way an unresolvable
+// UNC/device-namespace payload path already is.
+describe('guard-rulebook: an admin-share-spelled repository root must also recognise the local-drive spelling of the same payload path (RP-246)', () => {
+  const armedFor = async (customEnv: Record<string, string>, allow: string[]): Promise<void> => {
+    const { unattendedFlags } = await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+    );
+    const flag = unattendedFlags(customEnv)[0];
+    await mkdir(path.dirname(flag), { recursive: true });
+    await writeFile(
+      flag,
+      JSON.stringify({ item: 'RP-246', runDir: path.join(root, '.rig-run'), allow }),
+    );
+  };
+
+  const adminShareRootOrThrow = (): string => {
+    const match = /^([A-Za-z]):(.*)$/.exec(root);
+    const [, drive, rest] = match ?? [];
+    if (drive === undefined || rest === undefined) {
+      throw new Error(`root is not a drive-letter path, cannot build the repro: ${root}`);
+    }
+    return `\\\\${hostname()}\\${drive}$${rest}`;
+  };
+
+  it('blocks a Write to the local-drive spelling of .claude/settings.json when CLAUDE_PROJECT_DIR is the admin-share UNC spelling of the same root', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const uncRoot = adminShareRootOrThrow();
+    const customEnv = { HOME: home, CLAUDE_PROJECT_DIR: uncRoot };
+    await armedFor(customEnv, []);
+
+    // On origin/master this exits 0: neither the local-drive-spelled
+    // literal filePath nor its own realpath-resolved canonical spelling
+    // relativises under the UNC-only comparisonRoots, so the fragment is
+    // treated as never judged.
+    const result = await runHookFull(write(`${root}\\.claude\\settings.json`), customEnv);
+
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('blocks the same local-drive target through a `..`-carrying spelling of it', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const uncRoot = adminShareRootOrThrow();
+    const customEnv = { HOME: home, CLAUDE_PROJECT_DIR: uncRoot };
+    await armedFor(customEnv, []);
+
+    const target = `${root}\\.claude\\hooks\\..\\settings.json`;
+    const result = await runHookFull(write(target), customEnv);
+
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('control: the UNC admin-share spelling of the same payload path is already blocked', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const uncRoot = adminShareRootOrThrow();
+    const customEnv = { HOME: home, CLAUDE_PROJECT_DIR: uncRoot };
+    await armedFor(customEnv, []);
+
+    const result = await runHookFull(write(`${uncRoot}\\.claude\\settings.json`), customEnv);
 
     expect(result.code, result.stderr).toBe(2);
   });
