@@ -844,6 +844,39 @@ describe('ordinary implementation has a named, pinned role: implementation-agent
     expect(codex).toContain('sandbox_mode = "workspace-write"');
   });
 
+  // RP-291 (Jira comment 21652): the RP-231 pilot's "duplicate diagnostic"
+  // was implementation-agent re-running a failure-diagnostician's own
+  // reproduction (same selector, same head) while the diagnostician still
+  // owned that failure. The fix is a role boundary, not a cache: while a
+  // failure-diagnostician owns a failure, implementation-agent does not
+  // re-run that diagnostician's reproduction — it reports back instead. It
+  // still runs its own Red/Green tests as usual; only the diagnostician's
+  // own reproduction is out of bounds while owned.
+  it('does not re-run a reproduction failure-diagnostician still owns, and reports back instead', async () => {
+    const content = await text(universal, '.claude', 'agents', 'implementation-agent.md');
+    const scope = content.slice(content.indexOf('## Scope'), content.indexOf('## How you work'));
+    expect(scope.length, 'the Scope section must exist and be non-empty').toBeGreaterThan(0);
+    expect(scope).toMatch(/failure-diagnostician/);
+    expect(scope).toMatch(/owns?\s+(that|the)\s+failure|while\s+[^.]*\bowns\b/i);
+    expect(scope).toMatch(/does not re-run|never re-runs?|must not re-run|do not re-run/i);
+    expect(scope).toMatch(/reproduction/i);
+    expect(scope).toMatch(/report(s)?\s+back/i);
+  });
+
+  // Same boundary, projected: sync-codex-adapter.mjs derives
+  // developer_instructions from this file's body verbatim, so the sentence
+  // above must survive into the Codex profile too — codex.test.ts's
+  // "is in sync with its Claude Code sources" only catches DRIFT between the
+  // two files, not an absent sentence in both.
+  it('carries the same failure-diagnostician boundary in the Codex projection', async () => {
+    const codex = await text(universal, '.codex', 'agents', 'implementation-agent.toml');
+    expect(codex).toMatch(/failure-diagnostician/);
+    expect(codex).toMatch(/owns?\s+(that|the)\s+failure|while\s+[^.]*\bowns\b/i);
+    expect(codex).toMatch(/does not re-run|never re-runs?|must not re-run|do not re-run/i);
+    expect(codex).toMatch(/reproduction/i);
+    expect(codex).toMatch(/report(s)?\s+back/i);
+  });
+
   it('refuses a set of Claude agents that lacks the implementation-agent definition', async () => {
     const { validateClaudeAgents } = await routing();
     const policy = await realPolicy();

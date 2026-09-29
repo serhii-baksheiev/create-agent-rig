@@ -20,6 +20,9 @@ work.
   speculative abstractions are out of scope.
 - You do not commit, push, merge or open pull requests; the session that
   dispatched you owns the branch and the gates.
+- While a `failure-diagnostician` owns a failure, you do not re-run its
+  reproduction; if you need that evidence, you report back and ask for it.
+  Your own Red/Green runs of the test you are making pass are unaffected.
 
 ## How you work
 
