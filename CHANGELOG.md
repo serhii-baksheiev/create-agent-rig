@@ -22,11 +22,15 @@ subagent start/end events and both harnesses' own token usage read back
 through a new token-economics report, and gives team queue use three guards
 it did not have before — assignee-aware selection, a duplicate-work check
 before a claim, and stale-in-progress hygiene — plus release-scoped `next`
-selection and two new deferral labels. The 1.0 contract is widened, never
-narrowed: nothing is removed, renamed or given a new meaning, and each
-addition — `--help` on every subcommand, the `counts` key on
-`rig-owned-files`, the new `doctor` check ids, the `seeded` verdict, the
-manifest's `regions` key — is named in its entry below.
+selection and two new deferral labels. Nothing in the 1.0 contract is
+removed or renamed; its additions — `--help` on every subcommand, the
+`counts` key on `rig-owned-files`, the new `doctor` check ids, the `seeded`
+verdict, the manifest's `regions` key — are named in their entries below.
+Two existing cases change behaviour, each in its own entry: a `kept`
+user-owned file no longer keeps the manifest alive, so such an `uninstall`
+now reports `uninstalled` rather than `partial` (RP-260); and `PLAN.md` is
+seed-once, so `upgrade` reports an edited one as `seeded` rather than
+`conflict` (RP-257).
 
 ### Added
 
@@ -224,7 +228,7 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   the field that matched), or `unverifiable` (exit 3, when a source could not
   be read; never reported as clean). The `loop` skill runs it before claiming
   an item from the `jira` or `github-issues` queue (not `plan-md`), and
-  `pr-ship` before opening a PR; a non-clean exit stops the claim
+  `pr-ship` before opening a PR for a ticketed branch; a non-clean exit stops the claim
   or holds the PR (RP-222).
 
 - **Queue hygiene now also reports `stale-in-progress` items.** An item left
