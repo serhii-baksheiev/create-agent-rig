@@ -22,6 +22,24 @@
 // queue adapter at all, so a caller that never passes it gets a purely local,
 // read-only preview.
 //
+// RP-290: when `RIG_RUN_DIR`'s journal carries a `check-result` event
+// (`check-run.mjs`) whose LATEST record for a check name is a failure, the
+// note gains one more line per such name — `failed-check: <name> exit
+// <code>; tests: <id1>, <id2>…` — so a fresh reader has the failing test
+// identity without the original process output. See
+// `test/template/continuation.test.ts` (absent in a generated rig) ›
+// "adds a failed-check line built from the latest failing check-result
+// record, with a repo-relative test identity intact". A later pass for the
+// same name drops its line — › "uses the LATEST check-result record for a
+// check name — a later pass drops the earlier failure line". No
+// `check-result` events at all leaves the note byte-identical to before
+// RP-290 — › "does not add a failed-check line when the run directory
+// carries no check-result events at all — unchanged from before RP-290". A
+// `spawn-error` record (the command never started) is never treated as a
+// test failure — › "adds NO failed-check line for a spawn-error record —
+// RP-290 review round 1: a command that never started is not a test
+// failure".
+//
 // It NEVER records: a transcript, a prompt, source code, or a credential.
 // EVERY string field this composes — `ticket`, `branch`, `pr`, `headSha`,
 // `gateRounds`, the verdict's gate names, blocker rule names and verdict
@@ -568,10 +586,40 @@ const renderVerdict = (verdict) => {
 };
 
 /**
+ * One `failed-check: <name> exit <code>; tests: <id1>, <id2>…` line — RP-290,
+ * from a `check-run.mjs` `check-result` record whose latest outcome for that
+ * name is `fail`. Every value goes through `composeTextField`, the same
+ * structured pipeline every other field in this note gets, so an embedded
+ * credential or line terminator inside a test id is redacted/collapsed the
+ * same way — and a REPO-RELATIVE test id (no leading `/`) is not itself a
+ * shape any of the five structured path patterns matches, so it survives
+ * intact rather than becoming `[path]`. `tests:` reads `unknown` when the
+ * record named no failing test id at all, never an empty string.
+ */
+const composeFailedCheckLine = (check) => {
+  const name = composeTextField(check?.name);
+  const exitCode = composeTextField(check?.exitCode);
+  const ids = Array.isArray(check?.failedTests)
+    ? check.failedTests
+        .filter((id) => typeof id === 'string' && id.trim() !== '')
+        .map((id) => composeTextField(id))
+    : [];
+  const testsField = ids.length > 0 ? ids.join(', ') : 'unknown';
+  return `failed-check: ${name} exit ${exitCode}; tests: ${testsField}`;
+};
+
+/** `failedChecks` renders as zero or more `failed-check:` lines, never guessed when absent. */
+const renderFailedCheckLines = (failedChecks) =>
+  Array.isArray(failedChecks) ? failedChecks.map(composeFailedCheckLine) : [];
+
+/**
  * The shared note shape, in a fixed key order — see the module header for
  * what it never carries. Throws only on an unknown/absent `stop`: every
  * other field is optional and renders `unknown` rather than being guessed or
- * omitted, so a reader always sees the same ten lines.
+ * omitted, so a reader always sees the same ten lines, plus one
+ * `failed-check:` line (RP-290) per failing check `readFailedChecks` found —
+ * none when `failedChecks` is absent or empty, which keeps every caller and
+ * every existing test that never passes it byte-identical to before RP-290.
  */
 export const composeNote = ({
   ticket,
@@ -583,6 +631,7 @@ export const composeNote = ({
   verdict,
   diagnosis,
   remaining,
+  failedChecks,
 } = {}) => {
   if (!STOP_KINDS.includes(stop)) {
     throw new Error(
@@ -601,6 +650,7 @@ export const composeNote = ({
     `latest-verdict: ${renderVerdict(verdict)}`,
     `diagnosis: ${composeCappedTextField(diagnosis)}`,
     `remaining: ${composeCappedTextField(remaining)}`,
+    ...renderFailedCheckLines(failedChecks),
   ];
 
   return capNote(lines.join('\n'));
@@ -672,6 +722,32 @@ export const readRunEvidence = (runDir) => {
     };
   } catch {
     return { headSha: null, reviewers: [] };
+  }
+};
+
+const CHECK_RESULT_KIND = 'check-result';
+
+/**
+ * RP-290 — the LATEST `check-result` event per check NAME (`check-run.mjs`),
+ * filtered to the ones whose latest outcome is `fail`. A later PASS for the
+ * same name drops its earlier failure; a later FAIL for a name that once
+ * passed replaces it. `runDir` absent, non-existent, or unreadable reports
+ * none — the same silent-optional-trace shape every other reader in this
+ * module uses.
+ */
+export const readFailedChecks = (runDir) => {
+  try {
+    const { events } = readRun({ runDir });
+    const latestByName = new Map();
+    for (const event of events) {
+      if (event.kind !== CHECK_RESULT_KIND) continue;
+      const data = event.data;
+      if (!data || typeof data.name !== 'string') continue;
+      latestByName.set(data.name, data);
+    }
+    return Array.from(latestByName.values()).filter((data) => data.outcome === 'fail');
+  } catch {
+    return [];
   }
 };
 
@@ -768,9 +844,11 @@ if (invokedDirectly()) {
     }
   })();
 
-  // `readRunEvidence` already reports nulls for an undeclared/unreadable run
-  // — passing `undefined` when RIG_RUN_DIR is unset takes that same path.
+  // `readRunEvidence`/`readFailedChecks` already report nulls/none for an
+  // undeclared/unreadable run — passing `undefined` when RIG_RUN_DIR is unset
+  // takes that same path.
   const verdict = readRunEvidence(process.env.RIG_RUN_DIR);
+  const failedChecks = readFailedChecks(process.env.RIG_RUN_DIR);
 
   const note = composeNote({
     ticket: parsed.ticket,
@@ -782,6 +860,7 @@ if (invokedDirectly()) {
     verdict,
     diagnosis: parsed.diagnosis,
     remaining: parsed.remaining,
+    failedChecks,
   });
 
   process.stdout.write(`${note}\n`);

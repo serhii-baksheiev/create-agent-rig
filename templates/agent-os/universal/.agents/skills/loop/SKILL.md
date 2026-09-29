@@ -869,6 +869,12 @@ stop, or a review round — those are technical checkpoints internal to this
 session, not one of the four workflow-level stops above, and running it on
 each one would turn a rare, durable note into routine noise nobody reads.
 
+When a required check was run through `.claude/scripts/check-run.mjs` (§3 of
+`pr-ship`) and its latest record for a name is a failure, the composed note
+automatically carries a `failed-check: <name> exit <code>; tests: <id1>,
+<id2>…` line — the failing test identity, not just this session's memory of
+it.
+
 Each of the other three kinds has its own concrete moment, separate from the
 summary above.
 

@@ -432,9 +432,18 @@ describe('create-agent-rig uninstall', () => {
   // security measured against the built CLI (15 genuinely referenced or
   // imported — 7 direct hooks + 6 real imports + the two non-dependency
   // entries `settings.json` and `guard-secret-file.mjs` themselves, neither
-  // of whose OWN reasons start with "protected because" — and 10 kept only
+  // of whose OWN reasons start with "protected because" — and 11 kept only
   // as a precaution) and that a directly-wired hook the sweep used to
   // swallow gets the DIRECT wording back, not the caution one.
+  //
+  // RP-290: the precaution-only count moved from 10 to 11 with the addition
+  // of the new Core script `.claude/scripts/check-run.mjs` — an owned `.mjs`
+  // no wired hook imports, so it lands in the same precaution-only bucket
+  // as `doctor.mjs` and the rest, once the unreadable `guard-secret-file.mjs`
+  // seed forces every unverifiable file to be kept rather than risk removing
+  // one it needs. The genuinely-traced count (15) is unaffected: check-run.mjs
+  // is neither one of the 7 direct hooks, one of the 6 real imports, nor one
+  // of the two non-dependency entries the count is defined to mean.
   //
   // The precaution-only count was 29 before RP-180: `init` here installs Lean
   // Core only (no `--layer workflow`), and the superset sweep's precaution
@@ -480,7 +489,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(15 genuinely referenced or imported; 10 kept only as a precaution',
+        '(15 genuinely referenced or imported; 11 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',

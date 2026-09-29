@@ -18,6 +18,18 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
 
 ### Added
 
+- **A red required check now leaves durable evidence in the run
+  directory.** The new Core script `check-run.mjs`
+  (`node .claude/scripts/check-run.mjs --name <check> -- <command>`) runs a
+  check, passes its output through, exits with its code, and — when a run
+  directory is declared — journals one `check-result` event: the exit
+  status, signal or timeout, the failing test identities the runner printed,
+  a bounded tail of the output, and a capped, secret-redacted full log. A
+  continuation note then carries a `failed-check:` line naming the check and
+  its failing tests, so another controller can identify the original failure
+  without the lost terminal. `pr-ship` runs required checks through it
+  (RP-290).
+
 - **`doctor` adds two personal-machine onboarding diagnostics.**
   `personal-tracker` is a presence-only check of the tracker credential
   environment variable names the repository's own `.claude/queue.json`
