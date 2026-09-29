@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { skipUnless, symlinksAvailable } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
+import { runNodeTimed } from '../helpers/child-timing.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -302,19 +303,39 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
 
   // RP-262 boundedness (.claude/rules/invariants.md, "A guard that fails open
   // must do provably bounded work"): whatever folds `..` here must do it in
-  // ONE bounded pass. A long run of `../` must be handled fast, and it must
-  // fail CLOSED on a genuine match — never allow because resolving it looked
-  // too expensive to attempt. Enough `../` segments from `~/.ssh/` escape past
-  // the symbol itself onto the filesystem root, which is still catastrophic.
+  // ONE bounded pass — no per-step cost that grows with how much of the stack
+  // is already built. A run of `../` straight off `~/.ssh/` never grows past a
+  // stack of size 1 (each `..` pops the segment pushed just before it), so it
+  // cannot tell a linear fold from one that rebuilds the whole array on every
+  // push or pop — both stay equally fast, because there is nothing to copy
+  // either way. This input instead PUSHES `N` plain segments before any `..`
+  // arrives, so a fold with quadratic per-step cost actually pays for it: `N`
+  // pushes each copying up to `N` elements, then `N+2` pops doing the same on
+  // the way back down. Reproduced against a push-then-pop mutation of
+  // `foldDotDot` (rebuilding the array with `[...stack, part]`/`.slice(0,
+  // -1)` instead of `.push`/`.pop`): at this `N` it measured 8.1s–29.5s across
+  // runs (and 53.6s at N=40,000) — comfortably clearing this test's 5s bound
+  // every time, with room for run-to-run variance. The real, committed fold
+  // measured 240–290ms at the same `N`s — over an order of magnitude under
+  // the bound, not merely under it. It must also fail CLOSED on the match:
+  // enough `../` segments off a `~`-anchor escape past the anchor itself onto
+  // the filesystem root, which is still catastrophic. Measured in the child
+  // (RP-158), never by the parent's wall clock around the spawn.
   it('folds a long run of `..` in bounded time and still blocks the escape', async () => {
-    const longEscape = `cd ~/.ssh/${Array(4000).fill('..').join('/')} && rm -rf *`;
-    const start = Date.now();
-    const result = await run(longEscape);
-    const elapsed = Date.now() - start;
-    expect(elapsed, `took ${elapsed}ms — must stay bounded, not quadratic`).toBeLessThan(3000);
+    const N = 30_000;
+    const longEscape = `cd ~/${'a/'.repeat(N)}${'../'.repeat(N + 2)} && rm -rf *`;
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(longEscape)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 60_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
     expect(
       result.code,
-      `should BLOCK: a long enough run of '..' resolves onto the filesystem root, exits ${result.code} on master`,
+      `should BLOCK: a long enough run of '..' off a ~-anchor resolves onto the filesystem root (got exit ${result.code})`,
     ).toBe(2);
   });
 
