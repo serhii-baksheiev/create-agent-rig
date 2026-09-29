@@ -737,3 +737,77 @@ describe("content-blind-revalidation.test.ts's own run() helper bounds its child
     expect(boundValue).toBeGreaterThan(0);
   });
 });
+
+// RP-301. test/template/tracker-credentials-correspondence.test.ts has one
+// case that mutates a copy of doctor.ts, copies packages/cli/src, dynamically
+// imports the copy, and runs the real runDoctor against a real initProject
+// fixture: "reports a name doctor requires that jira.mjs never required
+// (mutation: doctor gains a name, in a /tmp copy of packages/cli/src)". A
+// phase breakdown (3 runs each, WSL and a standalone Windows probe against
+// this same checkout, reading the real packages/cli/src, packages/cli/dist
+// and templates trees but writing only under its own tmp dirs) put the two
+// phases that neither linking templates nor narrowing the src copy touches —
+// the dynamic import and the runDoctor call itself — at ~500 ms + ~735 ms on
+// WSL and ~63 ms + ~592 ms on Windows (the Windows import figure uses a
+// precompiled packages/cli/dist as a standalone proxy for vite-node's
+// transform, noted where it was measured), plus fixture setup (~300-390 ms)
+// and the still-real packages/cli/src copy (~96-134 ms, the smallest
+// measured phase but not eliminated: a per-file symlink there needs Windows
+// Developer Mode). Together they do not shrink below roughly 1.3 s even with
+// templates linked rather than copied. Four earlier windows-e2e runs measured
+// the whole case at 1,250 ms, 1,272 ms, 1,527 ms and 1,333 ms; the flagged
+// acceptance run (36541622268) hit 16,490 ms against the 15 s
+// template-project budget on a run where everything was slow
+// (test/template/codex.test.ts alone took 18,917 ms; the full run 1,359 s) —
+// a runner stall multiplying a ~1.3 s case about 10x, not a regression in the
+// case itself. So that one case carries its own vitest per-case timeout, the
+// same way RP-162's PowerShell case and RP-158's package-manager case do, and
+// the file-wide template-project figure above stays where it is.
+const TRACKER_CREDENTIALS_MUTATION_CASE_NAME =
+  'reports a name doctor requires that jira.mjs never required (mutation: doctor gains a name, in a /tmp copy of packages/cli/src)';
+const TRACKER_CREDENTIALS_MUTATION_CASE_BUDGET_DECLARATION =
+  /^const TRACKER_CREDENTIALS_MUTATION_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+
+async function readTrackerCredentialsTestSource(): Promise<string> {
+  return readFile(
+    path.join(repoRoot, 'test', 'template', 'tracker-credentials-correspondence.test.ts'),
+    'utf8',
+  );
+}
+
+describe(
+  'the tracker-credentials doctor-mutation case that copies packages/cli/src and runs the ' +
+    'real runDoctor (RP-301)',
+  () => {
+    it("carries its own budget, declared once by name and passed as that case's options", async () => {
+      const source = await readTrackerCredentialsTestSource();
+
+      expect(source).toMatch(TRACKER_CREDENTIALS_MUTATION_CASE_BUDGET_DECLARATION);
+
+      const caseWithOptions = new RegExp(
+        `it\\(\\s*'${escapeRegExp(TRACKER_CREDENTIALS_MUTATION_CASE_NAME)}'\\s*,\\s*\\{ timeout: TRACKER_CREDENTIALS_MUTATION_CASE_TIMEOUT_MS \\}`,
+      );
+      expect(source).toMatch(caseWithOptions);
+    });
+
+    it('is bounded above so a genuine hang still fails within a minute, and sits above the lane budget it replaces', async () => {
+      const source = await readTrackerCredentialsTestSource();
+      const declared = source.match(TRACKER_CREDENTIALS_MUTATION_CASE_BUDGET_DECLARATION);
+      expect(declared).not.toBeNull();
+
+      const budget = Number((declared?.[1] ?? '').replaceAll('_', ''));
+      expect(Number.isInteger(budget)).toBe(true);
+      expect(templateProject?.test.testTimeout).toBeDefined();
+      expect(budget).toBeGreaterThan(templateProject?.test.testTimeout ?? Number.POSITIVE_INFINITY);
+      expect(budget).toBeLessThanOrEqual(60_000);
+    });
+
+    it('is the only case in that file with a budget of its own — the figure moves for one case, not for the file', async () => {
+      const code = (await readTrackerCredentialsTestSource()).replace(/\/\/[^\n]*/g, '');
+      const optionKeys = code.match(/\btimeout\s*:/g) ?? [];
+      const trailingFigures = code.match(/\}\s*,\s*\d[\d_]*\s*\);/g) ?? [];
+      expect(optionKeys, 'timeout keys in options objects').toHaveLength(1);
+      expect(trailingFigures, 'numeric trailing-argument budgets').toHaveLength(0);
+    });
+  },
+);
