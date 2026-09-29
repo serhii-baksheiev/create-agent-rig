@@ -22,9 +22,11 @@ subagent start/end events and both harnesses' own token usage read back
 through a new token-economics report, and gives team queue use three guards
 it did not have before — assignee-aware selection, a duplicate-work check
 before a claim, and stale-in-progress hygiene — plus release-scoped `next`
-selection and two new deferral labels. The 1.0 contract is unchanged: no
-flag, JSON shape, exit code, verdict or outcome word, and no manifest key is
-added, removed or renamed.
+selection and two new deferral labels. The 1.0 contract is widened, never
+narrowed: nothing is removed, renamed or given a new meaning, and each
+addition — `--help` on every subcommand, the `counts` key on
+`rig-owned-files`, the new `doctor` check ids, the `seeded` verdict, the
+manifest's `regions` key — is named in its entry below.
 
 ### Added
 
@@ -221,7 +223,8 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   answers `clean` (exit 0), `duplicate-work` (exit 2, naming each match and
   the field that matched), or `unverifiable` (exit 3, when a source could not
   be read; never reported as clean). The `loop` skill runs it before claiming
-  an item and `pr-ship` before opening a PR; a non-clean exit stops the claim
+  an item from the `jira` or `github-issues` queue (not `plan-md`), and
+  `pr-ship` before opening a PR; a non-clean exit stops the claim
   or holds the PR (RP-222).
 
 - **Queue hygiene now also reports `stale-in-progress` items.** An item left
