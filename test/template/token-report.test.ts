@@ -159,7 +159,8 @@ const journal = (await import(pathToFileURL(path.join(scriptsDir, 'run-journal.m
 // Only imported once the module exists — every test below fails on this
 // import until then, which is the expected Red-step reason.
 let reportModule: {
-  tokenReportOf: (input: { runs: unknown[]; since: string }) => Report;
+  tokenReportOf: (input: { runs: unknown[]; since: string; wiring?: Wiring }) => Report;
+  render: (report: Report) => string;
 } | null = null;
 try {
   reportModule = (await import(pathToFileURL(reportScript).href)) as typeof reportModule;
@@ -215,11 +216,48 @@ interface TicketGroup {
   occurrences: Occurrence[];
 }
 
+// RP-292 — dispatch/hook witness availability, made explicit rather than
+// inferred by the reader from the absence of a `usage` object. `wiring` is
+// read from the repository's own `.claude/settings.json` /
+// `.codex/hooks.json` (whether a `record-dispatch.mjs` command is declared
+// under SubagentStart/SubagentStop for that harness), rooted at the `--runs`
+// directory's own checkout — never the CLI's `cwd` — and is `'unknown'`
+// rather than `'not-configured'` when that directory is not itself inside a
+// git checkout (there is nothing to read, not "read and found absent").
+// `state` is derived from JOURNALLED EVENTS ONLY — configuration can never by
+// itself produce `'witnessed'` — and `'trusted'` is never a reported state:
+// Codex does not run project-level hooks for an untrusted project, so an
+// absence of Codex dispatch evidence is explained in `reason`, never
+// claimed as a trust verdict this script cannot observe.
+type WiringState = 'configured' | 'not-configured' | 'unknown';
+interface Wiring {
+  claude: WiringState;
+  codex: WiringState;
+}
+interface UsageEvidenceHarness {
+  wiring: WiringState;
+  state: 'witnessed' | 'configured-no-witness' | 'not-configured' | 'unknown';
+  reason: string;
+  // Tally, by `usageUnavailable` reason code (record-dispatch.mjs:1070-1071),
+  // of every dispatch-end this harness journalled that named one — e.g.
+  // `{ 'transcript-path-missing': 1 }`. `{}` when none did.
+  unavailableReasons: Record<string, number>;
+}
+interface UsageEvidence {
+  claude: UsageEvidenceHarness;
+  codex: UsageEvidenceHarness;
+  // Controller (parent session) usage is never measured by this script —
+  // record-dispatch.mjs only journals SubagentStart/SubagentStop, never the
+  // controller's own turn — so this is a fixed statement, not a computation.
+  controller: { available: false; reason: string };
+}
+
 interface Report {
   since: string;
   runs: { read: number; skipped: Array<{ run: string; why: string }> };
   dispatchGroups: DispatchGroup[];
   tickets: TicketGroup[];
+  usageEvidence: UsageEvidence;
   money: { line: string; estimate: null };
 }
 
@@ -494,6 +532,319 @@ describe('token-report.mjs money line', () => {
     expect(group.dispatches).toEqual({ ended: 2, noEndObserved: 0 });
     expect(group.usage.claude).toBeNull();
     expect(data.money.line).toBe('usage unavailable; monetary cost unavailable');
+  });
+});
+
+// RP-292: today `dispatches: 'unavailable'` and a bare absent `usage` slot
+// read identically whether record-dispatch.mjs was never wired, was wired
+// but the subagent produced no evidence, or — for Codex — was skipped
+// silently because the project was untrusted. `usageEvidence` makes that
+// distinction explicit. `wiring` is injected directly into `tokenReportOf`
+// for every test below except the CLI-auto-detection test, mirroring how
+// `runs` is already injected rather than read from a live checkout.
+describe('token-report.mjs usageEvidence: dispatch/hook witness availability made explicit', () => {
+  it('reports configured-no-witness, with a reason that configuration is not execution, when the hook is wired but no dispatch was ever observed', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-A',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.state).toBe('configured-no-witness');
+    expect(data.usageEvidence.claude.reason).toMatch(/configuration is not execution/i);
+  });
+
+  it('reports not-configured — a different state and reason than configured-no-witness — when the hook is not wired and no dispatch was observed', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-B',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+    const runs = await readRuns(runsDir);
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const configured = reportModule!.tokenReportOf({
+      runs,
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+    const notConfigured = reportModule!.tokenReportOf({
+      runs,
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'not-configured' },
+    });
+
+    expect(configured.usageEvidence, JSON.stringify(configured)).toBeDefined();
+    expect(notConfigured.usageEvidence, JSON.stringify(notConfigured)).toBeDefined();
+    expect(notConfigured.usageEvidence.claude.state).toBe('not-configured');
+    expect(notConfigured.usageEvidence.claude.state).not.toBe(
+      configured.usageEvidence.claude.state,
+    );
+    expect(notConfigured.usageEvidence.claude.reason).not.toBe(
+      configured.usageEvidence.claude.reason,
+    );
+  });
+
+  it('reports witnessed from a dispatch-start alone, even when the hook is not wired in configuration — witness comes only from events', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-C',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'not-configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.state).toBe('witnessed');
+  });
+
+  it('never reports witnessed from configuration alone, for either harness, when the run journals no dispatch event at all', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-D',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.state).not.toBe('witnessed');
+    expect(data.usageEvidence.codex.state).not.toBe('witnessed');
+    expect(data.usageEvidence.claude.state).toBe('configured-no-witness');
+    expect(data.usageEvidence.codex.state).toBe('configured-no-witness');
+  });
+
+  it('tallies usageUnavailable reason codes per harness in usageEvidence and in the rendered evidence line, while the money line keeps its exact existing sentence', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-E',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: 'transcript-path-missing',
+    });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.unavailableReasons).toEqual({
+      'transcript-path-missing': 1,
+    });
+    expect(data.money).toEqual({
+      line: 'usage unavailable; monetary cost unavailable',
+      estimate: null,
+    });
+
+    const text = reportModule!.render(data);
+    expect(text).toMatch(/transcript-path-missing=1/);
+  });
+
+  it('renders the usage evidence line before the money line, which stays last, and leaves money as exactly {line, estimate}', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-F',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: claudeUsage(),
+    });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    expect(Object.keys(data.money).sort()).toEqual(['estimate', 'line']);
+    expect(data.money).toEqual({
+      line: 'usage measured; monetary cost unavailable',
+      estimate: null,
+    });
+
+    const text = reportModule!.render(data);
+    const lines = text.trimEnd().split('\n');
+    const evidenceIndex = lines.findIndex((line) => /usage evidence/i.test(line));
+    expect(evidenceIndex, text).toBeGreaterThanOrEqual(0);
+    expect(lines[lines.length - 1]).toBe(data.money.line);
+    expect(evidenceIndex).toBeLessThan(lines.length - 1);
+  });
+
+  it('the CLI reports wiring as unknown, never not-configured, for a --runs directory that is not itself part of a git checkout', async () => {
+    // runsRoot() is a bare mkdtemp under the OS temp dir — never a git
+    // checkout on its own — the same fixture every other test in this file
+    // already uses as --runs, deliberately reused here rather than a new
+    // fixture, so this pins the CLI's default behaviour, not a special case.
+    const runsDir = await runsRoot();
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.wiring).toBe('unknown');
+    expect(data.usageEvidence.claude.wiring).not.toBe('not-configured');
+    expect(data.usageEvidence.codex.wiring).toBe('unknown');
+    expect(data.usageEvidence.codex.wiring).not.toBe('not-configured');
+  });
+
+  it('states that controller (parent session) usage is unavailable, and why — only subagent dispatches are journalled', async () => {
+    const runsDir = await runsRoot();
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'unknown', codex: 'unknown' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.controller.available).toBe(false);
+    expect(data.usageEvidence.controller.reason).toMatch(/subagent/i);
+    expect(data.usageEvidence.controller.reason).toMatch(/controller|parent session/i);
+  });
+
+  it('a hostile usageUnavailable code carrying a control character reaches neither the text nor the --json output raw', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-HOSTILE',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: 'transcript\u009b-path-missing',
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T4 });
+
+    const textResult = await cli(['--runs', runsDir, '--since', SINCE]);
+    expect(textResult.code, textResult.out).toBe(0);
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this assertion
+    expect(textResult.stdout).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+
+    const jsonResult = await cli(['--runs', runsDir, '--since', SINCE, '--json']);
+    expect(jsonResult.code, jsonResult.out).toBe(0);
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this assertion
+    expect(jsonResult.stdout).not.toMatch(/[\x7f-\x9f]/);
+    expect(() => JSON.parse(jsonResult.stdout)).not.toThrow();
+  });
+});
+
+describe('token-report.mjs usageEvidence codex parity', () => {
+  it('reports configured-no-witness with a reason naming that project-hook trust is not observed and untrusted hooks are skipped silently, and never reports the state "trusted"', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-CODEX-A',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.codex.state).toBe('configured-no-witness');
+    expect(data.usageEvidence.codex.reason).toMatch(/trust/i);
+    expect(data.usageEvidence.codex.reason).toMatch(/untrusted hooks?.*skipped silently/i);
+
+    const text = reportModule!.render(data);
+    const wholeOutput = `${text}${JSON.stringify(data)}`;
+    expect(wholeOutput).not.toMatch(/"trusted"/);
+    expect(data.usageEvidence.claude.state).not.toBe('trusted');
+    expect(data.usageEvidence.codex.state).not.toBe('trusted');
+  });
+
+  it('a dispatch-end carrying usageUnavailable rollout-identity-mismatch tallies the same way a Claude code does', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-CODEX-B',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'codex', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'codex',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: 'rollout-identity-mismatch',
+    });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.codex.state).toBe('witnessed');
+    expect(data.usageEvidence.codex.unavailableReasons).toEqual({
+      'rollout-identity-mismatch': 1,
+    });
   });
 });
 
