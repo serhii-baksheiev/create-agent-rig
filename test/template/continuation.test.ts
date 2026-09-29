@@ -1113,6 +1113,610 @@ describe('RP-224 round 4 — coarse free-text path scrub, whole-field secret red
   });
 });
 
+// RP-297 — `isFreeTextPathToken`'s coarse scan triggered on ANY token merely
+// CONTAINING a forward slash, so an N/N fraction and a repo-relative evidence
+// path (a test id, a gate-round count) were scrubbed to `[path]` — and the
+// scrub then consumes everything from that token's own start to the end of
+// the segment, swallowing whatever followed it too. The reported case:
+// `--diagnosis "Gate rounds 3/3 exhausted … (agents-md-region-uninstall.test.ts:367 says …"`
+// published as `diagnosis: Gate rounds [path]` — the fraction "3/3" started
+// the scrub and everything after it, including the test identity, was lost.
+//
+// The fix: a free-text token starts a path span only when it starts with
+// `~`, `/`, or `\`, or CONTAINS a `\`, or carries a drive-letter prefix
+// (`C:\` / `C:/`) — never merely for containing `/` — while a token whose
+// path carries a `..` segment is still treated as a path, because that shape
+// can climb out of the repo regardless of which separator it uses.
+describe('RP-297 — free-text path token trigger is shape-based, not any forward slash', () => {
+  it('leaves an N/N fraction in diagnosis untouched, with the trailing text intact', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis = 'Gate rounds 3/3 exhausted, retry needed';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('leaves a repo-relative test identity in diagnosis untouched, with the trailing text intact', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis = 'see packages/cli/test/x.test.ts:367 for the failing assertion';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('leaves a sentence mixing an N/N fraction and a repo-relative test identity untouched, verbatim — the reported RP-297 shape', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis =
+      'Gate rounds 3/3 exhausted (agents-md-region-uninstall.test.ts:367 says neither marker matched)';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('still scrubs an absolute POSIX path in diagnosis (/home/alice/x)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'log written to /home/alice/x for review',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a tilde-prefixed path in diagnosis (~/x)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'backup kept under ~/x afterward',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('~/x');
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a relative path carrying a backslash in diagnosis (home\\alice)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'moved into home\\alice quietly',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a backslash drive-letter path in diagnosis (C:\\Users\\alice)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'trace shows C:\\Users\\alice today',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a forward-slash drive-letter path in diagnosis (C:/Users/alice)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'trace shows C:/Users/alice today',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a UNC path in diagnosis (\\\\server\\share\\x)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'checkout lives at \\\\server\\share\\x currently',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('\\\\server\\share\\x');
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a slash-separated relative path that climbs out of the repo with .. segments (../../etc/passwd)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'config read from ../../etc/passwd unexpectedly',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('../../etc/passwd');
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a relative path with an embedded .. segment mid-path (a/../../b)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'resolved to a/../../b during the walk',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('a/../../b');
+    expect(line).toContain('[path]');
+  });
+
+  // RP-297 round 2 — security-scanner HOLD on PR #351 (head e50df6e): the
+  // shape checks `isFreeTextPathToken` gained (drive-letter prefix,
+  // non-http(s) scheme, `$`/`%` env-var reference, `..` segment) are all
+  // start-anchored on the TOKEN, so a token wrapped in — or prefixed by —
+  // leading punctuation a person types under pressure (a paren, a bracket, a
+  // `--flag=`, a `label:`) defeats every one of them for a shape that has no
+  // structured five-pattern backstop of its own (only an absolute POSIX/UNC/
+  // drive path is caught upstream in `scrubPaths` regardless of where it
+  // sits in the token).
+
+  describe('leading punctuation no longer defeats the shape checks — each one is redacted', () => {
+    const leaks: Array<[string, string]> = [
+      ['a parenthesised tilde path', '(~alice/x)'],
+      ['a bracketed tilde path', '[~alice/x]'],
+      ['a tilde path after a --flag=', '--dir=~alice/x'],
+      ['a tilde path after a label:', 'path:~alice/x'],
+      ['a parenthesised smb:// URI', '(smb://alice-pc/share/x)'],
+      ['an smb:// URI after key=', 'url=smb://alice-pc/share'],
+      ['a parenthesised vscode-remote:// URI', '(vscode-remote://wsl+ubuntu/home/alice/x)'],
+      ['a parenthesised %USERPROFILE% reference', '(%USERPROFILE%/alice)'],
+      ['a parenthesised $HOME reference', '($HOME/alice-proj)'],
+      ['a $HOME reference after a --flag=', '--cwd=$HOME/alice-proj'],
+    ];
+
+    for (const [label, token] of leaks) {
+      it(`redacts ${label} (${token}), not just the shape's bare form`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+        expect(line).toContain('[path]');
+      });
+    }
+  });
+
+  // Owner guidance: a personal home-directory location must never leak, even
+  // when the token has no leading separator at all and the first path
+  // segment merely NAMES a known home root (case-insensitively) —
+  // `Users`, `home`, `wsl.localhost`, `wsl$` — the same roots a Windows,
+  // POSIX, or WSL absolute path would have used if the caller had typed the
+  // leading separator.
+  describe('a relative-looking token whose first segment names a home root is redacted', () => {
+    const homeRootLeaks: Array<[string, string]> = [
+      ['Users', 'Users/alice/proj'],
+      ['home', 'home/alice/proj'],
+      ['wsl.localhost', 'wsl.localhost/Ubuntu/home/alice/x'],
+      ['wsl$', 'wsl$/Ubuntu/home/alice/x'],
+    ];
+
+    for (const [rootName, token] of homeRootLeaks) {
+      it(`redacts a token whose first segment names the home root "${rootName}" (${token})`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+        expect(line).toContain('[path]');
+      });
+    }
+  });
+
+  it('still leaves a parenthesised repo-relative test identity in diagnosis untouched, verbatim', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis = 'at (packages/cli/test/x.test.ts:367) y';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('advisory A2: isolates the coarse ".." rule from the structured POSIX_PATH pattern — a single-slash token (../b) has no two-slash shape for POSIX_PATH to match at all', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // POSIX_PATH (the structured pattern `scrubPaths` runs first) needs a
+    // LEADING '/' followed by a run of non-slash characters and then a
+    // SECOND '/' — two slashes minimum. "../b" carries only one slash, so
+    // POSIX_PATH cannot match any span of it; if this token is still
+    // redacted, it can only be the coarse free-text `hasDotDotSegment` rule
+    // deciding it — unlike "a/../../b" and "../../etc/passwd" above, both of
+    // which carry two-or-more slashes and so are (at least partly) already
+    // matched by POSIX_PATH before the coarse rule ever runs.
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'resolved to ../b during the walk',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('../b');
+    expect(line).toContain('[path]');
+  });
+
+  // RP-297 round 3 — code-reviewer and security-scanner both HOLD on the
+  // round-2 fix (review at 14bc59d). Three remaining gaps, all in the same
+  // "boundary" family round 2 introduced:
+  //
+  //   (1) TILDE_BOUNDARY's negated class excludes `.` and `-` from counting
+  //       as a boundary — deliberately, to let a version-ish run like
+  //       `v1.2-3` continue through a tilde without tripping — but that same
+  //       exclusion means `-~alice/x` and `.~alice/x` are read as ONE
+  //       unbroken identifier and the tilde shape never fires at all.
+  //   (2) SCHEME_URI_AT_BOUNDARY's negated class excludes `-`, `.`, and `+`
+  //       for the same reason (so `vscode-remote://` isn't split into two
+  //       schemes) — but a LEADING `-`/`./`+` before the scheme name itself
+  //       hides the whole scheme the same way.
+  //   (3) `HTTP_URL_PREFIX` is a whole-token short-circuit at the very top of
+  //       `isFreeTextPathToken`: a token that STARTS WITH http(s):// returns
+  //       `false` immediately, before the tilde/scheme/home-root checks ever
+  //       run — so a second, non-http(s) shape later in the SAME token
+  //       (`https://ok/,smb://alice-pc/share`) is never seen at all.
+  //
+  // Plus two correctness items found alongside them:
+  //
+  //   (4) `HOME_ROOT_SEGMENT` has no anchor to the token's FIRST segment —
+  //       it fires on `users`/`home`/… appearing as ANY segment, so a
+  //       genuinely repo-relative path like `src/users/list.ts` is
+  //       over-redacted.
+  //   (5)/(6) several claims the comments above `isFreeTextPathToken` and the
+  //       round-2 tests already make (`foo~bar`/`myhome/x` survive; home-root
+  //       matching is case-insensitive; `HEAD~2`-shaped git refs survive)
+  //       have no test of their own yet.
+
+  describe('RP-297 round 3 — a tilde after `.` or `-` must still be redacted, not treated as one unbroken identifier', () => {
+    const leaks: Array<[string, string]> = [
+      ['a bare dash-tilde path', '-~alice/x'],
+      ['a parenthesised dash-tilde path', '(-~alice/x)'],
+      ['a double-dash-tilde path', '--~alice/x'],
+      ['a tilde path after a word-dash prefix', 'x-~alice/x'],
+      ['a tilde path after a bare dot', '.~alice/x'],
+      ['a tilde path after a version-ish dot prefix', 'v1.~alice/x'],
+      ['a dash-tilde-root path', '-~/alice'],
+      ['a tilde path after an ellipsis', 'tried...~alice/proj'],
+    ];
+
+    for (const [label, token] of leaks) {
+      it(`redacts ${label} (${token})`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+        expect(line).toContain('[path]');
+      });
+    }
+  });
+
+  describe('RP-297 round 3 — a scheme URI after `-`, `.`, or `+` must still be redacted', () => {
+    const leaks: Array<[string, string]> = [
+      ['a dash-prefixed smb:// URI', '-smb://alice-pc/share'],
+      ['a dot-prefixed smb:// URI', '.smb://alice-pc/share'],
+      ['a plus-prefixed smb:// URI', '+smb://alice-pc/share'],
+      ['a parenthesised dash-prefixed smb:// URI', '(-smb://alice-pc/share)'],
+      ['a dash-prefixed sftp:// URI with a userinfo', '-sftp://alice@alice-pc/srv'],
+      [
+        'a dash-prefixed vscode-remote:// URI (a scheme that itself contains an internal dash)',
+        '-vscode-remote://ssh-remote+alice-pc/srv/x',
+      ],
+    ];
+
+    for (const [label, token] of leaks) {
+      it(`redacts ${label} (${token})`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+        expect(line).toContain('[path]');
+      });
+    }
+  });
+
+  describe('RP-297 round 3 — a later non-http(s) scheme or tilde inside a token that STARTS with http(s):// must still be redacted, not hidden by the whole-token short-circuit', () => {
+    const leaks: Array<[string, string]> = [
+      [
+        'a comma-joined second smb:// URI in the same token as a leading https:// one',
+        'https://ok/,smb://alice-pc/share',
+      ],
+      ['a parenthesised tilde path glued onto a leading https:// URI', 'https://x/(~alice/y)'],
+      ['an uppercase HTTP:// prefix hiding a trailing tilde path', 'HTTP://x/~alice'],
+    ];
+
+    for (const [label, token] of leaks) {
+      it(`redacts ${label} (${token})`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+        expect(line).toContain('[path]');
+      });
+    }
+  });
+
+  describe('RP-297 round 3 — the home-root rule applies only to the FIRST path segment, after any leading punctuation', () => {
+    it('leaves a repo-relative path with "users" as an INNER segment untouched (src/users/list.ts)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at src/users/list.ts y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a repo-relative path with "home" as an INNER segment untouched (lib/home/x.ts)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at lib/home/x.ts y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('still redacts a home root as the FIRST segment (Users/alice/x)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'at Users/alice/x y',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('still redacts a parenthesised home root as the FIRST segment ((Users/alice/x))', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'at (Users/alice/x) y',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('still redacts an uppercase home root as the FIRST segment (HOME/alice/x)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'at HOME/alice/x y',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+  });
+
+  // RP-297 post-cap fix — gate rounds 3/3 spent, operator act recorded; both
+  // round-3 reviewers held on the SAME point in the fix that landed for round
+  // 3's "first segment only" requirement above. `HOME_ROOT_SEGMENT` is now
+  // `/(?:^[^\w/\\]*)(users|home|wsl\.localhost|wsl\$)[\\/]/i` — anchored to
+  // the very start of the token, with only a run of NON-WORD, non-slash
+  // characters allowed before the root name. That over-corrects: the prefix
+  // class excludes ordinary letters, so the MOMENT a word character (a flag
+  // name, a label, a drive letter, a lone variable name) sits in front of the
+  // root — `--dir=Users/alice/proj`, `path:home/alice/x`, `C:Users/alice` —
+  // the anchor can never reach the root at all, and the token survives
+  // verbatim with `alice` intact. This is the same class of leak round 2 and
+  // round 3 each fixed for the tilde/scheme boundary checks (a real prefix a
+  // person types under pressure defeats an anchor that only tolerates
+  // punctuation) — it is the home-root check's turn.
+  describe('RP-297 round 4 — a word-bearing prefix before the home root must not defeat the (now start-anchored) home-root check', () => {
+    const leaks: Array<[string, string]> = [
+      ['a tilde-less --dir= flag', '--dir=Users/alice/proj'],
+      ['a --cwd= flag', '--cwd=home/alice/proj'],
+      ['a path: label', 'path:home/alice/x'],
+      ['a label: prefix', 'label:Users/alice/x'],
+      ['a bare variable assignment', 'x=Users/alice'],
+      ['a comma-joined leading token', 'a,Users/alice/proj'],
+      ['a parenthesised comma-joined token', '(x,home/alice)'],
+      ['a cwd= flag in front of a wsl.localhost root', 'cwd=wsl.localhost/Ubuntu/home/alice'],
+      ['a dotted single-letter prefix', 'x.Users/alice'],
+      ['a drive-letter-shaped prefix with no separator', 'C:Users/alice'],
+      ['a file: label', 'file:Users/alice/x'],
+    ];
+
+    for (const [label, token] of leaks) {
+      it(`redacts ${label} (${token}), not just a punctuation-only prefix`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+      });
+    }
+  });
+
+  describe('RP-297 round 4 — survival guards: a home-root NAME that is not actually the first path segment must not be over-redacted', () => {
+    it('leaves a home root buried past the first two segments untouched (a/b/home/c)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at a/b/home/c y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a file named exactly "Users.ts" untouched — no path separator follows the root name (src/Users.ts)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at src/Users.ts y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a directory that merely STARTS WITH "users" untouched, not a whole segment (usersvc/x.ts)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at usersvc/x.ts y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a directory that merely STARTS WITH "home" untouched, not a whole segment (homepage/a.md)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at homepage/a.md y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+  });
+
+  describe('RP-297 round 3 — pinning comment claims that had no test of their own', () => {
+    it('leaves an ordinary identifier containing a tilde untouched (foo~bar)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at foo~bar y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves an identifier that merely CONTAINS the word "home" untouched (myhome/x)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at myhome/x y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('matches the home root case-insensitively (USERS/alice/x)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'at USERS/alice/x y',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+
+    it('matches the wsl.localhost home root case-insensitively (Wsl.Localhost/Ubuntu/home/alice)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const note = composeNote({
+        ticket: 'RP-1',
+        stop: 'escalation',
+        diagnosis: 'at Wsl.Localhost/Ubuntu/home/alice y',
+      });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).not.toMatch(/alice/);
+      expect(line).toContain('[path]');
+    });
+  });
+
+  describe('RP-297 round 3 — the existing survival cases stay green as the boundary rules widen', () => {
+    it('leaves a git detached-HEAD-relative ref untouched (HEAD~2 — a tilde after a WORD character must survive)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at HEAD~2 y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a branch-relative git ref untouched (origin/feature-x~1)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at origin/feature-x~1 y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves an SSH git remote untouched (git@github.com:org/repo)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at git@github.com:org/repo y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a parenthesised http:// URL untouched ((http://example.invalid/a))', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at (http://example.invalid/a) y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+  });
+});
+
 // --- readRunEvidence -----------------------------------------------------
 
 // RP-224 round 2 — code-reviewer r1 HOLD (checklist item 6, continuation.mjs:218):
