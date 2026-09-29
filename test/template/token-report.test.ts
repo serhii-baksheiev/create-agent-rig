@@ -221,6 +221,14 @@ interface Report {
   dispatchGroups: DispatchGroup[];
   tickets: TicketGroup[];
   money: { line: string; estimate: null };
+  // RP-294: a dispatch-end whose agentRef has no dispatch-start anywhere
+  // earlier in the same run is journaled with `orphan: true`
+  // (`record-dispatch.mjs`) — a harness-internal SubagentStop this script
+  // must never count as a real agent dispatch. `orphanEnds` is the total
+  // count of such records across every run read, summed independently of
+  // `dispatchGroups`/`tickets[].occurrences[].dispatches`, both of which
+  // exclude them entirely.
+  orphanEnds: number;
 }
 
 const SINCE = '2026-09-01T00:00:00.000Z';
@@ -1231,6 +1239,84 @@ describe('token-report.mjs dispatch pairing', () => {
     const ticket = data.tickets.find((t) => t.ticket === 'RP-72');
     expect(ticket, JSON.stringify(data.tickets)).toBeDefined();
     expect(ticket!.occurrences[0]!.dispatches).toBe('unavailable');
+    expect(data.dispatchGroups).toEqual([]);
+  });
+});
+
+// RP-294: the RP-231 controller run (rel110-20260928-213527, read-only
+// evidence, never committed here) journaled a run of dispatch-end events with no
+// matching dispatch-start — harness-internal SubagentStop firings, not real
+// agent dispatches. `record-dispatch.mjs` now marks such a record
+// `orphan: true` at write time (see dispatch-journal.test.ts, absent in a
+// generated rig, › "a dispatch-end whose agent never started in this run is
+// marked orphan (RP-294)"); this script must trust that explicit flag —
+// never re-derive "orphan" from its own pairing miss, which would also
+// (wrongly) fire on a genuinely unfinished dispatch from an OLDER journal
+// that predates this field — and must exclude every orphan end from both
+// `dispatchGroups` and `tickets[].occurrences[].dispatches`, reporting the
+// total separately as `orphanEnds`.
+describe('token-report.mjs orphan dispatch-end events (RP-294)', () => {
+  it('excludes an orphan dispatch-end (orphan: true, no matching start) from every dispatch count, and reports it as its own orphanEnds count', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-80',
+      now: T1,
+    });
+    dispatchEnd(runA, T2, {
+      agentRef: 'r-orphan',
+      orphan: true,
+      usageUnavailable: 'transcript-unreadable',
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(1);
+    expect(data.dispatchGroups).toEqual([]);
+    const ticket = data.tickets.find((t) => t.ticket === 'RP-80');
+    expect(ticket, JSON.stringify(data.tickets)).toBeDefined();
+    expect(ticket!.occurrences[0]!.dispatches).toEqual({ ended: 0, noEndObserved: 0 });
+  });
+
+  it('reports orphanEnds: 0 for a run whose only dispatch-end pairs with a dispatch-start', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-81',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, { agentType: 'code-reviewer', agentRef: 'r1' });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(0);
+  });
+
+  it('sums orphanEnds across every run read, not scoped to one run', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    dispatchEnd(runA, T1, { agentRef: 'r-orphan-a', orphan: true });
+    const runB = await mkrun(runsDir, 'run-b');
+    dispatchEnd(runB, T1, { agentRef: 'r-orphan-b', orphan: true });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(2);
+  });
+
+  it('does not count an unmatched dispatch-end lacking the orphan field as an orphan — only an explicit orphan: true counts', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    // No matching dispatch-start, AND no `orphan` field: e.g. a journal
+    // written before RP-294. token-report must trust the explicit flag
+    // rather than re-derive orphan status from its own pairing miss, so this
+    // reads as zero orphans, not one.
+    dispatchEnd(runA, T1, { agentRef: 'r-unmarked' });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(0);
     expect(data.dispatchGroups).toEqual([]);
   });
 });

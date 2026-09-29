@@ -204,6 +204,22 @@
  *     filter pass per selection window, and one scan of `takenSelections`
  *     per dispatch. Fine at the journal sizes this rig produces; not bounded
  *     against an adversarially large journal.
+ *   - ORPHAN DISPATCH-ENDS (RP-294) — `record-dispatch.mjs` marks a
+ *     `dispatch-end` `orphan: true` when its `agentRef` has no earlier
+ *     `dispatch-start` anywhere in the run's own journal AND the payload carries
+ *     no valid `agent_type` (a harness-internal
+ *     `SubagentStop`, not a real agent dispatch). This script trusts that
+ *     explicit flag rather than re-deriving "orphan" from its own pairing
+ *     miss — a `dispatch-end` with no matching start but no `orphan` field
+ *     (e.g. a journal written before RP-294) is not counted as an orphan,
+ *     and stays invisible to every count exactly as before. An orphan end is
+ *     excluded from `dispatchGroups` and from every
+ *     `tickets[].occurrences[].dispatches` count, and its total is reported
+ *     separately as the top-level `orphanEnds` — summed across every run
+ *     read — test/template/token-report.test.ts (absent in a generated rig)
+ *     › "excludes an orphan dispatch-end (orphan: true, no matching start)
+ *     from every dispatch count, and reports it as its own orphanEnds
+ *     count".
  *   - The text render sanitizes the whole rendered document once, after every
  *     line (including the `JSON.stringify`-built `usage`/`outcome`
  *     fragments) is assembled — stripping C0 controls except `\n`/`\t`, DEL
@@ -298,6 +314,7 @@ export const tokenReportOf = ({ runs, since }) => {
   const dispatchGroups = new Map();
   const groupUsageRaw = new Map();
   const ticketMap = new Map();
+  let orphanEnds = 0;
 
   const ensureTicket = (ticket) => {
     let entry = ticketMap.get(ticket);
@@ -349,6 +366,15 @@ export const tokenReportOf = ({ runs, since }) => {
     const pairs = [];
     const queueByRef = new Map();
     for (const event of dispatchEvents) {
+      // RP-294: an explicit `orphan: true` on a dispatch-end is trusted
+      // verbatim — never re-derived from a pairing miss — and excluded from
+      // pairing/dispatchGroups entirely; its own total is reported
+      // separately as `orphanEnds`. A dispatch-end with no matching start
+      // and NO `orphan` field falls through unchanged, exactly as before.
+      if (event.kind === 'dispatch-end' && event.data?.orphan === true) {
+        orphanEnds += 1;
+        continue;
+      }
       const ref = event.data?.agentRef;
       if (event.kind === 'dispatch-start') {
         const pair = { start: event, end: null };
@@ -535,6 +561,7 @@ export const tokenReportOf = ({ runs, since }) => {
     runs: { read: read.length, skipped },
     dispatchGroups: [...dispatchGroups.values()],
     tickets: [...ticketMap.values()],
+    orphanEnds,
     money,
   };
 };
