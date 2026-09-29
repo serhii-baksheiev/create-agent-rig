@@ -47,6 +47,22 @@ const stopFlagScript = path.join(
 // JSON it names before assuming it was this run when several are in flight on
 // one machine.
 //
+// RP-288 (Jira comment 21563, failure-diagnostician finding): the above
+// "will still clear itself" case was not actually tolerated — a peer run's
+// SCOPED arm mirrors into the real home the moment it is written, and this
+// audit's first check could observe it before the peer's own clear ran,
+// reporting a flag that was never actually leaked. Measured: a flag-free run
+// failed the audit in 4 of 121 runs, beside a peer suite that armed and
+// correctly cleared its own flag in that window. Teardown now RE-CHECKS a
+// candidate once more after `recheckWindowMs` (default ~35 s — the `doctor`
+// guard batch this repo runs can itself take up to a 30 s timeout, so the
+// window has to outlast that) before reporting it; only a candidate still
+// present at the SECOND check is thrown on. ⚠ This shifts, rather than
+// removes, the known limit above: a PEER flag held longer than the recheck
+// window is still reported as if it were this run's own leak — the window
+// is a bound on how long a legitimate concurrent arm may plausibly last, not
+// a guarantee that every non-leak is distinguishable from a slow peer.
+//
 // RP-296: `test/template/rig-run-dir-scrub.test.ts` › "holds with the
 // variable exported around the whole vitest process" spawns a NESTED vitest
 // (env `RIG_SCRUB_TEST_CHILD=1`) reusing this repo's own vitest.config.ts, so
@@ -61,12 +77,30 @@ const stopFlagScript = path.join(
 // already owns anything this child could leak. See
 // `unattended-flag-leak-audit-nested.test.ts` › "the nested RIG_SCRUB_TEST_CHILD
 // marker suppresses the RP-271 leak audit".
+/**
+ * The recheck window's default, in ms (RP-288): long enough to outlast a
+ * legitimate peer's scoped arm/clear, including the `doctor` guard batch's
+ * own up-to-30s timeout — see the header comment above for the measurement
+ * behind the choice.
+ */
+const DEFAULT_RECHECK_WINDOW_MS = 35_000;
+
+const realSleep = (ms: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 export async function auditFor(
-  options: { env?: NodeJS.ProcessEnv; homes?: string[] } = {},
+  options: {
+    env?: NodeJS.ProcessEnv;
+    homes?: string[];
+    recheckWindowMs?: number;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
 ): Promise<() => Promise<void>> {
   const env = options.env ?? process.env;
 
-  if (env.RIG_SCRUB_TEST_CHILD) {
+  if (env.RIG_SCRUB_TEST_CHILD === '1') {
     return async () => {};
   }
 
@@ -78,9 +112,19 @@ export async function auditFor(
     homes = homesOf();
   }
 
+  const recheckWindowMs = options.recheckWindowMs ?? DEFAULT_RECHECK_WINDOW_MS;
+  const sleep = options.sleep ?? realSleep;
+
   const snapshot = await snapshotUnattendedFlags(homes);
 
   return async () => {
+    const firstCheck = await newUnattendedFlags(snapshot);
+    if (firstCheck.length === 0) return;
+
+    // RP-288: a candidate seen once is not yet a leak — a peer run's scoped
+    // arm can be mid-flight. Wait out the recheck window and look again at
+    // the SAME snapshot before reporting anything.
+    await sleep(recheckWindowMs);
     const leaked = await newUnattendedFlags(snapshot);
     if (leaked.length === 0) return;
     throw new Error(

@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 import { auditFor } from '../helpers/unattended-flag-leak-audit.js';
 
 // RP-296 — diagnosed in the RP-231 pilot: `test/template/rig-run-dir-scrub.test.ts`
@@ -39,7 +40,21 @@ import { auditFor } from '../helpers/unattended-flag-leak-audit.js';
 // test/template/unattended-flag-audit-helper.test.ts already hand-writes —
 // never derived by calling into unattended-flag.mjs's own hashing.
 
-const tempHome = () => mkdtemp(path.join(tmpdir(), 'unattended-flag-leak-audit-nested-'));
+// RP-288: every home this file creates is tracked here and removed in
+// `afterEach`, so a run of this file leaves nothing behind in the OS temp
+// directory.
+const createdHomes: string[] = [];
+
+const tempHome = async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'unattended-flag-leak-audit-nested-'));
+  createdHomes.push(dir);
+  return dir;
+};
+
+afterEach(async () => {
+  const homes = createdHomes.splice(0);
+  await Promise.all(homes.map((dir) => removeFixture(dir)));
+});
 
 async function plantFlag(home: string, name: string): Promise<string> {
   const dir = path.join(home, '.claude');
@@ -99,7 +114,11 @@ describe('the nested RIG_SCRUB_TEST_CHILD marker suppresses the RP-271 leak audi
     ).toBe('function');
 
     const home = await tempHome();
-    const teardown = await auditFor({ homes: [home] });
+    // RP-288: recheckWindowMs: 0 keeps this test fast — it exercises the
+    // throw-on-leak path, not the recheck window's own timing, which
+    // test/template/unattended-flag-leak-audit-persistence-window.test.ts
+    // pins with an injected fake sleep instead.
+    const teardown = await auditFor({ homes: [home], recheckWindowMs: 0 });
 
     const planted = await plantFlag(home, '__PROJECT_NAME__-fedcba9876543210-loop-UNATTENDED');
 
@@ -110,6 +129,43 @@ describe('the nested RIG_SCRUB_TEST_CHILD marker suppresses the RP-271 leak audi
       caught = err;
     }
     expect(caught, 'teardown should have thrown the RP-271 leak error').toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/RP-271/);
+    expect((caught as Error).message).toContain(planted);
+  });
+
+  /**
+   * RP-295 comment 21408 — `auditFor` currently reads the marker with
+   * `if (env.RIG_SCRUB_TEST_CHILD)`, a plain truthiness check. That treats
+   * EVERY non-empty string as "this is the nested child", including the
+   * literal string `'0'` — which is exactly what a shell does NOT mean by
+   * "unset" or "false", and is a value an env-propagation bug (a stray
+   * `RIG_SCRUB_TEST_CHILD=0` surviving from an unrelated place) could easily
+   * produce. The marker must match the literal `'1'` the nested spawn in
+   * rig-run-dir-scrub.test.ts and unattended-flag-leak-audit.ts's own header
+   * comment both document — nothing looser.
+   */
+  it('does not treat RIG_SCRUB_TEST_CHILD="0" as the nested-child marker — the audit still runs and still throws', async () => {
+    const home = await tempHome();
+    // RP-288: recheckWindowMs: 0 keeps this test fast — see the comment on
+    // the equivalent call above.
+    const teardown = await auditFor({
+      env: { ...process.env, RIG_SCRUB_TEST_CHILD: '0' },
+      homes: [home],
+      recheckWindowMs: 0,
+    });
+
+    const planted = await plantFlag(home, '__PROJECT_NAME__-a1b2c3d4e5f60718-loop-UNATTENDED');
+
+    let caught: unknown;
+    try {
+      await teardown();
+    } catch (err) {
+      caught = err;
+    }
+    expect(
+      caught,
+      'RIG_SCRUB_TEST_CHILD="0" is not the "1" marker — the audit must not have been skipped',
+    ).toBeInstanceOf(Error);
     expect((caught as Error).message).toMatch(/RP-271/);
     expect((caught as Error).message).toContain(planted);
   });

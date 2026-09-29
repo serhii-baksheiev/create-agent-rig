@@ -898,6 +898,134 @@ describe('D. the loop skill points at the outcome command and the report', () =>
   });
 });
 
+// RP-300 part A — round 2. Round 1's block E pinned "proceeds ONCE, never a
+// second re-read" for a repeated identical detection — code-reviewer AND
+// prose-reviewer HOLD it on PR #354: that claims mechanism behaviour the
+// frozen code does not have. `typedResolutionOf`
+// (`lib/revalidation-evidence.mjs`, frozen) matches an outcome to a
+// detection only when `resolvedAt >= detectionAt` — so an EARLIER outcome,
+// even one recorded against the identical detection id, never resolves a
+// LATER re-entry's detection event, because that later detection's own `at`
+// postdates the earlier outcome's `resolvedAt`. The mechanism test right
+// below this comment characterises that, driving the real, frozen module
+// directly. The journal evidence behind this ticket (`journal/2026-09.md`,
+// two same-day queue items) showed detection ids that repeat exactly across
+// consecutive re-entries with the base unmoved, and ids that change the
+// moment the shared base advances — both consistent with this mechanism,
+// neither implying the mechanism itself skips a re-read.
+describe('D2. lib/revalidation-evidence.mjs — typedResolutionOf matches an outcome to a detection by id, only when resolvedAt >= detectionAt (frozen mechanism, RP-300)', () => {
+  const evidenceModule = async () =>
+    (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      typedResolutionOf: (
+        resolutions: Map<string, Array<{ resolvedAt: number; data: unknown }>>,
+        event: { at: string; data?: { id?: string } },
+      ) => unknown;
+      typedResolutionsOf: (
+        events: Array<{ kind: string; at: string; data?: Record<string, unknown> }>,
+      ) => Map<string, Array<{ resolvedAt: number; data: unknown }>>;
+    };
+
+  const DETECT_1 = '2026-09-29T09:47:04.867Z';
+  const RESOLVE_1 = '2026-09-29T09:50:00.000Z';
+  const DETECT_2 = '2026-09-29T12:00:51.126Z'; // a LATER re-entry, same id
+  const RESOLVE_2 = '2026-09-29T12:02:42.492Z';
+
+  const detection = (id: string, at: string) => ({
+    kind: 'revalidation',
+    at,
+    data: { id, ticket: 'RP-1', point: 'BEFORE_PR', result: 'CHANGED', changed: true },
+  });
+  const outcome = (detectionId: string, resolvedAt: string, actionChanged: boolean) => ({
+    kind: 'revalidation-outcome',
+    at: resolvedAt,
+    data: { detectionId, actionChanged, resolvedAt, ticket: 'RP-1', point: 'BEFORE_PR' },
+  });
+
+  it('typedResolutionOf does not resolve a later repeat of the same detection id — each repeat needs its own outcome (resolvedAt >= detectionAt)', async () => {
+    const { typedResolutionOf, typedResolutionsOf } = await evidenceModule();
+    const SAME_ID = 'detect-shared-id';
+
+    // Only the FIRST outcome exists so far.
+    const resolutions = typedResolutionsOf([outcome(SAME_ID, RESOLVE_1, false)]);
+
+    // The first detection, answered by that outcome: resolvedAt (RESOLVE_1)
+    // is at/after detectionAt (DETECT_1) — a real match.
+    expect(typedResolutionOf(resolutions, detection(SAME_ID, DETECT_1))).toMatchObject({
+      detectionId: SAME_ID,
+      actionChanged: false,
+    });
+
+    // A LATER re-entry that happens to carry the IDENTICAL id string
+    // (DETECT_2, after RESOLVE_1): the existing outcome's resolvedAt
+    // (RESOLVE_1) is BEFORE this detection's own `at` (DETECT_2), so it is
+    // NOT a match — the earlier outcome does not silently carry forward.
+    expect(typedResolutionOf(resolutions, detection(SAME_ID, DETECT_2))).toBeNull();
+
+    // Only once this repeat gets its OWN outcome (RESOLVE_2, after DETECT_2)
+    // does it resolve — proving the rule: every repeat needs its own
+    // `revalidate.mjs outcome`, never a reuse of an earlier one, however
+    // identical the id.
+    const resolutionsAfterSecondOutcome = typedResolutionsOf([
+      outcome(SAME_ID, RESOLVE_1, false),
+      outcome(SAME_ID, RESOLVE_2, false),
+    ]);
+    expect(
+      typedResolutionOf(resolutionsAfterSecondOutcome, detection(SAME_ID, DETECT_2)),
+    ).toMatchObject({ detectionId: SAME_ID, actionChanged: false, resolvedAt: RESOLVE_2 });
+  });
+});
+
+describe('E. pr-ship step 1 — a repeated identical revalidation hold still gets its own typed outcome (RP-300 round 2)', () => {
+  const section = (text: string, from: string, to: string): string => {
+    const start = text.indexOf(from);
+    const end = text.indexOf(to, start);
+    expect(start, `anchor ${JSON.stringify(from)} not found in pr-ship/SKILL.md`).toBeGreaterThan(
+      -1,
+    );
+    expect(end, `anchor ${JSON.stringify(to)} not found in pr-ship/SKILL.md`).toBeGreaterThan(
+      start,
+    );
+    return text.slice(start, end);
+  };
+
+  const holdSection = async (): Promise<string> => {
+    const skill = await read(path.join(universal, '.claude', 'skills', 'pr-ship', 'SKILL.md'));
+    return section(
+      skill,
+      'Exit 2 here is a HOLD',
+      "generator's `test/template/revalidate.test.ts`",
+    );
+  };
+
+  it('gives the procedural instruction: same id+sources already answered actionChanged=false still records its OWN outcome citing the earlier one', async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/same id[\s\S]{0,60}sources?/i);
+    expect(text).toMatch(
+      /already answered[\s\S]{0,40}actionChanged[\s\S]{0,10}false|actionChanged[\s\S]{0,40}false[\s\S]{0,80}already answered/i,
+    );
+    expect(text).toMatch(/record(?:s|ing)? (?:its|your) own[\s\S]{0,120}--action-changed false/i);
+    expect(text).toMatch(/citing the earlier outcome/i);
+  });
+
+  it('says a new id or source is still a fresh HOLD with a full re-read — the shortcut is only in what the re-read has to do, never whether it happens', async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/new id or source|new (?:detection )?id[\s\S]{0,60}new source/i);
+    expect(text).toMatch(/fresh HOLD/i);
+    expect(text).toMatch(/full re-read/i);
+  });
+
+  it('points the mechanism claim at the test that proves it, not at unbacked prose', async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/test\/template\/revalidation-evidence\.test\.ts/);
+    expect(text).toMatch(/absent in a generated rig/i);
+    expect(text).toMatch(
+      /typedResolutionOf does not resolve a later repeat of the same detection id/i,
+    );
+  });
+});
+
 describe('the report finds the runs where the loop declared them', () => {
   const SINCE = '2026-08-20T00:00:00.000Z';
   const AFTER = '2026-08-21T12:00:00.000Z';

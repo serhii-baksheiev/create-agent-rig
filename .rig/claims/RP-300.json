@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-300",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "bad80f606b8044a2fbd5158176c87b25e024a60120fe9cc784df57e44be07ea0",
+      "targetSha": "04909d50a7eb5dc18bd3a8b763784aad36af44ca"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "4ba8f107cf8175435e334ee16729693c496fb4ecaf94e5e5c9802402ca72b8c8",
+      "count": 2
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  }
+}

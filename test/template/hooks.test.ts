@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import { skipUnless, symlinksAvailable } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
+import { runNodeTimed } from '../helpers/child-timing.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -278,6 +279,103 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
       expect(
         result.stderr,
         `${command} — reason should name credentials/keys, not "filesystem root"/"whole home": ${result.stderr}`,
+      ).toMatch(/credential|key material|ssh key/i);
+    }
+  });
+
+  // RP-262: the cd-then-wildcard route reads the `cd` target with an
+  // EXACT-match lookup (`CATASTROPHIC.has(target)`), and `normalizeTarget`
+  // folds `.` and duplicate slashes but never resolves a literal `..`
+  // segment. `~/.ssh/..` IS `~` — cd there and `rm -rf *` wipes the whole
+  // home directory — but the literal string `~/.ssh/..` is not itself in
+  // `CATASTROPHIC`, so `catastrophicCwdTarget` stays null and the wildcard
+  // delete is never even inspected. Confirmed on master: every command below
+  // exits 0 today.
+  it('does not let a `..` escape in the cd target defeat a wildcard delete', async () => {
+    for (const command of ['cd ~/.ssh/.. && rm -rf *', 'cd $HOME/.ssh/.. && rm -rf .']) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — should BLOCK (resolves to the whole home directory), exits ${result.code} on master`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-262 boundedness (.claude/rules/invariants.md, "A guard that fails open
+  // must do provably bounded work"): whatever folds `..` here must do it in
+  // ONE bounded pass — no per-step cost that grows with how much of the stack
+  // is already built. A run of `../` straight off `~/.ssh/` never grows past a
+  // stack of size 1 (each `..` pops the segment pushed just before it), so it
+  // cannot tell a linear fold from one that rebuilds the whole array on every
+  // push or pop — both stay equally fast, because there is nothing to copy
+  // either way. This input instead PUSHES `N` plain segments before any `..`
+  // arrives, so a fold with quadratic per-step cost actually pays for it: `N`
+  // pushes each copying up to `N` elements, then `N+2` pops doing the same on
+  // the way back down. Reproduced against a push-then-pop mutation of
+  // `foldDotDot` (rebuilding the array with `[...stack, part]`/`.slice(0,
+  // -1)` instead of `.push`/`.pop`): at this `N` it measured 8.1s–29.5s across
+  // runs (and 53.6s at N=40,000) — comfortably clearing this test's 5s bound
+  // every time, with room for run-to-run variance. The real, committed fold
+  // measured 240–290ms at the same `N`s — over an order of magnitude under
+  // the bound, not merely under it. It must also fail CLOSED on the match:
+  // enough `../` segments off a `~`-anchor escape past the anchor itself onto
+  // the filesystem root, which is still catastrophic. Measured in the child
+  // (RP-158), never by the parent's wall clock around the spawn.
+  it('folds a long run of `..` in bounded time and still blocks the escape', async () => {
+    const N = 30_000;
+    const longEscape = `cd ~/${'a/'.repeat(N)}${'../'.repeat(N + 2)} && rm -rf *`;
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(longEscape)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 60_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: a long enough run of '..' off a ~-anchor resolves onto the filesystem root (got exit ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-262: a `..` in a cd target is ordinary and must not become a block on
+  // its own — only an ESCAPE onto a catastrophic target is. These mirror what
+  // the guard already allows for the equivalent path without a home/root
+  // escape: a relative `..` that stays inside the project, and an rm target
+  // that names something specific rather than a wildcard.
+  it('keeps allowing an ordinary relative `..` that never escapes onto a catastrophic target', async () => {
+    for (const command of [
+      'cd ./build/.. && ls',
+      'cd src/.. && rm -rf dist/*',
+      'cd ../sibling-project && ls',
+    ]) {
+      expect((await run(command)).code, command).toBe(0);
+    }
+  });
+
+  // RP-262 related: `isCredentialTarget` withholds the credential reason from
+  // ANY target carrying a literal `..` segment, on the theory that `..`
+  // always escapes the subtree — true for `~/.ssh/..` (which IS `~`), but not
+  // for `~/.ssh/a/..` or `~/.ssh/../.ssh` (both resolve back to `~/.ssh`
+  // itself) or `~/.ssh/a/../id_rsa` (a specific key file inside it). None of
+  // these ever leaves the credential directory, yet all three get the
+  // root/home reason instead. Confirmed on master: already BLOCKED, with the
+  // wrong reason — this is a reason-content fix, not an allow/block one, and
+  // (unlike the two tests above) it lives entirely on the direct-`rm` path: a
+  // fix that only refuses a `..`-bearing `cd` before a wildcard `rm` does not
+  // touch this case at all.
+  it('names credentials, not root/home, for a `..` that resolves back inside ~/.ssh', async () => {
+    for (const command of [
+      'rm -rf ~/.ssh/a/..',
+      'rm -rf ~/.ssh/../.ssh',
+      'rm -rf ~/.ssh/a/../id_rsa',
+    ]) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(
+        result.stderr,
+        `${command} resolves back inside ~/.ssh — should be named a credential deletion: ${result.stderr}`,
       ).toMatch(/credential|key material|ssh key/i);
     }
   });

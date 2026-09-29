@@ -28,6 +28,7 @@ import {
   MAX_AGENTS_MD_REGION_BYTES,
 } from '../lib/agents-md-region.js';
 import { atomicWriteInRepo } from '../lib/atomic-write.js';
+import { wrapSystemError } from '../lib/system-error.js';
 
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class UpgradeError extends Error {}
@@ -1439,8 +1440,12 @@ export async function applyUpgrade(
         // RP-268 AD1: an EACCES (or similar) from the temp-file create/
         // write surfaces here as a raw Node fs error — wrapped so
         // index.ts's typed-error handler formats it, not a raw stack trace.
-        throw new UpgradeError(
-          `Refusing to write "AGENTS.md": ${(error as NodeJS.ErrnoException).message}`,
+        // RP-289: only a Node system error (a string `code`) is wrapped, and
+        // the original is carried forward as `cause` rather than discarded.
+        throw wrapSystemError(
+          error,
+          (message, options) =>
+            new UpgradeError(`Refusing to write "AGENTS.md": ${message}`, options),
         );
       }
       if (!result.ok) {

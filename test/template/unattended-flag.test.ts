@@ -355,11 +355,14 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
       { item: 'AR-51', runDir: '/runs/1', allow: ['src/', '.claude/scripts/queue/'] },
       env(),
     );
-    expect(readUnattended(env())).toMatchObject({
-      on: true,
-      allow: ['src/', '.claude/scripts/queue/'],
-    });
-    clearUnattended(env());
+    try {
+      expect(readUnattended(env())).toMatchObject({
+        on: true,
+        allow: ['src/', '.claude/scripts/queue/'],
+      });
+    } finally {
+      clearUnattended(env());
+    }
     expect(readUnattended(env())).toEqual({ on: false });
     // RP-258: `--root` is mandatory now, so a widening-refusal case still has
     // to supply one to reach the widening check at all.
@@ -777,8 +780,11 @@ describe('readUnattended: what the flag file says, or that it cannot be read', (
       writeUnattended({ item: 'RP-61', runDir: '/runs/1', allow: ['.rig/'] }, env()),
     ).toThrow(/rulebook/);
     writeUnattended({ item: 'RP-61', runDir: '/runs/1', allow: ['.rig/claims/'] }, env());
-    expect(readUnattended(env())).toMatchObject({ on: true, allow: ['.rig/claims/'] });
-    clearUnattended(env());
+    try {
+      expect(readUnattended(env())).toMatchObject({ on: true, allow: ['.rig/claims/'] });
+    } finally {
+      clearUnattended(env());
+    }
     expect(readUnattended(env())).toEqual({ on: false });
   });
 

@@ -1,7 +1,9 @@
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { modeBitsDeny, skipUnless } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 import { newUnattendedFlags, snapshotUnattendedFlags } from '../helpers/unattended-flag-audit.js';
 
 // RP-271: test/template/queue-board.test.ts armed the checkout-scoped
@@ -24,7 +26,22 @@ import { newUnattendedFlags, snapshotUnattendedFlags } from '../helpers/unattend
 // hashing to compute the expected name. Every flag file planted below is a
 // literal string for exactly that reason.
 
-const tempHome = () => mkdtemp(path.join(tmpdir(), 'unattended-flag-audit-'));
+// RP-288: every home this file creates is tracked here and removed in
+// `afterEach`, so a run of this file leaves nothing behind in the OS temp
+// directory — the chmod-000 test restores its own home's mode in its own
+// `finally` before this cleanup ever touches it (see below).
+const createdHomes: string[] = [];
+
+const tempHome = async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), 'unattended-flag-audit-'));
+  createdHomes.push(dir);
+  return dir;
+};
+
+afterEach(async () => {
+  const homes = createdHomes.splice(0);
+  await Promise.all(homes.map((dir) => removeFixture(dir)));
+});
 
 async function plantFlag(home: string, name: string): Promise<string> {
   const dir = path.join(home, '.claude');
@@ -89,5 +106,60 @@ describe('snapshotUnattendedFlags / newUnattendedFlags: the leak-audit primitive
     const snapshot = await snapshotUnattendedFlags([home]);
 
     expect(await newUnattendedFlags(snapshot)).toEqual([]);
+  });
+
+  /**
+   * RP-288 — `listFlags` (the private primitive behind both exports above)
+   * tolerates ENOENT (no `.claude` yet) but rethrows every other `readdir`
+   * error verbatim. A home path that is itself a FILE makes
+   * `readdir(<home>/.claude)` fail with ENOTDIR, not ENOENT, on POSIX — a
+   * shape that should read the same as "nothing here yet", not as a leak-audit
+   * failure severe enough to abort the whole run's setup/teardown.
+   */
+  it('tolerates a home path that is a FILE, not a directory (ENOTDIR) — treated the same as ENOENT', async () => {
+    const parent = await tempHome();
+    const fileHome = path.join(parent, 'not-a-directory');
+    await writeFile(fileHome, 'this home is a file, not a directory\n');
+
+    await expect(snapshotUnattendedFlags([fileHome])).resolves.toEqual([
+      { home: fileHome, existing: new Set() },
+    ]);
+    await expect(newUnattendedFlags([{ home: fileHome, existing: new Set() }])).resolves.toEqual(
+      [],
+    );
+  });
+
+  /**
+   * RP-288 — every OTHER `readdir` error (anything but ENOENT/ENOTDIR) is
+   * rethrown today exactly as `fs.readdir` raised it, with no mention of
+   * which home the leak audit was even looking at, or that the leak audit is
+   * the thing that failed. A run-wide `globalSetup`/teardown failure with a
+   * bare `EACCES: permission denied` in it gives an operator nothing to act
+   * on. Expected: the error message names the home path AND carries the
+   * literal marker `RP-271 leak audit`, so it reads the same as the
+   * intentional leak-detection failure `unattended-flag-leak-audit.ts`
+   * throws, not as an unrelated crash.
+   */
+  it('prefixes any other read error with the home path and "RP-271 leak audit"', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    const home = await tempHome();
+    await mkdir(path.join(home, '.claude'), { recursive: true });
+    await chmod(home, 0o000);
+
+    let caught: unknown;
+    try {
+      await snapshotUnattendedFlags([home]);
+    } catch (err) {
+      caught = err;
+    } finally {
+      await chmod(home, 0o700);
+    }
+
+    expect(
+      caught,
+      'snapshotUnattendedFlags should have rejected on the EACCES home',
+    ).toBeInstanceOf(Error);
+    expect((caught as Error).message).toContain(home);
+    expect((caught as Error).message).toContain('RP-271 leak audit');
   });
 });
