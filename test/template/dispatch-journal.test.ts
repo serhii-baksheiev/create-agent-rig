@@ -851,12 +851,14 @@ describe('record-dispatch.mjs — the allowlist checker names the offending key 
 });
 
 // RP-294 — the RP-231 controller run (rel110-20260928-213527, read-only
-// evidence, never committed here) journaled ~25 dispatch-end events with NO
-// matching dispatch-start anywhere in the run: no agentType, no
+// evidence, never committed here) journaled a run of dispatch-end events with
+// NO matching dispatch-start anywhere in the run: no agentType, no
 // declaredModel/declaredEffort/declaredSource, always
 // usageUnavailable: 'transcript-unreadable', spaced roughly 15-30s apart
-// while real subagents ran. They read as harness-internal SubagentStop
-// firings this hook cannot distinguish from a real dispatch by shape alone —
+// while real subagents ran — every orphan end in that journal carried no
+// agentType at all, and every paired (real) end carried one. They read as
+// harness-internal SubagentStop firings this hook cannot distinguish from a
+// real dispatch by shape alone —
 // so the policy is structural: a dispatch-end whose agentRef has no earlier
 // dispatch-start recorded anywhere in THIS run's own journal is marked
 // `orphan: true`, preserving the raw record (never dropped) while giving a
@@ -1062,6 +1064,37 @@ describe('record-dispatch.mjs — the orphan check is bounded by file size, not 
   }, 30_000);
 });
 
+// RP-294 round 3 (advisory c, code-reviewer HOLD at ac42ae4): `journalFileSize`
+// only special-cases ENOENT ("the file does not exist yet") and re-throws
+// every other `statSync` failure, which `hasEarlierDispatchStart`'s own
+// `catch` then turns into `null` (unknown — never a guess). A directory sitting
+// where `events.jsonl` should be is the concrete, deterministic instance the
+// review round names: `statSync` on a directory does not throw at all (a
+// directory is a perfectly stat-able path), so this exercises the READ that
+// follows, not `journalFileSize` itself — `readRun`'s own `readFileSync`
+// rejects a directory with a non-ENOENT code, and that failure is what
+// resolves to `null`. The same shared read-before-write journal machinery
+// (`run-journal.mjs`'s `append`) means the dispatch-end this SubagentStop
+// would otherwise produce is ALSO never written in this exact pathological
+// case — so "orphan absent" here is proven the only way it can be: nothing
+// crashes, nothing hangs, and the hook still exits 0 with its stdout contract
+// intact, rather than any record surfacing `orphan: true` from a half-read
+// journal.
+describe('record-dispatch.mjs — a non-ENOENT stat/read error on the run journal never crashes the hook or produces a falsely-orphaned record (RP-294 round 3, advisory c)', () => {
+  it('exits 0, with empty stdout, when events.jsonl exists as a directory instead of a file', async () => {
+    const env = isolatedEnv({ RIG_RUN_DIR: runDir });
+    await mkdir(path.join(runDir, 'events.jsonl'));
+    const payload = dispatch({
+      hook_event_name: 'SubagentStop',
+      agent_id: 'agent-events-jsonl-is-a-directory',
+    }) as Record<string, unknown>;
+    delete payload.agent_type;
+    const result = await runHook(JSON.stringify(payload), env, ['--harness=claude']);
+    expect(result.code).toBe(0);
+    expect(result.stdout).toBe('');
+  });
+});
+
 // RP-294 review round on #340 (RP-287): the sanitiser guarding the RP-287
 // mismatch notice (`CONTROL_CHARS_RE`) only ever covered C0 (`\x00`-`\x1f`)
 // and DEL (`\x7f`) — the C1 range (`\x80`-`\x9f`, including CSI `\x9b`) and
@@ -1248,6 +1281,90 @@ describe('record-dispatch.mjs — the mismatch notice sanitises bidi-control and
     }
     expect(existsSync(expectedFlagPathB)).toBe(false);
   });
+
+  it('replaces ZERO WIDTH SPACE (\\u200B) in the checked root before it reaches the notice', async () => {
+    const checkoutA = await mkdtemp(path.join(tmpdir(), 'record-dispatch-zwsp-a-'));
+    const checkoutB = await mkdtemp(path.join(tmpdir(), 'record-dispatch-zwsp-b-'));
+    const runDirB = await mkdtemp(path.join(tmpdir(), 'record-dispatch-zwsp-rundir-b-'));
+    const expectedFlagPathB = expectedRealHomeFlagPath(await realpath(checkoutB));
+    const { writeUnattended, clearUnattended } = (await import(unattendedFlagUrl)) as {
+      writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
+      clearUnattended(env: NodeJS.ProcessEnv): string[];
+    };
+    const poisonedProjectDir = `${checkoutA}\u200Bmid`;
+    const envB = isolatedEnv({ CLAUDE_PROJECT_DIR: checkoutB });
+    const envA = isolatedEnv({ CLAUDE_PROJECT_DIR: poisonedProjectDir });
+    try {
+      writeUnattended({ item: 'RP-225', runDir: runDirB, allow: [] }, envB);
+
+      const result = await runHook(JSON.stringify(dispatch({})), envA, ['--harness=claude']);
+
+      expect(result.code).toBe(0);
+      const lines = result.stderr.split('\n').filter((line) => line.length > 0);
+      expect(lines, result.stderr).toHaveLength(1);
+      const notice = lines[0] ?? '';
+      expect(notice).not.toContain('\u200B');
+    } finally {
+      clearUnattended(envB);
+      await removeFixture(checkoutA);
+      await removeFixture(checkoutB);
+      await removeFixture(runDirB);
+    }
+    expect(existsSync(expectedFlagPathB)).toBe(false);
+  });
+});
+
+// RP-294 round 3 addendum (security-scanner SHIP-with-advisory at ac42ae4):
+// the notice comment's own claim of "no invisible-rendering character" still
+// missed several — SOFT HYPHEN (U+00AD), COMBINING GRAPHEME JOINER (U+034F),
+// VARIATION SELECTOR-16 (U+FE0F), a Unicode tag character (U+E0041, the
+// "Trojan Source" tag-character smuggling range), and HANGUL FILLER
+// (U+3164, visually blank in most fonts). The fix the advisory names is
+// broader than another explicit range: switching to the Unicode general
+// categories `\p{Cc}\p{Cf}\p{Zl}\p{Zp}` (plus U+115F/U+3164, which sit
+// outside Cf in some Unicode versions, and U+180E, a format character only
+// in older ones) — this test exercises five representative characters from
+// that broader claim rather than enumerating the whole space.
+describe('record-dispatch.mjs — the mismatch notice sanitises further invisible-rendering characters: SHY, CGJ, VS16, a tag character, and HANGUL FILLER (RP-294 round 3, security advisory)', () => {
+  it('replaces SOFT HYPHEN (U+00AD), CGJ (U+034F), VS16 (U+FE0F), a tag character (U+E0041), and HANGUL FILLER (U+3164) in the checked root', async () => {
+    const checkoutA = await mkdtemp(path.join(tmpdir(), 'record-dispatch-invis-a-'));
+    const checkoutB = await mkdtemp(path.join(tmpdir(), 'record-dispatch-invis-b-'));
+    const runDirB = await mkdtemp(path.join(tmpdir(), 'record-dispatch-invis-rundir-b-'));
+    const expectedFlagPathB = expectedRealHomeFlagPath(await realpath(checkoutB));
+    const { writeUnattended, clearUnattended } = (await import(unattendedFlagUrl)) as {
+      writeUnattended(input: Record<string, unknown>, env: NodeJS.ProcessEnv): string[];
+      clearUnattended(env: NodeJS.ProcessEnv): string[];
+    };
+    const shy = '\u00AD';
+    const cgj = '\u034F';
+    const vs16 = '\uFE0F';
+    const tagChar = '\u{E0041}';
+    const hangulFiller = '\u3164';
+    const poisonedProjectDir = `${checkoutA}${shy}mid${cgj}more${vs16}tag${tagChar}end${hangulFiller}`;
+    const envB = isolatedEnv({ CLAUDE_PROJECT_DIR: checkoutB });
+    const envA = isolatedEnv({ CLAUDE_PROJECT_DIR: poisonedProjectDir });
+    try {
+      writeUnattended({ item: 'RP-225', runDir: runDirB, allow: [] }, envB);
+
+      const result = await runHook(JSON.stringify(dispatch({})), envA, ['--harness=claude']);
+
+      expect(result.code).toBe(0);
+      const lines = result.stderr.split('\n').filter((line) => line.length > 0);
+      expect(lines, result.stderr).toHaveLength(1);
+      const notice = lines[0] ?? '';
+      expect(notice).not.toContain(shy);
+      expect(notice).not.toContain(cgj);
+      expect(notice).not.toContain(vs16);
+      expect(notice).not.toContain(tagChar);
+      expect(notice).not.toContain(hangulFiller);
+    } finally {
+      clearUnattended(envB);
+      await removeFixture(checkoutA);
+      await removeFixture(checkoutB);
+      await removeFixture(runDirB);
+    }
+    expect(existsSync(expectedFlagPathB)).toBe(false);
+  });
 });
 
 // RP-294: neither cap the RP-287 probe declares (`MAX_NOTICE_LENGTH`,
@@ -1393,6 +1510,103 @@ describe('record-dispatch.mjs — firstForeignFlag: the bounded scan decision ex
     const found = firstForeignFlag(names(), () => false, 1024);
     expect(found).toBeUndefined();
     expect(pulled).toBeLessThanOrEqual(1024);
+  });
+});
+
+// RP-294 round 3 (code-reviewer HOLD at ac42ae4): the firstForeignFlag tests
+// above prove the FUNCTION is bounded — they do not prove the PRODUCTION call
+// site actually uses that function with the real cap. Every boundary test
+// above passes `cap` as its own literal argument, so the call site inside
+// `anotherCheckoutFlagIsPresent` could pass `Infinity`, or
+// `MAX_HOME_ENTRIES_EXAMINED` could be raised to 1_000_000, and nothing above
+// would notice. This block tests the PRODUCTION function itself, through an
+// injectable `opendir` (default `opendirSync`) the implementer adds — a fake
+// directory handle standing in for the real one, so the entry order (and
+// therefore the cap boundary) is exactly what the test controls, with no
+// dependence on real filesystem enumeration order.
+//
+// I verified this design catches the two mutations the review names, using a
+// throwaway copy under /tmp (never the tracked implementation): with a
+// minimal Green fix (export `anotherCheckoutFlagIsPresent`, thread an
+// injectable `opendir` through to the one `opendirSync` call), both tests
+// below pass; changing the call site's cap argument to `Infinity`, or raising
+// `MAX_HOME_ENTRIES_EXAMINED` to 1_000_000, turns the first test below red
+// (the match at index 2000 becomes visible within an effectively unbounded
+// scan). See this session's report for the exact commands run.
+describe('record-dispatch.mjs — anotherCheckoutFlagIsPresent: the PRODUCTION wiring is bounded, not merely firstForeignFlag in isolation (RP-294 round 3)', () => {
+  interface FakeDirEntry {
+    name: string;
+  }
+  interface FakeDirHandle {
+    readSync(): FakeDirEntry | null;
+    closeSync(): void;
+  }
+  type Opendir = (dirPath: string) => FakeDirHandle;
+  type AnotherCheckoutFlagIsPresent = (
+    env: NodeJS.ProcessEnv,
+    deps?: { opendir?: Opendir },
+  ) => boolean;
+
+  /** A scoped flag basename this checkout does not own — matches SCOPED_FLAG_BASENAME_RE. */
+  const FOREIGN_FLAG_NAME = '__PROJECT_NAME__-aaaaaaaaaaaaaaaa-loop-UNATTENDED';
+
+  const loadAnotherCheckoutFlagIsPresent = async (): Promise<AnotherCheckoutFlagIsPresent> => {
+    const module = (await import(pathToFileURL(hookPath).href)) as {
+      anotherCheckoutFlagIsPresent?: AnotherCheckoutFlagIsPresent;
+    };
+    expect(typeof module.anotherCheckoutFlagIsPresent).toBe('function');
+    return module.anotherCheckoutFlagIsPresent as AnotherCheckoutFlagIsPresent;
+  };
+
+  /** A fake opendirSync-shaped handle over a fixed list of entry names, counting every readSync() call. */
+  const fakeDir = (names: string[]): { handle: FakeDirHandle; callsSoFar: () => number } => {
+    let index = 0;
+    let readSyncCalls = 0;
+    const handle: FakeDirHandle = {
+      readSync() {
+        readSyncCalls += 1;
+        if (index >= names.length) return null;
+        const name = names[index] as string;
+        index += 1;
+        return { name };
+      },
+      closeSync() {},
+    };
+    return { handle, callsSoFar: () => readSyncCalls };
+  };
+
+  const namesWithMatchAt = (total: number, matchIndex: number): string[] => {
+    const names = Array.from({ length: total }, (_unused, i) => `unrelated-file-${i}`);
+    names[matchIndex] = FOREIGN_FLAG_NAME;
+    return names;
+  };
+
+  it('returns false, and calls readSync at most 1024 (+1) times, when the only matching flag sits at index 2000 of 5000 entries', async () => {
+    const anotherCheckoutFlagIsPresent = await loadAnotherCheckoutFlagIsPresent();
+    const { handle, callsSoFar } = fakeDir(namesWithMatchAt(5000, 2000));
+    const env = isolatedEnv({});
+    const found = anotherCheckoutFlagIsPresent(env, { opendir: () => handle });
+    expect(found).toBe(false);
+    expect(callsSoFar()).toBeLessThanOrEqual(1025);
+  });
+
+  it('returns true when the matching flag sits at index 1000 — within the cap', async () => {
+    const anotherCheckoutFlagIsPresent = await loadAnotherCheckoutFlagIsPresent();
+    const { handle } = fakeDir(namesWithMatchAt(5000, 1000));
+    const env = isolatedEnv({});
+    const found = anotherCheckoutFlagIsPresent(env, { opendir: () => handle });
+    expect(found).toBe(true);
+  });
+
+  it('pins MAX_HOME_ENTRIES_EXAMINED at 1024, if the implementation exports it', async () => {
+    const module = (await import(pathToFileURL(hookPath).href)) as {
+      MAX_HOME_ENTRIES_EXAMINED?: number;
+    };
+    // Not exported is fine — the two wiring tests above are the real pin
+    // either way, and this constant is private today (round 2). If it IS
+    // exported, raising it must be caught here too.
+    if (module.MAX_HOME_ENTRIES_EXAMINED === undefined) return;
+    expect(module.MAX_HOME_ENTRIES_EXAMINED).toBe(1024);
   });
 });
 

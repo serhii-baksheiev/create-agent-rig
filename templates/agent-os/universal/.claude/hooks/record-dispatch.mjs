@@ -42,7 +42,8 @@
 // ANOTHER checkout's flag is armed in the SAME home, and this hook writes ONE
 // bounded (<=512 chars) `record-dispatch:` line to stderr naming the root it
 // checked (`CLAUDE_PROJECT_DIR`, or `cwd`, sanitised through `CONTROL_CHARS_RE`
-// — see that constant's own doc comment for the exact character set —
+// — a Unicode-general-category-based class, not an explicit range list; see
+// that constant's own doc comment for exactly what it strips —
 // so the line stays one line and carries no invisible-rendering character) —
 // never the other checkout's `runDir` or flag content, and never more than
 // that one line. Still exits 0, stdout stays empty, and nothing is written to
@@ -521,8 +522,13 @@ function resolveRunDir(env) {
 // checkout's armed one, is not silence. See the header for the full design;
 // this is the bounded probe and the one-line notice it may print.
 
-/** How many directory entries this probe examines — bounded, never unbounded work. */
-const MAX_HOME_ENTRIES_EXAMINED = 1024;
+/**
+ * How many directory entries this probe examines — bounded, never unbounded
+ * work. Exported so a test can pin the production value directly rather than
+ * trusting a call site to pass it correctly (RP-294 round 3) — see
+ * `anotherCheckoutFlagIsPresent`'s own doc comment.
+ */
+export const MAX_HOME_ENTRIES_EXAMINED = 1024;
 
 /** The longest stderr notice this probe ever writes — bounded, per the header. */
 const MAX_NOTICE_LENGTH = 512;
@@ -530,27 +536,48 @@ const MAX_NOTICE_LENGTH = 512;
 /**
  * Every character this hook strips from the checked root before it is ever
  * formatted into the RP-287 mismatch notice, so the notice always stays one
- * line and never carries an invisible-rendering character:
- *   - C0 controls (`\x00`-`\x1f`, including ESC `\x1b`) and DEL (`\x7f`);
- *   - C1 controls (`\x80`-`\x9f`, including CSI `\x9b`);
- *   - the Unicode line/paragraph separators (U+2028/U+2029) — RP-294 round 1
- *     added the C1 range and these two: the original C0/DEL-only pattern let
- *     both pass through unreplaced (dispatch-journal.test.ts, absent in a
- *     generated rig, › "the mismatch notice sanitises C1 controls and the
- *     Unicode line/paragraph separators, not just C0/DEL");
- *   - bidi-control and zero-width characters — ALM (U+061C), the zero-width
- *     range U+200B-U+200F, the bidi-embedding/override range U+202A-U+202E,
- *     the word-joiner/isolate range U+2060-U+2069, and BOM (U+FEFF) — RP-294
- *     round 2 (a security-scanner SHIP-with-advisories finding on PR #356):
- *     each renders invisibly the same way a control character does and can
- *     make a notice's visible text misrepresent the bytes actually present
- *     (the "Trojan Source" technique; RLO, U+202E, is the representative
- *     case pinned by dispatch-journal.test.ts, absent in a generated rig, ›
- *     "the mismatch notice sanitises bidi-control and zero-width characters
- *     (RP-294 round 2, security advisory)").
+ * line and never carries an invisible-rendering character. RP-294 round 3
+ * (a security-scanner SHIP-with-advisory finding at ac42ae4) replaced the
+ * round-1/round-2 approach — an explicit, enumerated range list — with
+ * Unicode GENERAL CATEGORIES, because enumeration kept missing individual
+ * invisible-rendering characters one at a time (round 1: C1, U+2028/U+2029;
+ * round 2: bidi-control/zero-width; round 3: SOFT HYPHEN, CGJ, VS16, a tag
+ * character, HANGUL FILLER — five more the range-list approach had not
+ * named yet). The class:
+ *
+ *   `\p{Cc}` — every C0 control (`\x00`-`\x1f`, including ESC), DEL
+ *     (`\x7f`), and C1 control (`\x80`-`\x9f`, including CSI `\x9b`);
+ *   `\p{Cf}` — format characters: ALM, the zero-width range U+200B-U+200F,
+ *     the bidi-embedding/override range U+202A-U+202E, the word-joiner/
+ *     isolate range U+2060-U+2069, BOM (U+FEFF), SOFT HYPHEN (U+00AD), and
+ *     the "Trojan Source" tag-character range (U+E0000-U+E007F);
+ *   `\p{Zl}`/`\p{Zp}` — the Unicode line/paragraph separators (U+2028/
+ *     U+2029);
+ *   plus SEVEN characters that render just as invisibly but sit OUTSIDE
+ *     those categories in at least one Unicode version this hook may run
+ *     under, added explicitly rather than assumed covered: the four Hangul
+ *     filler characters (U+115F, U+1160, U+3164, U+FFA0 — category `Lo`,
+ *     not `Cf`), the variation-selector range U+FE00-U+FE0F (category
+ *     `Mn`, not `Cf` — VS16, U+FE0F, is the representative case tested),
+ *     MONGOLIAN VOWEL SEPARATOR (U+180E — `Cf` only in older Unicode
+ *     versions), and COMBINING GRAPHEME JOINER (U+034F — category `Mn`,
+ *     not `Cf`).
+ *
+ * See dispatch-journal.test.ts (absent in a generated rig) › "the mismatch
+ * notice sanitises C1 controls and the Unicode line/paragraph separators,
+ * not just C0/DEL" (round 1), › "the mismatch notice sanitises bidi-control
+ * and zero-width characters (RP-294 round 2, security advisory)" (round 2),
+ * and › "the mismatch notice sanitises further invisible-rendering
+ * characters: SHY, CGJ, VS16, a tag character, and HANGUL FILLER (RP-294
+ * round 3, security advisory)" (round 3, this rewrite).
  */
-// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
-const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
+// Every codepoint below is a deliberately independent class member (Unicode categories
+// plus explicit invisible-rendering exceptions the categories miss); none are meant to
+// compose into one visual grapheme together, which is exactly the mistake this rule
+// otherwise guards against.
+const CONTROL_CHARS_RE =
+  // eslint-disable-next-line no-misleading-character-class -- see the comment above
+  /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\u{115F}\u{1160}\u{3164}\u{FFA0}\u{FE00}-\u{FE0F}\u{180E}\u{034F}]/gu;
 
 /** `-loop-UNATTENDED` — the fixed suffix `scopedBasename` in `unattended-flag.mjs` inserts an id before. */
 const SCOPED_FLAG_SUFFIX = '-loop-UNATTENDED';
@@ -633,15 +660,27 @@ function* dirEntryNames(handle) {
  * and the directory handle always closed via `closeSync` in `finally`. `env`
  * declaring no home means nothing is scanned. Never reports which other
  * checkout it saw.
+ *
+ * `deps.opendir` (default `opendirSync`) is the ONE seam this function takes
+ * a real filesystem call through — exported, with the seam, so a test can
+ * prove the PRODUCTION call site itself stays capped at
+ * `MAX_HOME_ENTRIES_EXAMINED` (a fake directory handle with entries the test
+ * fully controls, counting real `readSync` calls made) rather than only
+ * proving `firstForeignFlag` is bounded in isolation, which a call site could
+ * silently stop honouring (e.g. passing `Infinity`) without any existing test
+ * noticing (RP-294 round 3). See dispatch-journal.test.ts (absent in a
+ * generated rig) › "record-dispatch.mjs — anotherCheckoutFlagIsPresent: the
+ * PRODUCTION wiring is bounded, not merely firstForeignFlag in isolation
+ * (RP-294 round 3)".
  */
-function anotherCheckoutFlagIsPresent(env) {
+export function anotherCheckoutFlagIsPresent(env, { opendir = opendirSync } = {}) {
   const home = envHomeOf(env);
   if (home === null) return false;
   const own = new Set(unattendedFlags(env));
   const dir = path.join(home, '.claude');
   let handle;
   try {
-    handle = opendirSync(dir);
+    handle = opendir(dir);
   } catch {
     return false;
   }
@@ -668,9 +707,10 @@ function checkedRootOf(env) {
  * The one bounded (<=512 chars) `record-dispatch:` stderr line this hook ever
  * writes — naming only the root it checked, never another checkout's runDir
  * or flag content. The root is sanitised first through `CONTROL_CHARS_RE` —
- * see that constant's own doc comment for the exact character set (C0/DEL,
- * C1, the Unicode line/paragraph separators, and the bidi-control/zero-width
- * range) — each becoming `?`, so a root path carrying one can never split
+ * a Unicode-general-category-based class (`\p{Cc}\p{Cf}\p{Zl}\p{Zp}`, plus a
+ * handful of characters that render just as invisibly but sit outside those
+ * categories) — see that constant's own doc comment for exactly what it
+ * strips — each becoming `?`, so a root path carrying one can never split
  * this into more than the one line the tests require, and can never make the
  * printed line misrepresent the bytes actually present.
  */
