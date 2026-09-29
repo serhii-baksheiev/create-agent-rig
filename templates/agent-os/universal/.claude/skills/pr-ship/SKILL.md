@@ -138,7 +138,28 @@ blockers.
    both paths'** — the owner-directed detection carries no ticket for it to
    name, and its own `--owner-directed` outcome is written out above. A hold
    with no outcome, in either mode, is counted by the report as a re-read the
-   run skipped. A missing, untracked, unreadable or
+   run skipped.
+
+   **A repeated hold whose detection carries the same id and sources as one
+   you already answered with a typed `actionChanged: false` outcome does not
+   get silently reused as evidence for the new detection.** Record its own
+   `--action-changed false` outcome, citing the earlier outcome —
+   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket
+   <item-id> --action-changed false --note 'same id/sources as <earlier
+   note>; re-confirmed, no re-read needed'` — and continue this same gate run
+   from step 2. Do not go back through step 0 for it: that counts another
+   gate round for drift already answered, and re-entering re-detects the same
+   id, so the loop would end only when the rounds run out.
+   Any NEW id or a NEW source set is still a fresh HOLD with a full re-read;
+   the shortcut is only in what an already-matched repeat's own outcome has
+   to redo, never in whether it gets recorded at all. This is frozen
+   mechanism, not new prose: `typedResolutionOf` (`lib/revalidation-evidence.mjs`)
+   only matches an outcome to a detection whose own `at` is no later than
+   that outcome's `resolvedAt`, so an earlier outcome never reaches forward to
+   a later re-entry's detection event, even one carrying the identical id.
+   Pinned in the generator's `test/template/revalidation-evidence.test.ts` (absent in a generated rig) › "typedResolutionOf does not resolve a later repeat of the same detection id — each repeat needs its own outcome (resolvedAt >= detectionAt)".
+
+   A missing, untracked, unreadable or
    unsupported claim is `UNVERIFIABLE`, exits 2, and stops automatic progress;
    so is a tracker whose adapter the command cannot READ, which means the
    question was never put rather than that the claim record is unreadable.

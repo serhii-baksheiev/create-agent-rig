@@ -127,7 +127,14 @@
 //   "own" — pinned, not just documented: `test/template/duplicate-work.test.ts`
 //   (absent in a generated rig) › "detached HEAD — own-work exclusion
 //   misses, so the checkout's own branch is (mis)reported as a duplicate
-//   (pinned current behaviour)".
+//   (pinned current behaviour)". This is why a session RESUMING a
+//   continuation note must check out that note's branch by its own name
+//   (`git checkout <branch>` — no `-b`, no rename): only then does this
+//   already-exact-string exclusion cover it; a differently named branch that
+//   merely tracks the original is still reported — `test/template/duplicate-work.test.ts`
+//   (absent in a generated rig) › "exit 2, verdict duplicate-work — a
+//   checkout on a DIFFERENTLY NAMED branch that only TRACKS the original is
+//   still reported (the documented limit, unchanged)".
 // - A same-id branch under a naming convention `matchesTicket` does not
 //   recognise (no boundary-bounded occurrence of the id anywhere in the ref)
 //   is not seen — an untested design limit: fuzzy title matching is
