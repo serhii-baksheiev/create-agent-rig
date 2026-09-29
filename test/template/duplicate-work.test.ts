@@ -974,28 +974,34 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
   });
 });
 
-// RP-300 part B — a resumed claim (a second controller session picking up
-// where an earlier, interrupted one left off, per the item's own
-// continuation note — `continuation.mjs`, `journal/2026-09.md`: "a second
-// Codex session resumed it from the continuation note and reached gate
-// SHIP") must not report its own prior pushed branch as duplicate work. The
-// header's own documented Limits already say own-work exclusion is
-// exact-string on the CURRENT branch name alone, which is exactly what
-// misses here: a resumed checkout legitimately checks out a NEW local branch
-// name that TRACKS the previously-pushed remote branch (or is later pointed
-// at it with `git branch --set-upstream-to`), rather than reusing the exact
-// same local branch name. This block pins the narrowest available
-// mechanical proof of "own" for that case — the checkout's own configured
-// upstream (`@{upstream}`), something only an action taken BY this checkout
-// can set, never another controller's branch — WITHOUT weakening detection
-// of a genuinely different branch that happens to carry the same ticket id
-// alongside it (the second test below).
-describe("own-work exclusion also recognises the current branch's upstream tracking branch, not only its literal name (RP-300)", () => {
+// RP-300 part B — round 2. Round 1 tried a code-level fix (excluding a
+// candidate branch that matched the current checkout's `@{upstream}`) and
+// code-reviewer HOLD it: `git checkout -b <local> origin/<remote>` sets
+// `@{u}` to WHATEVER remote branch is named, including a rival controller's
+// own branch (autoSetupMerge) — so an upstream-based exclusion can hide a
+// genuine duplicate just as easily as it recognises a real resumption, and a
+// non-`origin` upstream strips to a name that can collide with a same-named
+// branch that really is on `origin`. No mechanical "own" proof survives
+// scrutiny here — another controller's branch can satisfy every one of them
+// the same way this checkout's own resumed branch can. So the fix is
+// procedural, not a new matching rule: `duplicate-work.mjs` itself is
+// unchanged, and a resuming controller checks out the continuation note's
+// `branch:` line BY ITS OWN NAME (`git checkout <branch>`, which creates a
+// local branch of that same name tracking `origin/<branch>` — no `-b`, no
+// rename) — the ALREADY-EXISTING exact-string exclusion then covers it, for
+// both the `branch` source (`ref === ownBranch`) and the `pr` source
+// (`isOwnPr`: `headRefName === ownBranch && !isCrossRepository`), with no
+// script change at all. The two tests below characterise that existing,
+// unchanged behaviour — they are expected to pass today, and stay green once
+// the loop skill's resumption prose (pinned separately, in
+// `test/template/continuation.test.ts` or `skills.test.ts`) tells a resuming
+// session to check out that way.
+describe("own-work exclusion, via the procedural fix: checking out the continuation note's branch BY ITS OWN NAME (RP-300 round 2)", () => {
   let root: string;
   let origin: string;
 
   beforeAll(async () => {
-    root = await mkdtemp(path.join(tmpdir(), 'duplicate-work-upstream-'));
+    root = await mkdtemp(path.join(tmpdir(), 'duplicate-work-resume-'));
     origin = path.join(root, 'origin.git');
     await mkdir(origin);
     await git(['init', '--bare', '-b', 'master'], origin);
@@ -1007,27 +1013,39 @@ describe("own-work exclusion also recognises the current branch's upstream track
     await git(['push', '-q', origin, 'master'], seed);
   }, 30_000);
 
-  it("exit 0, verdict clean — a resumed checkout's current branch TRACKS the remote branch that already carries the ticket id", async () => {
-    // Session 1's own prior work, pushed under its original name.
+  it('exit 0, verdict clean — a resumed checkout on the SAME branch name (no -b, no rename) is excluded on both the branch AND the pr source', async () => {
+    // Session 1's own prior work, pushed under its original name — and its
+    // own open PR from that same branch, exactly what a resuming session
+    // would find still open.
     await pushOtherBranch(root, origin, 'feat/rp-9040-original');
 
-    // Session 2's resumption: a FRESH clone, checked out onto a NEW local
-    // branch name that TRACKS the remote branch session 1 pushed — never the
-    // identical local branch name the existing exact-string exclusion already
-    // covers.
+    // Session 2's resumption, the procedure the loop skill will prescribe:
+    // a FRESH clone, then `git checkout <branch>` with NO `-b` and NO
+    // rename — git's own DWIM checkout creates a local branch of the exact
+    // same name, tracking `origin/feat/rp-9040-original`.
     const resumeDir = await mkdtemp(path.join(root, 'resume-'));
     await git(['clone', '-q', origin, resumeDir], root);
-    await git(['fetch', '-q', 'origin'], resumeDir);
-    await git(
-      ['checkout', '-q', '-b', 'feat/rp-9040-resumed', '--track', 'origin/feat/rp-9040-original'],
-      resumeDir,
-    );
+    await git(['checkout', '-q', 'feat/rp-9040-original'], resumeDir);
 
-    const gh = await ghListing([]);
+    const gh = await ghListing([
+      {
+        number: 55,
+        title: 'fix: continue RP-9040',
+        headRefName: 'feat/rp-9040-original',
+        url: 'https://example.invalid/acme/widgets/pull/55',
+        isCrossRepository: false,
+      },
+    ]);
     try {
       const parsed = await runCliJson(resumeDir, 'RP-9040', hermeticEnv());
       expect(parsed.verdict, JSON.stringify(parsed)).toBe('clean');
       expect(parsed.matches, JSON.stringify(parsed)).toEqual([]);
+      expect(parsed.sources, JSON.stringify(parsed)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ name: 'branch', status: 'read' }),
+          expect.objectContaining({ name: 'pr', status: 'read' }),
+        ]),
+      );
 
       const text = await runCli(resumeDir, ['--ticket', 'RP-9040'], hermeticEnv());
       expect(text.code, text.out).toBe(0);
@@ -1036,18 +1054,20 @@ describe("own-work exclusion also recognises the current branch's upstream track
     }
   });
 
-  it('exit 2, verdict duplicate-work — a DIFFERENT branch carrying the same ticket id is still reported, even though the current branch tracks its OWN (unrelated) upstream for that id', async () => {
-    // "Mine" — what a resumed session tracks, exactly like the previous test.
-    await pushOtherBranch(root, origin, 'feat/rp-9041-mine');
-    // Another controller's rival branch for the SAME ticket id — pushed
-    // independently, never tracked by this checkout.
-    await pushOtherBranch(root, origin, 'feat/rp-9041-rival');
+  it('exit 2, verdict duplicate-work — a checkout on a DIFFERENTLY NAMED branch that only TRACKS the original is still reported (the documented limit, unchanged)', async () => {
+    await pushOtherBranch(root, origin, 'feat/rp-9041-original');
 
+    // The procedure the previous test pins is NOT followed here — the
+    // resuming checkout renames the branch locally instead of reusing the
+    // original name. Own-work exclusion is exact-string by design (see the
+    // module header's own Limits), so this stays a reported duplicate —
+    // pinning that the round-1 code fix is genuinely gone, not silently
+    // still excluding a rename.
     const resumeDir = await mkdtemp(path.join(root, 'resume-'));
     await git(['clone', '-q', origin, resumeDir], root);
     await git(['fetch', '-q', 'origin'], resumeDir);
     await git(
-      ['checkout', '-q', '-b', 'feat/rp-9041-resumed', '--track', 'origin/feat/rp-9041-mine'],
+      ['checkout', '-q', '-b', 'feat/rp-9041-resumed', '--track', 'origin/feat/rp-9041-original'],
       resumeDir,
     );
 
@@ -1055,16 +1075,47 @@ describe("own-work exclusion also recognises the current branch's upstream track
     try {
       const parsed = await runCliJson(resumeDir, 'RP-9041', hermeticEnv());
       expect(parsed.verdict, JSON.stringify(parsed)).toBe('duplicate-work');
-      const mineMatch = parsed.matches.find((m) => m.ref === 'feat/rp-9041-mine');
-      const rivalMatch = parsed.matches.find((m) => m.ref === 'feat/rp-9041-rival');
-      expect(mineMatch, JSON.stringify(parsed)).toBeUndefined();
-      expect(rivalMatch, JSON.stringify(parsed)).toBeDefined();
+      const match = parsed.matches.find((m) => m.source === 'branch');
+      expect(match, JSON.stringify(parsed)).toBeDefined();
+      expect(match!.ref).toBe('feat/rp-9041-original');
 
       const text = await runCli(resumeDir, ['--ticket', 'RP-9041'], hermeticEnv());
       expect(text.code, text.out).toBe(2);
     } finally {
       gh.restore();
     }
+  });
+});
+
+// RP-300 round 2 — the procedural half of the fix above: the loop skill's
+// continuation-note section (§6a) currently only tells a session how to
+// PUBLISH a note when it stops. Nothing there yet tells a RESUMING session
+// how to pick the item back up so `duplicate-work.mjs` (unchanged, see the
+// round-2 tests above) recognises the resumed branch as its own — the
+// procedural fix pinned by this file's CLI-level characterisation is only
+// real once the skill actually prescribes it.
+describe('loop skill §6a — resuming from a continuation note checks out its branch BY ITS OWN NAME (RP-300 round 2)', () => {
+  const continuationSection = async (): Promise<string> => {
+    const content = await readFile(skillPath('loop'), 'utf8');
+    const start = content.indexOf('## 6a. Continuation notes');
+    const end = content.indexOf('## 7. The journal');
+    expect(start, 'anchor "## 6a. Continuation notes" not found in loop/SKILL.md').toBeGreaterThan(
+      -1,
+    );
+    expect(end, 'anchor "## 7. The journal" not found in loop/SKILL.md').toBeGreaterThan(start);
+    return content.slice(start, end);
+  };
+
+  it("tells a resuming session to check out the note's branch BY ITS OWN NAME — no -b, no rename", async () => {
+    const section = await continuationSection();
+    expect(section).toMatch(/git checkout[^\n]*<?branch>?/i);
+    expect(section).toMatch(/(?:by |under )?its own name|same name|no rename/i);
+  });
+
+  it('says WHY: so duplicate-work.mjs recognises the resumed branch as own work', async () => {
+    const section = await continuationSection();
+    expect(section).toMatch(/duplicate-work\.mjs/);
+    expect(section).toMatch(/own work|own branch|own-work exclusion/i);
   });
 });
 

@@ -875,6 +875,17 @@ automatically carries a `failed-check: <name> exit <code>; tests: <id1>,
 <id2>…` line — the failing test identity, not just this session's memory of
 it.
 
+A session resuming from a continuation note checks out the note's `branch:`
+line by its own name — `git checkout <branch>` (no `-b`, no rename), which
+creates a local branch of that same name tracking `origin/<branch>`. Do this
+even though the branch does not exist locally yet; do not rename it and do
+not track it under a new local name. This is not a style preference:
+`duplicate-work.mjs`'s own-work exclusion is exact-string, so only checking
+out the branch under its own name lets it recognise the resumed branch (and
+its open PR) as this session's own work rather than reporting it as a
+duplicate — see that script's own Limits for why a rename or a differently
+named tracking branch does not qualify.
+
 Each of the other three kinds has its own concrete moment, separate from the
 summary above.
 

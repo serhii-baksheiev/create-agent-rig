@@ -138,7 +138,25 @@ blockers.
    both paths'** — the owner-directed detection carries no ticket for it to
    name, and its own `--owner-directed` outcome is written out above. A hold
    with no outcome, in either mode, is counted by the report as a re-read the
-   run skipped. A missing, untracked, unreadable or
+   run skipped.
+
+   **A repeated hold whose detection carries the same id and sources as one
+   you already answered with a typed `actionChanged: false` outcome does not
+   get silently reused as evidence for the new detection.** Record its own
+   `--action-changed false` outcome, citing the earlier outcome —
+   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket
+   <item-id> --action-changed false --note 'same id/sources as <earlier
+   note>; re-confirmed, no re-read needed'` — and come back through step 0.
+   Any NEW id or a NEW source set is still a fresh HOLD with a full re-read;
+   the shortcut is only in what an already-matched repeat's own outcome has
+   to redo, never in whether it gets recorded at all. This is frozen
+   mechanism, not new prose: `typedResolutionOf` (`lib/revalidation-evidence.mjs`)
+   only matches an outcome to a detection whose own `at` is no later than
+   that outcome's `resolvedAt`, so an earlier outcome never reaches forward to
+   a later re-entry's detection event, even one carrying the identical id.
+   Pinned in the generator's `test/template/revalidation-evidence.test.ts` (absent in a generated rig) › "typedResolutionOf does not resolve a later repeat of the same detection id — each repeat needs its own outcome (resolvedAt >= detectionAt)".
+
+   Distinct from that mechanism citation: a missing, untracked, unreadable or
    unsupported claim is `UNVERIFIABLE`, exits 2, and stops automatic progress;
    so is a tracker whose adapter the command cannot READ, which means the
    question was never put rather than that the claim record is unreadable.
@@ -146,22 +164,8 @@ blockers.
    point, neither mode or both, a base that is not a revision, or a queue config
    that does not resolve — plus, on the owner-directed path, the four refusals
    above): fix the call or the config — the message says which. Its limits are its own header's; the
-   cited-path set is a labelled assumption, not a recorded fact.
-
-   **A repeated hold at this checkpoint is compared by its detection id, and
-   the comparison covers the hold's sources too — not the id alone.** Two
-   re-entries whose id AND `source` list both match, and which already carry a
-   typed `actionChanged: false` outcome recorded for that exact pairing,
-   proceed ONCE on that documented resolution rather than opening a second
-   re-read. Any NEW id or a NEW source set is a fresh HOLD — re-read, never a
-   silent continue — whatever moved to produce it, including an unrelated
-   merge to the default branch. The fast path covers only the drift already
-   answered; it is never licence to stop re-reading after one hold has been
-   answered. Either way, both the raw detection
-   and its typed outcome stay in the journal, so the report can always tell a
-   fast-pathed HOLD from a fresh re-read.
-
-   Pinned in the generator's `test/template/revalidate.test.ts` (absent in a generated rig) ›
+   cited-path set is a labelled assumption, not a recorded fact. Pinned in the
+   generator's `test/template/revalidate.test.ts` (absent in a generated rig) ›
    "continues when only updatedAt moved and still reports the marker evidence"
    and `test/template/content-blind-revalidation.test.ts` › "refuses a deleted
    tracked claim in a fresh run without take-up markers".
