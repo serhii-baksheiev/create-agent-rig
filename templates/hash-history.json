@@ -16,7 +16,8 @@
     "0.9.1",
     "0.10.0",
     "0.10.1",
-    "1.0.0"
+    "1.0.0",
+    "1.0.1"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -135,13 +136,15 @@
         "8ede9297480c889ec6d6caf8d076e7d69111fb472933dcf5a48b9a8425fe50c2",
         "f12cb04871578eca3c9c36a1c2d60f5ae15a0e9094ecfc7c704c341756de4e3e",
         "f260b1f2d60c57b96b2d735dbc7eb29890638ca9dedec467ff4784f6d8d8fab5",
-        "492fcd965f14194495721cb88eae5791cfd1f213c96fbc2307da8ddfb676c490"
+        "492fcd965f14194495721cb88eae5791cfd1f213c96fbc2307da8ddfb676c490",
+        "e4a1b24edab6e78ac85479bad9aee25e115664133a1e695d1d7e6fa986cc2bcc"
       ]
     },
     ".claude/agents/failure-diagnostician.md": {
       "since": "1.0.0",
       "hashes": [
-        "c3daf330246eb47beee8dae804dc0f84a7bfc626b749d0759f3491fe48627ec5"
+        "c3daf330246eb47beee8dae804dc0f84a7bfc626b749d0759f3491fe48627ec5",
+        "b9bc4e148835b50c791360895c2fc85d91f80e6d0d693a9fa01d83838b0fbdea"
       ]
     },
     ".claude/agents/implementation-agent.md": {
@@ -168,7 +171,8 @@
         "e01467a38a0183be46ba45b05d44f663fbf4b139ceaecb91b5d096f3286a3fcd",
         "844e215af7d80bd85f62ca937c79bea59c8d8cd7c97353937ce62f7747eb9df7",
         "7c0bc189521955f2d126bac0ff97ab4fa252b05067692a5a3bb6cda232ddfaa3",
-        "f456e508033dd7815d26f5e1057a3e85ed062ff31b51e992f4e063a5629b9b87"
+        "f456e508033dd7815d26f5e1057a3e85ed062ff31b51e992f4e063a5629b9b87",
+        "93e8eb018fea8d6ecd997d0bd9637ad740900cf2545619c5cebf301c1665b989"
       ]
     },
     ".claude/agents/test-writer.md": {
@@ -232,7 +236,8 @@
         "4524d715f2e41f4cfdd3d0f9c858817f913aaca5192bda97dff876b4d8c51f19",
         "f9e3e4b7c22c4a64f521402419707ff382b05c8deb6310f62e5545db87f7cb4f",
         "493ae58e54b055bd13ba992ee0dbfa2cb9ce9a3637ec345ab8d7cfff95831c60",
-        "e3a03aa6d3077b7c397f84bfecfb6e8df0f18a5849045c51150300b4ce9f48b2"
+        "e3a03aa6d3077b7c397f84bfecfb6e8df0f18a5849045c51150300b4ce9f48b2",
+        "e1f85d39932c430bcbc0e8b7d65a955fef9d73b4aac4af6b7f1f8692c63729da"
       ]
     },
     ".claude/hooks/guard-secret-file.mjs": {
@@ -240,7 +245,8 @@
       "hashes": [
         "f6b81cb7640924d2e56aced58e6b48f65df6638fb5a9099985fe5d673245c3ad",
         "8c333879dba1f2bf87bbb8e7b257ac51315a74a4cb45252408ca615e2a42d7b5",
-        "5bf2896ec5e5f94fab20b52cd22418a4392778b40744602a087e320eeca3f688"
+        "5bf2896ec5e5f94fab20b52cd22418a4392778b40744602a087e320eeca3f688",
+        "ad0f6ef9d4f7a64806c6a865fa5782722f0062440532e24196b664a14cb985fe"
       ]
     },
     ".claude/hooks/guard-subagent-model.mjs": {
@@ -274,7 +280,8 @@
         "0c191d326a7bb0bbfc110e2210f44b4aa39276e8db3779aaa4545cffd4e11863",
         "572c671f8f2cad190fe2f144071954ac4d3b1357cab80a19bad584dd3b3768c8",
         "6695698d2b38c79a12292601048dd0082a0cd18bf9e69c047d47679c2e6ecf67",
-        "79f400a6eccd1aa99fed2e5966f857c030fe8ba7a69df3f6819605e48277b202"
+        "79f400a6eccd1aa99fed2e5966f857c030fe8ba7a69df3f6819605e48277b202",
+        "d4613667b58d9215320285e663b3db6902ba656c797ee3408b6ecbec885be218"
       ]
     },
     ".claude/hooks/lib/hook-input.mjs": {
@@ -596,7 +603,8 @@
         "7721ee19fd1bcf6902be3d359def40742d79b88f5d83e7e3ca22ba45ca3211aa",
         "250292c9959916240bfc0fdf5987a864f6d54799de3d932dc6b85b776e62eaa9",
         "ad58b25f9ce30a1549b5047daa1e5b43c30352306aeceebacd638db86087e01f",
-        "f49142e6a64d5e8a8b4c4d239247f09255d65dd9d7de2cff0267b16421509e12"
+        "f49142e6a64d5e8a8b4c4d239247f09255d65dd9d7de2cff0267b16421509e12",
+        "1019a8b9af625f758e473f810c962457108a8e6c970e59388d9c73d835253a85"
       ]
     },
     ".claude/scripts/verdict.mjs": {
@@ -738,13 +746,15 @@
         "9ec92775791907f068d85ba58489236bd2bee69a8d769554ac530e8eadd5e374",
         "180c182cc909cc0b6c06cfa286f528f22b77189eee49cac067fdaaf2920f8bae",
         "29b4de4273097fc9e6c1c3e41c650fa20d95fa34b406365aabab62a6ae89b686",
-        "32e6cdf32a21da712889c50e6d74bceda8cdac79fce941426c8bc8769651023e"
+        "32e6cdf32a21da712889c50e6d74bceda8cdac79fce941426c8bc8769651023e",
+        "f4f751fb1be3fdc27ddc63b12fb2525ba868cc8f0ace298aa30fba3226192742"
       ]
     },
     ".codex/agents/failure-diagnostician.toml": {
       "since": "1.0.0",
       "hashes": [
-        "4d1209540407249c96cd6e3a5b874cf1c6c29bf382d3b88fdeb6f3eaafc5e2b6"
+        "4d1209540407249c96cd6e3a5b874cf1c6c29bf382d3b88fdeb6f3eaafc5e2b6",
+        "561d2b4ac3047dc70c672becd33570d82c7a69e4813b251ca6660f5ff58c929e"
       ]
     },
     ".codex/agents/implementation-agent.toml": {
@@ -769,7 +779,8 @@
         "9ee408789f237a0b55aac6a2472682a08f8696e1d1ff4918ea72766ac8535499",
         "bc9aacca1ca3ed4ceac485f7cd1c6ff5a5405ac7be83419d6145499cc560ee91",
         "b529f02056948ff0ca179c96d9d47962c9c8064feccb68d3c970e7b1a2513fc9",
-        "60f9c2d527bef281c5cf8e905db66199064c9436dbbe7a0e81c6391e189a06b6"
+        "60f9c2d527bef281c5cf8e905db66199064c9436dbbe7a0e81c6391e189a06b6",
+        "577d24a4a479cb11a9e1c964f7950c62a88b4acf91ce2345efefa526a8a6dfe1"
       ]
     },
     ".codex/agents/test-writer.toml": {
@@ -808,7 +819,8 @@
         "616ab573d3cf4b603bb4bfbc5e7631d17ebaa696af16474845fdaf35f41d0a97",
         "406c9a0a0e58e78788a10186b9e10b48f4ed215b6d68504a4fbb71e5ee506f85",
         "93f9b4ed7a49df9c83b74fd728fb3e0f83ff7c7e84f71f51d26c89b84cd091bd",
-        "615e15fed813dc1fae10c3ff498aab28096382f9e9bd5a89c72d1a6e5adb1219"
+        "615e15fed813dc1fae10c3ff498aab28096382f9e9bd5a89c72d1a6e5adb1219",
+        "c34235624226ff44bef7ae44c183fd41fd9dfbc8f1388c286edc77e1717792f5"
       ]
     },
     "CLAUDE.md": {
@@ -850,7 +862,8 @@
         "30e55d866d9a2c7359e594181070c63b1974d9df36e000caf419229284303a2e",
         "ebf0ef61407944373c862d37e6a80d4965ece72304b931428c6b3fcc5d9527c4",
         "46b68f9130d16a96278e03d0ddb14d99b678c5a239e4667aa79733e632e67505",
-        "5f6bd89f1ad57a080bb717595e0c31eb7fdbec593ea21aceaa4d69daa6647c37"
+        "5f6bd89f1ad57a080bb717595e0c31eb7fdbec593ea21aceaa4d69daa6647c37",
+        "58d4884cd737f7e019469422a704ff000439f1c237de0fa2a657f8233edc11ed"
       ]
     },
     "docs/decisions/content-blind-revalidation.md": {
@@ -908,7 +921,8 @@
       "hashes": [
         "97bb882dd066a65a740780a836199ecef8887392c1ece02a92670ecf153988d3",
         "f4a458a8938f8517b997cd6f0a0036d4eba640cd1ff213683804e7c0e2d02d7a",
-        "f7f13dc4c19c31bc950c58aa6276e67f42d41c7331510d5a5e6f60e4bfd0c38c"
+        "f7f13dc4c19c31bc950c58aa6276e67f42d41c7331510d5a5e6f60e4bfd0c38c",
+        "a15ae305f98ac1e598e0dd8804dd5269c4417208f48eddf8e379c94edf30e4ff"
       ]
     },
     "docs/decisions/two-empty-endings.md": {

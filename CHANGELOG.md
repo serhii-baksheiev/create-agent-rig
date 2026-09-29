@@ -14,7 +14,23 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
-## Unreleased
+## 1.1.0
+
+**1.1.0 is additive on the 1.0 line.** It gives an unfinished stop a bounded
+continuation note another controller can pick up, gives the dispatch journal
+subagent start/end events and both harnesses' own token usage read back
+through a new token-economics report, and gives team queue use three guards
+it did not have before — assignee-aware selection, a duplicate-work check
+before a claim, and stale-in-progress hygiene — plus release-scoped `next`
+selection and two new deferral labels. Nothing in the 1.0 contract is
+removed or renamed; its additions — `--help` on every subcommand, the
+`counts` key on `rig-owned-files`, the new `doctor` check ids, the `seeded`
+verdict, the manifest's `regions` key — are named in their entries below.
+Two existing cases change behaviour, each in its own entry: a `kept`
+user-owned file no longer keeps the manifest alive, so such an `uninstall`
+now reports `uninstalled` rather than `partial` (RP-260); and `PLAN.md` is
+seed-once, so `upgrade` reports an edited one as `seeded` rather than
+`conflict` (RP-257).
 
 ### Added
 
@@ -43,6 +59,19 @@ two copies of its exceptions is the shape 0.8.0 exists to remove.
   (`.codex/hooks.json`), always `warn`, and never claiming those hooks are
   already active or trusted. Neither check can push a clean rig's `doctor`
   exit code past `0` (RP-230).
+
+- **The dispatch journal now records when a subagent starts and stops,
+  observe-only.** A new hook, `record-dispatch.mjs`, fires on
+  `SubagentStart`/`SubagentStop` in both harnesses and appends
+  `dispatch-start`/`dispatch-end` events to the run journal already declared
+  for the run (`RIG_RUN_DIR`, or the unattended flag's run directory) —
+  nothing when no run directory is declared. Every field is filtered through
+  one allowlist before the write: schema, harness, a hashed controller id,
+  agent reference/type, and the model/effort the agent definition declares —
+  never cwd, transcript paths, prompts, response text, raw ids, or email. The
+  gate's verdict-coverage reader now also reports, per launched reviewer,
+  whether a dispatch was witnessed in that round (advisory; unavailable
+  without events) (RP-225).
 
 - **The dispatch journal records Claude subagent token usage.** On a Claude
   `SubagentStop`, `record-dispatch.mjs` reads the subagent's own transcript
@@ -147,6 +176,69 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   `fix` now names the specific affected paths, bounded, while `reason` and
   `detail` never do (RP-239 A2).
 
+- **A new read-only report turns the dispatch journal into token-usage
+  economics.** `node .claude/scripts/token-report.mjs` (workflow layer)
+  groups journalled dispatches by run → controller/harness → ticket → agent
+  type → declared model/effort, and reports ticket occurrences with attempts,
+  gate rounds, reviewer outcomes, wall time, and dispatch state (`ended` /
+  `noEndObserved` / `unavailable`, never silently `0`). Claude and Codex usage
+  are reported as separate rows, never summed, and there is no pricing: the
+  report states only "usage measured; monetary cost unavailable" or "usage
+  unavailable; monetary cost unavailable", and `--pricing` is refused.
+  `--json` gives the structured form, text otherwise (RP-228).
+
+- **A new script, `continuation.mjs`, composes a short, bounded note so
+  another controller can pick up unfinished work.** On an escalation,
+  blocker, pause, or terminated stop — never an ordinary stop, a subagent
+  stop, or a review round — it assembles ticket, stop kind, branch, PR, head,
+  this checkout's own gate-round count, the latest checked verdict with
+  blocker rules, and a capped diagnosis/remaining-work line, from durable
+  local pointers only. An absent value prints `unknown`, never a guess; every
+  field is scrubbed for filesystem paths and redacted for anything
+  secret-shaped before the note is built. Nothing touches the network unless
+  `--post` is given, and an adapter that cannot comment (`plan-md`) refuses
+  to post while the note still prints. A known limitation: the coarser
+  free-text scrub used for the `diagnosis`/remaining-work fields treats any
+  whitespace-delimited token containing a slash as the start of a path span,
+  so a repo-relative `file:line` reference, or a fraction such as `3/3`,
+  inside `--diagnosis` is also replaced with `[path]` — tracked for 1.1.1
+  (RP-297) (RP-224).
+
+- **Queue selection and claiming now respect who the tracker says owns an
+  item.** The `jira` and `github-issues` queue adapters each read the current
+  actor (Jira `/myself`, `gh api user`); an item assigned to someone else is
+  held under a new `assigned` cause instead of offered, and with the actor
+  unknown, an assigned item is held too. Unassigned and self-assigned items
+  stay eligible, and `claim()` re-checks the assignee immediately before its
+  write — an item reassigned since selection is refused as claim-stale, with
+  no mutation (RP-221).
+
+- **`doctor` gains a check that warns when the repository's installed rig is
+  newer than the CLI running it.** The new `rig-version` check compares the
+  manifest's recorded rig version against the running CLI: a manifest version
+  newer than the CLI warns `cli-older-than-repository` and says to update the
+  CLI before running `setup` or `upgrade`; an equal or older manifest version
+  is `ok`; a version that is not plain `major.minor.patch` warns
+  `version-uncomparable` instead of guessing (RP-229).
+
+- **A new script, `duplicate-work.mjs --ticket <id>`, checks for an existing
+  branch or open PR for a ticket before work starts on it.** It reads remote
+  branches and open PRs — excluding this checkout's own branch/PR — and
+  answers `clean` (exit 0), `duplicate-work` (exit 2, naming each match and
+  the field that matched), or `unverifiable` (exit 3, when a source could not
+  be read; never reported as clean). The `loop` skill runs it before claiming
+  an item from the `jira` or `github-issues` queue (not `plan-md`), and
+  `pr-ship` before opening a PR for a ticketed branch; a non-clean exit stops the claim
+  or holds the PR (RP-222).
+
+- **Queue hygiene now also reports `stale-in-progress` items.** An item left
+  "in progress" longer than a configurable threshold
+  (`options.staleInProgressDays`, default 3) is named with its last-updated
+  instant, its age, and the threshold — as an advisory finding only: no
+  takeover, reassignment, or mutating request. An item left in progress on
+  purpose (escalated) or one with no timestamp (`plan-md`) is never reported
+  this way (RP-223).
+
 ### Changed
 
 - **`unattended-flag.mjs on` and `verify` now require `--root <checkout>`, and
@@ -198,6 +290,26 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
   overwrite; `uninstall` does not migrate it, so on such a manifest it still
   removes an unedited `PLAN.md` (RP-257, RP-270).
 
+- **`next` selection can now be scoped to a release, and recognises two more
+  deferral labels.** `frozen` and `later` join `parked` as labels that hold an
+  item under the existing `deferred` cause, in every queue adapter. A new,
+  adapter-neutral `scope: { labels: [...] }` option (set in `options`, or on a
+  `boards.<name>` entry) skips any item missing a listed label as
+  `out-of-scope`; a scope with no eligible item ends as `queue-empty` rather
+  than silently falling back to an out-of-scope item, and a malformed scope
+  refuses selection instead of running unscoped. Unscoped selection, ordering,
+  the elevated-tier ration, and the claim/revalidation path are unchanged
+  (RP-273).
+
+- **The `pr-ship` skill now states explicitly that a finding from a harness's
+  own review or a CI scanner is evidence, never the verdict.** Such a finding
+  is handed to whichever Rig reviewer's ground it covers, which either
+  promotes it to an ordinary blocker or drops it with a stated reason; the
+  merge decision stays the gate's own verdict for the current head SHA, and an
+  upstream tool that did not run — or reviewed a different commit — is not
+  evidence at all. No change to orchestration, the verdict schema, reviewer
+  specs, or the fan-out itself (RP-240).
+
 ### Fixed
 
 - **A bootstrapped `upgrade` now records a deleted `PLAN.md`, so a later
@@ -241,10 +353,112 @@ create-agent-rig:end -->`), and `.claude/.rig-manifest.json` gains a
 - **`record-dispatch` no longer loses dispatch evidence silently when the
   controller session was started in a different checkout.** When the hook
   finds no run directory for its own checkout while another checkout's
-  unattended flag is armed, it now prints one `record-dispatch:` line on
-  stderr naming the checkout it checked; it still records nothing and
-  exits 0. The `loop` skill states that a session must be started from
-  the checkout whose run directory it declares (RP-287).
+  unattended flag is armed **in the same home** (the home `HOME`/`USERPROFILE`
+  itself declares), it now prints one `record-dispatch:` line on stderr
+  naming the checkout it checked; it still records nothing and exits 0. The
+  `loop` skill states that a session must be started from the checkout whose
+  run directory it declares (RP-287).
+
+- **Every CLI subcommand now answers `--help` instead of erroring or falling
+  into the wrong path.** `init`/`upgrade` used to exit 1 on `--help`,
+  `doctor`/`memory` exited 2, `uninstall` suggested `-- "--help"`, and `setup`
+  fell into the interactive-wizard refusal; every subcommand now prints its
+  own usage and exits 0 with no side effects (wrong invocations keep their
+  existing exit codes). `--json` always wins over `--help`: with `--json`
+  present the help flag is neither honoured nor stripped, so
+  `uninstall --json --yes --help` still refuses to run for real, exactly as
+  1.0.1 already did — only without `--json` does `--help` short-circuit to
+  usage text.
+  `doctor`'s workflow-layer line no longer names an internal ticket id in its
+  output; `upgrade` now names `create-agent-rig@<version>` (and the path
+  inside the package) rather than an npx-cache path, and reports that the
+  manifest was rewritten even when it wrote zero rig files.
+  `docs/command-contract.md` gains `--help` as an additive, per-subcommand
+  contract row (RP-239).
+
+- **Concurrent dispatch writers into one run directory no longer corrupt the
+  journal.** `append()` used to read the journal, compute the next sequence
+  number, and write with no lock; two writers landing on the same sequence —
+  which the dispatch-start/dispatch-end hooks above can do whenever reviewers
+  launch in parallel — made `readRun` refuse that run permanently. `append()`
+  now holds an exclusive, self-owned lock around the read-then-write (bounded
+  wait, a stale lock reclaimed once through a second exclusive marker);
+  running out of the wait is reported as a new `busy` failure, treated as a
+  lost record rather than a stopped run. Reading a run takes no lock and skips
+  a final line still being written (RP-225).
+
+- **A Windows lock-file race is now told apart from a genuinely unwritable
+  directory.** Opening a lock name whose previous file is still being deleted
+  fails on Windows with EACCES/EPERM while `lstat` no longer sees it; this
+  used to read as "the directory refuses writes" and lose the record as
+  unusable. A one-file probe now decides: if the directory still accepts a
+  new file, the lock name was only transiently pending and the writer keeps
+  waiting within its bounded attempts; if the probe is refused too, the
+  directory really refuses writes and the call still fails fast (RP-254).
+
+- **A `gh` invocation from the queue or preflight can no longer hang past its
+  case budget.** `github-issues.mjs` and `preflight.mjs` now bound every `gh`
+  child process (10 s), throwing a named error (which command, its arguments,
+  and the bound) on a real timeout; the current actor and the deploy check
+  still fail closed / report `unknown` rather than throw. Only an actual
+  `ETIMEDOUT` is reported as a timeout — a large-output kill
+  (`ENOBUFS`/`SIGTERM`) or any other signal death is rethrown unchanged
+  instead of being misreported as "did not complete within 10000ms" (RP-255).
+
+- **A queue claim is now verified by reading the tracker back, not assumed
+  from a successful write.** `claim()` takes the selection snapshot and
+  refuses — as `claim-stale`, with no write — when the item moved since
+  selection; after writing the transition it re-reads the item, and the claim
+  is only recorded (`workflowClaim`) once the tracker's own status history
+  (Jira) or label/event (GitHub) confirms it landed after that snapshot. On
+  Jira no two controllers can ever both be verified from one snapshot; on
+  `github-issues` that same guarantee holds only across different GitHub
+  accounts — a race between two controllers under the same account is a
+  stated, tested limit, not a guarantee (RP-220).
+
+- **The dispatch usage readers are hardened against a symlink swap and a
+  relative path, and two of their limits are now stated rather than silent.**
+  After `openSync`, the file actually opened is compared against the
+  preceding `lstatSync` by device and inode, rejecting a different file
+  opened in the window between the two calls before its changed content is
+  read (both the Claude transcript and the Codex rollout reader). A relative
+  `agent_transcript_path` is now refused as `transcript-path-not-absolute`
+  before it is opened, rather than read through a path that could resolve
+  outside the expected transcript. Two limits are now documented in the
+  hook's own header: the Codex `no-usage-records` reason is returned only
+  once identity has matched and no `token_usage_record` names the thread —
+  a matched record with no usable counter is `no-usage-counters` instead; and
+  an absolute, non-UNC path is not proven local — a Windows mapped drive
+  letter or `SUBST` alias can still denote a network location this hook has
+  no detector for (RP-269).
+
+### Generator repository (not a rig-facing change)
+
+- Adds `test/helpers/unattended-flag-audit.ts` and
+  `unattended-flag-leak-audit.ts`, wiring `vitest.config.ts` to fail a test
+  that leaks a scoped unattended flag into the real home (RP-271); the same
+  audit's teardown no longer misreads an outer test file's own flag as a leak
+  from the nested vitest child `rig-run-dir-scrub.test.ts` spawns — the
+  nested child now skips the audit under `RIG_SCRUB_TEST_CHILD`, since the
+  outer run's own audit already owns anything it could leak (RP-296).
+- The same nested-vitest-child theme, scoped to
+  `test/template/dispatch-journal.test.ts` (RP-263).
+- Test-only: bounds spawn-heavy test children (the `create`/Spec Kit suites)
+  below their Windows case budget (RP-248).
+- `packages/cli/src/commands/doctor.ts` gains an optional `guardRunner` test
+  seam; production callers never pass it, so a real `doctor` run is
+  unaffected (RP-261).
+- `packages/cli/src/commands/uninstall.ts` gains a read-count test seam and
+  drops one duplicate file read the code never used; the plan's own output is
+  unchanged (RP-245).
+- `docs/decisions/native-first-review.md` records a 2026-09-24 decision to
+  keep the existing Rig reviewers/router/verdict contract rather than grow
+  review behaviour, pending upstream Claude/Codex capability revalidation
+  (RP-241).
+- The secrets-lib linear-growth timing test now compares the minimum of
+  several interleaved samples per input size instead of one wall-clock
+  sample, so a single GC or scheduler pause on a shared CI runner no longer
+  fails it; the bound and the property it checks are unchanged (RP-299).
 
 ## 1.0.1
 
