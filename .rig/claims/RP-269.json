@@ -4,13 +4,13 @@
   "fingerprints": {
     "scope": {
       "algorithm": "sha256",
-      "value": "6847c7749d2bc0fb24456c165dbd4638d6e29c97222ac922b16ae3937e9b826c",
-      "targetSha": "bebb09213f1c1ca88e91da3700b988ce2d01c5e6"
+      "value": "2282af283066f5f6b7e022c8c5b2f74321faffc133503f863cef448735f38814",
+      "targetSha": "2d60dd5275df75947121677b8670a75942a176df"
     },
     "commentary": {
       "algorithm": "sha256",
-      "value": "a29e80bb03c49a56b77055a20a3667e4e555ef4e7583fbbb22e3c85041a35602",
-      "count": 8
+      "value": "70c2e598dc939812d369c6eb9c05d4d99e3fae04882faa400a7e5e8958aaadd4",
+      "count": 15
     }
   },
   "workflowClaim": {
