@@ -291,6 +291,64 @@ describe('planUpgrade — what it would do, before it does anything', () => {
     });
   });
 
+  // RP-270 FIX: the block above proves a bootstrapped run never RESTORES a
+  // deleted PLAN.md — but the `presentInEveryRelease` fallback branch that
+  // makes that true (`upgrade.ts` ~1075-1091) never adds a `seedOnceKept`
+  // entry the way its sibling branch just above it (`prior !== undefined`,
+  // ~1068-1074) does. `seedOnceKept` is what `applyUpgrade` folds into the
+  // FRESH manifest's `kept` bucket (`nextKept`, ~1261) — so the manifest a
+  // bootstrapped run writes after this branch fires carries no
+  // `kept['PLAN.md']` entry at all, even though PLAN.md really was seeded
+  // once and really is deleted on purpose. A plain `init` run right after
+  // reads that manifest, finds no prior seed hash for PLAN.md
+  // (`priorSeedHash`), and — since the file is genuinely absent, so it is
+  // not in `conflicts` either — plans and WRITES it right back
+  // (`init.ts`:395-398), resurrecting a queue the user deliberately deleted.
+  describe('upgrade — a bootstrapped run that leaves PLAN.md deleted must still record it, so a later init does not reseed it (RP-270)', () => {
+    it('records kept["PLAN.md"] in the manifest a bootstrapped upgrade writes, and a following plain init does not recreate PLAN.md', async () => {
+      await initProject(repo, { withWorkflow: true });
+      await rm(abs('PLAN.md'));
+      await rm(abs(WORKFLOW)); // presentInEveryRelease's own fixture requirement, as above
+      await rm(abs(MANIFEST_REL));
+
+      const plan = await planUpgrade(repo);
+      expect(plan.bootstrapped).toBe(true);
+      expect(verdictFor(plan, 'PLAN.md')).toBe('deleted');
+
+      await applyUpgrade(repo, plan);
+      const manifestAfterUpgrade = await readManifest(repo);
+      expect(manifestAfterUpgrade?.kept?.['PLAN.md']).toBeTruthy();
+
+      // The manifest this run just wrote is now the ordinary, non-bootstrapped
+      // case for the `init` that follows — it must not resurrect a file the
+      // user deliberately deleted on the strength of it.
+      await initProject(repo, {});
+      await expect(read('PLAN.md')).rejects.toThrow();
+    });
+
+    // Control: the ordinary, manifest-backed path (never bootstrapped) — the
+    // `prior !== undefined` branch right above the one this ticket fixes —
+    // already carries `seedOnceKept['PLAN.md']` forward correctly, so this is
+    // expected to pass today, unlike the bootstrapped case above.
+    it('control: the ordinary manifest-backed path already keeps kept["PLAN.md"] after a deleted-PLAN.md upgrade, and a following init does not recreate it', async () => {
+      await initProject(repo, { withWorkflow: true });
+      await rm(abs('PLAN.md'));
+      // the manifest survives untouched — this is deliberately NOT the
+      // bootstrapped path
+
+      const plan = await planUpgrade(repo);
+      expect(plan.bootstrapped).toBe(false);
+      expect(verdictFor(plan, 'PLAN.md')).toBe('deleted');
+
+      await applyUpgrade(repo, plan);
+      const manifestAfterUpgrade = await readManifest(repo);
+      expect(manifestAfterUpgrade?.kept?.['PLAN.md']).toBeTruthy();
+
+      await initProject(repo, {});
+      await expect(read('PLAN.md')).rejects.toThrow();
+    });
+  });
+
   // code-reviewer round 1 (PR #332) blocker 5: the migration this ticket
   // promises — a pre-RP-257 manifest (PLAN.md recorded as an ordinary,
   // byte-owned `files` entry, no `kept` bucket at all) converges to the

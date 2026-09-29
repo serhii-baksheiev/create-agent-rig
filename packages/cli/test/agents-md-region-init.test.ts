@@ -288,6 +288,39 @@ describe('initProject — re-running init on an already region-tracked AGENTS.md
     expect(after.split(REGION_END).length - 1).toBe(1);
   });
 
+  // RP-270 documented limit (not fixed by this ticket): `dropStaleRegion`
+  // (init.ts ~514) only fires when AGENTS.md is ABSENT at re-init time —
+  // `!(await exists(dest)) && previous?.regions?.[AGENTS_MAP] !== undefined`.
+  // A user who deletes the region-tracked file and drops in a brand-new,
+  // unmarked file of their own is not "absent" (`exists(dest)` is true), so
+  // the generic write loop takes the ordinary "already exists -> skipped"
+  // branch (init.ts ~590) and the stale `regions['AGENTS.md']` entry from the
+  // OLD file is carried forward unchanged — even though nothing on disk
+  // still matches it, and the new file is left completely alone (never
+  // merged, never refused, never re-marked). A future `upgrade`/`uninstall`
+  // is left vouching for a region that no longer describes anything real.
+  it('limit: replacing a region-tracked AGENTS.md with a brand-new, unmarked file keeps the stale regions entry — present-but-unmarked is left alone; only an ABSENT path drops it', async () => {
+    await writeFile(path.join(repo, 'AGENTS.md'), USER_PREFIX);
+    await initProject(repo, {});
+    const rawBefore = (await readRawManifest()) as RawManifestShape;
+    const staleHash = rawBefore.regions?.['AGENTS.md'];
+    expect(staleHash).toBeTruthy();
+
+    // The user deletes the region-tracked file and drops in a brand-new
+    // file of their own, carrying no markers at all.
+    const replacement = '# a totally different, unrelated document\n';
+    await writeFile(path.join(repo, 'AGENTS.md'), replacement);
+
+    await initProject(repo, {});
+
+    const rawAfter = (await readRawManifest()) as RawManifestShape;
+    // the stale entry survives, unchanged — even though the file it vouches
+    // for no longer exists
+    expect(rawAfter.regions?.['AGENTS.md']).toBe(staleHash);
+    // the replacement file itself is left completely untouched
+    expect(await readFile(path.join(repo, 'AGENTS.md'), 'utf8')).toBe(replacement);
+  });
+
   // Still refused: this is the ordinary first-install refusal (already
   // pinned above, in "refuses foreign or malformed markers, writing
   // nothing") — restated here, explicitly framed as "the manifest records no

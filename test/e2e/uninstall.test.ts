@@ -309,6 +309,31 @@ describe('create-agent-rig uninstall', () => {
     await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
   });
 
+  // The "N file(s) left behind" block (`index.ts` ~1251, the ordinary
+  // `result.manifestRemoved && !detach` branch) had no e2e assertion — every
+  // existing prose check either covers the `--detach` sibling wording
+  // (~1235) or a `partial` run's different phrasing ("preserved — the
+  // manifest was kept"). A plain install always leaves PLAN.md behind (the
+  // seed-once, always-`kept` path, RP-257), so an ORDINARY `uninstall --yes`
+  // with no edits anywhere still reaches this exact branch: the manifest is
+  // removed (a `kept` path never holds it alive, RP-260), and one file is
+  // reported left behind.
+  it('an ordinary uninstall that still leaves PLAN.md behind reports "file(s) left behind", not only the removed count', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runCli(['init'])).code).toBe(0);
+
+    const result = await runCli(['uninstall', '--yes']);
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toMatch(/^Removed \d+ files and the manifest\.$/m);
+    expect(result.stdout).toContain(
+      '1 file(s) left behind — they are yours now, uninstall no longer owns them:',
+    );
+    expect(result.stdout).toContain('! PLAN.md — user-owned (kept by init)');
+    await expect(readFile(path.join(repo, '.claude', '.rig-manifest.json'))).rejects.toThrow();
+    await expect(readFile(path.join(repo, 'PLAN.md'))).resolves.toBeTruthy();
+  });
+
   it('preserves modified wiring, a deleted managed file, and a foreign file, and reports all three', async () => {
     await initGitRepo();
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -457,17 +482,17 @@ describe('create-agent-rig uninstall', () => {
   //
   // code-reviewer round 1 (PR #332) blocker 2: RP-257 moved the printed
   // number to 16 by widening what the formula counts, not by adding
-  // anything genuinely traced. The roll-up's formula is `preserved.length -
-  // unverifiedCount`, so ANY additional `preserved` path that is not itself
-  // an `isUnverifiedReason` match — traced or not — widens the "genuinely
-  // referenced or imported" bucket by one. `PLAN.md` (a seed-once path,
-  // always `kept`, reason `'user-owned (kept by init)'`, never
-  // `isUnverifiedReason`) is now on every rig, and it is not a hook, not
+  // anything genuinely traced. The roll-up's formula was then
+  // `preserved.length - unverifiedCount`, so ANY additional `preserved` path
+  // that was not itself an `isUnverifiedReason` match — traced or not —
+  // widened the "genuinely referenced or imported" bucket by one. `PLAN.md`
+  // (a seed-once path, always `kept`, reason `'user-owned (kept by init)'`,
+  // never `isUnverifiedReason`) is on every rig, and it is not a hook, not
   // traced, and not one of the 7 direct hooks + 6 imports + 2 non-dependency
-  // entries the count is defined to mean. The number this test pins stays
-  // 15: a `kept` non-hook path must be excluded from "genuinely referenced
-  // or imported" (or bucketed on its own), the same way an unreadable seed
-  // is already excluded via `isUnverifiedReason`.
+  // entries the count is defined to mean. The fix subtracts the `kept` paths
+  // as well — the formula is now `preserved.length - unverifiedCount -
+  // keptCount` (`packages/cli/src/index.ts`) — so the number this test pins
+  // stays 15.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');

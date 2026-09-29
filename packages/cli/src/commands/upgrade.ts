@@ -1084,11 +1084,21 @@ export async function planUpgrade(
         // to vouch for a deliberate deletion — reads a missing PLAN.md as
         // brand new and writes it straight back, resurrecting a queue the
         // user removed on purpose.
+        //
+        // RP-270: this branch must also record a `seedOnceKept` entry, same
+        // as its `prior !== undefined` sibling above — otherwise the manifest
+        // this bootstrapped run writes has no seed-once entry for the path at
+        // all, and a later plain `init` reads that absence as "never seeded"
+        // and reseeds it right back, exactly the resurrection this branch
+        // exists to prevent. There is no `prior` hash to carry forward here
+        // (the manifest never had one), so this records the hash of what this
+        // release would have seeded, matching the `new` branch below.
         actions.push({
           rel: file.rel,
           verdict: 'deleted',
           reason: `shipped in every release since ${history.versions[0]}, and is gone — not restored`,
         });
+        seedOnceKept[file.rel] = sha256(file.content);
       } else {
         // Never seeded before, and nothing on disk — the one case this pass
         // actually writes: a release that adds a seed-once path a rig

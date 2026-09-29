@@ -925,6 +925,19 @@ describe('`--help` on a subcommand (RP-239 A1)', () => {
     );
   });
 
+  // `--json`'s payload names three outcomes, and the help text glosses each
+  // one — this pins the "partial" gloss specifically (`index.ts`:135): the
+  // other two ("uninstalled", "detached") already have assertions nearby,
+  // but nothing checked this exact line before.
+  it('uninstall --help glosses the "partial" outcome as something else still kept, manifest stays', async () => {
+    const run = await runCli(repo, ['uninstall', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    expect(run.stdout).toContain(
+      '"partial" (something else still kept, manifest stays), "detached"',
+    );
+  });
+
   it('doctor --help prints usage to stdout and exits 0, never the "accepts only --json" refusal', async () => {
     const run = await runCli(repo, ['doctor', '--help']);
 
