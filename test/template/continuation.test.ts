@@ -2381,6 +2381,172 @@ describe('continuation.mjs CLI — the failed-check line built from a check-run.
     expect(result.code, result.out).toBe(0);
     expect(result.stdout).not.toContain('failed-check:');
   });
+
+  // RP-295 (RP-290 review follow-up, item C.3) — `readFailedChecks` keeps
+  // only the LATEST `check-result` record per check NAME
+  // (`latestByName.set(data.name, data)`), then filters to `outcome ===
+  // 'fail'`. A `spawn-error` record for a name that previously FAILED
+  // becomes the "latest" and is then filtered OUT entirely (spawn-error is
+  // never a failure line) — so the earlier failure's own identity is lost
+  // with NO replacement, not superseded by anything more informative. The
+  // chosen rule this test pins (KISS: "keep the most informative" over
+  // "show both"): a `spawn-error` record never overwrites a prior `fail` (or
+  // `pass`) record for the same name — only another `fail` or a `pass` may
+  // replace it.
+  it('a later spawn-error for a check name does not hide an earlier fail for the same name — the failing identity must not be lost', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'fail',
+      exitCode: 1,
+      failedTests: ['test/a.test.ts > s > one'],
+      tail: 'boom',
+      now: '2026-01-01T00:00:01.000Z',
+    });
+    const { recordEvent } = (await load('run-journal.mjs')) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+    };
+    await recordEvent({
+      runDir,
+      kind: 'check-result',
+      data: {
+        schema: 1,
+        name: 'unit',
+        command: 'pnpm test:unit',
+        outcome: 'spawn-error',
+        exitCode: 127,
+        signal: null,
+        timedOut: false,
+        failedTests: [],
+        log: 'checks/unit-2.log',
+      },
+      now: '2026-01-01T00:00:02.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(
+      result.stdout,
+      'the earlier fail identity was lost behind a later spawn-error for the same check name',
+    ).toContain('failed-check: unit exit 1; tests: test/a.test.ts > s > one');
+  });
+
+  // RP-295 (RP-290 review follow-up, item C.1) — `failed-check:` lines are
+  // appended LAST (`renderFailedCheckLines`, at the end of `composeNote`'s
+  // fixed `lines` array), so they are the FIRST thing `capNote` cuts once
+  // the whole note exceeds `NOTE_CAP` (2000 characters) — `capNote` just
+  // slices from the front, keeping whatever came first regardless of value.
+  // `diagnosis`/`remaining` are each capped at only 500 characters on their
+  // own, yet reliably fill most of that budget with low-value free text
+  // while the higher-value failed-check identity — the whole reason this
+  // line exists — gets truncated out from under it.
+  it('keeps a failed-check line intact, ahead of the whole-note cap, even when diagnosis/remaining filler alone nearly fills the note', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const fillerId = (n: number): string =>
+      `test/cap/case-${n}.test.ts > suite > ${'z'.repeat(280)}`;
+    const lastId = `test/cap/case-last.test.ts > suite > ${'z'.repeat(240)} END-MARKER`;
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'd'.repeat(3000),
+      remaining: 'r'.repeat(3000),
+      failedChecks: [
+        { name: 'unit', exitCode: 1, failedTests: [fillerId(1), fillerId(2), lastId] },
+      ],
+    });
+    expect(note.length).toBeLessThanOrEqual(2000);
+    expect(
+      note,
+      "the failed-check line's own tail (the most specific failing-test identity) was cut by the whole-note cap, while low-value diagnosis/remaining filler text survived intact",
+    ).toContain('END-MARKER');
+  });
+
+  // RP-295 (RP-290 review follow-up, item C.2) — `composeFailedCheckLine`
+  // only ever reads `check?.name`, `check?.exitCode` and `check?.failedTests`
+  // — never `signal`/`timedOut`, even though `check-run.mjs` records both.
+  // `composeTextField(null)` renders `exitCode: null` (check-run's own shape
+  // for a timed-out/signal-killed check, since `child.on('close', (code,
+  // sig) => ...)` reports `code: null` when the process was killed) as the
+  // bare word "unknown" — so a timed-out check's own failed-check line reads
+  // "exit unknown" with NOTHING telling a fresh reader it was a timeout at
+  // all, let alone which signal.
+  it('renders "timed out" in the failed-check line for a timed-out check, instead of a bare "exit unknown"', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        { name: 'unit', exitCode: null, signal: 'SIGKILL', timedOut: true, failedTests: [] },
+      ],
+    });
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `a timed-out check renders no timeout wording at all: ${line}`).toMatch(
+      /timed out/i,
+    );
+  });
+
+  it('renders "killed by SIGTERM" in the failed-check line for a signal-killed (non-timeout) check', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        { name: 'unit', exitCode: null, signal: 'SIGTERM', timedOut: false, failedTests: [] },
+      ],
+    });
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `a signal-killed check renders no signal wording at all: ${line}`).toMatch(
+      /killed by SIGTERM/i,
+    );
+  });
+
+  // RP-295 — "no test runs real check-run output through continuation end to
+  // end". Every test above seeds the journal directly with `run-journal.mjs`'s
+  // `recordEvent`, independent of `check-run.mjs` itself; this is the one
+  // small e2e-style test that chains the REAL scripts together: a fake,
+  // vitest-shaped failing command run through the real check-run.mjs, then
+  // the real continuation.mjs CLI reading the SAME run directory.
+  it('a real check-run.mjs failure flows into a continuation note carrying its failed-check identity (end to end)', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-e2e-run-'));
+    const fakeTestPath = path.join(repoDir, 'fake-vitest.mjs');
+    await writeFile(
+      fakeTestPath,
+      "process.stdout.write(' FAIL  test/e2e/example.test.ts > suite > does the thing\\n');\n" +
+        'process.exit(1);\n',
+    );
+
+    const checkRunResult = await run(
+      process.execPath,
+      [scriptPath('check-run.mjs'), '--name', 'unit', '--', process.execPath, fakeTestPath],
+      repoDir,
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(checkRunResult.code, checkRunResult.out).not.toBe(0);
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).toContain(
+      'failed-check: unit exit 1; tests: test/e2e/example.test.ts > suite > does the thing',
+    );
+  });
 });
 
 // --- wired into the workflow layer -----------------------------------------

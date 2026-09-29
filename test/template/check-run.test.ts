@@ -491,6 +491,64 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
     expect(record!.data.failedTests).toContain('c');
   });
 
+  // RP-295 (RP-290 review follow-up, item E) — `extractFailedTestId` trims
+  // trailing whitespace with `trimEnd()` on the FULL captured identity, but
+  // the 300-character cap (`FAILED_TEST_MAX_CHARS`) is applied LATER, in
+  // `runCheck`'s own push (`normalizedId.slice(0, FAILED_TEST_MAX_CHARS)`),
+  // on the identity `normalizeFailedTestId` already returned. Cutting AFTER
+  // trimming means a cut that lands on INTERIOR whitespace (whitespace that
+  // was never at the identity's own true end, so `trimEnd()` never touched
+  // it) can leave the STORED entry ending in whitespace anyway — exactly
+  // what `trimEnd()` was meant to prevent. The fix this pins: cut first,
+  // THEN trim what the cut exposed.
+  it('trims trailing whitespace exposed by the 300-character cut, not only the identity’s own true end', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    // Character at index 299 (the 300th character) is a space; real content
+    // continues past it, so trimEnd() on the FULL string never removes this
+    // space — the true end is 'B'.repeat(50), not whitespace at all.
+    const id = `${'A'.repeat(299)} ${'B'.repeat(50)}`;
+    await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, { lines: [`FAIL ${id}`], exitCode: 1 }),
+      ],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+    const record = await latestCheckResult(runDir);
+    const entry = record!.data.failedTests[0];
+    expect(entry, JSON.stringify(record!.data.failedTests)).toBe('A'.repeat(299));
+    expect(entry, JSON.stringify(entry)).toHaveLength(299);
+  });
+
+  // RP-295, item E (second half) — a raw `\r` inside a single logical "line"
+  // (makeLineFeeder only splits on `\n`; a bare `\r` used for a
+  // carriage-return redraw stays embedded in the line's own content) can sit
+  // INSIDE the `\S.*` capture (the `s` flag makes `.` match `\r` too), so an
+  // identity can currently swallow everything the runner wrote after its own
+  // `\r` — redraw junk included. The identity should stop at the first
+  // embedded `\r` instead of spanning past it.
+  it('stops a failing-test identity at an embedded \\r rather than swallowing what follows it', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    const line = 'FAIL test/a.test.ts > case\rirrelevant redraw junk';
+    await runCheckRun(
+      ['--name', 'unit', '--', ...runnerCommand(runnerPath, { lines: [line], exitCode: 1 })],
+      {
+        cwd,
+        env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+      },
+    );
+    const record = await latestCheckResult(runDir);
+    expect(record!.data.failedTests, JSON.stringify(record!.data.failedTests)).toEqual([
+      'test/a.test.ts > case',
+    ]);
+  });
+
   it('strips ANSI escape codes from the identity and the tail', async () => {
     const cwd = await freshCwd();
     const runDir = await freshRunDir();
@@ -633,12 +691,23 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
   // fixture below can demonstrate the SMB cost directly off Windows (there is
   // no SMB stack to probe), so the assertions are honest about being a weak
   // guard on this platform and a real one only on win32.
+  // RP-295 (item: "the win32 backslash-UNC timing test order-dependence") —
+  // both fixtures below used to hit the SAME literal host (`192.0.2.1`). An
+  // OS-level DNS/route negative-cache primed by whichever of the two ran
+  // FIRST could make the OTHER artificially fast regardless of whether
+  // check-run's own fs-probing guard still holds — a REINTRODUCED probe
+  // could pass the `elapsedMs` assertion by accident, on nothing but test
+  // ORDER. A fresh, non-routable TEST-NET-3 (RFC 5737, 203.0.113.0/24) host
+  // per call removes that shared state; this is a test-file-only fix, no
+  // production behaviour changes.
+  const uniqueDocIp = (): string => `203.0.113.${1 + Math.floor(Math.random() * 253)}`;
+
   describe('does not touch the filesystem for a UNC-looking failing-test path in runner output', () => {
     it('does not touch the filesystem for a UNC-looking failing-test path in runner output', async () => {
       const cwd = await freshCwd();
       const runDir = await freshRunDir();
       const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
-      const uncPath = '//192.0.2.1/share/a/b.test.ts';
+      const uncPath = `//${uniqueDocIp()}/share/a/b.test.ts`;
       const start = Date.now();
       await runCheckRun(
         [
@@ -665,7 +734,7 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
       const cwd = await freshCwd();
       const runDir = await freshRunDir();
       const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
-      const uncPath = '\\\\192.0.2.1\\share\\a\\b.test.ts';
+      const uncPath = `\\\\${uniqueDocIp()}\\share\\a\\b.test.ts`;
       const start = Date.now();
       await runCheckRun(
         [
@@ -1982,6 +2051,123 @@ describe('a PEM block whose BEGIN and END markers sit on the SAME line', () => {
   });
 });
 
+// --- PEM marker ordering: END followed by a NEW BEGIN on the SAME line ------
+//
+// RP-295 (RP-290 review follow-up, item A) — the `if (inPemBlock)` branch
+// only ever checks for an END marker and, if found, unconditionally
+// disarms: `if (PRIVATE_KEY_END_PATTERN.test(relativized)) inPemBlock =
+// false;`. A line that closes one key AND opens a second on the SAME line
+// (two keys concatenated with no newline between the first END and the
+// second BEGIN) is misread as "block closed", and the second key's own body
+// — on the lines that follow — is never redacted. The rule this pins:
+// armed iff the LAST BEGIN on the line comes after the LAST END.
+
+describe('a line carries END followed by a NEW BEGIN — the block must stay armed for what follows', () => {
+  it('keeps the block armed for the second key body when END and a new BEGIN sit on the SAME line', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    const firstKeyBody = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
+    const secondKeyBody = 'OPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMN';
+    const pemEnd = '-----END RSA PRIVATE KEY-----';
+
+    await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, {
+          lines: [
+            pemHeader(),
+            firstKeyBody,
+            `${pemEnd} ${pemHeader()}`,
+            secondKeyBody,
+            pemEnd,
+            'after-ok',
+          ],
+          exitCode: 1,
+        }),
+      ],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+
+    const record = await latestCheckResult(runDir);
+    const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+
+    expect(
+      logContent,
+      'the second key body leaked — the block was wrongly disarmed by the END on the same line as the new BEGIN',
+    ).not.toContain(secondKeyBody);
+    expect(logContent, 'text after the final END did not survive').toContain('after-ok');
+  });
+});
+
+// --- PEM marker ordering: a BEGIN followed by >256 chars on an over-length line
+//
+// RP-295 (RP-290 review follow-up, item A, second half) — the `overLimit`
+// branch only ever inspects `meta.tail`, the last `OVERFLOW_TAIL_CHARS`
+// (256) raw characters of the CURRENT pending line. A BEGIN header sitting
+// EARLY in an over-length (> 64 KiB) line, followed by more than 256
+// characters of further content still on that SAME line before it closes,
+// is pushed entirely out of that rolling window by the time the line
+// finally closes — `tail` holds only trailing filler, no header — so
+// `inPemBlock` never arms and the key's body on the lines that follow goes
+// out completely unredacted.
+
+const PEM_HEADER_THEN_OVERFLOW_RUNNER_SOURCE = `
+const config = JSON.parse(process.argv[2] ?? '{}');
+process.stdout.write(config.header + 'z'.repeat(Number(config.suffixBytes ?? 0)) + '\\n');
+for (const line of config.afterLines ?? []) {
+  process.stdout.write(\`\${line}\\n\`);
+}
+process.exit(Number(config.exitCode ?? 0));
+`;
+
+describe('a BEGIN header followed by more than 256 characters on the SAME over-length line', () => {
+  it(
+    'still arms the block, even though the small rolling tail no longer contains the header once the line closes',
+    { timeout: 20_000 },
+    async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'header-then-overflow-runner.mjs',
+        PEM_HEADER_THEN_OVERFLOW_RUNNER_SOURCE,
+      );
+      const bodyLine = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
+      const endLine = '-----END RSA PRIVATE KEY-----';
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            header: pemHeader(),
+            suffixBytes: 70 * 1024,
+            afterLines: [bodyLine, endLine, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+
+      expect(
+        logContent,
+        'the key body leaked — a BEGIN header more than 256 characters from the end of an over-length line never armed the block',
+      ).not.toContain(bodyLine);
+      expect(logContent, 'the END line leaked').not.toContain(endLine);
+      expect(logContent, 'text after END did not survive').toContain('after-ok');
+    },
+  );
+});
+
 // --- a single line longer than the credential scan limit ---------------------
 //
 // RP-290 review round 1 — `findSecretValues` reads at most `DEFAULT_SCAN_LIMIT`
@@ -2263,6 +2449,208 @@ describe('an interrupt (SIGINT) delivered to check-run itself, not its process g
       expect(leftover, leftover.join(', ')).toEqual([]);
     },
   );
+});
+
+// --- a signal arriving AFTER the child closes, during read-back -------------
+//
+// RP-295 (RP-290 review follow-up, item B) — `removeInterruptHandlers()`
+// runs immediately once the checked command's own `close`/`error` event
+// resolves — BEFORE the two capture files are read back
+// (`passThroughAndProcess`) and unlinked (the outer `finally`). A
+// SIGINT/SIGTERM landing in that window is no longer caught by this
+// process's own handler: Node's default action tears the process down
+// immediately, and the capture temp files it was about to remove are left
+// behind. The window is normally too narrow to hit from outside reliably —
+// this needs a deterministic seam to land the signal inside it rather than
+// racing real disk I/O. `DELAY_READBACK_PRELOAD_SOURCE` below is a
+// TEST-OWNED fixture (no production file is touched) loaded with `node
+// --import`: it monkeypatches `fs.createReadStream` for the CHILD `node`
+// process only (the one running check-run.mjs, which this file only ever
+// spawns), via `node:module`'s own `syncBuiltinESMExports` — the same
+// technique `content-blind-revalidation.test.ts` already uses (there,
+// in-process, to patch `readFileSync` before a dynamic `import()`) — so the
+// FIRST read-back call blocks for a caller-controlled delay
+// (`CHECK_RUN_TEST_READBACK_DELAY_MS`) before it ever reaches the real file.
+
+const DELAY_READBACK_PRELOAD_SOURCE = `
+import { createRequire, syncBuiltinESMExports } from 'node:module';
+import { PassThrough } from 'node:stream';
+
+const delayMs = Number(process.env.CHECK_RUN_TEST_READBACK_DELAY_MS || '0');
+if (delayMs > 0) {
+  const require = createRequire(import.meta.url);
+  const fs = require('node:fs');
+  const realCreateReadStream = fs.createReadStream;
+  fs.createReadStream = (...args) => {
+    const proxy = new PassThrough();
+    // Deliberately NOT unref()'d: check-run.mjs's own entry point ends in a
+    // top-level await (\`process.exitCode = await runCheck(parsed);\`), and an
+    // unref'd timer does not count as pending event-loop work — with nothing
+    // else keeping the loop alive, Node treats the still-unsettled await as
+    // "Unsettled Top-Level Await" and exits with code 13 almost immediately,
+    // never actually waiting out the delay this preload exists to create.
+    setTimeout(() => {
+      const real = realCreateReadStream(...args);
+      real.on('error', (error) => proxy.destroy(error));
+      real.pipe(proxy);
+    }, delayMs);
+    return proxy;
+  };
+  syncBuiltinESMExports();
+}
+`;
+
+describe('a signal arriving after the checked command closes, before read-back finishes', () => {
+  it(
+    'still removes the capture temp files when SIGINT arrives in that window',
+    { timeout: 20_000 },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnPosix().ok, onlyOnPosix().reason);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const captureTmpDir = await trackedMkdtemp(path.join(tmpdir(), 'check-run-capture-'));
+      const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+      const preloadPath = await writeFixture(
+        cwd,
+        'delay-readback-preload.mjs',
+        DELAY_READBACK_PRELOAD_SOURCE,
+      );
+
+      const checkRunProcess = spawn(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preloadPath).href,
+          CHECK_RUN,
+          '--name',
+          'unit',
+          '--',
+          ...runnerCommand(runnerPath, { lines: ['hello'], exitCode: 0 }),
+        ],
+        {
+          cwd,
+          env: hermeticEnv({
+            RIG_RUN_DIR: runDir,
+            TMPDIR: captureTmpDir,
+            TEMP: captureTmpDir,
+            TMP: captureTmpDir,
+            CHECK_RUN_TEST_READBACK_DELAY_MS: '5000',
+          }),
+        },
+      );
+
+      // The checked command (RUNNER_SOURCE, no sleep configured) exits
+      // almost immediately; the 5s artificial read-back delay above
+      // guarantees check-run is still awaiting the FIRST
+      // `passThroughAndProcess` call — past `removeInterruptHandlers()`,
+      // past the capture fds' `closeSync`, and short of the `finally` that
+      // unlinks the capture files — well before this fixed wait elapses.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      process.kill(checkRunProcess.pid!, 'SIGINT');
+
+      await new Promise<void>((resolve) => checkRunProcess.on('close', () => resolve()));
+
+      const leftover = (await readdir(captureTmpDir)).filter((name) =>
+        name.startsWith('check-run-'),
+      );
+      expect(
+        leftover,
+        `capture files leaked after a SIGINT during read-back: ${leftover.join(', ')}`,
+      ).toEqual([]);
+    },
+  );
+});
+
+// --- documented limits (RP-295 triage of RP-290 review advisories) ----------
+//
+// Each test below asserts that the module HEADER states a specific,
+// already-decided limit — never that the underlying behaviour changes. Per
+// `.claude/rules/invariants.md`'s "state the limits, and test them": a
+// limits comment is the module's own claim about how far it can be trusted,
+// and nothing checks prose on its own, so it drifts unless something reads
+// it back. These are DECLINE-with-a-stated-limit outcomes from the RP-295
+// triage, not TAKE fixes — see the journal / PR description for the
+// per-item reasoning.
+
+describe('the module header states its own backpressure limit (RP-295, item D)', () => {
+  // `passThroughAndProcess` calls `dest.write(chunk)` without ever checking
+  // its return value or pausing `readStream` on backpressure — measured
+  // directly: piping 400 MB to a stalled reader peaked at 551 MB RSS in this
+  // process. The header currently claims "never loading the whole thing
+  // into memory at once" with no caveat for a slow/stalled DESTINATION
+  // reader (the caller's own stdout/stderr) — that promise holds for the
+  // bounded, chunk-at-a-time SOURCE read, but not for how much unflushed
+  // data can queue at the destination end when it cannot keep up. A cheap,
+  // non-flaky, in-scope (test-file-only) reproduction of the memory bound
+  // itself was not available without either exporting `passThroughAndProcess`
+  // for direct unit testing or a real multi-hundred-MB stalled-pipe/RSS
+  // measurement (cross-platform-fragile, and heavy for this suite) — both
+  // implementation changes outside a test-writer's scope — so this item is
+  // declined with a stated limit instead of a behavioural fix.
+  it('names that a stalled destination reader is not memory-bounded, since dest.write() backpressure is not honoured', async () => {
+    const source = await readFile(CHECK_RUN, 'utf8');
+    expect(
+      source,
+      'the header still claims "never loading the whole thing into memory at once" with no caveat for a stalled/slow destination reader — passThroughAndProcess calls dest.write(chunk) without checking its return value or pausing the source stream on backpressure',
+    ).toMatch(/backpressure/i);
+  });
+});
+
+describe('the CMD_PATH_META_CHARS comment correctly describes what JS \\s matches (RP-295, item G)', () => {
+  it('does not attribute Unicode-whitespace matching to the u flag, and names U+2028, U+2029 and U+FEFF alongside the Space_Separator set', async () => {
+    const source = await readFile(CHECK_RUN, 'utf8');
+    expect(
+      source,
+      'the comment still reads "`u`-flagged `\\s`" — JS `\\s` matches the same WhiteSpace/LineTerminator set with or without the u flag; the flag has nothing to do with it',
+    ).not.toContain('`u`-flagged `\\s`');
+    expect(
+      source,
+      "the comment's own list of what \\s matches omits U+2028 (LINE SEPARATOR), which \\s DOES match as a line terminator",
+    ).toContain('U+2028');
+    expect(
+      source,
+      "the comment's own list of what \\s matches omits U+2029 (PARAGRAPH SEPARATOR), which \\s DOES match as a line terminator",
+    ).toContain('U+2029');
+    expect(
+      source,
+      "the comment's own list of what \\s matches omits U+FEFF (ZERO WIDTH NO-BREAK SPACE / BOM), which \\s DOES match",
+    ).toContain('U+FEFF');
+  });
+});
+
+describe('declined RP-290 review advisories, each pinned as a one-line header limit (RP-295)', () => {
+  it('states that a journalled check-result does not itself wire the check into the gate-stop-dod Definition-of-Done gate', async () => {
+    const source = await readFile(CHECK_RUN, 'utf8');
+    expect(
+      source,
+      'the header never mentions gate-stop-dod or dod-checks.json — a reader could assume a journalled check-result is automatically enforced by the stop gate, when wiring it in is a separate, config-driven step',
+    ).toMatch(/gate-stop-dod|dod-checks\.json/);
+  });
+
+  it('documents the trade-off that the cmd.exe batch-path allowlist also refuses ordinary, SAFE non-ASCII punctuation', async () => {
+    const source = await readFile(CHECK_RUN, 'utf8');
+    expect(
+      source,
+      'the header documents Unicode letters/marks/numbers passing the allowlist, but never states that an ordinary, SAFE non-ASCII punctuation mark (a typographic apostrophe as in "O’Brien", full-width brackets) is refused too, not only an unsafe shape',
+    ).toMatch(/non-ASCII punctuation|typographic apostrophe|full-width/i);
+  });
+
+  it('states that the macOS /private-prefix rule reads process.platform directly and has no non-darwin test coverage', async () => {
+    const source = await readFile(CHECK_RUN, 'utf8');
+    expect(
+      source,
+      'the header documents the /private-prefix rule itself but never states that DARWIN is read from process.platform directly (not injectable), so the rule has no test coverage off macOS',
+    ).toMatch(/not injectable|cannot be exercised|no non-darwin|untestable off (macOS|darwin)/i);
+  });
+
+  it('states that relativize strips only the FIRST matching prefix candidate per value', async () => {
+    const source = await readFile(CHECK_RUN, 'utf8');
+    expect(
+      source,
+      'relativize returns as soon as ONE candidate prefix matches — a value carrying TWO differently-spelled absolute forms of cwd (e.g. the raw cwd and its realpath) on the same line has only the first found form stripped; the header never states this',
+    ).toMatch(/only the first matching prefix|first matching prefix candidate/i);
+  });
 });
 
 // --- wired into Core ---------------------------------------------------------

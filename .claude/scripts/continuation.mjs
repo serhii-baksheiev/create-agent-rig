@@ -779,10 +779,37 @@ const composeFreeTextField = (value) => {
 /** `composeFreeTextField`, plus the per-field 500-character cap `diagnosis`/`remaining` carry. */
 const composeCappedTextField = (value) => truncateField(composeFreeTextField(value));
 
-/** Cap the WHOLE note — a backstop for a field this module does not cap on its own. */
-const capNote = (note) => {
-  if (note.length <= NOTE_CAP) return note;
-  return `${note.slice(0, NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length)}${NOTE_TRUNCATION_SUFFIX}`;
+/**
+ * Cap the WHOLE note — a backstop for a field this module does not cap on
+ * its own. RP-295 (RP-290 review follow-up, item C.1) — `prefixText` (the ten
+ * fixed `ticket`/`stop`/.../`remaining` lines) and `failedCheckText` (zero or
+ * more `failed-check:` lines) are capped SEPARATELY here: the old version cut
+ * one joined string from the front, so a note over `NOTE_CAP` lost whatever
+ * sat at the very END — the failed-check block, appended last, ahead of
+ * everything else that is only ever `unknown` or capped free text
+ * (`diagnosis`/`remaining`, `FIELD_CAP` each). The failed-check block is the
+ * highest-value content this note carries, so it is now the one thing that
+ * survives intact: `prefixText` is truncated to whatever budget remains
+ * after reserving room for the full `failedCheckText` and the truncation
+ * suffix. See `continuation.test.ts` (absent in a generated rig) › "keeps a
+ * failed-check line intact, ahead of the whole-note cap, even when
+ * diagnosis/remaining filler alone nearly fills the note".
+ */
+const capNote = (prefixText, failedCheckText) => {
+  const full = failedCheckText ? `${prefixText}\n${failedCheckText}` : prefixText;
+  if (full.length <= NOTE_CAP) return full;
+
+  const reserved = failedCheckText ? failedCheckText.length + 1 : 0;
+  const budget = NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length - reserved;
+  if (budget < 0) {
+    // The failed-check block alone, plus the suffix, is already over
+    // NOTE_CAP — bounded the same way any other over-cap case here is: fall
+    // back to truncating the WHOLE joined note from the front, never an
+    // unbounded write.
+    return `${full.slice(0, NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length)}${NOTE_TRUNCATION_SUFFIX}`;
+  }
+  const truncatedPrefix = `${prefixText.slice(0, budget)}${NOTE_TRUNCATION_SUFFIX}`;
+  return failedCheckText ? `${truncatedPrefix}\n${failedCheckText}` : truncatedPrefix;
 };
 
 /**
@@ -847,6 +874,36 @@ const renderVerdict = (verdict) => {
   return `${gate} ${answer} @ ${shortSha}${suffix}`;
 };
 
+// RP-295 (RP-290 review follow-up, item C.2) — a signal name is rendered
+// verbatim into the note, so it goes through the same allowlist shape every
+// other structured value in this module is held to rather than being passed
+// through unchecked: exactly `SIG` followed by 1-12 uppercase letters/digits
+// (`SIGTERM`, `SIGKILL`, `SIGRT35`, …). Anything else — `check-run.mjs`
+// itself only ever sets `signal` from Node's own `child.on('close', (code,
+// sig) => …)`, but this module never trusts an upstream shape it does not
+// control — is omitted rather than rendered, falling back to the bare exit
+// code below.
+const SIGNAL_NAME_PATTERN = /^SIG[A-Z0-9]{1,12}$/;
+
+/**
+ * The outcome portion of a `failed-check:` line — RP-295 (RP-290 review
+ * follow-up, item C.2). `composeFailedCheckLine` used to read only
+ * `exitCode`, never `signal`/`timedOut`, even though `check-run.mjs` records
+ * both: a timed-out or signal-killed check reports `exitCode: null` (Node's
+ * own `child.on('close', (code, sig) => …)` shape once a process is killed),
+ * which rendered as the bare, uninformative "exit unknown" — nothing told a
+ * fresh reader the check never got the chance to fail on its own. `timedOut`
+ * takes priority over `signal` (a timeout kill sets both, and "timed out" is
+ * the more specific fact — it explains WHY the process was signalled).
+ */
+const describeCheckOutcome = (check) => {
+  if (check?.timedOut === true) return 'timed out';
+  if (typeof check?.signal === 'string' && SIGNAL_NAME_PATTERN.test(check.signal)) {
+    return `killed by ${check.signal}`;
+  }
+  return `exit ${composeTextField(check?.exitCode)}`;
+};
+
 /**
  * One `failed-check: <name> exit <code>; tests: <id1>, <id2>…` line — RP-290,
  * from a `check-run.mjs` `check-result` record whose latest outcome for that
@@ -856,18 +913,21 @@ const renderVerdict = (verdict) => {
  * same way — and a REPO-RELATIVE test id (no leading `/`) is not itself a
  * shape any of the five structured path patterns matches, so it survives
  * intact rather than becoming `[path]`. `tests:` reads `unknown` when the
- * record named no failing test id at all, never an empty string.
+ * record named no failing test id at all, never an empty string. The outcome
+ * portion renders "timed out" or "killed by <SIGNAL>" instead of a bare
+ * "exit unknown" where `check-run.mjs` recorded one — see
+ * `describeCheckOutcome` above.
  */
 const composeFailedCheckLine = (check) => {
   const name = composeTextField(check?.name);
-  const exitCode = composeTextField(check?.exitCode);
+  const outcome = describeCheckOutcome(check);
   const ids = Array.isArray(check?.failedTests)
     ? check.failedTests
         .filter((id) => typeof id === 'string' && id.trim() !== '')
         .map((id) => composeTextField(id))
     : [];
   const testsField = ids.length > 0 ? ids.join(', ') : 'unknown';
-  return `failed-check: ${name} exit ${exitCode}; tests: ${testsField}`;
+  return `failed-check: ${name} ${outcome}; tests: ${testsField}`;
 };
 
 /** `failedChecks` renders as zero or more `failed-check:` lines, never guessed when absent. */
@@ -901,7 +961,7 @@ export const composeNote = ({
     );
   }
 
-  const lines = [
+  const prefixLines = [
     'rig-continuation v1',
     `ticket: ${composeTextField(ticket)}`,
     `stop: ${stop}`,
@@ -912,10 +972,10 @@ export const composeNote = ({
     `latest-verdict: ${renderVerdict(verdict)}`,
     `diagnosis: ${composeCappedTextField(diagnosis)}`,
     `remaining: ${composeCappedTextField(remaining)}`,
-    ...renderFailedCheckLines(failedChecks),
   ];
+  const failedCheckText = renderFailedCheckLines(failedChecks).join('\n');
 
-  return capNote(lines.join('\n'));
+  return capNote(prefixLines.join('\n'), failedCheckText);
 };
 
 /**
@@ -1005,6 +1065,15 @@ export const readFailedChecks = (runDir) => {
       if (event.kind !== CHECK_RESULT_KIND) continue;
       const data = event.data;
       if (!data || typeof data.name !== 'string') continue;
+      // RP-295 (RP-290 review follow-up, item C.3) — a `spawn-error` record
+      // never overwrites a PRIOR record for the same name: `spawn-error` is
+      // filtered out below regardless (a command that never started is not
+      // a test failure), so letting it become "latest" for a name that had
+      // already failed would lose that failure's own identity with nothing
+      // more informative to replace it. Only another `fail` or a `pass`
+      // record may replace an existing entry — a `spawn-error` is recorded
+      // only when it is the FIRST thing seen for that name.
+      if (data.outcome === 'spawn-error' && latestByName.has(data.name)) continue;
       latestByName.set(data.name, data);
     }
     return Array.from(latestByName.values()).filter((data) => data.outcome === 'fail');
