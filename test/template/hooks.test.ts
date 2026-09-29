@@ -661,6 +661,75 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     ).toBe(2);
   });
 
+  // RP-309 gate round 3 (code-reviewer round 2): `cwdTargetString` joins the
+  // WHOLE tracked `{ anchor, parts }` stack from scratch every time `checkRm`
+  // is called — and `checkRm` runs once per `rm` SEGMENT on the command line,
+  // not once per command line. A long anchored `cd` followed by many cheap,
+  // non-catastrophic `rm` segments pays the anchor's full length on every one
+  // of them: segment count × anchor depth, not segment count + anchor depth —
+  // the same quadratic hazard RP-309 gate round 2 already named for a
+  // relative `cd` chain, now hit through `rm` instead. The command below
+  // tracks a 40,000-segment anchor with one `cd`, then runs 40,000 harmless
+  // `rm x` segments (each pays the join in full) before a final `cd ~/.ssh &&
+  // rm -rf *` that must still be caught. Measured directly against this hook
+  // at this size: ~21s (a bare `cd ~/.ssh && rm -rf *` alone measures ~0.23s).
+  // Measured in the child (RP-158), never by the parent's wall clock around
+  // the spawn.
+  it('joins the tracked cwd once per rm segment, not once per segment squared (RP-309 gate round 3)', async () => {
+    const N = 40_000;
+    const anchor = 'a/'.repeat(N);
+    const chain = `cd ~/${anchor} && ` + 'rm x; '.repeat(N) + 'cd ~/.ssh && rm -rf *';
+    // Killed well under vitest's own 15s project timeout, so a hang reports
+    // THIS assertion's message rather than a bare framework timeout.
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: the final cd lands in ~/.ssh, and rm -rf * deletes it (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 gate round 3 (code-reviewer round 2): `resolveRmTargetAgainstCwd`
+  // slices and folds a COPY of the tracked cwd's `parts` array for every
+  // relative `..`-bearing `rm` OPERAND — and a single `rm` can carry many
+  // operands on one command line. A long anchored `cd` followed by one `rm`
+  // with many `../x` operands pays the anchor's full length on every operand:
+  // operand count × anchor depth, not operand count + anchor depth. The
+  // command below tracks a 40,000-segment anchor with one `cd`, then runs a
+  // single `rm` with 40,000 `../x` operands (each pays the slice+fold in
+  // full, none of them individually catastrophic) before a final `cd ~/.ssh
+  // && rm -rf *` that must still be caught. Measured directly against this
+  // hook at this size: ~40s (a bare `cd ~/.ssh && rm -rf *` alone measures
+  // ~0.09s). Measured in the child (RP-158), never by the parent's wall clock
+  // around the spawn.
+  it('resolves each `..`-bearing rm operand against the tracked cwd once, not once per operand squared (RP-309 gate round 3)', async () => {
+    const N = 40_000;
+    const anchor = 'a/'.repeat(N);
+    const chain = `cd ~/${anchor} && rm` + ' ../x'.repeat(N) + ' && cd ~/.ssh && rm -rf *';
+    // Killed well under vitest's own 15s project timeout, so a hang reports
+    // THIS assertion's message rather than a bare framework timeout.
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: the final cd lands in ~/.ssh, and rm -rf * deletes it (got ${result.code})`,
+    ).toBe(2);
+  });
+
   // RP-309 gate round 2: `resolveCwdTarget` reads the RAW first token
   // (`command.args[0]`) specifically so `cd -` (return to $OLDPWD) can be told
   // apart from a bare `cd` (lands at $HOME) — but that also means a leading
@@ -788,7 +857,19 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
   // unaffected: it genuinely does land at $HOME. Confirmed on head 0ac2fa3:
   // `pushd && rm -rf *` exits 2 today (wrongly treated as landing at $HOME),
   // and must exit 0.
-  it('does not treat a bare `pushd` (no operand) as landing at $HOME — it swaps the stack, not cd (RP-309 gate round 2)', async () => {
+  //
+  // RP-309 gate round 3 (owner-controller decision): the round-2 fix above
+  // "clears tracking the same way `cd -` does" for EVERY bare `pushd` —
+  // but that is only correct when the stack was empty to begin with. With a
+  // directory already tracked, a bare `pushd` on an empty (single-entry)
+  // stack genuinely FAILS in real bash and leaves the cwd exactly where it
+  // was — clearing tracking in that case is the unsafe direction: it lets a
+  // wildcard delete right after it through uninspected, even though the real
+  // shell never moved. So a bare `pushd` must leave an ALREADY-tracked cwd
+  // UNCHANGED, not clear it — only the nothing-tracked-yet case (asserted
+  // below) stays a clear. Confirmed on head 43d2a8e: both commands below
+  // exit 0 today (tracking is wrongly cleared) and must exit 2.
+  it('does not treat a bare `pushd` (no operand) as landing at $HOME, and does not clear an already-tracked catastrophic cwd either (RP-309 gate round 3)', async () => {
     const result = await run('pushd && rm -rf *');
     expect(
       result.code,
@@ -796,6 +877,91 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     ).toBe(0);
     // a bare `cd` is unaffected — it genuinely lands at $HOME
     expect((await run('cd && rm -rf *')).code).toBe(2);
+    // with something already tracked, a bare pushd on an empty stack fails
+    // and leaves the cwd unchanged — tracking must stay, not clear
+    for (const command of ['cd ~; pushd; rm -rf *', 'cd ~ && pushd && rm -rf *']) {
+      const tracked = await run(command);
+      expect(
+        tracked.code,
+        `${command} — a bare pushd fails on an empty stack and leaves the cwd unchanged, so tracking must stay $HOME, exits ${tracked.code} on head`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-309 gate round 3 (security-scanner round 2, verified against real
+  // bash): more spellings that leave the cwd exactly where it was, so
+  // tracking must likewise stay exactly where it was rather than clear or
+  // guess at a new anchor.
+  //   - `pushd -n DIR` pushes DIR onto the stack WITHOUT cd-ing there (`-n`
+  //     suppresses the directory change) — the cwd stays whatever it was
+  //     before the `pushd`, never `DIR` itself.
+  //   - `pushd +N`/`pushd -N` rotate the stack to the Nth entry and cd there —
+  //     but with only one entry tracked (the ordinary case here), rotating
+  //     fails exactly like a bare `pushd` on an empty stack does, and leaves
+  //     the cwd unchanged for the same reason.
+  // Confirmed on head 43d2a8e: every command below exits 0 today (`pushd -n
+  // DIR` is mistracked as landing AT `DIR`; `pushd +1`/`pushd -1` clear or
+  // mis-fold tracking instead of leaving it alone).
+  it('does not move tracking for `pushd -n DIR`, `pushd +N` or `pushd -N` — none of them change the cwd (RP-309 gate round 3)', async () => {
+    for (const command of [
+      'cd / && pushd -n /tmp && rm -rf *',
+      'cd ~/.ssh && pushd -n /tmp && rm -rf *',
+      'cd / ; pushd ; rm -rf *',
+      'cd / ; pushd +1 ; rm -rf *',
+      'cd / ; pushd -1 ; rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — the pushd does not change the cwd, so tracking must not move, exits ${result.code} on head`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-309 gate round 3 (code-reviewer round 2, A2 surviving mutants): an
+  // `rm` operand's OWN `..` resolution against the tracked cwd
+  // (`resolveRmTargetAgainstCwd`) must fold against a COPY of the tracked
+  // stack, never the stack itself — an `rm` never changes the working
+  // directory, so a LATER `cd`/`pushd` on the same command line must still
+  // fold against exactly what a prior `cd` left, untouched by an `rm` in
+  // between. `cd ~/p` tracks `~/p`; `rm -rf ../q/r` resolves to the
+  // non-catastrophic `~/q/r` and must leave `~/p` tracked; the following
+  // `cd ..` then lands on `~`, and `rm -rf *` wipes it.
+  it("does not let an rm operand's own `..` resolution mutate the tracked cwd for a later cd (RP-309 gate round 3)", async () => {
+    const result = await run('cd ~/p && rm -rf ../q/r && cd .. && rm -rf *');
+    expect(
+      result.code,
+      `should BLOCK: the rm resolution must not have moved tracking off ~/p, so cd .. lands on ~ (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 gate round 3 (code-reviewer round 2, A2 surviving mutants):
+  // escaping upward past an anchor with plain `cd ..` segments (no `..`-laden
+  // single operand) must switch tracking to the filesystem root exactly the
+  // same way `resolveTarget`'s own anchor-escape does — `cd ~ && cd .. && cd
+  // ..` climbs out of $HOME entirely (there is no home-relative name for
+  // where that lands), and a further `cd usr` from there is `/usr`.
+  it('escapes an anchor via plain `cd ..` segments onto the filesystem root (RP-309 gate round 3)', async () => {
+    const result = await run('cd ~ && cd .. && cd .. && cd usr && rm -rf *');
+    expect(
+      result.code,
+      `should BLOCK: two cd .. off ~ escape onto /, and cd usr from there is /usr (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 gate round 3 (code-reviewer round 2, A2 surviving mutants): an
+  // `rm` operand that resolves back INSIDE `~/.ssh` via the tracked-cwd
+  // route must get the credential wording, exactly like the direct-`rm`
+  // case RP-262 already pins (`names credentials, not root/home, for a '..'
+  // that resolves back inside ~/.ssh`) — this is the same resolution, now
+  // reached by tracking a `cd` into a subdirectory of `~/.ssh` first.
+  it('names SSH credentials for an rm operand that resolves back inside ~/.ssh via the tracked cwd (RP-309 gate round 3)', async () => {
+    const result = await run('cd ~/.ssh/x && rm -rf ../id_rsa');
+    expect(result.code).toBe(2);
+    expect(
+      result.stderr,
+      `cd ~/.ssh/x && rm -rf ../id_rsa resolves to ~/.ssh/id_rsa — reason should name credentials/keys: ${result.stderr}`,
+    ).toMatch(/credential|key material|ssh key/i);
   });
 
   // RP-309 gate round 2: `resolveCwdTarget`'s own doc comment points readers

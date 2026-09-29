@@ -60,9 +60,16 @@
 //   - `~user` (a tilde naming ANOTHER account's home, not the caller's own)
 //     is never resolved — only a bare `~`/`$HOME` is;
 //   - `popd` is never tracked at all — only `cd`/`pushd` change it;
-//   - a bare `pushd` (no operand) SWAPS the directory stack rather than
-//     landing at $HOME, so tracking clears the same way `cd -` does — a bare
-//     `cd` is unaffected, since it genuinely lands at $HOME;
+//   - a bare `pushd` (no operand), `pushd -n DIR` (pushes DIR WITHOUT cd-ing
+//     there) and `pushd +N`/`pushd -N` (rotate the stack to its Nth entry —
+//     with the single entry this guard ever tracks, that rotation FAILS in
+//     real bash exactly like a bare `pushd` on an empty stack does) all
+//     leave the cwd exactly where it was, so tracking is left exactly where
+//     it was too, rather than cleared or guessed at (RP-309 gate round 3) —
+//     a bare `cd` is unaffected, since it genuinely lands at $HOME. A
+//     POPULATED real shell stack can make any of these land somewhere this
+//     guard cannot see either way; keeping the OLD tracking over-blocks a
+//     wildcard delete that follows, which is the safe direction;
 //   - a subshell-local `cd`/`pushd` is not told apart from the outer shell's own tracked directory (`( cd ~/.ssh )`) either —
 //     tracking still updates when the subshell closes, which over-blocks a
 //     wildcard delete written after it. That is the safe direction, so it
@@ -873,16 +880,25 @@ function resolveTarget(token) {
 
 /**
  * The `cd`/`pushd` OPERAND, read past whatever precedes it (RP-309 gate
- * round 2). `--` ends option parsing without being an operand itself; any
- * OTHER token starting with `-` that is more than one character (`-P`, `-L`,
- * `-e`, `-@`, …) is an option and is skipped rather than read as the target
- * — the previous version read the raw first token unconditionally, so the
- * real path one argument later was never looked at. A LONE `-` before any
- * operand is `$OLDPWD` and is reported as its own kind, because it must
- * resolve differently from a bare `cd` (`$HOME`) — see `advanceCwd`. No
- * token left at all is reported as `bare`.
+ * round 2), and — `pushd` only — past the spellings that never actually cd
+ * anywhere at all (RP-309 gate round 3): `-n` suppresses the directory
+ * change entirely, so the DIRECTORY argument that follows it is not a real
+ * cd target either, and `+N`/`-N` (digits only) rotate the stack to its Nth
+ * entry rather than naming a directory — both are reported as `unmoved`
+ * before either is read as an ordinary flag or token, which is what the
+ * generic flag-skip below would otherwise do to `-n` (skip it and read DIR
+ * as if `-n` were `-P`) and what the "not a `-`-prefixed token at all" path
+ * would do to `+N` (read `+1` itself as a literal relative path segment).
+ * `--` ends option parsing without being an operand itself; any OTHER token
+ * starting with `-` that is more than one character (`-P`, `-L`, `-e`, `-@`,
+ * …) is an option and is skipped rather than read as the target — the
+ * previous version read the raw first token unconditionally, so the real
+ * path one argument later was never looked at. A LONE `-` before any operand
+ * is `$OLDPWD` and is reported as its own kind, because it must resolve
+ * differently from a bare `cd` (`$HOME`) — see `advanceCwd`. No token left
+ * at all is reported as `bare`.
  */
-function cdOperand(args) {
+function cdOperand(name, args) {
   let sawDashDash = false;
   for (const { value } of args) {
     if (!sawDashDash) {
@@ -891,6 +907,9 @@ function cdOperand(args) {
         continue;
       }
       if (value === '-') return { kind: 'oldpwd' };
+      if (name === 'pushd' && (value === '-n' || /^[+-]\d+$/.test(value))) {
+        return { kind: 'unmoved' };
+      }
       if (value.length > 1 && value.startsWith('-')) continue; // -P, -L, -e, -@…
     }
     return { kind: 'token', value };
@@ -938,18 +957,57 @@ function foldRelativeSegments(state, raw) {
 }
 
 /**
- * The joined string form of a tracked cwd — `~`, `~/.ssh`, `/etc`, `/`, … —
- * built ONLY here, where `checkRm` actually needs to compare it against the
- * literal `CATASTROPHIC`/wildcard sets, never on every `cd` (RP-309 gate
- * round 2: deciding catastrophic-ness from `anchor`/`parts.length` alone
- * would still need this exact string for the set-membership checks
- * themselves, so it stays a single join call at the one place that reads
- * it, rather than something every `cd` rebuilds).
+ * The joined string form of a `{ anchor, parts }` position — `~`, `~/.ssh`,
+ * `/etc`, `/`, … Only called where `parts` is already known to be short
+ * (bounded by `classifyPosition`'s own `MAX_CATASTROPHIC_DEPTH` check, or by
+ * an operand's own length in `resolveRmOperandAgainstCwd`) — never on the
+ * tracked cwd's full stack unconditionally, which is exactly what made
+ * `checkRm` quadratic in the number of `rm` segments/operands on a command
+ * line before RP-309 gate round 3 (it joined the WHOLE tracked stack once
+ * per segment, and again once per `..`-bearing operand — see
+ * test/template/hooks.test.ts (absent in a generated rig) ›
+ * "joins the tracked cwd once per rm segment, not once per segment squared
+ * (RP-309 gate round 3)" and › "resolves each `..`-bearing rm operand
+ * against the tracked cwd once, not once per operand squared (RP-309 gate
+ * round 3)").
  */
 function cwdTargetString(cwd) {
   if (!cwd) return null;
   if (cwd.anchor === '/') return cwd.parts.length === 0 ? '/' : `/${cwd.parts.join('/')}`;
   return cwd.parts.length === 0 ? cwd.anchor : `${cwd.anchor}/${cwd.parts.join('/')}`;
+}
+
+/**
+ * The deepest non-`.ssh` member of `CATASTROPHIC` is 2 segments past its
+ * anchor (`/usr/*`, `/System/*`, …); doubled with margin so a future
+ * addition to that set does not have to move this bound. Past this depth —
+ * and outside the one subtree allowed to be deep, see `classifyPosition` —
+ * a position is provably not a member of `CATASTROPHIC` without ever
+ * joining `parts` to check.
+ */
+const MAX_CATASTROPHIC_DEPTH = 8;
+
+/**
+ * Classify a `{ anchor, parts }` position as catastrophic/credential WITHOUT
+ * joining the whole `parts` array when it is long (RP-309 gate round 3).
+ *
+ * Being (still) inside the `~/.ssh`/`$HOME/.ssh` subtree is decided from
+ * `parts[0]` alone, however many segments follow — a tracked position never
+ * carries a literal `..` (`foldRelativeSegments`/`resolveTarget` fold it
+ * away as they build `parts`, and `resolveRmOperandAgainstCwd` below folds
+ * an operand's own `..` before ever reading the tracked stack), so nothing
+ * past `.ssh` can walk back out of the subtree — see `isCredentialTarget`'s
+ * own doc comment for why a literal `..` would otherwise defeat this exact
+ * shortcut. Everything else beyond `MAX_CATASTROPHIC_DEPTH` is answered
+ * "not catastrophic" from the depth alone; within it, the join is cheap
+ * enough to just do and compare against the real sets.
+ */
+function classifyPosition(anchor, parts) {
+  const inSshSubtree = (anchor === '~' || anchor === '$HOME') && parts[0] === '.ssh';
+  if (inSshSubtree) return { catastrophic: true, credential: true };
+  if (parts.length > MAX_CATASTROPHIC_DEPTH) return { catastrophic: false, credential: false };
+  const target = cwdTargetString({ anchor, parts });
+  return { catastrophic: isCatastrophic(target), credential: isCredentialTarget(target) };
 }
 
 /**
@@ -970,14 +1028,22 @@ function cwdTargetString(cwd) {
  *
  * See the header's own "The limits, stated exactly" section for the
  * spellings this deliberately still cannot resolve (`cd -`/`pushd -`,
- * `~user`, `popd`, a bare `pushd`, a subshell-local `cd`, `builtin cd`).
+ * `~user`, `popd`, a bare `pushd`, `pushd -n`/`+N`/`-N`, a subshell-local
+ * `cd`, `builtin cd`).
  */
 function advanceCwd(cwd, name, args) {
-  const operand = cdOperand(args);
+  const operand = cdOperand(name, args);
   if (operand.kind === 'oldpwd') return null; // `cd -`/`pushd -`: $OLDPWD
+  if (operand.kind === 'unmoved') return cwd; // RP-309 gate round 3: `pushd -n DIR`/`pushd +N`/`pushd -N` never move the cwd
   if (operand.kind === 'bare') {
-    // a bare `cd` lands at $HOME; a bare `pushd` only swaps the stack.
-    return name === 'pushd' ? null : { anchor: '~', parts: [] };
+    // A bare `cd` genuinely lands at $HOME. A bare `pushd` SWAPS the
+    // directory stack rather than landing at $HOME — with nothing tracked
+    // yet there is nothing to swap to either (tracking stays cleared), and
+    // with something already tracked, a bare `pushd` on the one-entry stack
+    // this guard ever builds FAILS in real bash and leaves the cwd exactly
+    // where it was (RP-309 gate round 3) — both read as "leave cwd exactly
+    // as it is", i.e. `cwd` itself, whether that is `null` or tracked.
+    return name === 'pushd' ? cwd : { anchor: '~', parts: [] };
   }
   const raw = operand.value.replace(/\$\{HOME\}/g, '$HOME');
   if (/^~[^/]/.test(raw)) return null; // `~user`: another account's home
@@ -996,15 +1062,74 @@ function advanceCwd(cwd, name, args) {
 }
 
 /**
- * A RELATIVE `..`-bearing `rm` operand resolved against the tracked cwd, on
- * a COPY of its parts — an `rm` never itself changes the working directory,
- * so the tracked stack a later `cd`/`pushd` on the same command line reads
- * must come out exactly as it was (RP-309 gate round 2, "the escape check").
+ * Fold a `..`-bearing `rm` OPERAND's OWN segments in isolation — never
+ * reading the tracked cwd at all — into how many segments it pops off
+ * whatever precedes it (`popCount`) and what it pushes after those pops
+ * (`localSegments`). Bounded to the operand's own length, exactly like
+ * `foldRelativeSegments` (RP-309 gate round 2) already is for a `cd` — the
+ * input has already been through `normalizeTarget`, so `.`/empty segments
+ * and `${HOME}` are already gone; the filter below is a defensive no-op for
+ * that, not a second pass over anything.
  */
-function resolveRmTargetAgainstCwd(cwd, target) {
-  const state = { anchor: cwd.anchor, parts: cwd.parts.slice() };
-  foldRelativeSegments(state, target);
-  return cwdTargetString(state);
+function foldOperandSegments(normalized) {
+  const local = [];
+  let popCount = 0;
+  for (const segment of normalized.split('/')) {
+    if (segment === '' || segment === '.') continue;
+    if (segment === '..') {
+      if (local.length > 0) local.pop();
+      else popCount += 1;
+      continue;
+    }
+    local.push(segment);
+  }
+  return { popCount, localSegments: local };
+}
+
+/**
+ * A RELATIVE `..`-bearing `rm` operand classified against the tracked cwd —
+ * an `rm` never itself changes the working directory, so the tracked stack
+ * a later `cd`/`pushd` on the same command line reads must come out exactly
+ * as it was (RP-309 gate round 2, "the escape check"); reading only
+ * `cwd.parts.length`/`cwd.parts[0]` and, when needed, a bounded PREFIX slice
+ * accomplishes that without ever copying the whole tracked stack (RP-309
+ * gate round 3: the previous version sliced a COPY of the whole tracked
+ * `parts` array for every such operand, which made a single `rm` with many
+ * `../x` operands off a long anchored `cd` pay the anchor's full length on
+ * each one — operand count × anchor depth, not operand count + anchor
+ * depth).
+ *
+ * The operand's own segments are folded in isolation first
+ * (`foldOperandSegments`) into `popCount` and `localSegments`. The
+ * surviving depth (`cwd.parts.length - popCount`) then decides how much of
+ * the tracked stack actually needs reading:
+ *   - negative: popped past the tracked anchor itself — nowhere higher to
+ *     name but the filesystem root, the same reading `resolveTarget`/
+ *     `foldRelativeSegments` already use for that escape;
+ *   - zero: lands exactly at the anchor, plus whatever `localSegments`
+ *     pushed after it;
+ *   - positive, inside the `~/.ssh`/`$HOME/.ssh` subtree (`cwd.parts[0] ===
+ *     '.ssh'`): catastrophic/credential regardless of how deep, decided
+ *     without reading anything past that one element;
+ *   - positive and shallow enough (`<= MAX_CATASTROPHIC_DEPTH`): the
+ *     surviving PREFIX (bounded by that constant, never the whole stack) is
+ *     read and joined with `localSegments`;
+ *   - positive and deep: provably not catastrophic from the depth alone.
+ */
+function resolveRmOperandAgainstCwd(cwd, target) {
+  const { popCount, localSegments } = foldOperandSegments(target);
+  const survivingDepth = cwd.parts.length - popCount;
+
+  if (survivingDepth < 0) return classifyPosition('/', localSegments);
+  if (survivingDepth === 0) return classifyPosition(cwd.anchor, localSegments);
+
+  const inSshSubtree =
+    (cwd.anchor === '~' || cwd.anchor === '$HOME') && cwd.parts[0] === '.ssh';
+  if (inSshSubtree) return { catastrophic: true, credential: true };
+  if (survivingDepth > MAX_CATASTROPHIC_DEPTH) return { catastrophic: false, credential: false };
+
+  const survivingPrefix = cwd.parts.slice(0, survivingDepth); // bounded: <= MAX_CATASTROPHIC_DEPTH
+  return classifyPosition(cwd.anchor, survivingPrefix.concat(localSegments));
 }
 
 /**
@@ -1014,28 +1139,56 @@ function resolveRmTargetAgainstCwd(cwd, target) {
  * below), so a `./*` entry here would never be reached; that dead comparison
  * was removed rather than left to imply a fold `normalizeTarget` does not
  * actually do. A `..`-bearing operand is never compared against this set —
- * it is resolved against the tracked cwd by `resolveRmTargetAgainstCwd`
+ * it is resolved against the tracked cwd by `resolveRmOperandAgainstCwd`
  * above instead, wherever it actually lands (RP-309 gate round 2).
  */
 const WILDCARD_AFTER_CD = new Set(['*', '.', './']);
 
 function checkRm({ args }, cwd) {
-  const cwdTarget = cwdTargetString(cwd);
+  // Classified ONCE per `rm` segment, not rebuilt from a join per operand
+  // below — see `classifyPosition`'s own bound.
+  const cwdStatus = cwd ? classifyPosition(cwd.anchor, cwd.parts) : null;
   for (const { value } of operandsOf(args)) {
     const normalized = normalizeTarget(value);
     const anchored = /^(\/|~|\$HOME)/.test(normalized);
     const escapesUpward = normalized.split('/').includes('..');
+
     // RP-309 gate round 2 ("the escape check"): a RELATIVE `..`-bearing
     // operand is resolved against the tracked cwd, so `rm -rf ..`/`rm -rf
     // ../*` are judged by where they actually land — not only recognised
-    // when the tracked cwd was already catastrophic.
-    const target =
-      cwd && !anchored && escapesUpward ? resolveRmTargetAgainstCwd(cwd, normalized) : normalized;
-    // Only reached for an ANCHORED operand (the cwd-resolved branch above
-    // already carries no literal `..`), so this stays `resolveTarget(value)`
-    // exactly as before — the pre-existing subtree-prefix reasoning above
-    // `isCredentialTarget`'s own doc comment is untouched.
-    const credentialSource = target === normalized ? resolveTarget(value) : target;
+    // when the tracked cwd was already catastrophic. Handled as its own
+    // branch (RP-309 gate round 3) because it is classified directly,
+    // never via a joined target string — see `resolveRmOperandAgainstCwd`.
+    if (cwd && !anchored && escapesUpward) {
+      const resolved = resolveRmOperandAgainstCwd(cwd, normalized);
+      if (resolved.catastrophic) {
+        if (resolved.credential) {
+          return (
+            'BLOCKED — this deletes SSH credentials/key material under ~/.ssh, ' +
+            'which breaks authentication and cannot be recovered from a delete. If a ' +
+            'specific key genuinely needs removing, name it precisely and confirm ' +
+            'with the human who owns that key first.'
+          );
+        }
+        return (
+          'BLOCKED — this deletes the filesystem root or the whole home directory, ' +
+          'which no task in this project requires. If a path really needs removing, ' +
+          'name it relative to the project.'
+        );
+      }
+      // Not catastrophic where it lands — an operand that resolved through
+      // `..` can never itself equal a bare `*`/`.`/`./`, so there is nothing
+      // more for the WILDCARD_AFTER_CD check below to add for THIS operand.
+      continue;
+    }
+
+    const target = normalized;
+    // For an ANCHORED operand this stays `resolveTarget(value)` exactly as
+    // before — the pre-existing subtree-prefix reasoning above
+    // `isCredentialTarget`'s own doc comment is untouched. For anything else
+    // (no `cwd`, or no `..`) `resolveTarget` folds nothing further anyway,
+    // so it is skipped rather than called for no reason.
+    const credentialSource = anchored ? resolveTarget(value) : target;
 
     if (isCatastrophic(target)) {
       if (isCredentialTarget(credentialSource)) {
@@ -1060,12 +1213,12 @@ function checkRm({ args }, cwd) {
       );
     }
     // `cd / && rm -rf *` is `rm -rf /*` with the target hidden in a prior
-    // segment. `isCatastrophic` (not mere presence of a tracked value) is
-    // what gates this — `cwdTarget` may equally hold an ordinary,
+    // segment. `catastrophic` (not mere presence of a tracked cwd) is what
+    // gates this — `cwdStatus` may equally describe an ordinary,
     // non-catastrophic cwd (`~/project`) tracked only so a later relative
     // `cd` has somewhere to fold against.
-    if (cwdTarget && isCatastrophic(cwdTarget) && WILDCARD_AFTER_CD.has(target)) {
-      if (isCredentialTarget(cwdTarget)) {
+    if (cwdStatus && cwdStatus.catastrophic && WILDCARD_AFTER_CD.has(target)) {
+      if (cwdStatus.credential) {
         return (
           'BLOCKED — an earlier segment changed directory into SSH credentials/key ' +
           'material under ~/.ssh, so this wildcard delete destroys them. If a ' +
