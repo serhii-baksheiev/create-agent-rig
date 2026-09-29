@@ -1270,6 +1270,104 @@ describe('RP-297 — free-text path token trigger is shape-based, not any forwar
     expect(line).not.toContain('a/../../b');
     expect(line).toContain('[path]');
   });
+
+  // RP-297 round 2 — security-scanner HOLD on PR #351 (head e50df6e): the
+  // shape checks `isFreeTextPathToken` gained (drive-letter prefix,
+  // non-http(s) scheme, `$`/`%` env-var reference, `..` segment) are all
+  // start-anchored on the TOKEN, so a token wrapped in — or prefixed by —
+  // leading punctuation a person types under pressure (a paren, a bracket, a
+  // `--flag=`, a `label:`) defeats every one of them for a shape that has no
+  // structured five-pattern backstop of its own (only an absolute POSIX/UNC/
+  // drive path is caught upstream in `scrubPaths` regardless of where it
+  // sits in the token).
+
+  describe('leading punctuation defeats the start-anchored shape checks — each one still leaks the home directory name today', () => {
+    const leaks: Array<[string, string]> = [
+      ['a parenthesised tilde path', '(~alice/x)'],
+      ['a bracketed tilde path', '[~alice/x]'],
+      ['a tilde path after a --flag=', '--dir=~alice/x'],
+      ['a tilde path after a label:', 'path:~alice/x'],
+      ['a parenthesised smb:// URI', '(smb://alice-pc/share/x)'],
+      ['an smb:// URI after key=', 'url=smb://alice-pc/share'],
+      ['a parenthesised vscode-remote:// URI', '(vscode-remote://wsl+ubuntu/home/alice/x)'],
+      ['a parenthesised %USERPROFILE% reference', '(%USERPROFILE%/alice)'],
+      ['a parenthesised $HOME reference', '($HOME/alice-proj)'],
+      ['a $HOME reference after a --flag=', '--cwd=$HOME/alice-proj'],
+    ];
+
+    for (const [label, token] of leaks) {
+      it(`redacts ${label} (${token}), not just the shape's bare form`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+        expect(line).toContain('[path]');
+      });
+    }
+  });
+
+  // Owner guidance: a personal home-directory location must never leak, even
+  // when the token has no leading separator at all and the first path
+  // segment merely NAMES a known home root (case-insensitively) —
+  // `Users`, `home`, `wsl.localhost`, `wsl$` — the same roots a Windows,
+  // POSIX, or WSL absolute path would have used if the caller had typed the
+  // leading separator.
+  describe('a relative-looking token whose first segment names a home root still leaks the user name today', () => {
+    const homeRootLeaks: Array<[string, string]> = [
+      ['Users', 'Users/alice/proj'],
+      ['home', 'home/alice/proj'],
+      ['wsl.localhost', 'wsl.localhost/Ubuntu/home/alice/x'],
+      ['wsl$', 'wsl$/Ubuntu/home/alice/x'],
+    ];
+
+    for (const [rootName, token] of homeRootLeaks) {
+      it(`redacts a token whose first segment names the home root "${rootName}" (${token})`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+        expect(line).toContain('[path]');
+      });
+    }
+  });
+
+  it('still leaves a parenthesised repo-relative test identity in diagnosis untouched, verbatim', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis = 'at (packages/cli/test/x.test.ts:367) y';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('advisory A2: isolates the coarse ".." rule from the structured POSIX_PATH pattern — a single-slash token (../b) has no two-slash shape for POSIX_PATH to match at all', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // POSIX_PATH (the structured pattern `scrubPaths` runs first) needs a
+    // LEADING '/' followed by a run of non-slash characters and then a
+    // SECOND '/' — two slashes minimum. "../b" carries only one slash, so
+    // POSIX_PATH cannot match any span of it; if this token is still
+    // redacted, it can only be the coarse free-text `hasDotDotSegment` rule
+    // deciding it — unlike "a/../../b" and "../../etc/passwd" above, both of
+    // which carry two-or-more slashes and so are (at least partly) already
+    // matched by POSIX_PATH before the coarse rule ever runs.
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'resolved to ../b during the walk',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('../b');
+    expect(line).toContain('[path]');
+  });
 });
 
 // --- readRunEvidence -----------------------------------------------------

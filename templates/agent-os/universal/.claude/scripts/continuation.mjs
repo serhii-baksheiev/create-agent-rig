@@ -212,7 +212,13 @@
 //       digit (so the `s:` inside `https://…` is never mistaken for one, and
 //       a digit-prefixed run like `9C:\Users\alice` is left to the coarser
 //       free-text pass below rather than this pattern — see the
-//       "9C:\Users\alice" case a few lines down);
+//       "9C:\Users\alice" case a few lines down). This pattern runs FIRST,
+//       inside `scrubPaths`, ahead of the coarse free-text pass below — which
+//       is why that coarse pass carries no drive-letter trigger of its own:
+//       any drive-letter-shaped span this pattern's own condition already
+//       recognises is gone (replaced with `[path]`) before the coarse pass
+//       ever sees the field, so a second, token-level drive-letter check
+//       there could never fire and would be dead code;
 //     - a forward-slash UNC path (`//host/…`, no backslash at all — the
 //       shape a quoted or URL-typed string forces, and now also `//host\…` —
 //       either slash direction after the host), consumed to the next hard
@@ -243,38 +249,55 @@
 // - `diagnosis` and `remaining` go through ONE MORE pass after the five
 //   structured patterns above: any WHITESPACE-DELIMITED token whose SHAPE
 //   looks like a path — not merely one that contains a `/` anywhere, which
-//   is what RP-297 fixed (see below) — starts a scrubbed span. A token
-//   triggers this pass when it starts with `~`, `/`, or `\`; or contains a
-//   `\` anywhere; or carries a drive-letter prefix (`C:\`/`C:/`); or
-//   contains a `..` path segment; or is a non-`http(s)` URI scheme
-//   (`file://`, `smb://`, `vscode-remote://`, …); or is an
-//   environment-variable-style reference (`$HOME`, `%USERPROFILE%`) that
-//   also carries a path separator — and it is not an `http://`/`https://`
-//   URL. The span begins at the token's own first character (so a leading
-//   hard delimiter — an opening `"`, for instance — stays outside it,
-//   because the text is first split on hard delimiters and each
-//   delimiter-free segment is scrubbed on its own) and runs to the next hard
-//   delimiter or the end of the field — the same "consume through
-//   whitespace" rule the five structured patterns already use, and for the
-//   same reason: this is the coarse, safe-direction backstop for every shape
-//   the five named patterns do not recognise — `smb://…`, `vscode-remote://…`,
-//   a drive-less rooted Windows path (`\Users\alice\x`), a tilde path naming
-//   a user directly (`~alice/x`), a bare `~\x`, and the digit-prefixed drive
-//   path above (`9C:\Users\alice`, which the structured `DRIVE_PATH` pattern
-//   deliberately excludes). It is coarser on purpose: it does not
-//   distinguish a relative path from an absolute one, and it can swallow
-//   trailing prose the five structured patterns would have left alone (a
-//   plain word after a scrubbed tilde path, for instance) —
+//   is what RP-297 round 1 fixed (see below) — starts a scrubbed span. A
+//   token triggers this pass when: it starts with `/` or `\`; or it
+//   contains a `\` anywhere; or it carries a `~` at a BOUNDARY — its own
+//   start, or after any character that is not a word character, `.`, or
+//   `-` (`TILDE_BOUNDARY`); or it contains a `..` path segment
+//   (`hasDotDotSegment`); or it carries a non-`http(s)` URI scheme at a
+//   boundary (`file://`, `smb://`, `vscode-remote://`, …
+//   — `hasNonHttpSchemeUri`); or it carries an environment-variable-style
+//   reference (`$HOME`, `%USERPROFILE%`) at a boundary that ALSO carries a
+//   path separator somewhere in the token (`ENV_VAR_BOUNDARY`); or its first
+//   path segment names a known home root — `Users`, `home`, `wsl.localhost`,
+//   `wsl$`, case-insensitive — at a boundary, immediately followed by a
+//   path separator (`HOME_ROOT_SEGMENT`) — and, throughout, a token that
+//   itself STARTS WITH `http://`/`https://` is excluded first and skips
+//   every other check (`HTTP_URL_PREFIX`). RP-297 round 2 — security-scanner
+//   HOLD on PR #351 (head e50df6e) — is why every one of these triggers
+//   except the two whole-token membership tests (`includes('\\')`,
+//   `hasDotDotSegment`) is a BOUNDARY match rather than a token-start match:
+//   a token-start-only check is defeated by leading punctuation a person
+//   types under pressure — a paren, a bracket, a `--flag=`, a `label:` — in
+//   front of the shape, which is exactly what round 1's checks missed for
+//   `(~alice/x)`, `--dir=~alice/x`, `path:~alice/x`, `(smb://…)`,
+//   `url=smb://…`, `(vscode-remote://…)`, `(%USERPROFILE%/…)`,
+//   `($HOME/…)`, and `--cwd=$HOME/…`; and is why `HOME_ROOT_SEGMENT` exists
+//   at all — a token with NO leading separator whatsoever, like
+//   `Users/alice/proj`, still names a home directory in its very first
+//   segment and is scrubbed the same as `/Users/alice/proj` would have been.
+//   The span begins at the token's own first character (so a leading hard
+//   delimiter — an opening `"`, for instance — stays outside it, because the
+//   text is first split on hard delimiters and each delimiter-free segment
+//   is scrubbed on its own) and runs to the next hard delimiter or the end
+//   of the field — the same "consume through whitespace" rule the five
+//   structured patterns already use, and for the same reason: this is the
+//   coarse, safe-direction backstop for every shape the five named patterns
+//   do not recognise. It is coarser on purpose: it does not distinguish a
+//   relative path from an absolute one, it can swallow trailing prose the
+//   five structured patterns would have left alone (a plain word after a
+//   scrubbed tilde path, for instance), and a token that legitimately mixes
+//   an env-var sigil with an unrelated number (`$5/month`) is scrubbed too —
 //   over-scrubbing diagnosis/remaining text is the accepted trade for never
-//   under-scrubbing it, UP TO the shape the trigger itself recognises: a
-//   relative, separator-less token such as `Users/alice/x` — no leading
-//   separator, no backslash, no `..` segment, no recognised scheme — is now
-//   OUTSIDE that shape and survives verbatim, same as an N/N fraction
-//   (`3/3`) or a repo-relative test identity
-//   (`packages/cli/test/x.test.ts:367`); see `test/template/
-//   continuation.test.ts` (absent in a generated rig), `describe('RP-297 —
-//   free-text path token trigger is shape-based, not any forward slash')`.
-//   It runs ONLY on these two fields,
+//   under-scrubbing it. UP TO the shapes the triggers above actually
+//   recognise, though: an UNROOTED token with none of them — no leading
+//   separator, no backslash, no `~`/scheme/env-var/home-root boundary, no
+//   `..` segment — survives verbatim, same as an N/N fraction (`3/3`) or a
+//   repo-relative test identity (`packages/cli/test/x.test.ts:367`, NOT
+//   `Users/alice/x`, which the home-root trigger now catches); see
+//   `test/template/continuation.test.ts` (absent in a generated rig),
+//   `describe('RP-297 — free-text path token trigger is shape-based, not
+//   any forward slash')`. It runs ONLY on these two fields,
 //   never on a structured one, because a structured field's caller
 //   constructs the value rather than typing it under pressure. Bounded, not
 //   linear: the field is split once on hard delimiters (a native
@@ -429,16 +452,67 @@ const scrubPaths = (text) =>
 // delimiter) outside the span it scrubs.
 const HARD_DELIMITER_SPLIT = /(["'`|<>⏎])/g;
 const HTTP_URL_PREFIX = /^https?:\/\//i;
-// A non-http(s) URI scheme (`file://`, `smb://`, `vscode-remote://`, …) —
-// checked only after HTTP_URL_PREFIX has already excluded http(s) itself.
-const SCHEME_URI_PREFIX = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
-// A drive-letter path (`C:\…` / `C:/…`), including a bare single-letter
-// prefix that itself carries no leading separator otherwise.
-const DRIVE_LETTER_PREFIX = /^[A-Za-z]:[\\/]/;
+
+// RP-297 round 2 — security-scanner HOLD on PR #351 (head e50df6e): every
+// shape trigger below used to be anchored to the TOKEN'S OWN START
+// (`^`/`startsWith`), so leading punctuation a person types under
+// pressure — a paren, a bracket, a `--flag=`, a `label:` — sat in front of
+// the shape and defeated the check entirely. Every trigger that isn't
+// already a whole-token membership test (`includes('\\')`,
+// `hasDotDotSegment`) is now a BOUNDARY match instead: it fires at the
+// token's own start OR after any character that is not itself part of an
+// identifier the shape could legitimately continue (a word character, and
+// for the tilde trigger also `.`/`-`) — so `(~alice/x)`, `--dir=~alice/x`,
+// and `path:~alice/x` all trigger the same as a bare `~alice/x` would, while
+// an ordinary identifier that happens to contain the same character, like
+// `foo~bar` or `myhome/x`, does not.
+
+// A `~`-prefixed path, at the token's own start or after any character
+// that is not a word character, `.`, or `-`.
+const TILDE_BOUNDARY = /(?:^|[^\w.-])~/;
+
+// A non-http(s) URI scheme (`file://`, `smb://`, `vscode-remote://`, …), at
+// the token's own start or after any character that cannot itself be part
+// of a scheme name. Every boundary match in the token is walked (not just
+// tested) so an `http`/`https` scheme found at one boundary does not hide a
+// DIFFERENT, non-http(s) scheme found at another; `HTTP_URL_PREFIX` above
+// only excludes a token that itself STARTS WITH http(s) — a wrapped one
+// (`(http://…)`) does not start with it and needs this per-scheme check
+// too.
+const SCHEME_URI_AT_BOUNDARY = /(?:^|[^A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*):\/\//g;
+const HTTP_SCHEME_NAME = /^https?$/i;
+
+/**
+ * Does `token` carry a non-http(s) URI scheme at a boundary anywhere in it?
+ * One forward `exec` walk over the token — bounded, since every field this
+ * runs on is already cut to `RAW_FIELD_CAP` before this pass ever sees it.
+ */
+const hasNonHttpSchemeUri = (token) => {
+  SCHEME_URI_AT_BOUNDARY.lastIndex = 0;
+  let match;
+  while ((match = SCHEME_URI_AT_BOUNDARY.exec(token)) !== null) {
+    if (!HTTP_SCHEME_NAME.test(match[1])) return true;
+  }
+  return false;
+};
+
 // `$HOME/x`, `%USERPROFILE%\x` — an environment-variable-style path
-// reference, recognised only when it is ALSO followed somewhere by a path
-// separator (so a bare `$5` or `%done%` is not mistaken for one).
-const ENV_VAR_PREFIX = /^[$%]/;
+// reference, at the token's own start or after any non-word character, and
+// ONLY when the token ALSO carries a path separator somewhere — so a bare
+// `$5` or `%done%` is not mistaken for one. This pass does not distinguish
+// a price from a path, though: a token that legitimately mixes the two,
+// like `$5/month`, IS scrubbed — over-scrubbing diagnosis/remaining text is
+// the accepted trade this whole coarse pass makes (see the module header's
+// "Limits" section), not a claim that a `$`-prefixed number is safe.
+const ENV_VAR_BOUNDARY = /(?:^|[^\w])[$%]/;
+
+// A token's first path segment naming a known home root — `Users`, `home`,
+// `wsl.localhost`, or `wsl$` (case-insensitive) — at the token's own start
+// or after any non-word character, immediately followed by a path
+// separator: the same roots an absolute Windows/POSIX/WSL path would have
+// used had the caller typed the leading separator, so `Users/alice/proj`
+// is treated the same as `/Users/alice/proj` would have been.
+const HOME_ROOT_SEGMENT = /(?:^|[^\w])(users|home|wsl\.localhost|wsl\$)[\\/]/i;
 
 /** Does this token contain a literal `..` path segment (split on `/` and `\`)? */
 const hasDotDotSegment = (token) => token.split(/[\\/]/).includes('..');
@@ -446,31 +520,40 @@ const hasDotDotSegment = (token) => token.split(/[\\/]/).includes('..');
 /**
  * Does this whitespace-delimited token start a coarse free-text path span?
  *
- * RP-297: this used to trigger on ANY token merely CONTAINING a `/`, which
- * misread an N/N fraction (`3/3`) and a repo-relative evidence identity
- * (`packages/cli/test/x.test.ts:367`) as a path — and the scrub then
- * consumes everything from that token's own start to the end of the
+ * RP-297 round 1: this used to trigger on ANY token merely CONTAINING a
+ * `/`, which misread an N/N fraction (`3/3`) and a repo-relative evidence
+ * identity (`packages/cli/test/x.test.ts:367`) as a path — and the scrub
+ * then consumes everything from that token's own start to the end of the
  * segment, so the trailing text (a test id, a line number) was lost too.
- * The rule is now SHAPE-based: a token starts a path span only when it
- * starts with `~`, `/`, or `\`; or contains a `\` anywhere; or carries a
- * drive-letter prefix (`C:\`/`C:/`); or contains a `..` path segment (which
- * can climb out of the repo regardless of which separator it uses); or is a
- * non-http(s) URI (`file://`, `smb://`, `vscode-remote://`, …); or is an
- * environment-variable-style reference (`$HOME`, `%USERPROFILE%`) that also
- * carries a path separator somewhere in the token. A relative,
- * separator-less token such as `Users/alice/x` — no leading separator, no
- * backslash, no `..` segment — is deliberately NOT one of these shapes and
- * now survives verbatim; see `test/template/continuation.test.ts` (absent
- * in a generated rig), `describe('RP-297 — …')`.
+ * RP-297 round 2: the shape checks that replaced it were themselves
+ * anchored to the token's own start, so leading punctuation defeated them
+ * (see the block comment above `TILDE_BOUNDARY`); every shape below except
+ * the two whole-token membership tests is now a boundary match instead. A
+ * token starts a path span when it starts with `/` or `\`; or contains a
+ * `\` anywhere; or carries a `~` at a boundary; or contains a `..` path
+ * segment (which can climb out of the repo regardless of which separator it
+ * uses); or carries a non-http(s) URI scheme at a boundary (`file://`,
+ * `smb://`, `vscode-remote://`, …); or carries an environment-variable-style
+ * reference (`$HOME`, `%USERPROFILE%`) at a boundary that ALSO carries a
+ * path separator somewhere in the token; or has a first path segment naming
+ * a known home root (`Users`, `home`, `wsl.localhost`, `wsl$`) at a
+ * boundary. A token with none of these shapes — no leading separator, no
+ * backslash, no `..` segment, no recognised scheme, no home-root segment —
+ * survives verbatim, the same as a repo-relative test identity:
+ * `test/template/continuation.test.ts` (absent in a generated rig) ›
+ * "leaves a repo-relative test identity in diagnosis untouched, with the
+ * trailing text intact" (`packages/cli/test/x.test.ts:367` — NOT
+ * `Users/alice/x`, which the home-root rule above now catches).
  */
 const isFreeTextPathToken = (token) => {
   if (HTTP_URL_PREFIX.test(token)) return false;
-  if (token.startsWith('~') || token.startsWith('/') || token.startsWith('\\')) return true;
+  if (token.startsWith('/') || token.startsWith('\\')) return true;
   if (token.includes('\\')) return true;
-  if (DRIVE_LETTER_PREFIX.test(token)) return true;
+  if (TILDE_BOUNDARY.test(token)) return true;
   if (hasDotDotSegment(token)) return true;
-  if (SCHEME_URI_PREFIX.test(token)) return true;
-  if (ENV_VAR_PREFIX.test(token) && (token.includes('/') || token.includes('\\'))) return true;
+  if (hasNonHttpSchemeUri(token)) return true;
+  if (ENV_VAR_BOUNDARY.test(token) && (token.includes('/') || token.includes('\\'))) return true;
+  if (HOME_ROOT_SEGMENT.test(token)) return true;
   return false;
 };
 
