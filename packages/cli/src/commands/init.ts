@@ -26,6 +26,7 @@ import {
   MAX_AGENTS_MD_REGION_BYTES,
 } from '../lib/agents-md-region.js';
 import { atomicWriteInRepo } from '../lib/atomic-write.js';
+import { wrapSystemError } from '../lib/system-error.js';
 
 /**
  * Codex's documented combined-budget default (round 2, prose-reviewer
@@ -669,6 +670,15 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       // exactly that window; real callers never pass it.
       await options.onAgentsRegionWritePending?.();
       const dest = destinations.get(AGENTS_MAP)!;
+      // RP-289: `existingAgentsMode` is the mode read at PLAN time, well
+      // before this re-verification — re-`lstat` right alongside the RP-268
+      // byte re-read below, and write with THIS mode, not the stale one, so a
+      // `chmod` landing in the re-verification window is not silently
+      // discarded. Mirrors `applyUpgrade`'s own `currentStat` at its apply-
+      // time re-check. A failed re-`lstat` (e.g. the file vanished) falls
+      // back to the plan-time mode; the byte re-check just below refuses the
+      // write in that case regardless, since a vanished file reads back `null`.
+      const currentStat = await lstat(dest).catch(() => null);
       const currentBytes = await readBoundedFileInRepo(repoDir, dest, MAX_AGENTS_MD_REGION_BYTES);
       if (currentBytes === null || !currentBytes.equals(existingAgentsBytes)) {
         throw new InitError(
@@ -682,14 +692,18 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
           repoDir,
           AGENTS_MAP,
           Buffer.from(composed, 'utf8'),
-          existingAgentsMode ?? 0o644,
+          currentStat !== null ? currentStat.mode & 0o777 : (existingAgentsMode ?? 0o644),
         );
       } catch (error) {
         // RP-268 AD1: an EACCES (or similar) from the temp-file create/
         // write surfaces here as a raw Node fs error — wrapped so
         // index.ts's typed-error handler formats it, not a raw stack trace.
-        throw new InitError(
-          `Refusing to write "${AGENTS_MAP}": ${(error as NodeJS.ErrnoException).message}`,
+        // RP-289: only a Node system error (a string `code`) is wrapped, and
+        // the original is carried forward as `cause` rather than discarded.
+        throw wrapSystemError(
+          error,
+          (message, options) =>
+            new InitError(`Refusing to write "${AGENTS_MAP}": ${message}`, options),
         );
       }
       if (!result.ok) {

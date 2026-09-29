@@ -1,11 +1,11 @@
-import { access, chmod, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { InitError, initProject } from '../src/commands/init.js';
 import type { InitOptions } from '../src/commands/init.js';
 import { applyUpgrade, planUpgrade, UpgradeError } from '../src/commands/upgrade.js';
-import { modeBitsDeny, skipUnless } from '../../../test/helpers/env.js';
+import { modeBitsDeny, modeBitsExist, skipUnless } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 import { composeRegion, sha256 } from '../../../test/helpers/agents-md-region.js';
 
@@ -23,6 +23,19 @@ import { composeRegion, sha256 } from '../../../test/helpers/agents-md-region.js
  *    which excludes every region-tracked path — so a region-appended
  *    AGENTS.md never clears a stale `kept['AGENTS.md']` entry a hand-edited
  *    manifest left behind.
+ *
+ * RP-289 — two further hardening gaps in the same code this file already
+ * covers:
+ *  - the write-time MODE `initProject` passes to `atomicWriteInRepo` is the
+ *    one `lstat` read at PLAN time, alongside `existingAgentsBytes` — never
+ *    re-read next to the AD2 re-verification above, even though AD2 already
+ *    proves the BYTES are re-checked right there. A mode change landing in
+ *    that same window (no content edit, so the byte check still passes) is
+ *    silently discarded.
+ *  - AD1's own catch block (`initProject`'s and `applyUpgrade`'s region
+ *    write) wraps ANY thrown value into a bare `InitError`/`UpgradeError`
+ *    message, with no `cause` — the original Node error is discarded, not
+ *    merely reformatted.
  */
 
 let repo: string;
@@ -169,6 +182,109 @@ describe('AD2 — initProject re-verifies AGENTS.md immediately before the regio
     // the rig files this run already installed before the region write stay
     // on disk — the same shape as the symlink and unwritable-root refusals.
     await expect(access(path.join(repo, 'CLAUDE.md'))).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * RP-289 — `existingAgentsMode` is captured once, at PLAN time (the same
+ * `lstat` that reads `existingAgentsBytes`, well before the AD2 re-read
+ * above), and carried unchanged all the way to the write. AD2 already proves
+ * the BYTES are re-verified immediately before the write; the MODE is not —
+ * a `chmod` landing in that exact window (no content change, so AD2's own
+ * byte-for-byte check still passes and the write proceeds) is silently
+ * discarded, and the file is written back with the stale, plan-time mode.
+ *
+ * Fix direction: `lstat` AGENTS.md again immediately alongside the RP-268
+ * re-read, and pass THAT stat's `mode & 0o777` to `atomicWriteInRepo` —
+ * mirroring what `applyUpgrade` already does at its own apply-time re-check
+ * (`upgrade.ts`'s region-write branch reads `currentStat` right next to
+ * `currentBytes`, both freshly, immediately before writing).
+ */
+describe('RP-289 — initProject writes AGENTS.md with the write-time mode, not the plan-time one', () => {
+  it('adopts a mode change landing in the re-verification window, not the mode read at plan time', async (context) => {
+    skipUnless(context, modeBitsExist().ok, modeBitsExist().reason);
+
+    const originalPrefix = '# Team notes\nKeep this section exactly as it is.\n';
+    await writeFile(agentsMdPath(), originalPrefix);
+    await chmod(agentsMdPath(), 0o644);
+
+    const hookOptions: InitOptions & { onAgentsRegionWritePending?: () => Promise<void> } = {
+      onAgentsRegionWritePending: async () => {
+        // Content untouched — only the mode changes — so AD2's own
+        // byte-for-byte re-verification still passes and the write proceeds.
+        await chmod(agentsMdPath(), 0o600);
+      },
+    };
+
+    await initProject(repo, hookOptions);
+
+    const mode = (await stat(agentsMdPath())).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+});
+
+/**
+ * RP-289 — the AD1 catch blocks above (`initProject`'s and `applyUpgrade`'s
+ * own region-write, both denied by the same `chmod 0o500` fixture AD1 uses)
+ * wrap ANY thrown value into a plain `InitError`/`UpgradeError` message
+ * string, dropping the original entirely — never carried forward as `cause`.
+ * Fix direction: a thrown value carrying a string `code` (a Node system
+ * error, exactly AD1's EACCES) is still wrapped, but the wrap sets
+ * `{ cause: error }`, so the original is not lost.
+ */
+describe('RP-289 — a Node system error wrapped as InitError/UpgradeError carries the original as `cause`', () => {
+  it('initProject: the InitError from a permission-denied temp-file create carries the original EACCES as cause', async (context) => {
+    skipUnless(context, modeBitsDeny().ok, modeBitsDeny().reason);
+
+    await initProject(repo, {});
+    const raw = JSON.parse(await readFile(manifestPath(), 'utf8'));
+    delete raw.files['AGENTS.md'];
+    await writeFile(manifestPath(), `${JSON.stringify(raw, null, 2)}\n`);
+    const foreignPrefix = '# host notes\nkeep me\n';
+    await writeFile(agentsMdPath(), foreignPrefix);
+
+    await chmod(repo, 0o500);
+    try {
+      let caught: unknown;
+      try {
+        await initProject(repo, {});
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(InitError);
+      const cause = (caught as Error & { cause?: unknown }).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as NodeJS.ErrnoException).code).toBe('EACCES');
+    } finally {
+      await chmod(repo, 0o700);
+    }
+  });
+
+  it('applyUpgrade: the UpgradeError from a permission-denied temp-file create carries the original EACCES as cause', async (context) => {
+    skipUnless(context, modeBitsDeny().ok, modeBitsDeny().reason);
+
+    const USER_PREFIX = '# Team notes\nKeep this section exactly as it is.\n';
+    const OLD_BODY = '# OLD RULEBOOK BODY — a fake stand-in for a previous release\n';
+    await installThenSimulateRegion(USER_PREFIX, OLD_BODY);
+    const plan = await planUpgrade(repo);
+
+    await chmod(repo, 0o500);
+    try {
+      let caught: unknown;
+      try {
+        await applyUpgrade(repo, plan);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(UpgradeError);
+      const cause = (caught as Error & { cause?: unknown }).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect((cause as NodeJS.ErrnoException).code).toBe('EACCES');
+    } finally {
+      await chmod(repo, 0o700);
+    }
   });
 });
 
