@@ -786,6 +786,15 @@ describe('the assignment pattern does provably bounded work, on any input', () =
 
   // Linear growth, asserted as a RATIO so the case survives a slow machine: a
   // quadratic pattern is 4x per doubling, a linear one is about 2x.
+  //
+  // 🔴 A single sample at each size is a coin flip with a GC pause or a
+  // scheduler hiccup: CI run 36525761598 read 3.7ms vs 34.9ms (ratio 9.37) on
+  // an unchanged, genuinely linear pattern. Noise can only ever ADD time to a
+  // sample, never subtract it, so the MINIMUM over several interleaved
+  // samples estimates the intrinsic cost of the pattern — a stall lands on
+  // one sample, not on all five, and taking the min of each size cancels it
+  // out without changing what is being measured or the bound it is checked
+  // against.
   it('grows linearly with input size rather than quadratically', async () => {
     const time = async (kilobytes: number): Promise<number> => {
       const line = 'jwt'.repeat(Math.floor((kilobytes * 1024) / 3));
@@ -794,8 +803,17 @@ describe('the assignment pattern does provably bounded work, on any input', () =
       return Number(process.hrtime.bigint() - started) / 1e6;
     };
     await time(16); // warm up, so the first measurement is not the JIT's
-    const small = await time(32);
-    const large = await time(128);
+    const SAMPLES = 5;
+    let small = Infinity;
+    let large = Infinity;
+    // Interleaved, not blocked: a small/large/small/large… order means a
+    // single noisy window (a GC pause, a scheduler quantum) can hit at most
+    // one sample of each size, not skew one size's whole run relative to the
+    // other's.
+    for (let i = 0; i < SAMPLES; i += 1) {
+      small = Math.min(small, await time(32));
+      large = Math.min(large, await time(128));
+    }
     // 4x the input. Linear would be ~4x the time; quadratic would be ~16x.
     expect(large / Math.max(small, 1), `32KB=${small}ms 128KB=${large}ms`).toBeLessThan(8);
   });
