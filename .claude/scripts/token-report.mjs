@@ -355,7 +355,7 @@
  *     checkout root to the child's own HOME".
  */
 
-import { closeSync, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -991,7 +991,10 @@ const isHomeDirectory = (checkoutRoot) => {
 const recordDispatchConfiguredIn = (filePath) => {
   let fd;
   try {
-    fd = openSync(filePath, 'r');
+    // O_NONBLOCK: opening a FIFO with no writer would otherwise block before
+    // the isFile check below can reject it. It changes nothing for a regular
+    // file, and it is undefined (so 0) on Windows.
+    fd = openSync(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
   } catch (error) {
     return error?.code === 'ENOENT' ? 'not-configured' : 'unknown';
   }

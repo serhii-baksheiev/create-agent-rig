@@ -112,6 +112,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { fifosAvailable, skipUnless } from '../helpers/env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -429,7 +430,7 @@ const WIRED_CODEX_HOOKS = JSON.stringify({
 
 /** A fresh, bare `git init` checkout with its own `.claude/runs` directory —
  * the `--runs` value every wiring-resolution test below passes to the CLI.
- * No commit is needed: `git rev-parse --git-common-dir` resolves right after
+ * No commit is needed: `git rev-parse --show-toplevel` resolves right after
  * `git init`. */
 const wiringCheckout = async (): Promise<{ checkoutDir: string; runsDir: string }> => {
   const checkoutDir = await mkdtemp(path.join(tmpdir(), 'token-report-wiring-'));
@@ -1044,6 +1045,102 @@ describe('token-report.mjs CLI wiring resolution: bounded reads, not bounded sta
   );
 });
 
+// RP-292 gate round 3 — blocker (code + security): `recordDispatchConfiguredIn`
+// calls `openSync(filePath, 'r')` before it ever checks `stat.isFile()`, so a
+// FIFO with no writer on the other end blocks inside `open()` itself — the
+// `isFile()` guard that would otherwise reject a non-regular file is never
+// reached, because the call before it never returns. POSIX-only: Windows has
+// no `mkfifo`, and the fixture below is skipped (not failed) wherever
+// `mkfifo` itself is unavailable, since there is nothing this checkout can
+// pin without it.
+
+describe('token-report.mjs CLI wiring resolution: a FIFO with no writer must not block open() (RP-292 gate round 3)', () => {
+  const BOUND_MS = 8_000;
+
+  it(
+    'finishes within a bound and reports claude wiring as unknown when .claude/settings.json is a FIFO with no writer, instead of blocking forever inside open()',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const { checkoutDir, runsDir } = await wiringCheckout();
+      const fifoPath = path.join(checkoutDir, '.claude', 'settings.json');
+      execFileSync('mkfifo', [fifoPath]);
+
+      const result = await cliBounded(
+        ['--runs', runsDir, '--since', SINCE, '--json'],
+        withoutGitLocation(),
+        BOUND_MS,
+      );
+
+      expect(
+        result.killed,
+        `CLI had to be killed after ${result.elapsedMs}ms without finishing — opening a FIFO with no writer blocks inside open(), before the isFile() check that would otherwise reject it ever runs: ${result.out.slice(0, 500)}`,
+      ).toBe(false);
+      expect(result.code, result.out).toBe(0);
+      const data = JSON.parse(result.out) as Report;
+      expect(data.usageEvidence.claude.wiring).toBe('unknown');
+    },
+    BOUND_MS + 5_000,
+  );
+
+  it(
+    'finishes within a bound and reports codex wiring as unknown when .codex/hooks.json is a symlink to a FIFO with no writer, instead of blocking forever inside open()',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const { checkoutDir, runsDir } = await wiringCheckout();
+      const fifoPath = path.join(checkoutDir, 'codex-hooks.fifo');
+      execFileSync('mkfifo', [fifoPath]);
+      await mkdir(path.join(checkoutDir, '.codex'), { recursive: true });
+      await symlink(fifoPath, path.join(checkoutDir, '.codex', 'hooks.json'));
+
+      const result = await cliBounded(
+        ['--runs', runsDir, '--since', SINCE, '--json'],
+        withoutGitLocation(),
+        BOUND_MS,
+      );
+
+      expect(
+        result.killed,
+        `CLI had to be killed after ${result.elapsedMs}ms without finishing — opening a FIFO with no writer blocks inside open(), before the isFile() check that would otherwise reject it ever runs: ${result.out.slice(0, 500)}`,
+      ).toBe(false);
+      expect(result.code, result.out).toBe(0);
+      const data = JSON.parse(result.out) as Report;
+      expect(data.usageEvidence.codex.wiring).toBe('unknown');
+    },
+    BOUND_MS + 5_000,
+  );
+});
+
+// RP-292 gate round 3 — advisory pin: the byte cap in
+// `recordDispatchConfiguredIn` is decided on TOTAL BYTES READ, never on
+// whether the truncated buffer happens to parse. A file whose first
+// `WIRING_FILE_MAX_BYTES` bytes already ARE a complete, validly wired config
+// — followed by more whitespace that pushes the file's total size past the
+// cap — must still read as 'unknown'. Dropping the `total >
+// WIRING_FILE_MAX_BYTES` check (deciding from JSON.parse succeeding or
+// failing instead) would make this go red, because the truncated buffer
+// parses to a fully wired config.
+describe('token-report.mjs CLI wiring resolution: the byte cap is decided on total bytes read, not on parse success (RP-292 gate round 3)', () => {
+  it('reports claude wiring as unknown when a complete, validly wired config sits entirely within the first WIRING_FILE_MAX_BYTES bytes but trailing whitespace pushes the file past the cap', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    const validLen = Buffer.byteLength(WIRED_CLAUDE_SETTINGS, 'utf8');
+    expect(validLen).toBeLessThan(WIRING_FILE_MAX_BYTES);
+    const paddingToCap = ' '.repeat(WIRING_FILE_MAX_BYTES - validLen);
+    const pastCap = ' '.repeat(64);
+    const content = WIRED_CLAUDE_SETTINGS + paddingToCap + pastCap;
+    expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(WIRING_FILE_MAX_BYTES);
+    // The first WIRING_FILE_MAX_BYTES bytes alone are a complete, parseable,
+    // wired document — proving the 'unknown' verdict below comes from the
+    // size cap, not from a parse failure.
+    expect(() => JSON.parse(content.slice(0, WIRING_FILE_MAX_BYTES))).not.toThrow();
+    await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), content);
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('unknown');
+  });
+});
+
 // RP-292 gate round 2 — blocker 2 (code): the resolver
 // (`gitCheckoutRootOrNull` + `recordDispatchConfiguredIn`) had no test
 // exercising it through the CLI with a real git checkout — every existing
@@ -1238,7 +1335,7 @@ describe('token-report.mjs usageEvidence unavailableReasons tally bound (RP-292 
 // `stripControlChars`, which deliberately preserves `\n` (the render's own
 // line breaks) and only strips the C0/DEL/C1 control ranges — never the
 // wider Unicode bidi-control block. Restricting a code to a safe identifier
-// set ([A-Za-z0-9._-]) is the fix this pins; the tests assert the hostile
+// set ([A-Za-z0-9._:-]) is the fix this pins; the tests assert the hostile
 // character's ABSENCE from output, not a specific replacement.
 describe('token-report.mjs usageEvidence unavailableReasons codes are restricted to a safe identifier set (RP-292 gate round 2)', () => {
   it('a code carrying a literal newline plus a forged "usage evidence:" line does not produce a second such line in the text render', async () => {
