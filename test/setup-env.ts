@@ -10,3 +10,15 @@
  * `test/template/rig-run-dir-scrub.test.ts`.
  */
 delete process.env.RIG_RUN_DIR;
+
+/**
+ * `CLAUDE_PROJECT_DIR` names the checkout a session's own calls scope to (the
+ * `loop` skill, a manual `unattended-flag.mjs on --root` probe). The
+ * unattended-flag env() helpers this test tree builds inherit it from
+ * `process.env` exactly like `RIG_RUN_DIR` above, scoping a fixture's flag to
+ * whatever checkout the invoking shell happened to export rather than the one
+ * the fixture actually created (RP-288, `test/template/unattended-flag.test.ts`).
+ * Scrubbed here, before any test file loads, and pinned by
+ * `test/template/claude-project-dir-scrub.test.ts`.
+ */
+delete process.env.CLAUDE_PROJECT_DIR;

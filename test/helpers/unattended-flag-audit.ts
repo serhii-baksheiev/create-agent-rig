@@ -24,8 +24,14 @@ async function listFlags(home: string): Promise<Set<string>> {
   try {
     entries = await readdir(dir);
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return new Set();
-    throw err;
+    const code = (err as NodeJS.ErrnoException).code;
+    // ENOENT: no `.claude` yet. ENOTDIR: `home` itself is a file, not a
+    // directory — a home that has never been a directory reads the same as
+    // one with no `.claude` in it, not as a leak-audit failure.
+    if (code === 'ENOENT' || code === 'ENOTDIR') return new Set();
+    throw new Error(`RP-271 leak audit: cannot read ${home}: ${(err as Error).message}`, {
+      cause: err,
+    });
   }
   return new Set(entries.filter((name) => FLAG_PATTERN.test(name)));
 }
