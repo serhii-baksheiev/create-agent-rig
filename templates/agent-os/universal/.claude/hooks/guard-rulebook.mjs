@@ -101,7 +101,7 @@
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { editFragments } from './lib/edit-input.mjs';
+import { editFragments, exceedsPathComponentBound } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, canonicalRulebookPath, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
@@ -132,15 +132,33 @@ const canonicalRoot = (root) => {
 
 /** Resolve symlinks in the nearest existing ancestor, preserving a missing tail. */
 const canonicalPath = (filePath) => {
-  let cursor = resolve(filePath);
-  const tail = [];
+  const resolved = resolve(filePath);
+  // RP-247: this walk spends one `realpathSync.native` call per path
+  // component that does not exist on disk — a crafted `file_path` with many
+  // such components (`/a/a/a/…`) would otherwise make it grow with the
+  // component count instead of the file's actual depth, and this hook calls
+  // it (via `protectedRelative`, below) for every fragment before it ever
+  // checks whether the unattended flag is armed. `exceedsPathComponentBound`
+  // is `edit-input.mjs`'s own bound, reused rather than a second number
+  // (`.claude/rules/invariants.md`, "one mechanism, one implementation") —
+  // every edit surface already refuses a `file_path` this long before a
+  // fragment carrying it ever reaches this function, so this is a second,
+  // defensive application of the same bound: past it, give up immediately,
+  // exactly as the "no further progress" fallback below already does,
+  // instead of spending the walk.
+  if (exceedsPathComponentBound(resolved)) return filePath;
+  let cursor = resolved;
+  const tail = []; // pushed nearest-missing-first; reversed once, joined once — never `unshift`, never spread
   for (;;) {
     try {
-      return join(realpathSync.native(cursor), ...tail);
+      const base = realpathSync.native(cursor);
+      if (tail.length === 0) return base;
+      tail.reverse();
+      return join(base, tail.join('/'));
     } catch {
       const parent = dirname(cursor);
       if (parent === cursor) return filePath;
-      tail.unshift(basename(cursor));
+      tail.push(basename(cursor));
       cursor = parent;
     }
   }

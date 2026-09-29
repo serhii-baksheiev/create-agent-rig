@@ -1271,6 +1271,70 @@ describe('guard-rulebook: a `//`-prefixed path is refused only when it resolves 
   });
 });
 
+/**
+ * RP-247 — security-scanner finding on PR #302, pre-existing (not introduced
+ * by any RP-244 round above). `canonicalPath` resolves symlinks in the
+ * nearest EXISTING ancestor of a payload path by walking upward one
+ * `dirname` at a time, catching `ENOENT` at each missing level and calling
+ * `realpathSync.native` again — one native filesystem call per path
+ * COMPONENT that does not exist. A crafted `file_path` with many components
+ * that do not exist (`C:\a\a\a\…` / `/a/a/a/…`) makes this walk grow with the
+ * component count, and `protectedRelative` — which calls `canonicalPath`
+ * unconditionally, for EVERY fragment, before this guard ever checks whether
+ * the unattended flag is armed — runs it on every Write/Edit this hook sees.
+ * A killed hook is an ALLOW (`.claude/rules/invariants.md`, "fail-open
+ * guards"), so a slow `canonicalPath` is itself the vulnerability: this hook
+ * sits on the PreToolUse path of every edit, attended or not.
+ *
+ * Measured on this branch (WSL/ext4; the ticket's own numbers, taken on
+ * NTFS, are worse — ~366 ms at 8 KB, ~11 s at 64 KB, >25 s at 128 KB of
+ * `C:\a\a\…`):
+ *
+ *   16,000 components   ~0.6–0.8 s
+ *   24,000 components   ~1.4 s
+ *   32,000 components   ~1.8 s
+ *   48,000 components   ~3.1 s
+ *   64,000 components   ~5.2 s
+ *   96,000 components   ~15.0 s
+ *  128,000 components   ~24.2 s
+ *
+ * No cap exists on component count in `canonicalPath` or `protectedRelative`
+ * today, and no refusal is possible either way: at every size above, the
+ * hook simply spends the measured time and then answers `0` — nothing under
+ * the rulebook, because the crafted path never resolves under `root` — never
+ * refusing at all, armed or not. The planned fix (RP-247) bounds the walk
+ * and refuses past the cap, the same shape as `MAX_PATCH_PATH_COMPONENTS` in
+ * `edit-input.mjs`: a bound crossed names the limit and a split-and-retry
+ * remedy rather than doing unbounded work.
+ */
+describe("guard-rulebook: canonicalPath does bounded work over a path's component count, instead of growing without bound (RP-247)", () => {
+  it('refuses a Write to a many-component nonexistent path quickly, naming the limit and a split-and-retry remedy', async () => {
+    await armed([]);
+    const components = Array.from({ length: 64_000 }, () => 'a').join('/');
+    const target = path.join(root, components, 'final.txt');
+
+    const start = Date.now();
+    const result = await run(write(target));
+    const elapsedMs = Date.now() - start;
+
+    expect(
+      elapsedMs,
+      `took ${elapsedMs}ms — canonicalPath must not grow with the path's component count`,
+    ).toBeLessThan(2000);
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/component/i);
+    expect(result.stderr).toMatch(/limit/i);
+    expect(result.stderr).toMatch(/split|smaller/i);
+  });
+
+  it('still resolves an ordinary, shallow path normally — unchanged from today', async () => {
+    await armed([]);
+    const target = path.join(root, 'src', 'a', 'b', 'x.ts');
+    const result = await run(write(target));
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
 describe('guard-rulebook: refusing to inspect is not allowing', () => {
   it('blocks a rulebook edit when the flag exists but cannot be read, and names the file', async () => {
     await armed([], '{ not json');

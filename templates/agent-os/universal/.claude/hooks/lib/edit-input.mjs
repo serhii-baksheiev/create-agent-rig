@@ -51,7 +51,11 @@ const MAX_SPLICE_OPERATIONS = 1_000;
 const MAX_PATCH_SECTIONS = 128;
 /** A MultiEdit is capped before it is mapped — bounded work, never a spread of input. */
 const MAX_MULTI_EDITS = 256;
-const MAX_PATCH_PATH_COMPONENTS = 512;
+// RP-247: exported — `guard-rulebook.mjs`'s `canonicalPath` mirrors this same
+// bound rather than carrying its own number, so the two guards agree on one
+// figure instead of two that can drift apart (`.claude/rules/invariants.md`,
+// "one mechanism, one implementation").
+export const MAX_PATCH_PATH_COMPONENTS = 512;
 
 /**
  * The surfaces this normaliser answers for. A tool outside the set is one the
@@ -89,6 +93,45 @@ const unreadableToolInput = (toolName) =>
         appliesToAll: true,
       };
 
+/**
+ * RP-247: counts path separators in one forward pass over the raw string,
+ * bailing out the moment the count would exceed the bound — bounded work
+ * regardless of how long the remainder of the string is, rather than first
+ * splitting the whole input into an array (or handing it to
+ * `path.posix.normalize`, whose handling of a long run of `..` segments is
+ * quadratic) before ever checking its size. `MAX_PATCH_PATH_COMPONENTS` is
+ * reused rather than a second number: a real path (Win32 verbatim
+ * ≤32,767 characters, Linux `PATH_MAX` 4096) never comes close to it, so an
+ * ordinary edit is unaffected.
+ */
+export function exceedsPathComponentBound(raw) {
+  let count = 1;
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw.charCodeAt(i);
+    if (ch === 47 /* '/' */ || ch === 92 /* '\\' */) {
+      count += 1;
+      if (count > MAX_PATCH_PATH_COMPONENTS) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The one refusal for a `file_path`/`notebook_path` whose component count
+ * crosses `MAX_PATCH_PATH_COMPONENTS` before it ever reaches
+ * `path.posix.normalize` — shared by every direct edit surface below, the
+ * same way `unreadableToolInput` is (RP-247).
+ */
+function pathComponentOverflowFragment() {
+  return {
+    filePath: '',
+    fragment: '',
+    inspectionRefusal: `path component count exceeds the ${MAX_PATCH_PATH_COMPONENTS}-component inspection limit`,
+    remedy: 'Split it into a smaller edit and retry.',
+    appliesToAll: true,
+  };
+}
+
 export function editFragments(input) {
   const toolName = input?.tool_name;
   const rawToolInput = input?.tool_input;
@@ -121,9 +164,11 @@ export function editFragments(input) {
   }
   const toolInput = rawToolInput ?? {};
   if (toolName === 'Write' || toolName === 'Edit') {
+    const filePath = normalisePath(toolInput.file_path);
+    if (filePath === null) return [pathComponentOverflowFragment()];
     return [
       {
-        filePath: normalisePath(toolInput.file_path),
+        filePath,
         fragment: String(
           (toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '',
         ),
@@ -138,6 +183,7 @@ export function editFragments(input) {
   if (toolName === 'MultiEdit') {
     if (!Array.isArray(toolInput.edits)) return [];
     const filePath = normalisePath(toolInput.file_path);
+    if (filePath === null) return [pathComponentOverflowFragment()];
     if (toolInput.edits.length > MAX_MULTI_EDITS) {
       return [
         {
@@ -154,9 +200,11 @@ export function editFragments(input) {
     }));
   }
   if (toolName === 'NotebookEdit') {
+    const filePath = normalisePath(toolInput.notebook_path);
+    if (filePath === null) return [pathComponentOverflowFragment()];
     return [
       {
-        filePath: normalisePath(toolInput.notebook_path),
+        filePath,
         fragment: String(toolInput.new_source ?? ''),
       },
     ];
@@ -601,20 +649,37 @@ const DRIVE_RELATIVE_PREFIX = /^[A-Za-z]:(?!\/)/;
 // at — keeps a `..` in the remainder from ever reaching back far enough to
 // cancel the marker itself; an empty remainder (a bare `C:`) is left as-is
 // rather than turned into `C:.`, unchanged from before this round.
+// RP-247: `path.posix.normalize` is only quadratic in the RELATIVE case — a
+// leading `..` run it cannot clamp at a root, so each one stays in the
+// output and the run keeps growing. The DRIVE_ROOT_PREFIX branch above and
+// the UNC branch in `normalisePath` below both normalise an ABSOLUTE string
+// (one that starts with `/`), which clamps a `..` run at the root in one
+// linear pass instead — already exercised at 200,000 segments by the
+// RP-244 tests above, and left untouched here. Only the two RELATIVE
+// branches — this function's plain fallback, and its DRIVE_RELATIVE_PREFIX
+// case, which has no root to clamp at — get the bound, checked before the
+// `path.posix.normalize` call each one makes.
 function clampAtDriveRoot(slashed) {
   if (DRIVE_ROOT_PREFIX.test(slashed)) {
     return slashed.slice(0, 2) + path.posix.normalize(slashed.slice(2));
   }
   if (DRIVE_RELATIVE_PREFIX.test(slashed)) {
     const remainder = slashed.slice(2);
-    return remainder === '' ? slashed : slashed.slice(0, 2) + path.posix.normalize(remainder);
+    if (remainder === '') return slashed;
+    if (exceedsPathComponentBound(remainder)) return null;
+    return slashed.slice(0, 2) + path.posix.normalize(remainder);
   }
+  if (exceedsPathComponentBound(slashed)) return null;
   return path.posix.normalize(slashed);
 }
 
 function normalisePath(value) {
   const raw = String(value ?? '').trim();
   if (raw === '') return '';
+  // `null` here is a sentinel distinct from every valid return of this
+  // function (including `''`) — `clampAtDriveRoot` returns it once its own
+  // bound is crossed (RP-247); every caller below checks for it and returns
+  // `pathComponentOverflowFragment()` instead of a normal fragment.
   const driveMatch = WIN32_VERBATIM_DRIVE_PREFIX.exec(raw);
   if (driveMatch) {
     const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
@@ -636,6 +701,14 @@ function canonicalPatchPath(value) {
   const raw = String(value ?? '').replaceAll('\\', '/');
   const normalised = normalisePath(raw);
   if (
+    // RP-247: `normalisePath` returns `null`, not a string, once its own
+    // component bound is crossed — reached here only in principle, since
+    // every apply_patch path already spent `overPathComponentBudget` (the
+    // per-patch aggregate, same bound) before `repositoryPatchPath` ever
+    // calls this function; kept as the same "cannot safely resolve" outcome
+    // the other conditions below already produce, so a future caller cannot
+    // reintroduce the unbounded case by skipping that aggregate check.
+    normalised === null ||
     normalised === '' ||
     raw.startsWith('/') ||
     raw.startsWith('//') ||
