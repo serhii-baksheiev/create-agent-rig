@@ -69,27 +69,39 @@
 // dispatch-usage.test.ts (absent in a generated rig) › "reports
 // usageUnavailable: transcript-path-unc for a UNC-shaped
 // agent_transcript_path (leading "//") — never opens anything"), then
-// requires its basename to be exactly `agent-<agent_id>.jsonl` for the
+// requires an absolute path (see dispatch-usage.test.ts, absent in a generated
+// rig, › "reports usageUnavailable with transcript-path-not-absolute for a
+// relative path whose basename otherwise binds to its agent_id") and its
+// basename to be exactly `agent-<agent_id>.jsonl` for the
 // payload's OWN `agent_id`; any other basename, a UNC-shaped or
 // missing/empty path, resolves to `usageUnavailable` without opening
 // anything. The read itself
 // is bounded on three axes at once: at
 // most 32 MiB read in total, at most 8 MiB in one line, at most 3s wall
 // time (checked between chunks) — a fixed-size buffer on an
-// `O_RDONLY|O_NONBLOCK` handle opened after an `lstatSync`/`fstatSync`
-// `isFile()` check. Crossing ANY bound, an unreadable file, an empty
+// `O_RDONLY|O_NONBLOCK` handle whose opened `fstatSync` is a regular file
+// with the same device and inode as the preceding regular-file `lstatSync`.
+// That comparison happens after `openSync`: it rejects a different opened file
+// before reading changed content, but does not prevent the open itself. See
+// dispatch-usage-codex.test.ts (absent in a generated rig) › "does not read a
+// rollout replaced with a symlink after lstatSync has accepted its regular
+// file". Crossing ANY bound, an unreadable file, an empty
 // transcript, a transcript with no usage-bearing assistant record, an
 // out-of-range counter, or a single malformed JSON line ANYWHERE in the
 // transcript makes the whole dispatch `usageUnavailable: '<short reason
 // code>'` (`transcript-unreadable`, `transcript-path-missing`,
-// `transcript-path-unc`, `transcript-path-mismatch`, `transcript-too-large`,
+// `transcript-path-unc`, `transcript-path-not-absolute`,
+// `transcript-path-mismatch`, `transcript-too-large`,
 // `transcript-line-too-large`, `transcript-timeout`,
 // `transcript-malformed-line`, `transcript-empty`, `no-usage-records`,
 // `invalid-usage-counter`) — never a partial number, and the reason codes
 // themselves never carry the path or any transcript content. Assistant
 // records' `message.usage` counters (`input_tokens`, `output_tokens`,
 // `cache_creation_input_tokens`, `cache_read_input_tokens`) are deduped by
-// `requestId ?? message.id`, last occurrence per key wins, then summed;
+// `requestId ?? message.id`, last occurrence per key wins, then summed. An
+// optional cache counter can therefore sum only valid deduped records that
+// carry it; that is not a partial transcript result: any malformed line,
+// unreadable path, or read-bound failure rejects every accumulated counter.
 // `usage.requests` is the count of distinct keys. A counter absent from
 // every deduped record stays absent (never `0`, never inferred); a counter
 // present anywhere but not a non-negative safe integer makes the whole
@@ -117,11 +129,15 @@
 // `path.isAbsolute`, because a mixed-separator UNC path is not
 // POSIX-absolute and would otherwise fall through as the wrong reason
 // code — then not absolute (`rollout-path-not-absolute`), then an
-// `lstatSync`/`fstatSync` `isFile()` check exactly as the Claude transcript
-// gets (`transcript-unreadable`; a symlink, FIFO, or other non-regular file
-// is refused without ever being followed). The read itself shares RP-226's
+// `lstatSync`/`openSync`/`fstatSync` regular-file identity check exactly as
+// the Claude transcript gets (`transcript-unreadable`; a symlink, FIFO, or
+// other non-regular file is refused before reading, and after opening a
+// candidate descriptor the reader rejects a different opened file before
+// reading its changed content). See dispatch-usage-codex.test.ts (absent in a generated rig) ›
+// "does not read a rollout replaced with a symlink after lstatSync has
+// accepted its regular file". The read itself shares RP-226's
 // bounded JSONL reader verbatim (`readBoundedLines`, extracted below so both
-// sections call the same lstat/open/chunked-read/carry-across-chunk
+// sections call the same lstat/open/fstat identity check, chunked-read/carry-across-chunk
 // implementation once) — the same 32 MiB total / 8 MiB per line / 3s
 // wall-time bounds and the same
 // `transcript-too-large`/`transcript-line-too-large`/`transcript-timeout`/
@@ -210,6 +226,21 @@
 //     the final line's `JSON.parse` all run outside the clock; a process
 //     stuck in one of those still relies on the harness's own hook timeout
 //     as the real backstop.
+//   - **Absolute non-UNC paths are not proven local.** This hook accepts an
+//     absolute non-UNC regular file under the same bounds and post-open
+//     identity check, but has no network-location detector. On Windows,
+//     mapped drive letters and `SUBST` aliases can denote network paths; see
+//     https://learn.microsoft.com/en-us/windows/win32/api/shlwapi/nf-shlwapi-pathisnetworkpathw.
+//     The hook behaviour is pinned in dispatch-usage-codex.test.ts (absent in
+//     a generated rig) ›
+//     "documents that absolute non-UNC paths are not proven local, and still captures usage from one (network location remains unmeasured)".
+//   - **`no-usage-records` has a narrow Codex meaning.** It is returned only
+//     after the first `session_meta` binds to `agent_id`, when no
+//     `token_usage_record` has that `thread_id`; a matched record without a
+//     usable counter is instead `no-usage-counters`. See
+//     dispatch-usage-codex.test.ts (absent in a generated rig) › "reports
+//     usageUnavailable with no-usage-records when identity holds but no
+//     token_usage_record names this thread_id".
 //
 // PRIVACY: this record never carries `cwd`, a transcript path, a prompt, a
 // response, a raw `session_id`/`agent_id`, or an email address — see
@@ -646,8 +677,8 @@ const expectedTranscriptBasename = (agentId) => `agent-${agentId}.jsonl`;
 
 /**
  * The one-pass, bounded JSONL line reader both RP-226 (Claude transcript) and
- * RP-227 (Codex rollout) fold their own records through — the lstat/open,
- * chunked read, carry-across-chunk partial line, and all three bounds (total
+ * RP-227 (Codex rollout) fold their own records through — the lstat/open/fstat
+ * identity check, chunked read, carry-across-chunk partial line, and all three bounds (total
  * bytes, one line's bytes, wall time) live here exactly once. `foldLine(buf)`
  * is called with each complete line's raw bytes (no trailing newline,
  * possibly zero-length for a trailing blank line) and returns `false` for a
@@ -667,7 +698,10 @@ function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
     if (!lst.isFile()) return 'transcript-unreadable';
 
     fd = openSync(file, OPEN_FLAGS);
-    if (!fstatSync(fd).isFile()) return 'transcript-unreadable';
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== lst.dev || opened.ino !== lst.ino) {
+      return 'transcript-unreadable';
+    }
 
     const chunk = Buffer.alloc(TRANSCRIPT_READ_CHUNK_BYTES);
     // The pending partial line, carried across chunk reads as a list of
@@ -824,8 +858,9 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
 /**
  * `{ usage }` or `{ usageUnavailable }` for one `SubagentStop` payload's
  * Claude transcript — a UNC-shaped path is refused first (reusing the
- * Codex path's `UNC_PATH_RE`), then the basename binding, both before any
- * file is even opened; `transcript_path` (the parent's) is never consulted.
+ * Codex path's `UNC_PATH_RE`), then a non-absolute path, then the basename
+ * binding, all before any file is even opened; `transcript_path` (the
+ * parent's) is never consulted.
  */
 function claudeUsageOf(input, agentId) {
   const transcriptPath = input.agent_transcript_path;
@@ -834,6 +869,9 @@ function claudeUsageOf(input, agentId) {
   }
   if (UNC_PATH_RE.test(transcriptPath)) {
     return { usageUnavailable: 'transcript-path-unc' };
+  }
+  if (!path.isAbsolute(transcriptPath)) {
+    return { usageUnavailable: 'transcript-path-not-absolute' };
   }
   if (path.basename(transcriptPath) !== expectedTranscriptBasename(agentId)) {
     return { usageUnavailable: 'transcript-path-mismatch' };

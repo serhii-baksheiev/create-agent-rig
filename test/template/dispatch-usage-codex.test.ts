@@ -1,9 +1,10 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdtemp, symlink, writeFile } from 'node:fs/promises';
+import { renameSync, symlinkSync, unlinkSync } from 'node:fs';
+import { mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 // RP-227 — passive Codex usage capture, added to the RP-225 dispatch-end
@@ -650,6 +651,69 @@ describe('record-dispatch.mjs — a matched token_usage_record with no usable th
 });
 
 describe('record-dispatch.mjs — Codex rollout path is refused before anything is opened (RP-227)', () => {
+  it('does not read a rollout replaced with a symlink after lstatSync has accepted its regular file', async () => {
+    // The reader calls synchronous filesystem primitives, so a real timing
+    // race cannot be scheduled deterministically. This mock leaves every
+    // operation real except it replaces the checked regular file immediately
+    // before the reader's actual openSync. The lstat/fstat device-and-inode
+    // comparison rejects the newly opened target before reading its content.
+    const agentId = 'swap-after-lstat';
+    const checkedFile = await writeRollout(`agent-${agentId}.jsonl`, [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1, output_tokens: 1 },
+      }),
+    ]);
+    const attackerFile = await writeRollout('attacker-rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 313131, output_tokens: 313131 },
+      }),
+    ]);
+    const parkedFile = `${checkedFile}.checked`;
+    let swapped = false;
+
+    vi.resetModules();
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        openSync: (...args: Parameters<typeof actual.openSync>) => {
+          const [file] = args;
+          if (!swapped && file === checkedFile) {
+            renameSync(checkedFile, parkedFile);
+            symlinkSync(attackerFile, checkedFile, 'file');
+            swapped = true;
+          }
+          return actual.openSync(...args);
+        },
+      };
+    });
+
+    try {
+      const module = (await import(
+        `${pathToFileURL(hookPath).href}?symlink-swap=${Date.now()}`
+      )) as {
+        readCodexRolloutUsage: (
+          file: string,
+          agentId: string,
+        ) => { usage?: Record<string, unknown>; usageUnavailable?: string };
+      };
+      const result = module.readCodexRolloutUsage(checkedFile, agentId);
+      expect(swapped).toBe(true);
+      expect(result).toEqual({ usageUnavailable: 'transcript-unreadable' });
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+      if (swapped) {
+        unlinkSync(checkedFile);
+        renameSync(parkedFile, checkedFile);
+      }
+    }
+  });
+
   it('reports usageUnavailable and never reads transcript_path (the parent) when agent_transcript_path is absent', async () => {
     const parentFile = await writeRollout('parent-decoy.jsonl', [
       sessionMetaLine('no-agent-transcript-path'),
@@ -805,6 +869,48 @@ describe('record-dispatch.mjs — Codex rollout path is refused before anything 
     const data = (events[0]?.data ?? {}) as Record<string, unknown>;
     expect(typeof data.usageUnavailable).toBe('string');
     expect('usage' in data).toBe(false);
+  });
+});
+
+describe('record-dispatch.mjs — LIMITS documents the Windows network-location boundary (RP-269)', () => {
+  const testName =
+    'documents that absolute non-UNC paths are not proven local, and still captures usage from one (network location remains unmeasured)';
+
+  it(testName, async () => {
+    // This fixture is an absolute, non-UNC local temporary path. It proves the
+    // hook still reads the broad class it cannot classify as local; it does
+    // not pretend local storage proves how a mapped or SUBST path
+    // is backed on Windows.
+    const agentId = 'absolute-non-unc-location-unmeasured';
+    const file = await writeRollout('absolute-non-unc-rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 17, output_tokens: 9 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    const usage = data.usage as Record<string, unknown> | undefined;
+    expect(usage?.inputTokens).toBe(17);
+    expect(usage?.outputTokens).toBe(9);
+    expect('usageUnavailable' in data).toBe(false);
+
+    const source = await readFile(hookPath, 'utf8');
+    const limitsStart = source.indexOf('// LIMITS, stated because');
+    const limitsEnd = source.indexOf('//\n// PRIVACY:', limitsStart);
+    expect(limitsStart).toBeGreaterThanOrEqual(0);
+    expect(limitsEnd).toBeGreaterThan(limitsStart);
+    const limits = source.slice(limitsStart, limitsEnd);
+    expect(limits).toMatch(/absolute non-UNC paths? (?:are|is) not proven local/i);
+    expect(limits).toContain('dispatch-usage-codex.test.ts');
+    expect(limits).toContain(testName);
   });
 });
 

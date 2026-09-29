@@ -412,6 +412,25 @@ describe('record-dispatch.mjs — Claude usage capture on SubagentStop (RP-226)'
 });
 
 describe('record-dispatch.mjs — usage is unavailable when the transcript cannot be trusted (RP-226)', () => {
+  it('reports usageUnavailable with transcript-path-not-absolute for a relative path whose basename otherwise binds to its agent_id', async () => {
+    const agentId = 'relative-but-bound';
+    const result = await runHook(
+      JSON.stringify(
+        dispatch({
+          agent_id: agentId,
+          agent_transcript_path: `relative/agent-${agentId}.jsonl`,
+        }),
+      ),
+      env(),
+      ['--harness=claude'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('transcript-path-not-absolute');
+    expect('usage' in data).toBe(false);
+  });
+
   it('reports usageUnavailable when agent_transcript_path’s basename does not match agent-<agent_id>.jsonl for the payload’s own agent_id', async () => {
     const claimedAgentId = 'target-1';
     // Written under a DIFFERENT agent's correctly-shaped name — the basename
