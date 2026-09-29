@@ -41,14 +41,25 @@
 // an entry that is not among this checkout's own candidate paths means
 // ANOTHER checkout's flag is armed in the SAME home, and this hook writes ONE
 // bounded (<=512 chars) `record-dispatch:` line to stderr naming the root it
-// checked (`CLAUDE_PROJECT_DIR`, or `cwd`, with any control character
-// replaced so the line stays one line) — never the other checkout's `runDir`
-// or flag content, and never more than that one line. Still exits 0, stdout
-// stays empty, and nothing is written to any journal; any error inside this
-// probe is swallowed, exactly like every other failure mode in this
-// observe-only hook. See dispatch-journal.test.ts (absent in a generated rig)
-// › "prints exactly one bounded stderr notice naming the checked root, and
-// writes nothing, when the armed flag belongs to a DIFFERENT checkout".
+// checked (`CLAUDE_PROJECT_DIR`, or `cwd`, sanitised through `CONTROL_CHARS_RE`
+// — see that constant's own doc comment for the exact character set —
+// so the line stays one line and carries no invisible-rendering character) —
+// never the other checkout's `runDir` or flag content, and never more than
+// that one line. Still exits 0, stdout stays empty, and nothing is written to
+// any journal; any error inside this probe is swallowed, exactly like every
+// other failure mode in this observe-only hook. See dispatch-journal.test.ts
+// (absent in a generated rig) › "prints exactly one bounded stderr notice
+// naming the checked root, and writes nothing, when the armed flag belongs to
+// a DIFFERENT checkout". RP-294 round 2 (B3) extracted the bounded scan's
+// DECISION into a small, exported, pure function, `firstForeignFlag(names,
+// isForeign, cap = MAX_HOME_ENTRIES_EXAMINED)` — pulls at most `cap` items
+// from an arbitrary iterable and returns the first one `isForeign` accepts,
+// or `undefined`; `anotherCheckoutFlagIsPresent` below feeds it a lazy
+// generator over the `opendirSync` handle's own entries, so the cap still
+// bounds the real `readSync` calls, not just the function's own loop. See
+// dispatch-journal.test.ts (absent in a generated rig) › "record-dispatch.mjs
+// — firstForeignFlag: the bounded scan decision extracted into a testable
+// pure function (RP-294 round 2, B3)".
 //
 // The record is bounded by ONE allowlist, `DISPATCH_FIELDS`: every key is
 // filtered through it immediately before the write, so a field added to the
@@ -65,17 +76,42 @@
 // ORPHAN DISPATCH-ENDS (RP-294): the RP-231 controller run
 // (rel110-20260928-213527, read-only evidence, never committed here)
 // journaled ~25 `dispatch-end` events with no matching `dispatch-start`
-// anywhere in the run — harness-internal `SubagentStop` firings this hook
-// cannot distinguish from a real dispatch by shape alone. So on a
-// `dispatch-end` this hook re-reads the run's OWN events (`readRun`, the same
-// reader `readEvents` in this file's test uses) and marks `orphan: true` when
-// no earlier `dispatch-start` in this run carries the same `agentRef` — never
-// on a `dispatch-start`, and never derived from anything but that explicit
-// flag once written (`token-report.mjs` trusts it verbatim rather than
-// re-deriving "orphan" from its own pairing miss). The check is bounded, not
-// merely fast: past `MAX_ORPHAN_CHECK_EVENTS` events in the run, or on ANY
-// failure reading the run (a `RunJournalError`, or anything else), `orphan`
-// is left absent — the previous behaviour — rather than guessed either way.
+// anywhere in the run — harness-internal `SubagentStop` firings. The payload
+// SHAPE is what that evidence actually recorded, not a guess: those ~25
+// orphan ends carried no `agent_type` at all, while every real, paired end in
+// the same journal echoed back the payload's own `agent_type`. So `orphan:
+// true` is written only when BOTH hold (RP-294 round 2, B4): no earlier
+// `dispatch-start` in this run carries the same `agentRef`, AND the payload's
+// own `agent_type` is absent or fails `AGENT_TYPE_RE` (the same narrow shape
+// `agentType` below is built from). The second condition exists to rule out
+// an ordinary start/end RACE — a `SubagentStop` whose `SubagentStart` hook
+// has not finished writing yet, for a real agent whose payload DOES carry
+// `agent_type` — which "no start" alone cannot tell apart from a genuine
+// harness-internal event. See dispatch-journal.test.ts (absent in a generated
+// rig) › "record-dispatch.mjs — orphan requires BOTH no earlier start AND no
+// agent_type on the payload (RP-294 round 2, B4)". Never marked on a
+// `dispatch-start`, and never derived from anything but that explicit flag
+// once written (`token-report.mjs` trusts it verbatim rather than
+// re-deriving "orphan" from its own pairing miss).
+//
+// The "no earlier dispatch-start" half is `hasEarlierDispatchStart`, and it
+// is bounded on TWO axes, in this order (RP-294 round 2, B1): first, BEFORE
+// any read at all, `statSync` on both `events.jsonl` and `decisions.jsonl` —
+// either file larger than `MAX_ORPHAN_CHECK_BYTES` (~4 MiB) answers `null`
+// (unknown) with no file ever opened for this check; only once both files
+// pass that size gate does it call `readRun` and apply the pre-existing
+// `MAX_ORPHAN_CHECK_EVENTS` (4096) count guard as a second, independent
+// bound. Round 1 checked the event count only AFTER `readRun` had already
+// done the full unbounded read and parse — a bound on what happens after an
+// unbounded read is not a bound on the read. `null` on either bound, or on
+// ANY failure reading the run (a `RunJournalError`, a stat error other than
+// "the file does not exist yet", or anything else), leaves `orphan` absent —
+// the previous behaviour — rather than guessed either way; a genuinely
+// missing journal file (`ENOENT` — this run has not written that file yet)
+// is zero bytes, not a failure. See dispatch-journal.test.ts (absent in a
+// generated rig) › "record-dispatch.mjs — the orphan check is bounded by
+// file size, not merely by event count after an unbounded read (RP-294
+// round 2, B1)".
 //
 // CLAUDE USAGE CAPTURE (RP-226), on `SubagentStop` with `--harness=claude`
 // only: this hook reads ONLY the payload's `agent_transcript_path` — never
@@ -256,12 +292,19 @@
 //     dispatch-usage-codex.test.ts (absent in a generated rig) › "reports
 //     usageUnavailable with no-usage-records when identity holds but no
 //     token_usage_record names this thread_id".
-//   - **The orphan check (RP-294) is bounded by event count, not by time.**
-//     `hasEarlierDispatchStart` reads the run's events once via `readRun` and
-//     gives up — leaving `orphan` absent — once the run already carries more
-//     than `MAX_ORPHAN_CHECK_EVENTS`; a run that never crosses that bound but
-//     is merely slow to read from disk has no separate timeout here, unlike
-//     the transcript readers above.
+//   - **The orphan check (RP-294) is bounded by file size FIRST, then by
+//     event count — never by time.** `hasEarlierDispatchStart` `statSync`s
+//     both journal files before opening either; past `MAX_ORPHAN_CHECK_BYTES`
+//     (~4 MiB) on either one, `readRun` is never called at all. Only once both
+//     pass that gate does the pre-existing `MAX_ORPHAN_CHECK_EVENTS` (4096)
+//     count guard run as a second check. A run that never crosses either
+//     bound but is merely slow to read from disk has no separate timeout
+//     here, unlike the transcript readers above.
+//   - **Orphan needs no earlier start AND no `agent_type` on the payload
+//     (RP-294 round 2, B4).** A real dispatch-end whose `SubagentStart` hook
+//     simply has not finished writing yet still carries the payload's own
+//     `agent_type`, so "no earlier start" alone is not sufficient — only a
+//     payload with no valid `agent_type` either is marked `orphan: true`.
 //
 // PRIVACY: this record never carries `cwd`, a transcript path, a prompt, a
 // response, a raw `session_id`/`agent_id`, or an email address — see
@@ -400,6 +443,7 @@ import {
   opendirSync,
   readSync,
   realpathSync,
+  statSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -484,17 +528,29 @@ const MAX_HOME_ENTRIES_EXAMINED = 1024;
 const MAX_NOTICE_LENGTH = 512;
 
 /**
- * Any C0 control character (including ESC, `\x1b`), DEL, C1 control character
- * (`\x80`-`\x9f`, including CSI `\x9b`), or the Unicode line/paragraph
- * separators (U+2028/U+2029) — stripped from the checked root before it is
- * ever formatted into the notice, so the notice always stays one line. RP-294
- * added the C1 range and U+2028/U+2029: the original C0/DEL-only pattern let
- * both pass through unreplaced (see dispatch-journal.test.ts, absent in a
- * generated rig, › "the mismatch notice sanitises C1 controls and the
- * Unicode line/paragraph separators, not just C0/DEL").
+ * Every character this hook strips from the checked root before it is ever
+ * formatted into the RP-287 mismatch notice, so the notice always stays one
+ * line and never carries an invisible-rendering character:
+ *   - C0 controls (`\x00`-`\x1f`, including ESC `\x1b`) and DEL (`\x7f`);
+ *   - C1 controls (`\x80`-`\x9f`, including CSI `\x9b`);
+ *   - the Unicode line/paragraph separators (U+2028/U+2029) — RP-294 round 1
+ *     added the C1 range and these two: the original C0/DEL-only pattern let
+ *     both pass through unreplaced (dispatch-journal.test.ts, absent in a
+ *     generated rig, › "the mismatch notice sanitises C1 controls and the
+ *     Unicode line/paragraph separators, not just C0/DEL");
+ *   - bidi-control and zero-width characters — ALM (U+061C), the zero-width
+ *     range U+200B-U+200F, the bidi-embedding/override range U+202A-U+202E,
+ *     the word-joiner/isolate range U+2060-U+2069, and BOM (U+FEFF) — RP-294
+ *     round 2 (a security-scanner SHIP-with-advisories finding on PR #356):
+ *     each renders invisibly the same way a control character does and can
+ *     make a notice's visible text misrepresent the bytes actually present
+ *     (the "Trojan Source" technique; RLO, U+202E, is the representative
+ *     case pinned by dispatch-journal.test.ts, absent in a generated rig, ›
+ *     "the mismatch notice sanitises bidi-control and zero-width characters
+ *     (RP-294 round 2, security advisory)").
  */
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
-const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2060-\u2069\ufeff]/g;
 
 /** `-loop-UNATTENDED` — the fixed suffix `scopedBasename` in `unattended-flag.mjs` inserts an id before. */
 const SCOPED_FLAG_SUFFIX = '-loop-UNATTENDED';
@@ -532,14 +588,51 @@ const SCOPED_FLAG_BASENAME_RE = (() => {
 })();
 
 /**
+ * The bounded-scan DECISION (RP-294 round 2, B3), extracted into a small,
+ * exported, pure function so its cap boundary is provable outright rather
+ * than only observable through directory-enumeration order (filesystem-
+ * defined, and therefore not something a black-box test can control). Pulls
+ * at most `cap` items from `names` — via one `.next()` call per item examined,
+ * never more — and returns the first one `isForeign` accepts, or `undefined`
+ * once either `names` is exhausted or `cap` items have been examined,
+ * whichever comes first. See dispatch-journal.test.ts (absent in a generated
+ * rig) › "record-dispatch.mjs — firstForeignFlag: the bounded scan decision
+ * extracted into a testable pure function (RP-294 round 2, B3)".
+ */
+export function firstForeignFlag(names, isForeign, cap = MAX_HOME_ENTRIES_EXAMINED) {
+  const iterator = names[Symbol.iterator]();
+  for (let examined = 0; examined < cap; examined += 1) {
+    const { value, done } = iterator.next();
+    if (done) return undefined;
+    if (isForeign(value)) return value;
+  }
+  return undefined;
+}
+
+/**
+ * A lazy generator over one already-open `opendirSync` handle's entry NAMES
+ * only — never the whole `readdirSync` array — so `firstForeignFlag` pulling
+ * at most `cap` items also bounds the real `readSync` calls made, not merely
+ * its own loop.
+ */
+function* dirEntryNames(handle) {
+  let entry = handle.readSync();
+  while (entry !== null) {
+    yield entry.name;
+    entry = handle.readSync();
+  }
+}
+
+/**
  * Whether a checkout-scoped unattended flag OTHER than this checkout's own is
  * present in `envHomeOf(env)`'s `.claude` directory — a counted
  * `opendirSync`/`readSync` walk (never a file open, never a content read,
  * never an unbounded `readdirSync` array), matched only against
  * `SCOPED_FLAG_BASENAME_RE`, with entries examined capped at
- * `MAX_HOME_ENTRIES_EXAMINED` and the directory handle always closed via
- * `closeSync` in `finally`. `env` declaring no home means nothing is scanned.
- * Never reports which other checkout it saw.
+ * `MAX_HOME_ENTRIES_EXAMINED` (via `firstForeignFlag` over `dirEntryNames`)
+ * and the directory handle always closed via `closeSync` in `finally`. `env`
+ * declaring no home means nothing is scanned. Never reports which other
+ * checkout it saw.
  */
 function anotherCheckoutFlagIsPresent(env) {
   const home = envHomeOf(env);
@@ -553,16 +646,9 @@ function anotherCheckoutFlagIsPresent(env) {
     return false;
   }
   try {
-    let examined = 0;
-    let entry = handle.readSync();
-    while (entry !== null && examined < MAX_HOME_ENTRIES_EXAMINED) {
-      examined += 1;
-      if (SCOPED_FLAG_BASENAME_RE.test(entry.name) && !own.has(path.join(dir, entry.name))) {
-        return true;
-      }
-      entry = handle.readSync();
-    }
-    return false;
+    const isForeign = (name) =>
+      SCOPED_FLAG_BASENAME_RE.test(name) && !own.has(path.join(dir, name));
+    return firstForeignFlag(dirEntryNames(handle), isForeign, MAX_HOME_ENTRIES_EXAMINED) !== undefined;
   } finally {
     try {
       handle.closeSync();
@@ -581,9 +667,12 @@ function checkedRootOf(env) {
 /**
  * The one bounded (<=512 chars) `record-dispatch:` stderr line this hook ever
  * writes — naming only the root it checked, never another checkout's runDir
- * or flag content. The root is sanitised first: any ASCII control character
- * (including ESC) becomes `?`, so a root path carrying one can never split
- * this into more than the one line the tests require.
+ * or flag content. The root is sanitised first through `CONTROL_CHARS_RE` —
+ * see that constant's own doc comment for the exact character set (C0/DEL,
+ * C1, the Unicode line/paragraph separators, and the bidi-control/zero-width
+ * range) — each becoming `?`, so a root path carrying one can never split
+ * this into more than the one line the tests require, and can never make the
+ * printed line misrepresent the bytes actually present.
  */
 function writeMismatchNotice(env) {
   const root = checkedRootOf(env).replace(CONTROL_CHARS_RE, '?');
@@ -1042,28 +1131,70 @@ function codexUsageOf(input, agentId) {
 
 // ── Orphan dispatch-end detection (RP-294) ──────────────────────────────────
 //
-// See the header's ORPHAN DISPATCH-ENDS section. Bounded by event COUNT, not
-// by time: a run past `MAX_ORPHAN_CHECK_EVENTS` is read no further, and
-// `null` (unknown) is returned rather than a guess either way.
+// See the header's ORPHAN DISPATCH-ENDS section. Bounded on TWO axes, in
+// this order, never by time: a byte-size gate (`MAX_ORPHAN_CHECK_BYTES`),
+// checked via `statSync` BEFORE either journal file is ever opened for this
+// check, then — only once both files pass that gate — an event-count guard
+// (`MAX_ORPHAN_CHECK_EVENTS`) applied to what `readRun` returns. `null`
+// (unknown) is returned on either bound, rather than a guess either way. See
+// dispatch-journal.test.ts (absent in a generated rig) ›
+// "record-dispatch.mjs — the orphan check is bounded by file size, not
+// merely by event count after an unbounded read (RP-294 round 2, B1)".
+
+/**
+ * The largest either journal file (`events.jsonl`, `decisions.jsonl`) may be
+ * for this hook's orphan check to read it at all — ~4 MiB. `statSync` runs
+ * BEFORE any read, so a run whose journal has grown past this bound is never
+ * opened for this check: `readRun` is not called at all. A run past this
+ * size leaves `orphan` absent (the previous behaviour) rather than reading
+ * further.
+ */
+const MAX_ORPHAN_CHECK_BYTES = 4 * 1024 * 1024;
 
 /**
  * How many events in the run's own journal this hook's orphan check will
- * ever look at — bounded, never unbounded work. A run past this size leaves
+ * ever look at — the SECOND bound, applied only once both files already
+ * passed `MAX_ORPHAN_CHECK_BYTES` above. A run past this count leaves
  * `orphan` absent (the previous behaviour) rather than scanning further.
  */
 const MAX_ORPHAN_CHECK_EVENTS = 4096;
 
 /**
+ * The byte size of `file`, or `0` when it does not exist yet — a run's
+ * `events.jsonl`/`decisions.jsonl` genuinely may not exist before this run's
+ * first record, and that is an empty journal, not a failure. Any OTHER stat
+ * failure (permissions, and the like) propagates to the caller, which is
+ * already wrapped in `hasEarlierDispatchStart`'s own `try`/`catch` and
+ * resolves to `null` exactly like any other read failure.
+ */
+function journalFileSize(file) {
+  try {
+    return statSync(file).size;
+  } catch (error) {
+    if (error?.code === 'ENOENT') return 0;
+    throw error;
+  }
+}
+
+/**
  * Whether `agentRef` has an earlier `dispatch-start` recorded anywhere in
  * this run's own journal, checked just before writing a `dispatch-end`
- * record — `true`/`false` when the read succeeded and stayed within
- * `MAX_ORPHAN_CHECK_EVENTS`, `null` ("unknown, do not guess") when the run is
- * larger than that bound or `readRun` throws for any reason (a missing run
- * directory, an unreadable journal, anything else). A caller must mark
- * `orphan: true` only on an explicit `false` here — never on `null`.
+ * record — `true`/`false` when the read succeeded and stayed within both
+ * bounds, `null` ("unknown, do not guess") when either journal file is
+ * larger than `MAX_ORPHAN_CHECK_BYTES` (checked first, before either file is
+ * opened), the run's events exceed `MAX_ORPHAN_CHECK_EVENTS` (checked second,
+ * against what `readRun` returns), or `readRun`/`statSync` throws for any
+ * other reason (a missing run directory, an unreadable journal, anything
+ * else). A caller must mark `orphan: true` only on an explicit `false` here
+ * — never on `null`.
  */
 function hasEarlierDispatchStart(runDir, agentRef) {
   try {
+    const eventsBytes = journalFileSize(path.join(runDir, 'events.jsonl'));
+    const decisionsBytes = journalFileSize(path.join(runDir, 'decisions.jsonl'));
+    if (eventsBytes > MAX_ORPHAN_CHECK_BYTES || decisionsBytes > MAX_ORPHAN_CHECK_BYTES) {
+      return null;
+    }
     const { events } = readRun({ runDir });
     if (events.length > MAX_ORPHAN_CHECK_EVENTS) return null;
     return events.some(
@@ -1112,7 +1243,15 @@ function main() {
 
     data.agentRef = ref(runDir, agentId);
 
-    if (kind === 'dispatch-end' && hasEarlierDispatchStart(runDir, data.agentRef) === false) {
+    // RP-294 round 2, B4: BOTH conditions, not "no start" alone — see the
+    // header's ORPHAN DISPATCH-ENDS section for why `agentType === null` is
+    // checked first (cheap, and skips the bounded journal read entirely for
+    // every ordinary end that carries a real agent_type).
+    if (
+      kind === 'dispatch-end' &&
+      agentType === null &&
+      hasEarlierDispatchStart(runDir, data.agentRef) === false
+    ) {
       data.orphan = true;
     }
 
