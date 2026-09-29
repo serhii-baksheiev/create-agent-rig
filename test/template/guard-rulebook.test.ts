@@ -7,7 +7,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { runNodeTimed } from '../helpers/child-timing.js';
-import { needsGitRoot, onlyOnWindows, skipUnless } from '../helpers/env.js';
+import {
+  deepCwdSpawnAvailable,
+  needsGitRoot,
+  onlyOnWindows,
+  skipUnless,
+  symlinksAvailable,
+} from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -1329,7 +1335,8 @@ describe('guard-rulebook: canonicalPath fails closed when resolve() crosses the 
     return dir;
   };
 
-  it('refuses a Write of a short relative file_path once the deep cwd pushes resolve() past the bound', async () => {
+  it('refuses a Write of a short relative file_path once the deep cwd pushes resolve() past the bound', async (ctx) => {
+    skipUnless(ctx, deepCwdSpawnAvailable().ok, deepCwdSpawnAvailable().reason);
     await armed([]);
     const cwd = await buildDeepCwd();
 
@@ -1355,7 +1362,8 @@ describe('guard-rulebook: canonicalPath fails closed when resolve() crosses the 
   // sessions just because RP-247 gives it a bound. Pinned explicitly rather
   // than assumed, because the planned fix could in principle have chosen
   // otherwise.
-  it('an unarmed session still allows it — the refusal above applies only while the flag is armed', async () => {
+  it('an unarmed session still allows it — the refusal above applies only while the flag is armed', async (ctx) => {
+    skipUnless(ctx, deepCwdSpawnAvailable().ok, deepCwdSpawnAvailable().reason);
     const cwd = await buildDeepCwd();
 
     const result = await runNodeTimed(hookPath, {
@@ -1417,6 +1425,34 @@ describe('guard-rulebook: canonicalPath fails closed when resolve() crosses the 
     expect(result.stderr).toMatch(/component/i);
     expect(result.stderr).toMatch(/limit/i);
     expect(result.stderr).toMatch(/split|smaller/i);
+  });
+
+  // RP-247 round 3 — a THIRD gap in `canonicalPath`, found while fixing the
+  // round-2 bound: the extracted implementation seeds the walk's `tail` with
+  // `basename(resolved)` and starts `cursor` at `dirname(resolved)`,
+  // skipping a `realpath` attempt on the full resolved path (leaf included).
+  // That skip was made to keep the round-3 component-count pin at ≤101
+  // calls — but a `file_path` whose own LEAF is a symlink is never resolved
+  // by a walk that never tries the leaf itself: `canonicalPath('src/link.md')`
+  // returns the lexical `src/link.md` unchanged even when that symlink
+  // points at `.claude/rules/x.md`, so a Write through such a link never
+  // matches the rulebook prefix. No huge component count needed — this is a
+  // POSIX-only fixture (`symlinksAvailable`) because building it needs a
+  // real symlink, which an ordinary Windows CI account cannot create
+  // (`symlinksAvailable`'s own reason, `env.ts`); the walk logic itself is
+  // platform-neutral, and the win32-only cases above already cover the
+  // Windows-specific reproductions of the OTHER two gaps.
+  it('blocks a Write to a symlink file whose target is inside the rulebook', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
+    await writeFile(path.join(root, '.claude', 'rules', 'x.md'), 'protected\n');
+    await mkdir(path.join(root, 'src'), { recursive: true });
+    await symlink(path.join(root, '.claude', 'rules', 'x.md'), path.join(root, 'src', 'link.md'));
+    await armed([]);
+
+    const result = await run(write(path.join(root, 'src', 'link.md')));
+
+    expect(result.code, result.stderr).toBe(2);
   });
 });
 

@@ -100,8 +100,8 @@
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
-import { editFragments, exceedsPathComponentBound, MAX_PATCH_PATH_COMPONENTS } from './lib/edit-input.mjs';
+import { canonicalPath } from './lib/canonical-path.mjs';
+import { editFragments, pathComponentOverflowFragment } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, canonicalRulebookPath, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
@@ -136,52 +136,22 @@ const canonicalRoot = (root) => {
   }
 };
 
-/**
- * Resolve symlinks in the nearest existing ancestor, preserving a missing
- * tail. Returns `null` — never the raw `filePath` — once the resolved path
- * crosses the component bound (RP-247 round 2).
- *
- * RP-247 round 1 returned `filePath` here past the bound: the raw,
- * UNRESOLVED string. `protectedRelative` reads that as "not under the
- * rulebook" — the lexical spelling itself rarely starts with a rulebook
- * prefix, only the REAL, resolved location might — so a fail-OPEN fallback
- * on the one path meant to catch a resolved rulebook location made this
- * exactly the case `.claude/rules/invariants.md` warns against:
- * "refusing to inspect is not allowing". Security-scanner demonstrated it on
- * PR #350 with a real Win32 junction aliasing `.claude`, and independently
- * with no symlink at all — a short, ordinary `file_path` resolved against a
- * merely deep `cwd`, which `edit-input.mjs`'s own bound never sees, since it
- * only counts separators in the raw string the payload sent, not what
- * `resolve()` does with it. `null` is `protectedRelative`'s signal to refuse
- * rather than to treat this fragment as harmless.
- */
-const canonicalPath = (filePath) => {
-  const resolved = resolve(filePath);
-  // This walk spends one `realpathSync.native` call per path component that
-  // does not exist on disk — a crafted `file_path` with many such
-  // components (`/a/a/a/…`) would otherwise make it grow with the component
-  // count instead of the file's actual depth, and this hook calls it (via
-  // `protectedRelative`, below) for every fragment before it ever checks
-  // whether the unattended flag is armed. `exceedsPathComponentBound` is
-  // `edit-input.mjs`'s own bound, reused rather than a second number
-  // (`.claude/rules/invariants.md`, "one mechanism, one implementation").
-  if (exceedsPathComponentBound(resolved)) return null;
-  let cursor = resolved;
-  const tail = []; // pushed nearest-missing-first; reversed once, joined once — never `unshift`, never spread
-  for (;;) {
-    try {
-      const base = realpathSync.native(cursor);
-      if (tail.length === 0) return base;
-      tail.reverse();
-      return join(base, tail.join('/'));
-    } catch {
-      const parent = dirname(cursor);
-      if (parent === cursor) return filePath;
-      tail.push(basename(cursor));
-      cursor = parent;
-    }
-  }
-};
+// RP-247 round 3: `canonicalPath` — resolve symlinks in the nearest existing
+// ancestor of a fragment's `filePath`, preserving a missing tail, returning
+// `null` (never the raw `filePath`) once the resolved path crosses the
+// component bound — now lives in `./lib/canonical-path.mjs`, side-effect
+// free so it can be pinned directly, in-process (this file calls
+// `process.exit(main())` at module top level, so importing IT in-process
+// would kill the test worker). See that module's own docstring for why the
+// bound check runs before any `realpath` call, and why round 1's fail-OPEN
+// fallback here — returning the raw, unresolved `filePath` past the bound —
+// was itself the vulnerability security-scanner found on PR #350: a real
+// Win32 junction aliasing `.claude`, and independently a short, ordinary
+// `file_path` resolved against a merely deep `cwd`, both bypassed the
+// rulebook because `protectedRelative` below reads an unresolved lexical
+// spelling as "not under the rulebook" — the REAL, resolved location might
+// be, but never gets the chance to say so. `null` is `protectedRelative`'s
+// signal to refuse rather than to treat the fragment as harmless.
 
 /** The repo-relative tail of an absolute path, or the path itself when it is not under the root. */
 export const relativeTo = (root, filePath) => {
@@ -318,17 +288,15 @@ function main() {
   // below — a fragment `canonicalPath` could not resolve within the
   // component bound is not "never judged", the same distinction
   // `protectedRelative` now draws. `.claude/rules/invariants.md`, "Refusing
-  // to inspect is not allowing": the same limit-plus-remedy wording
-  // `edit-input.mjs`'s `pathComponentOverflowFragment()` uses, since both
-  // report the same bound.
+  // to inspect is not allowing". RP-247 round 3: the message is
+  // `pathComponentOverflowFragment()` itself, imported from `edit-input.mjs`,
+  // not a hand-written second copy of its wording — one spelling of one
+  // refusal, since both report the same bound.
   if (componentOverflow) {
     const mode = readUnattended(unattendedEnv);
     if (!mode.on) return 0; // attended session
-    process.stderr.write(
-      'BLOCKED — cannot safely inspect this unattended edit: ' +
-        `path component count exceeds the ${MAX_PATCH_PATH_COMPONENTS}-component inspection limit\n` +
-        'Split it into a smaller edit and retry.\n',
-    );
+    const { inspectionRefusal, remedy } = pathComponentOverflowFragment();
+    process.stderr.write(`BLOCKED — cannot safely inspect this unattended edit: ${inspectionRefusal}\n${remedy}\n`);
     return 2;
   }
   if (paths.length === 0 && !unjudgeable) return 0; // nothing under the rulebook: never judged

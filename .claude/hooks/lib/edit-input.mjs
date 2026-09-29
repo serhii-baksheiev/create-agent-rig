@@ -120,9 +120,14 @@ export function exceedsPathComponentBound(raw) {
  * The one refusal for a `file_path`/`notebook_path` whose component count
  * crosses `MAX_PATCH_PATH_COMPONENTS` before it ever reaches
  * `path.posix.normalize` — shared by every direct edit surface below, the
- * same way `unreadableToolInput` is (RP-247).
+ * same way `unreadableToolInput` is (RP-247). Exported: `guard-rulebook.mjs`
+ * reuses its `inspectionRefusal`/`remedy` wording for the component bound
+ * `canonical-path.mjs` enforces on a RESOLVED path, rather than hand-writing
+ * a second copy of the same sentence — one spelling of one refusal
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation";
+ * RP-247 round 3).
  */
-function pathComponentOverflowFragment() {
+export function pathComponentOverflowFragment() {
   return {
     filePath: '',
     fragment: '',
