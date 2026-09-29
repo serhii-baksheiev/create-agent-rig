@@ -114,6 +114,89 @@ describe('the one case that starts Windows PowerShell', () => {
   });
 });
 
+// RP-266 follow-up (rounds 2 and 3). test/template/codex-wrapper-bounds.test.ts
+// has TWO cases that each drive the real generated Windows wrapper through
+// several scenarios — the same irreducible cost as the codex.test.ts case
+// above (RP-162: starting powershell.exe with an -EncodedCommand, measured
+// 817 ms–over 15 000 ms on a loaded hosted Windows runner), paid several
+// times in a row by each case's own loop. Round 3 added enough scenarios
+// (the git.cmd hijack repro, the restored never-exiting-guard tree-kill
+// proof with its own process-list query, the large-stdin fail-open repro)
+// that stretching the round-2 case further risked exceeding the ceiling
+// RP-162 established for a SINGLE start, so round 3 put them in a second
+// case with a second named budget instead — each case still carries its own
+// budget the same way the codex.test.ts case above does, and the file-wide
+// figure stays at this project's default.
+const CODEX_WRAPPER_BOUNDS_CASE_NAME =
+  'always fails closed under a lowered bound, and never throws on a malformed override (RP-266 follow-up)';
+const CODEX_WRAPPER_BOUNDS_CASE_BUDGET_DECLARATION =
+  /^const CODEX_WRAPPER_BOUNDS_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+const CODEX_WRAPPER_BOUNDS_SECURITY_CASE_NAME =
+  'never runs a planted guard.cmd-fed fake guard, never leaks a killed guard process, and never treats a guard that exits early on a large payload as a wrapper failure (RP-266 round 3)';
+const CODEX_WRAPPER_BOUNDS_SECURITY_CASE_BUDGET_DECLARATION =
+  /^const CODEX_WRAPPER_BOUNDS_SECURITY_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+
+async function readCodexWrapperBoundsTestSource(): Promise<string> {
+  return readFile(path.join(repoRoot, 'test', 'template', 'codex-wrapper-bounds.test.ts'), 'utf8');
+}
+
+describe('the Windows-PowerShell-starting cases in codex-wrapper-bounds.test.ts (RP-266 follow-up / round 3)', () => {
+  it.each([
+    [
+      CODEX_WRAPPER_BOUNDS_CASE_NAME,
+      CODEX_WRAPPER_BOUNDS_CASE_BUDGET_DECLARATION,
+      'CODEX_WRAPPER_BOUNDS_CASE_TIMEOUT_MS',
+    ],
+    [
+      CODEX_WRAPPER_BOUNDS_SECURITY_CASE_NAME,
+      CODEX_WRAPPER_BOUNDS_SECURITY_CASE_BUDGET_DECLARATION,
+      'CODEX_WRAPPER_BOUNDS_SECURITY_CASE_TIMEOUT_MS',
+    ],
+  ])(
+    "%s carries its own budget, declared once by name and passed as that case's options",
+    async (name, declaration, constantName) => {
+      const source = await readCodexWrapperBoundsTestSource();
+
+      expect(source).toMatch(declaration);
+
+      const caseWithOptions = new RegExp(
+        `it\\(\\s*'${escapeRegExp(name)}'\\s*,\\s*\\{ timeout: ${constantName} \\}`,
+      );
+      expect(source).toMatch(caseWithOptions);
+    },
+  );
+
+  it.each([
+    CODEX_WRAPPER_BOUNDS_CASE_BUDGET_DECLARATION,
+    CODEX_WRAPPER_BOUNDS_SECURITY_CASE_BUDGET_DECLARATION,
+  ])(
+    'is bounded above so a genuine hang still fails within a minute, and sits above the lane budget it replaces',
+    async (declaration) => {
+      const source = await readCodexWrapperBoundsTestSource();
+      const declared = source.match(declaration);
+      expect(declared).not.toBeNull();
+
+      const budget = Number((declared?.[1] ?? '').replaceAll('_', ''));
+      expect(Number.isInteger(budget)).toBe(true);
+      expect(templateProject?.test.testTimeout).toBeDefined();
+      expect(budget).toBeGreaterThan(templateProject?.test.testTimeout ?? Number.POSITIVE_INFINITY);
+      expect(budget).toBeLessThanOrEqual(60_000);
+    },
+  );
+
+  it('carries exactly two case budgets of its own in that file — one per case, never a third or a file-wide one', async () => {
+    const code = (await readCodexWrapperBoundsTestSource()).replace(/\/\/[^\n]*/g, '');
+    const optionKeys = code.match(/\btimeout\s*:/g) ?? [];
+    const trailingFigures = code.match(/\}\s*,\s*\d[\d_]*\s*\);/g) ?? [];
+    // The safety-net timeout `runWindowsWrapper`/`findLeftoverNodeProcesses`
+    // pass to `execFile` is a bare positional argument (never `timeout:`),
+    // matching the shorthand `runGuardInput` already uses in codex.test.ts
+    // for the same reason.
+    expect(optionKeys, 'timeout keys in options objects').toHaveLength(2);
+    expect(trailingFigures, 'numeric trailing-argument budgets').toHaveLength(0);
+  });
+});
+
 // RP-158. test/template/package-manager-transport.test.ts has one
 // `it.each(['npm', 'pnpm', 'npx'] as const)` case that starts a real
 // package-manager CLI child process ('runs the installed %s CLI directly and

@@ -45,6 +45,43 @@ const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
  */
 const CLAUDE_ONLY_HOOKS = new Set(['guard-subagent-model.mjs', 'warn-subagent-routing.mjs']);
 
+/**
+ * RP-266: these four guards' Windows wrapper had three unbounded waits (`git
+ * rev-parse --show-toplevel`, the stdin copy, `$child.WaitForExit()`) and no
+ * `timeout` in `.claude/settings.json`, so a host stall on any of them ended
+ * only at the harness's own default hook timeout — which resolves to ALLOW
+ * (docs/decisions/fail-open-guards.md). Each stage below now carries an
+ * explicit millisecond bound and kills the whole process tree on expiry.
+ */
+const BOUNDED_STAGE_GUARDS = new Set([
+  'guard-secret-file.mjs',
+  'guard-rulebook.mjs',
+  'block-no-verify.mjs',
+  'guard-bash.mjs',
+]);
+
+// RP-266 follow-up (round 2): git rev-parse is a fast local operation and
+// keeps its own tight bound. The stdin copy and the guard's own run share
+// ONE deadline instead — headroom for guard latency under load, without a
+// separate unmeasured figure for each half — tracked by a stopwatch so the
+// guard wait gets whatever the stdin copy did not spend. The projected
+// `.codex/hooks.json` timeout (see `codexHooks` below) stays above the sum
+// of both, so the outer wiring never kills the wrapper before it can report
+// its own stage's timeout.
+const GIT_DEFAULT_MS = 5_000;
+const GUARD_DEADLINE_MS = 35_000;
+
+/**
+ * `.claude/settings.json` carries no `timeout` for these four guards — one
+ * there would SHORTEN Claude Code's own 600 s default hook-kill point rather
+ * than lengthen it, and a kill is an allow (`docs/decisions/fail-open-guards.md`).
+ * The Codex projection has no such default of its own to preserve, so
+ * `codexHooks` below adds this explicitly: comfortably above
+ * `GIT_DEFAULT_MS + GUARD_DEADLINE_MS` (40 s) plus PowerShell's own startup
+ * cost.
+ */
+const BOUNDED_STAGE_HOOKS_TIMEOUT_SECONDS = 90;
+
 const slash = (value) => value.replaceAll('\\', '/');
 
 // RP-177 retired the `init` override layer and the per-stack overlays — there
@@ -177,27 +214,127 @@ function windowsHookCommand(command) {
   const argumentsLine = isRecordDispatch(command)
     ? "$startInfo.Arguments = '\"' + $hookPath + '\" --harness=codex'"
     : "$startInfo.Arguments = '\"' + $hookPath + '\"'";
+  const bounded = BOUNDED_STAGE_GUARDS.has(hookFileOf(command));
   // PowerShell owns its stdin, so `& node` receives an empty stream. Copy the
   // original bytes into a child process explicitly; parsing and re-encoding the
   // JSON here would make the wrapper a second implementation of the hook input.
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    '$repoRoot = git rev-parse --show-toplevel',
-    'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
-    '$env:CLAUDE_PROJECT_DIR = $repoRoot',
-    `$hookPath = Join-Path $repoRoot '${hook}'`,
-    '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
-    "$startInfo.FileName = 'node'",
-    argumentsLine,
-    '$startInfo.UseShellExecute = $false',
-    '$startInfo.RedirectStandardInput = $true',
-    '$child = [System.Diagnostics.Process]::Start($startInfo)',
-    '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
-    '$child.StandardInput.Close()',
-    '$child.WaitForExit()',
-    'exit $child.ExitCode',
-  ].join('; ');
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const script = bounded
+    ? [
+        "$ErrorActionPreference = 'Stop'",
+        // PR #353 round 2: a native command's stderr, redirected under this
+        // preference, becomes a terminating NativeCommandError — including
+        // PowerShell's own CLIXML progress noise, which SilentlyContinue
+        // suppresses at the source instead of relying on every redirect to
+        // catch it.
+        "$ProgressPreference = 'SilentlyContinue'",
+        // `$env:RIG_CODEX_WRAPPER_TIMEOUT_MS` is a test-only knob that can
+        // only LOWER a stage's own bound, selected through `[Math]::Min(...)`
+        // alone — never a comparison that could raise one. A malformed or
+        // absent value must never throw and must never fall through to a
+        // production `[int]` cast that could overflow, so it is validated by
+        // shape (1-9 digits) before any cast, and `$rigMs` stays at the
+        // largest possible value otherwise, so `[Math]::Min` always keeps
+        // each stage's own default.
+        '$rigRaw = $env:RIG_CODEX_WRAPPER_TIMEOUT_MS',
+        '$rigMs = [int]::MaxValue',
+        // RP-266 round 3 advisory: .NET's `$` anchor (unlike JS's) also
+        // matches just before a single trailing `\n`, so a bare
+        // `^[0-9]{1,9}$` would accept "3000`n" as valid. `\z` matches only
+        // the true end of the string, with no such exception.
+        "if ($rigRaw -match '^[0-9]{1,9}\\z') { $rigMs = [int]$rigRaw }",
+        `$gitDefaultMs = ${GIT_DEFAULT_MS}`,
+        '$gitBoundMs = [Math]::Min($gitDefaultMs, $rigMs)',
+        // PR #353 round 1 resolved git through `cmd.exe /c`, which risks a
+        // cwd lookup and the user's own AutoRun; ComSpec with `/d` (skip
+        // AutoRun) is the documented safer form of the same idea.
+        '$gitInfo = New-Object System.Diagnostics.ProcessStartInfo',
+        '$gitInfo.FileName = $env:ComSpec',
+        "$gitInfo.Arguments = '/d /c git rev-parse --show-toplevel'",
+        '$gitInfo.UseShellExecute = $false',
+        '$gitInfo.RedirectStandardOutput = $true',
+        // PR #353 round 3 SECURITY blocker (code-reviewer, security-scanner):
+        // cmd.exe resolves a bare command name (`git`) in the CURRENT
+        // DIRECTORY first, ahead of PATH, unless this is set — so a text
+        // `git.cmd` planted at the wrapper's own cwd could replace `git`
+        // itself and, through it, `$repoRoot`. This governs the CHILD
+        // cmd.exe's own environment, so it is set on ProcessStartInfo,
+        // before that child starts.
+        "$gitInfo.EnvironmentVariables['NoDefaultCurrentDirectoryInExePath'] = '1'",
+        '$gitProc = [System.Diagnostics.Process]::Start($gitInfo)',
+        '$gitOk = $gitProc.WaitForExit($gitBoundMs)',
+        // PR #353 round 1 blocker (code-reviewer, security-scanner): a kill
+        // run bare under `$ErrorActionPreference = 'Stop'` turned an
+        // already-exited process's stderr into a terminating error the
+        // wrapper never caught, so it exited 1 — which Codex reads as
+        // non-blocking. The kill is now the ONLY thing inside the try; the
+        // report and `exit 2` run unconditionally once a bound has expired,
+        // never inside the catch.
+        'if (-not $gitOk) { try { taskkill /PID $gitProc.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: git rev-parse timed out after $gitBoundMs ms"); exit 2 }',
+        '$repoRoot = $gitProc.StandardOutput.ReadToEnd().Trim()',
+        'if ($gitProc.ExitCode -ne 0) { exit $gitProc.ExitCode }',
+        '$env:CLAUDE_PROJECT_DIR = $repoRoot',
+        `$hookPath = Join-Path $repoRoot '${hook}'`,
+        '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
+        "$startInfo.FileName = 'node'",
+        argumentsLine,
+        '$startInfo.UseShellExecute = $false',
+        '$startInfo.RedirectStandardInput = $true',
+        // `node` is a bare FileName here, resolved by CreateProcess/SearchPath
+        // in the WRAPPER's (powershell.exe's) OWN process environment — not
+        // the child's, and not $startInfo.EnvironmentVariables, which only
+        // governs the started child. A planted `node.exe` in the working
+        // directory is the same class of hijack as the git.cmd one above.
+        "$env:NoDefaultCurrentDirectoryInExePath = '1'",
+        '$child = [System.Diagnostics.Process]::Start($startInfo)',
+        // The stdin copy and the guard's own run share ONE deadline: a
+        // stopwatch tracks what the copy actually spent, and the guard wait
+        // gets whatever is left, rather than each half carrying its own
+        // separate, unmeasured figure.
+        `$guardDeadlineMs = ${GUARD_DEADLINE_MS}`,
+        '$guardBudgetMs = [Math]::Min($guardDeadlineMs, $rigMs)',
+        '$guardStopwatch = [System.Diagnostics.Stopwatch]::StartNew()',
+        '$copyTask = [Console]::OpenStandardInput().CopyToAsync($child.StandardInput.BaseStream)',
+        // PR #353 round 3 advisory: if the guard exits before draining a
+        // large stdin write, the pipe closes on the child's end and
+        // `$copyTask.Wait` FAULTS — calling `.Wait` on a faulted Task
+        // re-throws synchronously, which under `$ErrorActionPreference =
+        // 'Stop'` is an unhandled terminating error the wrapper never
+        // caught, so it exited 1 instead of the guard's own (already
+        // rendered) exit code. The catch falls through to the child's own
+        // wait instead — the child has, after all, already exited, which is
+        // WHY the copy faulted — never reporting it as a stdin timeout.
+        'try { $stdinOk = $copyTask.Wait($guardBudgetMs) } catch { $stdinOk = $true }',
+        'if (-not $stdinOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: stdin timed out after $guardBudgetMs ms"); exit 2 }',
+        '$child.StandardInput.Close()',
+        '$guardRemainingMs = [Math]::Max(0, $guardBudgetMs - $guardStopwatch.ElapsedMilliseconds)',
+        '$guardOk = $child.WaitForExit($guardRemainingMs)',
+        // PR #353 round 3 blocker: this message must report the CONFIGURED
+        // bound ($guardBudgetMs, the shared deadline lowered by
+        // [Math]::Min against any override), not $guardRemainingMs — the
+        // time actually left after the stdin copy, which is always a few ms
+        // below the configured bound once the copy has spent any time at
+        // all.
+        'if (-not $guardOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: guard timed out after $guardBudgetMs ms"); exit 2 }',
+        'exit $child.ExitCode',
+      ]
+    : [
+        "$ErrorActionPreference = 'Stop'",
+        '$repoRoot = git rev-parse --show-toplevel',
+        'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+        '$env:CLAUDE_PROJECT_DIR = $repoRoot',
+        `$hookPath = Join-Path $repoRoot '${hook}'`,
+        '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
+        "$startInfo.FileName = 'node'",
+        argumentsLine,
+        '$startInfo.UseShellExecute = $false',
+        '$startInfo.RedirectStandardInput = $true',
+        '$child = [System.Diagnostics.Process]::Start($startInfo)',
+        '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
+        '$child.StandardInput.Close()',
+        '$child.WaitForExit()',
+        'exit $child.ExitCode',
+      ];
+  const encoded = Buffer.from(script.join('; '), 'utf16le').toString('base64');
   return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
 }
 
@@ -228,7 +365,17 @@ function codexHooks(settings) {
           ...(typeof matcher === 'string' ? { matcher } : {}),
           hooks: kept.map((hook) => {
             const command = portableHookCommand(hook.command);
-            return { ...hook, command, commandWindows: windowsHookCommand(hook.command) };
+            const projected = {
+              ...hook,
+              command,
+              commandWindows: windowsHookCommand(hook.command),
+            };
+            // Added by the projection itself, never spread from the Claude
+            // source — see BOUNDED_STAGE_HOOKS_TIMEOUT_SECONDS above.
+            if (BOUNDED_STAGE_GUARDS.has(hookFileOf(hook.command))) {
+              projected.timeout = BOUNDED_STAGE_HOOKS_TIMEOUT_SECONDS;
+            }
+            return projected;
           }),
         },
       ];
