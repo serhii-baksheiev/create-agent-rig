@@ -57,10 +57,25 @@
 // keeps (`.claude/rules/invariants.md`, the independent-oracle
 // invariant): `schema`, `harness`, `controller`, `agentType`, `agentRef`,
 // `declaredModel`, `declaredEffort`, `declaredSource`, `usage`,
-// `usageUnavailable`, `measuredModel`. `controller` and `agentRef` are never
-// the raw `session_id`/`agent_id` — they are
+// `usageUnavailable`, `measuredModel`, `orphan`. `controller` and `agentRef`
+// are never the raw `session_id`/`agent_id` — they are
 // `sha256(basename(runDir) + "\0" + value).slice(0, 16)`, so the record names
 // no id a reader could correlate outside this one run.
+//
+// ORPHAN DISPATCH-ENDS (RP-294): the RP-231 controller run
+// (rel110-20260928-213527, read-only evidence, never committed here)
+// journaled ~25 `dispatch-end` events with no matching `dispatch-start`
+// anywhere in the run — harness-internal `SubagentStop` firings this hook
+// cannot distinguish from a real dispatch by shape alone. So on a
+// `dispatch-end` this hook re-reads the run's OWN events (`readRun`, the same
+// reader `readEvents` in this file's test uses) and marks `orphan: true` when
+// no earlier `dispatch-start` in this run carries the same `agentRef` — never
+// on a `dispatch-start`, and never derived from anything but that explicit
+// flag once written (`token-report.mjs` trusts it verbatim rather than
+// re-deriving "orphan" from its own pairing miss). The check is bounded, not
+// merely fast: past `MAX_ORPHAN_CHECK_EVENTS` events in the run, or on ANY
+// failure reading the run (a `RunJournalError`, or anything else), `orphan`
+// is left absent — the previous behaviour — rather than guessed either way.
 //
 // CLAUDE USAGE CAPTURE (RP-226), on `SubagentStop` with `--harness=claude`
 // only: this hook reads ONLY the payload's `agent_transcript_path` — never
@@ -241,6 +256,12 @@
 //     dispatch-usage-codex.test.ts (absent in a generated rig) › "reports
 //     usageUnavailable with no-usage-records when identity holds but no
 //     token_usage_record names this thread_id".
+//   - **The orphan check (RP-294) is bounded by event count, not by time.**
+//     `hasEarlierDispatchStart` reads the run's events once via `readRun` and
+//     gives up — leaving `orphan` absent — once the run already carries more
+//     than `MAX_ORPHAN_CHECK_EVENTS`; a run that never crosses that bound but
+//     is merely slow to read from disk has no separate timeout here, unlike
+//     the transcript readers above.
 //
 // PRIVACY: this record never carries `cwd`, a transcript path, a prompt, a
 // response, a raw `session_id`/`agent_id`, or an email address — see
@@ -384,7 +405,7 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readHookInput } from './lib/hook-input.mjs';
-import { recordEvent } from '../scripts/run-journal.mjs';
+import { recordEvent, readRun } from '../scripts/run-journal.mjs';
 import { FLAG_BASENAME, readUnattended, unattendedFlags } from '../scripts/unattended-flag.mjs';
 
 /** The one allowlist a record's `data` may carry — see the header. */
@@ -400,6 +421,7 @@ export const DISPATCH_FIELDS = Object.freeze([
   'usage',
   'usageUnavailable',
   'measuredModel',
+  'orphan',
 ]);
 
 /** A narrow, allowlisted shape for an agent type — never echoed unless it matches. */
@@ -461,9 +483,18 @@ const MAX_HOME_ENTRIES_EXAMINED = 1024;
 /** The longest stderr notice this probe ever writes — bounded, per the header. */
 const MAX_NOTICE_LENGTH = 512;
 
-/** Any ASCII control character (including ESC, `\x1b`) — stripped from the checked root before it is ever formatted into the notice, so the notice always stays one line. */
+/**
+ * Any C0 control character (including ESC, `\x1b`), DEL, C1 control character
+ * (`\x80`-`\x9f`, including CSI `\x9b`), or the Unicode line/paragraph
+ * separators (U+2028/U+2029) — stripped from the checked root before it is
+ * ever formatted into the notice, so the notice always stays one line. RP-294
+ * added the C1 range and U+2028/U+2029: the original C0/DEL-only pattern let
+ * both pass through unreplaced (see dispatch-journal.test.ts, absent in a
+ * generated rig, › "the mismatch notice sanitises C1 controls and the
+ * Unicode line/paragraph separators, not just C0/DEL").
+ */
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
-const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/g;
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
 
 /** `-loop-UNATTENDED` — the fixed suffix `scopedBasename` in `unattended-flag.mjs` inserts an id before. */
 const SCOPED_FLAG_SUFFIX = '-loop-UNATTENDED';
@@ -1009,6 +1040,40 @@ function codexUsageOf(input, agentId) {
   return readCodexRolloutUsage(rolloutPath, agentId);
 }
 
+// ── Orphan dispatch-end detection (RP-294) ──────────────────────────────────
+//
+// See the header's ORPHAN DISPATCH-ENDS section. Bounded by event COUNT, not
+// by time: a run past `MAX_ORPHAN_CHECK_EVENTS` is read no further, and
+// `null` (unknown) is returned rather than a guess either way.
+
+/**
+ * How many events in the run's own journal this hook's orphan check will
+ * ever look at — bounded, never unbounded work. A run past this size leaves
+ * `orphan` absent (the previous behaviour) rather than scanning further.
+ */
+const MAX_ORPHAN_CHECK_EVENTS = 4096;
+
+/**
+ * Whether `agentRef` has an earlier `dispatch-start` recorded anywhere in
+ * this run's own journal, checked just before writing a `dispatch-end`
+ * record — `true`/`false` when the read succeeded and stayed within
+ * `MAX_ORPHAN_CHECK_EVENTS`, `null` ("unknown, do not guess") when the run is
+ * larger than that bound or `readRun` throws for any reason (a missing run
+ * directory, an unreadable journal, anything else). A caller must mark
+ * `orphan: true` only on an explicit `false` here — never on `null`.
+ */
+function hasEarlierDispatchStart(runDir, agentRef) {
+  try {
+    const { events } = readRun({ runDir });
+    if (events.length > MAX_ORPHAN_CHECK_EVENTS) return null;
+    return events.some(
+      (event) => event.kind === 'dispatch-start' && event.data?.agentRef === agentRef,
+    );
+  } catch {
+    return null;
+  }
+}
+
 function main() {
   try {
     const input = readHookInput();
@@ -1046,6 +1111,10 @@ function main() {
     if (agentType) data.agentType = agentType;
 
     data.agentRef = ref(runDir, agentId);
+
+    if (kind === 'dispatch-end' && hasEarlierDispatchStart(runDir, data.agentRef) === false) {
+      data.orphan = true;
+    }
 
     if (agentType) {
       const projectRoot = process.env.CLAUDE_PROJECT_DIR || process.cwd();
