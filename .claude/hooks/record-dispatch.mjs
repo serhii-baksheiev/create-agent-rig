@@ -69,8 +69,10 @@
 // dispatch-usage.test.ts (absent in a generated rig) › "reports
 // usageUnavailable: transcript-path-unc for a UNC-shaped
 // agent_transcript_path (leading "//") — never opens anything"), then
-// requires an absolute path and its basename to be exactly
-// `agent-<agent_id>.jsonl` for the
+// requires an absolute path (see dispatch-usage.test.ts, absent in a generated
+// rig, › "reports usageUnavailable with transcript-path-not-absolute for a
+// relative path whose basename otherwise binds to its agent_id") and its
+// basename to be exactly `agent-<agent_id>.jsonl` for the
 // payload's OWN `agent_id`; any other basename, a UNC-shaped or
 // missing/empty path, resolves to `usageUnavailable` without opening
 // anything. The read itself
@@ -79,8 +81,11 @@
 // time (checked between chunks) — a fixed-size buffer on an
 // `O_RDONLY|O_NONBLOCK` handle whose opened `fstatSync` is a regular file
 // with the same device and inode as the preceding regular-file `lstatSync`.
-// This rejects a pathname swapped between those calls, including a replacement
-// symlink. Crossing ANY bound, an unreadable file, an empty
+// That comparison happens after `openSync`: it rejects a different opened file
+// before reading changed content, but does not prevent the open itself. See
+// dispatch-usage-codex.test.ts (absent in a generated rig) › "does not read a
+// rollout replaced with a symlink after lstatSync has accepted its regular
+// file". Crossing ANY bound, an unreadable file, an empty
 // transcript, a transcript with no usage-bearing assistant record, an
 // out-of-range counter, or a single malformed JSON line ANYWHERE in the
 // transcript makes the whole dispatch `usageUnavailable: '<short reason
@@ -126,8 +131,11 @@
 // code — then not absolute (`rollout-path-not-absolute`), then an
 // `lstatSync`/`openSync`/`fstatSync` regular-file identity check exactly as
 // the Claude transcript gets (`transcript-unreadable`; a symlink, FIFO, or
-// other non-regular file is refused before reading, and a pathname swapped
-// after `lstatSync` is rejected when the opened descriptor differs). The read itself shares RP-226's
+// other non-regular file is refused before reading, and after opening a
+// candidate descriptor the reader rejects a different opened file before
+// reading its changed content). See dispatch-usage-codex.test.ts (absent in a generated rig) ›
+// "does not read a rollout replaced with a symlink after lstatSync has
+// accepted its regular file". The read itself shares RP-226's
 // bounded JSONL reader verbatim (`readBoundedLines`, extracted below so both
 // sections call the same lstat/open/fstat identity check, chunked-read/carry-across-chunk
 // implementation once) — the same 32 MiB total / 8 MiB per line / 3s
@@ -218,11 +226,14 @@
 //     the final line's `JSON.parse` all run outside the clock; a process
 //     stuck in one of those still relies on the harness's own hook timeout
 //     as the real backstop.
-//   - **The UNC prefix refusal does not establish that a Windows path is
-//     local.** Mapped drives, `subst` drives, and junctions can reach network
-//     storage while remaining absolute, so this hook reads a regular file at
-//     such a path only under the same bounds and open-file identity check; it
-//     has no network-location detector.
+//   - **Absolute non-UNC paths are not proven local.** This hook accepts an
+//     absolute non-UNC regular file under the same bounds and post-open
+//     identity check, but has no network-location detector. On Windows,
+//     mapped drive letters and `SUBST` aliases can denote network paths; see
+//     https://learn.microsoft.com/en-us/windows/win32/api/shlwapi/nf-shlwapi-pathisnetworkpathw.
+//     The hook behaviour is pinned in dispatch-usage-codex.test.ts (absent in
+//     a generated rig) ›
+//     "documents that absolute non-UNC paths are not proven local, and still captures usage from one (network location remains unmeasured)".
 //   - **`no-usage-records` has a narrow Codex meaning.** It is returned only
 //     after the first `session_meta` binds to `agent_id`, when no
 //     `token_usage_record` has that `thread_id`; a matched record without a
