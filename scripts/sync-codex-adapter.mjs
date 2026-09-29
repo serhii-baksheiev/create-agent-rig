@@ -237,7 +237,11 @@ function windowsHookCommand(command) {
         // each stage's own default.
         '$rigRaw = $env:RIG_CODEX_WRAPPER_TIMEOUT_MS',
         '$rigMs = [int]::MaxValue',
-        "if ($rigRaw -match '^[0-9]{1,9}$') { $rigMs = [int]$rigRaw }",
+        // RP-266 round 3 advisory: .NET's `$` anchor (unlike JS's) also
+        // matches just before a single trailing `\n`, so a bare
+        // `^[0-9]{1,9}$` would accept "3000`n" as valid. `\z` matches only
+        // the true end of the string, with no such exception.
+        "if ($rigRaw -match '^[0-9]{1,9}\\z') { $rigMs = [int]$rigRaw }",
         `$gitDefaultMs = ${GIT_DEFAULT_MS}`,
         '$gitBoundMs = [Math]::Min($gitDefaultMs, $rigMs)',
         // PR #353 round 1 resolved git through `cmd.exe /c`, which risks a
@@ -248,6 +252,14 @@ function windowsHookCommand(command) {
         "$gitInfo.Arguments = '/d /c git rev-parse --show-toplevel'",
         '$gitInfo.UseShellExecute = $false',
         '$gitInfo.RedirectStandardOutput = $true',
+        // PR #353 round 3 SECURITY blocker (code-reviewer, security-scanner):
+        // cmd.exe resolves a bare command name (`git`) in the CURRENT
+        // DIRECTORY first, ahead of PATH, unless this is set — so a text
+        // `git.cmd` planted at the wrapper's own cwd could replace `git`
+        // itself and, through it, `$repoRoot`. This governs the CHILD
+        // cmd.exe's own environment, so it is set on ProcessStartInfo,
+        // before that child starts.
+        "$gitInfo.EnvironmentVariables['NoDefaultCurrentDirectoryInExePath'] = '1'",
         '$gitProc = [System.Diagnostics.Process]::Start($gitInfo)',
         '$gitOk = $gitProc.WaitForExit($gitBoundMs)',
         // PR #353 round 1 blocker (code-reviewer, security-scanner): a kill
@@ -267,6 +279,12 @@ function windowsHookCommand(command) {
         argumentsLine,
         '$startInfo.UseShellExecute = $false',
         '$startInfo.RedirectStandardInput = $true',
+        // `node` is a bare FileName here, resolved by CreateProcess/SearchPath
+        // in the WRAPPER's (powershell.exe's) OWN process environment — not
+        // the child's, and not $startInfo.EnvironmentVariables, which only
+        // governs the started child. A planted `node.exe` in the working
+        // directory is the same class of hijack as the git.cmd one above.
+        "$env:NoDefaultCurrentDirectoryInExePath = '1'",
         '$child = [System.Diagnostics.Process]::Start($startInfo)',
         // The stdin copy and the guard's own run share ONE deadline: a
         // stopwatch tracks what the copy actually spent, and the guard wait
@@ -276,12 +294,27 @@ function windowsHookCommand(command) {
         '$guardBudgetMs = [Math]::Min($guardDeadlineMs, $rigMs)',
         '$guardStopwatch = [System.Diagnostics.Stopwatch]::StartNew()',
         '$copyTask = [Console]::OpenStandardInput().CopyToAsync($child.StandardInput.BaseStream)',
-        '$stdinOk = $copyTask.Wait($guardBudgetMs)',
+        // PR #353 round 3 advisory: if the guard exits before draining a
+        // large stdin write, the pipe closes on the child's end and
+        // `$copyTask.Wait` FAULTS — calling `.Wait` on a faulted Task
+        // re-throws synchronously, which under `$ErrorActionPreference =
+        // 'Stop'` is an unhandled terminating error the wrapper never
+        // caught, so it exited 1 instead of the guard's own (already
+        // rendered) exit code. The catch falls through to the child's own
+        // wait instead — the child has, after all, already exited, which is
+        // WHY the copy faulted — never reporting it as a stdin timeout.
+        'try { $stdinOk = $copyTask.Wait($guardBudgetMs) } catch { $stdinOk = $true }',
         'if (-not $stdinOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: stdin timed out after $guardBudgetMs ms"); exit 2 }',
         '$child.StandardInput.Close()',
         '$guardRemainingMs = [Math]::Max(0, $guardBudgetMs - $guardStopwatch.ElapsedMilliseconds)',
         '$guardOk = $child.WaitForExit($guardRemainingMs)',
-        'if (-not $guardOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: guard timed out after $guardRemainingMs ms"); exit 2 }',
+        // PR #353 round 3 blocker: this message must report the CONFIGURED
+        // bound ($guardBudgetMs, the shared deadline lowered by
+        // [Math]::Min against any override), not $guardRemainingMs — the
+        // time actually left after the stdin copy, which is always a few ms
+        // below the configured bound once the copy has spent any time at
+        // all.
+        'if (-not $guardOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: guard timed out after $guardBudgetMs ms"); exit 2 }',
         'exit $child.ExitCode',
       ]
     : [

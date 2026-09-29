@@ -577,12 +577,28 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       // digits — 99999999999 (11 digits) or 2147483648 (10 digits, past
       // Int32.MaxValue) must never throw and must never fall through to a
       // production `[int]` cast that could overflow.
-      const validityPattern = windowsScript.match(/-match\s+'(\^\[0-9\]\{1,9\}\$)'/)?.[1];
+      const validityPattern = windowsScript.match(/-match\s+'(\^\[0-9\]\{1,9\}(?:\\z|\$))'/)?.[1];
       expect(
         validityPattern,
-        `${guardFile}: expected the override validated by the regex ^[0-9]{1,9}$`,
+        `${guardFile}: expected the override validated by a ^[0-9]{1,9} shape`,
       ).toBeDefined();
-      const validity = new RegExp(validityPattern ?? '(?!)');
+      // RP-266 round 3 advisory: .NET's `$` (unlike JS's) matches not only the
+      // true end of the string but also just before a single trailing `\n` —
+      // so a bare `^[0-9]{1,9}$` accepts "3000\n" in PowerShell's own -match,
+      // even though the same literal text tested through JS's regex engine
+      // below would (misleadingly) look safe. `\z` is the anchor with no such
+      // exception, so the SHAPE of the anchor is what has to be pinned here,
+      // not a re-test in an engine that does not share the bug.
+      expect(
+        validityPattern,
+        `${guardFile}: the override validity regex must end with \\z (the exact end of the ` +
+          "string), not a bare $ — .NET's $ matches before a trailing newline too, so a value " +
+          'like "3000\\n" would still pass the validity check with a bare $',
+      ).toMatch(/\\z$/);
+      // Re-test the digit shape in JS: .NET's \z has no JS counterpart (JS reads it as a
+      // literal 'z'), and JS's own $ without the m flag already means the true end of the
+      // string, so translate the one anchor before building the RegExp.
+      const validity = new RegExp((validityPattern ?? '(?!)').replace(/\\z$/, () => '$'));
       expect(
         '99999999999',
         'an 11-digit override must fail the shape and keep the defaults',
@@ -614,6 +630,160 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           'else { … }" branch — a reviewer called that shape "shaped for a regex"; a single ' +
           '[Math]::Min(...) selection replaces it',
       ).not.toMatch(/if\s*\(\s*\$\w*[Oo]verrid(?:den|e)\w*\s*\)/);
+    },
+  );
+
+  // PR #353 round 3 SECURITY BLOCKER (code-reviewer, security-scanner):
+  // cmd.exe (and Windows' own CreateProcess, for a bare executable name like
+  // 'node') looks in the CURRENT DIRECTORY first when resolving a command,
+  // ahead of PATH — unless NoDefaultCurrentDirectoryInExePath is set. A text
+  // `git.cmd` planted at the repository root, echoing an attacker-chosen
+  // directory, replaces `$repoRoot` — and with it `$hookPath`, and with it
+  // the guard script node actually runs. Measured: exit 0 on
+  // `git push --force origin master` through the generated guard-bash
+  // wrapper (an unhijacked run exits 2). The behavioural repro is
+  // codex-wrapper-bounds.test.ts's hijack case.
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "sets NoDefaultCurrentDirectoryInExePath=1 before starting git and before starting node in %s's wrapper, so a planted git.cmd/node.exe in the working directory cannot hijack the lookup (RP-266 round 3)",
+    async (guardFile) => {
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: Record<
+          string,
+          Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>
+        >;
+      };
+      const entry = Object.values(config.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+
+      // The git CHILD's own resolution (cmd.exe, via $env:ComSpec) is
+      // governed by ITS OWN process environment, set on ProcessStartInfo's
+      // EnvironmentVariables dictionary — not the wrapper's own $env:, which
+      // a child process does not inherit changes to made after it started
+      // (and $gitInfo is built before $env:ComSpec is even read).
+      const gitEnvIdx = windowsScript.search(
+        /\$gitInfo\.EnvironmentVariables\[['"]NoDefaultCurrentDirectoryInExePath['"]\]\s*=\s*['"]1['"]/,
+      );
+      expect(
+        gitEnvIdx,
+        `${guardFile}: expected $gitInfo.EnvironmentVariables['NoDefaultCurrentDirectoryInExePath'] = '1'`,
+      ).toBeGreaterThanOrEqual(0);
+      const gitStartIdx = windowsScript.indexOf('[System.Diagnostics.Process]::Start($gitInfo)');
+      expect(gitStartIdx).toBeGreaterThan(-1);
+      expect(
+        gitStartIdx,
+        `${guardFile}: the git child's NoDefaultCurrentDirectoryInExePath must be set before it starts`,
+      ).toBeGreaterThan(gitEnvIdx);
+
+      // node's own start uses a bare 'node' FileName, resolved by
+      // CreateProcess/SearchPath in the WRAPPER's (powershell.exe's) own
+      // process environment — set through $env:, not through $startInfo's
+      // EnvironmentVariables (which governs the CHILD node process's
+      // environment, not the search that locates node.exe itself).
+      const wrapperEnvIdx = windowsScript.search(
+        /\$env:NoDefaultCurrentDirectoryInExePath\s*=\s*['"]1['"]/,
+      );
+      expect(
+        wrapperEnvIdx,
+        `${guardFile}: expected $env:NoDefaultCurrentDirectoryInExePath = '1' before node starts`,
+      ).toBeGreaterThanOrEqual(0);
+      const nodeStartIdx = windowsScript.indexOf('[System.Diagnostics.Process]::Start($startInfo)');
+      expect(nodeStartIdx).toBeGreaterThan(-1);
+      expect(
+        wrapperEnvIdx,
+        `${guardFile}: the wrapper's own NoDefaultCurrentDirectoryInExePath must be set before node starts`,
+      ).toBeLessThan(nodeStartIdx);
+    },
+  );
+
+  // PR #353 round 3 CODE BLOCKER: the guard stage's timeout message reported
+  // whatever was LEFT of the shared deadline after the stdin copy had
+  // already spent part of it (e.g. 966 ms of a 1000 ms bound) rather than
+  // the bound that was actually configured (the shared deadline, or the
+  // lowered override). Decision: report the configured bound.
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "reports the guard stage's configured bound, not the stdin copy's leftover, in %s's timeout message (RP-266 round 3)",
+    async (guardFile) => {
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: Record<
+          string,
+          Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>
+        >;
+      };
+      const entry = Object.values(config.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+
+      expect(
+        windowsScript,
+        `${guardFile}: the guard-stage timeout message must interpolate the configured deadline ` +
+          '(e.g. $guardBudgetMs, the shared deadline lowered by [Math]::Min against any override), ' +
+          'not the leftover time WaitForExit was actually given after the stdin copy',
+      ).toMatch(/guard timed out after \$guard(?:BudgetMs|DeadlineMs) ms/);
+      expect(
+        windowsScript,
+        `${guardFile}: the guard-stage message must not report $guardRemainingMs — that is a few ` +
+          'ms below the configured bound once the stdin copy has spent any time at all, so a ' +
+          '1000 ms bound would be reported as e.g. "966 ms"',
+      ).not.toMatch(/guard timed out after \$guardRemainingMs ms/);
+    },
+  );
+
+  // Accepted advisory, fail-open: if the guard exits before draining a large
+  // stdin write, the pipe closes on the child's end and $copyTask.Wait
+  // FAULTS — calling .Wait on a faulted Task re-throws synchronously, and
+  // under $ErrorActionPreference = 'Stop' that is an unhandled terminating
+  // error, so the wrapper exits 1 instead of the guard's own (already
+  // rendered) exit code. The fix lets a faulted copy fall through to the
+  // child wait rather than crash the script.
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "falls through to the child wait instead of throwing when the stdin copy faults, in %s's wrapper (RP-266 round 3)",
+    async (guardFile) => {
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: Record<
+          string,
+          Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>
+        >;
+      };
+      const entry = Object.values(config.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+
+      const guardedCopyWait = windowsScript.match(
+        /try\s*\{\s*\$stdinOk\s*=\s*\$copyTask\.Wait\([^)]*\)\s*\}\s*catch\s*\{[^{}]*\}/,
+      );
+      expect(
+        guardedCopyWait,
+        `${guardFile}: expected $stdinOk = $copyTask.Wait(...) wrapped in its own try/catch, so a ` +
+          'faulted copy (the guard exited before draining a large write) cannot throw uncaught ' +
+          `under $ErrorActionPreference = 'Stop':\n${windowsScript}`,
+      ).not.toBeNull();
+
+      // The catch must let the wrapper fall through to the child's own wait
+      // (the child has, after all, already exited — that is WHY the copy
+      // faulted) rather than reporting it as a stdin timeout.
+      expect(
+        guardedCopyWait?.[0],
+        `${guardFile}: a faulted copy must fall through to the child wait, not be reported as a ` +
+          'stdin timeout — the catch must not itself write the timeout message or exit 2',
+      ).not.toMatch(/timed out after|exit 2/);
+      expect(
+        guardedCopyWait?.[0],
+        `${guardFile}: the catch must set $stdinOk to a truthy value so the wrapper proceeds past ` +
+          "the stdin-timeout check to the child's own wait, instead of leaving it false",
+      ).toMatch(/catch\s*\{\s*\$stdinOk\s*=\s*\$true\s*\}/);
     },
   );
 
