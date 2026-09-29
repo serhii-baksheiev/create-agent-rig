@@ -9,13 +9,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-secret-file.mjs\"",
-            "timeout": 60
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-secret-file.mjs\""
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-rulebook.mjs\"",
-            "timeout": 60
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-rulebook.mjs\""
           }
         ]
       },
@@ -24,13 +22,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-no-verify.mjs\"",
-            "timeout": 60
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/block-no-verify.mjs\""
           },
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs\"",
-            "timeout": 60
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs\""
           }
         ]
       },

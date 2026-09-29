@@ -60,14 +60,27 @@ const BOUNDED_STAGE_GUARDS = new Set([
   'guard-bash.mjs',
 ]);
 
-// Measured on hosted Windows runners (RP-111): these guards have taken
-// ~20-30s per invocation under load, so the guard/child stage needs
-// headroom; git and stdin are fast local operations and get a tighter bound.
-// Sum (50 000 ms) stays under the 60 s `.claude/settings.json` timeout for
-// these four hooks (see `codexHooks` below).
-const GIT_STAGE_TIMEOUT_MS = 5_000;
-const STDIN_STAGE_TIMEOUT_MS = 5_000;
-const GUARD_STAGE_TIMEOUT_MS = 40_000;
+// RP-266 follow-up (round 2): git rev-parse is a fast local operation and
+// keeps its own tight bound. The stdin copy and the guard's own run share
+// ONE deadline instead — headroom for guard latency under load, without a
+// separate unmeasured figure for each half — tracked by a stopwatch so the
+// guard wait gets whatever the stdin copy did not spend. The projected
+// `.codex/hooks.json` timeout (see `codexHooks` below) stays above the sum
+// of both, so the outer wiring never kills the wrapper before it can report
+// its own stage's timeout.
+const GIT_DEFAULT_MS = 5_000;
+const GUARD_DEADLINE_MS = 35_000;
+
+/**
+ * `.claude/settings.json` carries no `timeout` for these four guards — one
+ * there would SHORTEN Claude Code's own 600 s default hook-kill point rather
+ * than lengthen it, and a kill is an allow (`docs/decisions/fail-open-guards.md`).
+ * The Codex projection has no such default of its own to preserve, so
+ * `codexHooks` below adds this explicitly: comfortably above
+ * `GIT_DEFAULT_MS + GUARD_DEADLINE_MS` (40 s) plus PowerShell's own startup
+ * cost.
+ */
+const BOUNDED_STAGE_HOOKS_TIMEOUT_SECONDS = 90;
 
 const slash = (value) => value.replaceAll('\\', '/');
 
@@ -208,25 +221,43 @@ function windowsHookCommand(command) {
   const script = bounded
     ? [
         "$ErrorActionPreference = 'Stop'",
-        // RP-266 follow-up: `$env:RIG_CODEX_WRAPPER_TIMEOUT_MS` is a test-only
-        // knob that can only LOWER a stage's bound, never raise it — `$rigMs`
-        // starts at the largest possible value, so an absent/unparsable
-        // override leaves every `-lt` comparison below false and every stage
-        // at its real production default.
+        // PR #353 round 2: a native command's stderr, redirected under this
+        // preference, becomes a terminating NativeCommandError — including
+        // PowerShell's own CLIXML progress noise, which SilentlyContinue
+        // suppresses at the source instead of relying on every redirect to
+        // catch it.
+        "$ProgressPreference = 'SilentlyContinue'",
+        // `$env:RIG_CODEX_WRAPPER_TIMEOUT_MS` is a test-only knob that can
+        // only LOWER a stage's own bound, selected through `[Math]::Min(...)`
+        // alone — never a comparison that could raise one. A malformed or
+        // absent value must never throw and must never fall through to a
+        // production `[int]` cast that could overflow, so it is validated by
+        // shape (1-9 digits) before any cast, and `$rigMs` stays at the
+        // largest possible value otherwise, so `[Math]::Min` always keeps
+        // each stage's own default.
         '$rigRaw = $env:RIG_CODEX_WRAPPER_TIMEOUT_MS',
         '$rigMs = [int]::MaxValue',
-        "if ($rigRaw -match '^[0-9]+$') { $rigMs = [int]$rigRaw }",
-        `$gitBoundMs = ${GIT_STAGE_TIMEOUT_MS}`,
-        '$gitOverridden = $rigMs -lt $gitBoundMs',
-        'if ($gitOverridden) { $gitBoundMs = $rigMs }',
+        "if ($rigRaw -match '^[0-9]{1,9}$') { $rigMs = [int]$rigRaw }",
+        `$gitDefaultMs = ${GIT_DEFAULT_MS}`,
+        '$gitBoundMs = [Math]::Min($gitDefaultMs, $rigMs)',
+        // PR #353 round 1 resolved git through `cmd.exe /c`, which risks a
+        // cwd lookup and the user's own AutoRun; ComSpec with `/d` (skip
+        // AutoRun) is the documented safer form of the same idea.
         '$gitInfo = New-Object System.Diagnostics.ProcessStartInfo',
-        "$gitInfo.FileName = 'cmd.exe'",
-        "$gitInfo.Arguments = '/c git rev-parse --show-toplevel'",
+        '$gitInfo.FileName = $env:ComSpec',
+        "$gitInfo.Arguments = '/d /c git rev-parse --show-toplevel'",
         '$gitInfo.UseShellExecute = $false',
         '$gitInfo.RedirectStandardOutput = $true',
         '$gitProc = [System.Diagnostics.Process]::Start($gitInfo)',
-        `if ($gitOverridden) { $gitOk = $gitProc.WaitForExit($gitBoundMs) } else { $gitOk = $gitProc.WaitForExit(${GIT_STAGE_TIMEOUT_MS}) }`,
-        'if (-not $gitOk) { taskkill /PID $gitProc.Id /T /F 2>$null | Out-Null; [Console]::Error.WriteLine("codex wrapper: git rev-parse timed out after $gitBoundMs ms"); exit 2 }',
+        '$gitOk = $gitProc.WaitForExit($gitBoundMs)',
+        // PR #353 round 1 blocker (code-reviewer, security-scanner): a kill
+        // run bare under `$ErrorActionPreference = 'Stop'` turned an
+        // already-exited process's stderr into a terminating error the
+        // wrapper never caught, so it exited 1 — which Codex reads as
+        // non-blocking. The kill is now the ONLY thing inside the try; the
+        // report and `exit 2` run unconditionally once a bound has expired,
+        // never inside the catch.
+        'if (-not $gitOk) { try { taskkill /PID $gitProc.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: git rev-parse timed out after $gitBoundMs ms"); exit 2 }',
         '$repoRoot = $gitProc.StandardOutput.ReadToEnd().Trim()',
         'if ($gitProc.ExitCode -ne 0) { exit $gitProc.ExitCode }',
         '$env:CLAUDE_PROJECT_DIR = $repoRoot',
@@ -237,18 +268,20 @@ function windowsHookCommand(command) {
         '$startInfo.UseShellExecute = $false',
         '$startInfo.RedirectStandardInput = $true',
         '$child = [System.Diagnostics.Process]::Start($startInfo)',
-        `$stdinBoundMs = ${STDIN_STAGE_TIMEOUT_MS}`,
-        '$stdinOverridden = $rigMs -lt $stdinBoundMs',
-        'if ($stdinOverridden) { $stdinBoundMs = $rigMs }',
+        // The stdin copy and the guard's own run share ONE deadline: a
+        // stopwatch tracks what the copy actually spent, and the guard wait
+        // gets whatever is left, rather than each half carrying its own
+        // separate, unmeasured figure.
+        `$guardDeadlineMs = ${GUARD_DEADLINE_MS}`,
+        '$guardBudgetMs = [Math]::Min($guardDeadlineMs, $rigMs)',
+        '$guardStopwatch = [System.Diagnostics.Stopwatch]::StartNew()',
         '$copyTask = [Console]::OpenStandardInput().CopyToAsync($child.StandardInput.BaseStream)',
-        `if ($stdinOverridden) { $stdinOk = $copyTask.Wait($stdinBoundMs) } else { $stdinOk = $copyTask.Wait(${STDIN_STAGE_TIMEOUT_MS}) }`,
-        'if (-not $stdinOk) { taskkill /PID $child.Id /T /F 2>$null | Out-Null; [Console]::Error.WriteLine("codex wrapper: stdin timed out after $stdinBoundMs ms"); exit 2 }',
+        '$stdinOk = $copyTask.Wait($guardBudgetMs)',
+        'if (-not $stdinOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: stdin timed out after $guardBudgetMs ms"); exit 2 }',
         '$child.StandardInput.Close()',
-        `$guardBoundMs = ${GUARD_STAGE_TIMEOUT_MS}`,
-        '$guardOverridden = $rigMs -lt $guardBoundMs',
-        'if ($guardOverridden) { $guardBoundMs = $rigMs }',
-        `if ($guardOverridden) { $guardOk = $child.WaitForExit($guardBoundMs) } else { $guardOk = $child.WaitForExit(${GUARD_STAGE_TIMEOUT_MS}) }`,
-        'if (-not $guardOk) { taskkill /PID $child.Id /T /F 2>$null | Out-Null; [Console]::Error.WriteLine("codex wrapper: guard timed out after $guardBoundMs ms"); exit 2 }',
+        '$guardRemainingMs = [Math]::Max(0, $guardBudgetMs - $guardStopwatch.ElapsedMilliseconds)',
+        '$guardOk = $child.WaitForExit($guardRemainingMs)',
+        'if (-not $guardOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: guard timed out after $guardRemainingMs ms"); exit 2 }',
         'exit $child.ExitCode',
       ]
     : [
@@ -299,7 +332,17 @@ function codexHooks(settings) {
           ...(typeof matcher === 'string' ? { matcher } : {}),
           hooks: kept.map((hook) => {
             const command = portableHookCommand(hook.command);
-            return { ...hook, command, commandWindows: windowsHookCommand(hook.command) };
+            const projected = {
+              ...hook,
+              command,
+              commandWindows: windowsHookCommand(hook.command),
+            };
+            // Added by the projection itself, never spread from the Claude
+            // source — see BOUNDED_STAGE_HOOKS_TIMEOUT_SECONDS above.
+            if (BOUNDED_STAGE_GUARDS.has(hookFileOf(hook.command))) {
+              projected.timeout = BOUNDED_STAGE_HOOKS_TIMEOUT_SECONDS;
+            }
+            return projected;
           }),
         },
       ];

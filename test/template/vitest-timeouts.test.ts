@@ -114,6 +114,60 @@ describe('the one case that starts Windows PowerShell', () => {
   });
 });
 
+// RP-266 follow-up (round 2). test/template/codex-wrapper-bounds.test.ts has
+// one case that drives the real generated Windows wrapper through several
+// scenarios (the taskkill-race repro looping four powershell.exe starts, a
+// passthrough run, an invalid-override run) — the same irreducible cost as
+// the codex.test.ts case above (RP-162: starting powershell.exe with an
+// -EncodedCommand, measured 817 ms–over 15 000 ms on a loaded hosted Windows
+// runner), paid several times in a row by the loop. So that one case carries
+// its own budget, the same way the codex.test.ts case above does, and the
+// file-wide figure stays at this project's default.
+const CODEX_WRAPPER_BOUNDS_CASE_NAME =
+  'always fails closed under a lowered bound, and never throws on a malformed override (RP-266 follow-up)';
+const CODEX_WRAPPER_BOUNDS_CASE_BUDGET_DECLARATION =
+  /^const CODEX_WRAPPER_BOUNDS_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+
+async function readCodexWrapperBoundsTestSource(): Promise<string> {
+  return readFile(path.join(repoRoot, 'test', 'template', 'codex-wrapper-bounds.test.ts'), 'utf8');
+}
+
+describe('the one case that starts Windows PowerShell in codex-wrapper-bounds.test.ts (RP-266 follow-up)', () => {
+  it("carries its own budget, declared once by name and passed as that case's options", async () => {
+    const source = await readCodexWrapperBoundsTestSource();
+
+    expect(source).toMatch(CODEX_WRAPPER_BOUNDS_CASE_BUDGET_DECLARATION);
+
+    const caseWithOptions = new RegExp(
+      `it\\(\\s*'${escapeRegExp(CODEX_WRAPPER_BOUNDS_CASE_NAME)}'\\s*,\\s*\\{ timeout: CODEX_WRAPPER_BOUNDS_CASE_TIMEOUT_MS \\}`,
+    );
+    expect(source).toMatch(caseWithOptions);
+  });
+
+  it('is bounded above so a genuine hang still fails within a minute, and sits above the lane budget it replaces', async () => {
+    const source = await readCodexWrapperBoundsTestSource();
+    const declared = source.match(CODEX_WRAPPER_BOUNDS_CASE_BUDGET_DECLARATION);
+    expect(declared).not.toBeNull();
+
+    const budget = Number((declared?.[1] ?? '').replaceAll('_', ''));
+    expect(Number.isInteger(budget)).toBe(true);
+    expect(templateProject?.test.testTimeout).toBeDefined();
+    expect(budget).toBeGreaterThan(templateProject?.test.testTimeout ?? Number.POSITIVE_INFINITY);
+    expect(budget).toBeLessThanOrEqual(60_000);
+  });
+
+  it('is the only case in that file with a budget of its own — the figure moves for one case, not for the file', async () => {
+    const code = (await readCodexWrapperBoundsTestSource()).replace(/\/\/[^\n]*/g, '');
+    const optionKeys = code.match(/\btimeout\s*:/g) ?? [];
+    const trailingFigures = code.match(/\}\s*,\s*\d[\d_]*\s*\);/g) ?? [];
+    // The safety-net timeout `runWindowsWrapper` passes to `execFile` is a
+    // bare positional argument (never `timeout:`), matching the shorthand
+    // `runGuardInput` already uses in codex.test.ts for the same reason.
+    expect(optionKeys, 'timeout keys in options objects').toHaveLength(1);
+    expect(trailingFigures, 'numeric trailing-argument budgets').toHaveLength(0);
+  });
+});
+
 // RP-158. test/template/package-manager-transport.test.ts has one
 // `it.each(['npm', 'pnpm', 'npx'] as const)` case that starts a real
 // package-manager CLI child process ('runs the installed %s CLI directly and

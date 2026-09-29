@@ -51,14 +51,21 @@ const text = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
 // budget of its own — the figure moves for one case, not for the file".
 const WINDOWS_POWERSHELL_CASE_TIMEOUT_MS = 60_000;
 
-// RP-266: the Windows wrapper for these four guards has three unbounded
+// RP-266: the Windows wrapper for these four guards HAD three unbounded
 // waits (`git rev-parse --show-toplevel`, the stdin copy, `$child.WaitForExit()`)
-// and no `timeout` in either `.claude/settings.json` or the projected
-// `.codex/hooks.json`, so a host stall on any of them ends only at the
+// and no `timeout` anywhere, so a host stall on any of them ended only at the
 // harness's own default hook timeout — which
 // `docs/decisions/fail-open-guards.md:27` records resolves to ALLOW, not a
-// block. `gate-stop-dod` and `record-dispatch` already carry an explicit
-// `timeout` (seconds); these four never got one.
+// block. Round 1 (PR #353) bounded each stage, but code-reviewer and
+// security-scanner both found it still fails open: every `taskkill … | Out-Null`
+// runs under `$ErrorActionPreference = 'Stop'`, and PS 5.1 turns any stderr
+// line from an already-exited process into a terminating error the wrapper
+// never catches, so a guard that exits moments AFTER its bound gets exit 1
+// (non-blocking) instead of the wrapper's own exit 2. This round (round 2 of
+// PR #353) hardens that kill, tightens the override the earlier round left
+// "shaped for a regex" (duplicated per-stage if/else branches), and moves the
+// hooks.json `timeout` here — never into `.claude/settings.json`, which would
+// shorten Claude Code's own 600 s default kill point instead.
 const BOUNDED_STAGE_GUARDS = [
   'guard-secret-file.mjs',
   'guard-rulebook.mjs',
@@ -356,8 +363,130 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     },
   );
 
+  // PR #353 round 1 blocker (code-reviewer, security-scanner): every kill
+  // ran `taskkill … 2>$null | Out-Null` directly under
+  // `$ErrorActionPreference = 'Stop'`. In PS 5.1 any stderr line from
+  // taskkill — the process already exited, or a tree member vanished, both
+  // ordinary once the timeout has genuinely fired — is a terminating
+  // NativeCommandError the wrapper never caught, so it exited 1. Codex
+  // treats exit 1 as non-blocking: fail open. Reproduced 5/6 and 6/8 with a
+  // guard that exits ~0.1–0.6 s after the bound (behavioural repro in
+  // test/template/codex-wrapper-bounds.test.ts).
   it.each(BOUNDED_STAGE_GUARDS)(
-    "declares .codex/hooks.json's %s timeout explicitly, above the wrapper's own per-stage bound (RP-266)",
+    "wraps every kill in %s's wrapper so it cannot throw, and reports the timeout unconditionally once a bound expired (RP-266 follow-up)",
+    async (guardFile) => {
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: Record<
+          string,
+          Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>
+        >;
+      };
+      const entry = Object.values(config.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      expect(entry, `${guardFile} has no projected Codex hook entry`).toBeDefined();
+
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+
+      const taskkillCount = (windowsScript.match(/taskkill/g) ?? []).length;
+      expect(taskkillCount, `${guardFile}: expected at least one taskkill site`).toBeGreaterThan(0);
+
+      const guardedKills =
+        windowsScript.match(/try\s*\{[^{}]*taskkill[^{}]*\}\s*catch\s*\{[^{}]*\}/g) ?? [];
+      expect(
+        guardedKills.length,
+        `${guardFile}: every taskkill site must sit inside its own try/catch so a ` +
+          'PS 5.1 NativeCommandError from an already-exited process cannot escape and skip ' +
+          `the wrapper's own exit 2. Found ${taskkillCount} taskkill site(s), ${guardedKills.length} guarded:\n${windowsScript}`,
+      ).toBe(taskkillCount);
+
+      // The catch must swallow ONLY the kill — never the timeout report that
+      // has to run unconditionally once a bound has genuinely expired.
+      for (const block of guardedKills) {
+        expect(
+          block,
+          `${guardFile}: a try/catch around a kill must not also swallow the timeout report: ${block}`,
+        ).not.toMatch(/timed out after|exit 2/);
+      }
+
+      const unconditionalReports =
+        windowsScript.match(
+          /\[Console\]::Error\.WriteLine\("codex wrapper: [^"]*timed out after[^"]*"\)\s*;?\s*exit 2/g,
+        ) ?? [];
+      expect(
+        unconditionalReports.length,
+        `${guardFile}: expected the stderr message and exit 2 to run unconditionally for every stage`,
+      ).toBeGreaterThanOrEqual(2);
+    },
+  );
+
+  // Hygiene, from reviewer advisories accepted alongside the blocker above:
+  // CLIXML progress noise from a native command can land IN the block
+  // reason, and `cmd.exe` alone risks a cwd lookup / the user's AutoRun.
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "keeps CLIXML progress noise out of %s's block reason and resolves git through ComSpec with AutoRun disabled (RP-266 follow-up)",
+    async (guardFile) => {
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: Record<
+          string,
+          Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>
+        >;
+      };
+      const entry = Object.values(config.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+
+      expect(
+        windowsScript,
+        `${guardFile}: expected $ProgressPreference = 'SilentlyContinue' so CLIXML progress ` +
+          'noise from a native command cannot land in the block reason',
+      ).toMatch(/\$ProgressPreference\s*=\s*'SilentlyContinue'/);
+
+      expect(
+        windowsScript,
+        `${guardFile}: expected git resolved through $env:ComSpec (not a bare 'cmd.exe', which ` +
+          'risks a cwd lookup) with /d (skips the user AutoRun) before /c',
+      ).toMatch(/\$env:ComSpec/);
+      expect(windowsScript).toMatch(/\/d\b/);
+      expect(windowsScript).toContain('git rev-parse --show-toplevel');
+    },
+  );
+
+  // Per the official docs (https://code.claude.com/docs/en/hooks.md), Claude
+  // Code's own default command-hook timeout is 600 s. Putting a `timeout`
+  // into `.claude/settings.json` for these four SHORTENS Claude's kill point
+  // instead of lengthening it — and a kill is an allow
+  // (docs/decisions/fail-open-guards.md:27). The bound belongs only on the
+  // Codex projection, which has no 600 s default of its own to preserve.
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "never shortens Claude Code's own 600 s default hook timeout for %s in .claude/settings.json (RP-266 follow-up)",
+    async (guardFile) => {
+      const settings = JSON.parse(await text(universal, '.claude', 'settings.json')) as {
+        hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number }> }>>;
+      };
+      const entry = Object.values(settings.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      expect(entry, `${guardFile} has no .claude/settings.json entry`).toBeDefined();
+
+      expect(
+        entry?.timeout,
+        `${guardFile}'s .claude/settings.json entry must carry no timeout at all — one here ` +
+          "would SHORTEN Claude Code's own 600 s default kill point to a lower figure, and a " +
+          'kill is an allow (docs/decisions/fail-open-guards.md:27)',
+      ).toBeUndefined();
+    },
+  );
+
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "declares .codex/hooks.json's %s timeout as exactly 90 s, added by the projection itself, above the wrapper's own worst-case stage sum (RP-266 follow-up)",
     async (guardFile) => {
       const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
         hooks: Record<
@@ -372,51 +501,53 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         .find((hook) => hook.command.includes(guardFile));
       expect(entry, `${guardFile} has no projected Codex hook entry`).toBeDefined();
 
-      // `.claude/settings.json`'s `timeout` field is in seconds — pinned by
-      // gate-stop-dod.mjs's own comment ("890_000 ms against a 900 s wiring
-      // timeout"), and Codex's projected hooks.json already carries the same
-      // field verbatim for gate-stop-dod (900) and record-dispatch (10).
+      // Only the Codex projection carries this — `.claude/settings.json` has
+      // none for these four (pinned above), so `codexHooks()` must be adding
+      // this explicitly rather than merely spreading the Claude source.
       expect(
-        typeof entry?.timeout,
-        `${guardFile}'s projected Codex hook entry has no explicit timeout — a host stall on ` +
-          'this guard ends only at the harness default hook timeout, which ' +
-          'docs/decisions/fail-open-guards.md:27 records resolves to ALLOW',
-      ).toBe('number');
-      expect(entry?.timeout ?? 0).toBeGreaterThan(0);
+        entry?.timeout,
+        `${guardFile}'s projected Codex hook entry must carry a timeout of exactly 90 — 90 must exceed git ` +
+          "5 s + the shared stdin/guard deadline 35 s + PowerShell's own startup cost " +
+          '(measured 3–8 s, up to 15 s on hosted runners)',
+      ).toBe(90);
 
       const encoded = entry?.commandWindows?.match(
         /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
       )?.[1];
       const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
-      // Three stages, each with its own literal millisecond bound: the git
-      // stage and the child/guard stage call `WaitForExit(<ms>)`, the stdin
-      // copy calls `.Wait(<ms>)` on the async copy task.
-      const stageBoundsMs = [
-        ...windowsScript.matchAll(/\b(?:WaitForExit|Wait)\(\s*(\d+)\s*\)/g),
-      ].map((m) => Number(m[1]));
-      expect(
-        stageBoundsMs,
-        `expected exactly three literal per-stage millisecond bounds (git, stdin, guard) in ` +
-          `${guardFile}'s Windows wrapper, found: ${JSON.stringify(stageBoundsMs)}`,
-      ).toHaveLength(3);
 
-      // RP-266 follow-up: a host stall could cross EVERY stage in sequence
-      // (git times out, then stdin, then the guard), so the outer hooks.json
-      // timeout must cover the worst-case SUM of all three bounds, not just
-      // the largest single one.
-      const sumOfStageBoundsMs = stageBoundsMs.reduce((total, ms) => total + ms, 0);
+      // RP-266 follow-up: a reviewer called the earlier per-stage `if
+      // ($xOverridden) { … } else { … }` branches "shaped for a regex" — the
+      // fix is named literal DEFAULT assignments read once, not a duplicated
+      // conditional per stage. git keeps its own bound; the stdin copy and
+      // the guard wait now share ONE deadline (the stdin bound used to count
+      // node startup and block large legitimate writes).
+      const gitDefault = windowsScript.match(/\$gitDefaultMs\s*=\s*(\d+)\b/)?.[1];
+      const guardDeadline = windowsScript.match(/\$guardDeadlineMs\s*=\s*(\d+)\b/)?.[1];
+      expect(
+        gitDefault,
+        `${guardFile}: expected a named literal $gitDefaultMs = <ms> default assignment`,
+      ).toBeDefined();
+      expect(
+        guardDeadline,
+        `${guardFile}: expected a named literal $guardDeadlineMs = <ms> default assignment, ` +
+          'shared by the stdin copy and the guard wait',
+      ).toBeDefined();
+
+      const sumOfStageDefaultsMs = Number(gitDefault) + Number(guardDeadline);
       const declaredTimeoutMs = (entry?.timeout ?? 0) * 1000;
       expect(
         declaredTimeoutMs,
-        `${guardFile}'s hooks.json timeout (${entry?.timeout}s) must exceed the wrapper's own ` +
-          `worst-case SUM of per-stage bounds (${sumOfStageBoundsMs} ms), or the outer wiring ` +
-          "kills the wrapper before it can report its own stage's timeout",
-      ).toBeGreaterThan(sumOfStageBoundsMs);
+        `${guardFile}'s hooks.json timeout (${entry?.timeout}s = ${declaredTimeoutMs} ms) must ` +
+          `exceed the wrapper's own worst-case SUM of stage defaults ($gitDefaultMs + ` +
+          `$guardDeadlineMs = ${sumOfStageDefaultsMs} ms), or the outer wiring kills the ` +
+          "wrapper before it can report its own stage's timeout",
+      ).toBeGreaterThan(sumOfStageDefaultsMs);
     },
   );
 
   it.each(BOUNDED_STAGE_GUARDS)(
-    "lets a test-only RIG_CODEX_WRAPPER_TIMEOUT_MS override lower %s's per-stage bounds, and never raise them (RP-266)",
+    "lets a test-only RIG_CODEX_WRAPPER_TIMEOUT_MS override lower %s's per-stage bounds through Math.Min alone, and never raise them (RP-266 follow-up)",
     async (guardFile) => {
       const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
         hooks: Record<
@@ -439,15 +570,34 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         `${guardFile}'s Windows wrapper must read a test-only ` +
           '$env:RIG_CODEX_WRAPPER_TIMEOUT_MS override for its stage bounds — hosted-Windows ' +
           'guard latency needs realistic (multi-second) production defaults, and a behavioural ' +
-          'test cannot wait out a 40 s default on every run',
+          'test cannot wait out a 35 s default on every run',
       ).toMatch(/\$env:RIG_CODEX_WRAPPER_TIMEOUT_MS/);
 
-      // "Only ever lowers a bound": the override must be compared against
-      // each stage's own default through a construct that can only select
-      // the SMALLER of the two — `-lt` (the override wins only when it is
-      // smaller) or `[Math]::Min(` (which by definition returns the smaller
-      // argument) — and never through `-gt`/`-ge`, which would let an
-      // oversized override raise a bound instead of lowering it.
+      // Accepted advisory: the override is a positive integer of at most 9
+      // digits — 99999999999 (11 digits) or 2147483648 (10 digits, past
+      // Int32.MaxValue) must never throw and must never fall through to a
+      // production `[int]` cast that could overflow.
+      const validityPattern = windowsScript.match(/-match\s+'(\^\[0-9\]\{1,9\}\$)'/)?.[1];
+      expect(
+        validityPattern,
+        `${guardFile}: expected the override validated by the regex ^[0-9]{1,9}$`,
+      ).toBeDefined();
+      const validity = new RegExp(validityPattern ?? '(?!)');
+      expect(
+        '99999999999',
+        'an 11-digit override must fail the shape and keep the defaults',
+      ).not.toMatch(validity);
+      expect(
+        '2147483648',
+        'a 10-digit override past Int32.MaxValue must fail the shape too',
+      ).not.toMatch(validity);
+      expect('2000', 'a normal override must still validate').toMatch(validity);
+
+      // "Only ever lowers a bound, and never through a duplicated per-stage
+      // if/else": PR #353 round 1's `if ($gitOverridden) { … } else { … }`
+      // shape (once per stage) is exactly what a reviewer called "shaped for
+      // a regex" — the fix is a single `[Math]::Min(...)` selection against
+      // each named default, with no conditional tied to the override at all.
       expect(
         windowsScript,
         `${guardFile}'s wrapper must never compare RIG_CODEX_WRAPPER_TIMEOUT_MS with -gt/-ge — ` +
@@ -455,11 +605,15 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       ).not.toMatch(/RIG_CODEX_WRAPPER_TIMEOUT_MS[^\n;]{0,200}-(?:gt|ge)\b/);
       expect(
         windowsScript,
-        `${guardFile}'s wrapper must select the override only through a lower-bound construct ` +
-          "(-lt or [Math]::Min() against each stage's own default)",
-      ).toMatch(
-        /RIG_CODEX_WRAPPER_TIMEOUT_MS[\s\S]{0,160}(?:-lt\b|\[Math\]::Min\()|(?:-lt\b|\[Math\]::Min\()[\s\S]{0,160}RIG_CODEX_WRAPPER_TIMEOUT_MS/,
-      );
+        `${guardFile}'s wrapper must select the override only through [Math]::Min(...) against ` +
+          "each stage's own named default",
+      ).toMatch(/\[Math\]::Min\(/);
+      expect(
+        windowsScript,
+        `${guardFile}'s wrapper must not carry a duplicated per-stage "if ($xOverridden) { … } ` +
+          'else { … }" branch — a reviewer called that shape "shaped for a regex"; a single ' +
+          '[Math]::Min(...) selection replaces it',
+      ).not.toMatch(/if\s*\(\s*\$\w*[Oo]verrid(?:den|e)\w*\s*\)/);
     },
   );
 
@@ -799,152 +953,15 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     expect(trustGuidance).toContain('https://learn.chatgpt.com/docs/hooks');
     expect(trustGuidance).toMatch(/changed[^.]*hook[^.]*review again/i);
   });
-
-  // RP-266 behavioural pair. `guard-rulebook.mjs` is overwritten with a
-  // stand-in inside a scratch repository, exactly as the existing
-  // "anchors a nested-cwd Windows Codex rulebook edit" case above does, so
-  // these drive the SAME generated wrapper the content-level tests just
-  // inspected as text — not a hand-written stand-in wrapper.
-  it('kills the whole wrapper within a bounded time instead of hanging on a guard that never exits (RP-266)', async (ctx) => {
-    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
-
-    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-bound-hang-'));
-    try {
-      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
-      await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
-        recursive: true,
-      });
-
-      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
-        hooks: {
-          PreToolUse: Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>;
-        };
-      };
-      const encoded = config.hooks.PreToolUse.flatMap((group) => group.hooks)
-        .find((hook) => hook.command.includes('guard-rulebook.mjs'))
-        ?.commandWindows?.match(
-          /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
-        )?.[1];
-      expect(encoded).toBeDefined();
-
-      // Never reads stdin and never exits. `await new Promise(() => {})`
-      // looked like it would hang but does not: Node detects the unsettled
-      // top-level await and exits on its own (measured on Windows/Node 24:
-      // exit code 13 in ~0.5 s), which would fail this case for the wrong
-      // reason. `setInterval` with an interval Node never reaches keeps the
-      // event loop alive and genuinely never exits on its own. The safety-net
-      // `timeout` passed to `runWindowsWrapper` below is what bounds THIS
-      // test — today's wrapper has no bound of its own, so without it this
-      // would hang indefinitely.
-      await writeFile(
-        path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
-        'setInterval(() => {}, 1 << 30);\n',
-      );
-
-      const started = Date.now();
-      const result = await runWindowsWrapper(
-        encoded!,
-        {
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Write',
-          tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
-          cwd: scratch,
-        },
-        scratch,
-        // RP-266 follow-up: production's real guard-stage default is 40 s
-        // (hosted-Windows guard latency headroom), too long for a
-        // behavioural case to wait out on every run. The wrapper reads this
-        // test-only override and — per the case above — may only LOWER a
-        // stage's bound with it, never raise one, so 2000 ms here exercises
-        // the same code path a real stall would hit, just faster.
-        { CLAUDE_PROJECT_DIR: '', RIG_CODEX_WRAPPER_TIMEOUT_MS: '2000' },
-        // Safety net for THIS test, never a production bound: today's
-        // wrapper does not read the override above at all, so without this
-        // the child would run out its full, real 40 s default.
-        8_000,
-      );
-      const elapsedMs = Date.now() - started;
-
-      expect(result.code, result.stderr).toBe(2);
-      expect(result.stderr).toMatch(/codex wrapper: .*timed out after 2000 ms/i);
-      expect(elapsedMs).toBeLessThan(7_000);
-    } finally {
-      await removeFixture(scratch);
-    }
-  });
-
-  it('passes a promptly-exiting guard’s exit code and stdout straight through the wrapper (RP-266)', async (ctx) => {
-    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
-
-    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-hook-bound-pass-'));
-    try {
-      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
-      await cp(path.join(universal, '.claude'), path.join(scratch, '.claude'), {
-        recursive: true,
-      });
-
-      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
-        hooks: {
-          PreToolUse: Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>;
-        };
-      };
-      const encoded = config.hooks.PreToolUse.flatMap((group) => group.hooks)
-        .find((hook) => hook.command.includes('guard-rulebook.mjs'))
-        ?.commandWindows?.match(
-          /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
-        )?.[1];
-      expect(encoded).toBeDefined();
-
-      await writeFile(
-        path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
-        [
-          "import { readFileSync } from 'node:fs';",
-          'try { readFileSync(0); } catch {}',
-          "process.stdout.write('RP266-PROBE-OK\\n');",
-          'process.exit(7);',
-        ].join('\n'),
-      );
-
-      const result = await runWindowsWrapper(
-        encoded!,
-        {
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Write',
-          tool_input: { file_path: path.join(scratch, '.claude', 'rules', 'autonomy.md') },
-          cwd: scratch,
-        },
-        scratch,
-        { CLAUDE_PROJECT_DIR: '' },
-        8_000,
-      );
-
-      expect(result.code, result.stderr).toBe(7);
-      expect(result.stdout).toContain('RP266-PROBE-OK');
-    } finally {
-      await removeFixture(scratch);
-    }
-  });
 });
 
-function runWindowsWrapper(
-  encodedCommand: string,
-  input: Record<string, unknown>,
-  cwd: string,
-  env: Record<string, string>,
-  timeout?: number,
-): Promise<{ code: number; stderr: string; stdout: string }> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand],
-      { cwd, env: { ...process.env, ...env }, timeout },
-      (error, stdout, stderr) =>
-        resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stdout, stderr }),
-    );
-    if (!child.stdin) return reject(new Error('no stdin'));
-    child.stdin.end(JSON.stringify(input));
-  });
-}
+// RP-266 follow-up: the win32 behavioural cases that drive the real
+// generated wrapper (busy-wait taskkill-race repro, override passthrough,
+// invalid-override fallback) moved to test/template/codex-wrapper-bounds.test.ts
+// — every one of them starts a real powershell.exe, the same load-sensitive
+// cost RP-162's comment above already measured, so they get their own file
+// and their own per-case budget instead of the wall-clock-sensitive shape
+// this file used to carry for two of them.
 
 function runGuard(script: string, command: string): Promise<{ code: number; stderr: string }> {
   return runGuardInput(script, {
