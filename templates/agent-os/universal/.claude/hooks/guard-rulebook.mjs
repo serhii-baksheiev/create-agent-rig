@@ -96,15 +96,21 @@
 //     `adminShareDriveSpelling` — › "guard-rulebook: an admin-share-spelled
 //     repository root must also recognise the local-drive spelling of the
 //     same payload path (RP-246)";
-//   - `protectedRelative` judges a fragment's REAL, resolved location
-//     (`canonicalPath`) before any literal spelling — a literal spelling
-//     under an allowed rulebook prefix that is itself a symlink/junction to a
-//     DIFFERENT, non-allowed rulebook prefix must never authorize the edit
-//     the resolved spelling names, so literal spellings are consulted only as
-//     additional refusal candidates once the resolved spelling failed to name
-//     any rulebook path at all — RP-246 part 2, › "guard-rulebook: a literal
-//     spelling under an allowed prefix must not authorize the different
-//     rulebook prefix it resolves to (RP-246)";
+//   - `protectedRelative` judges EVERY spelling a fragment carries — its REAL,
+//     resolved location (`canonicalPath`) and both literal spellings
+//     (`filePath`, `rawFilePath`) — and returns every one of them that names a
+//     rulebook path, never just the first. Neither spelling gets to hide a
+//     rulebook match the other one names: a literal spelling under an allowed
+//     prefix that resolves, through a symlink, to a DIFFERENT, non-allowed
+//     rulebook prefix does not authorize the edit (RP-246 part 2, › "guard-rulebook:
+//     a literal spelling under an allowed prefix must not authorize the
+//     different rulebook prefix it resolves to (RP-246)"), and — the mirror
+//     case round 2 closed — a literal spelling under a NON-allowed prefix that
+//     resolves to an ALLOWED one is not hidden by that resolved match either
+//     — › "guard-rulebook: a literal spelling outside an allowed prefix is not
+//     hidden by a resolved match inside it (RP-246 round 2)". The edit is
+//     refused if ANY collected spelling names a rulebook path the item's
+//     allow-list does not cover, and the refusal names that one;
 //
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
@@ -199,33 +205,47 @@ export const isAllowed = (rel, allow) =>
 // `.claude/rules/invariants.md` reads the two differently: refuse it while
 // armed, the same as every other case this file cannot resolve.
 //
-// RP-246: the REAL, resolved location (`canonical`) is judged FIRST, and a
-// match there is returned immediately — never overridden by a literal
-// spelling. A literal spelling under an allowed prefix (`.claude/rules/x`)
-// that is itself a symlink/junction to a DIFFERENT, non-allowed rulebook
-// prefix (`.claude/hooks/`) used to be returned first just because it was
-// tried first, so `isAllowed` downstream saw only the harmless-looking
-// literal spelling and never the real target. Literal spellings (`filePath`,
-// `rawFilePath`) are consulted only once the canonical spelling failed to
-// name a rulebook path at all — as ADDITIONAL refusal candidates, exactly
-// what RP-60's junction-to-a-vendored-file case still needs (the canonical
-// target there sits outside the rulebook; only the lexical `rawFilePath`
-// spelling names it) — never as a way to authorize a canonical match this
-// function already refused.
+// RP-246 round 2: neither the REAL, resolved location (`canonical`) nor
+// either literal spelling (`filePath`, `rawFilePath`) is allowed to hide a
+// rulebook match the other one names — round 1 fixed the direction where a
+// harmless-looking literal spelling under an allowed prefix resolved to a
+// non-allowed one, but still returned the FIRST rulebook match found
+// (canonical first, literals only once canonical named nothing at all), so
+// the mirror case slipped through: a literal spelling under a NON-allowed
+// prefix that resolves, through a symlink, to an ALLOWED one was read as
+// fully authorized, because the allowed resolved match was the only one ever
+// returned. So every spelling this fragment carries — at most three
+// candidates: `canonical`, `filePath`, `rawFilePath` — is resolved against
+// the rulebook independently, and ALL of the rulebook paths any of them names
+// are returned, deduplicated, as an array; the caller refuses the edit if ANY
+// of them is not covered by the item's allow-list. `canonicalPath` is still
+// called at most once per fragment, exactly as before — only the reading of
+// its result changed, from "first match wins" to "every match is collected".
+// › "guard-rulebook: a literal spelling under an allowed prefix must not
+// authorize the different rulebook prefix it resolves to (RP-246)" pins the
+// round-1 direction still held; see the generator's `test/template/guard-rulebook.test.ts` (absent in a generated rig) ›
+// "guard-rulebook: a literal spelling outside an allowed prefix is not hidden
+// by a resolved match inside it (RP-246 round 2)" for the mirror case this
+// round closed.
 const protectedRelative = (roots, filePath, rawFilePath) => {
   const canonical = canonicalPath(filePath);
+  const matches = [];
   if (typeof canonical === 'string' && canonical !== '') {
     for (const root of roots) {
       const rel = canonicalRulebookPath(relativeTo(root, canonical));
-      if (rel !== undefined) return rel;
+      if (rel !== undefined) {
+        matches.push(rel);
+        break;
+      }
     }
   }
   const literalCandidates = [...new Set([filePath, rawFilePath].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
     .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)));
   for (const candidate of literalCandidates) {
     const rel = canonicalRulebookPath(candidate);
-    if (rel !== undefined) return rel;
+    if (rel !== undefined && !matches.includes(rel)) matches.push(rel);
   }
+  if (matches.length > 0) return matches;
   return canonical === null ? COMPONENT_OVERFLOW : undefined;
 };
 
@@ -319,7 +339,15 @@ function main() {
       componentOverflow = true;
       continue;
     }
-    if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
+    // RP-246 round 2: `protectedRelative` now returns EVERY rulebook path any
+    // spelling of this fragment names, not just the first — every one of them
+    // joins `paths` so the refusal check below sees all of them, not only
+    // whichever spelling happened to be tried first.
+    if (Array.isArray(rel)) {
+      for (const candidate of rel) {
+        if (!paths.includes(candidate)) paths.push(candidate);
+      }
+    }
   }
   // RP-247 round 2: checked before the "nothing under the rulebook" bail-out
   // below — a fragment `canonicalPath` could not resolve within the

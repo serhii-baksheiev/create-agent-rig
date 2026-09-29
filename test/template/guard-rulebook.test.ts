@@ -667,6 +667,136 @@ describe('guard-rulebook: a literal spelling under an allowed prefix must not au
   });
 });
 
+// RP-246 round 2 (code-reviewer on PR #359, head 58f9635 refuses/exit 2, head
+// e7e098e allows/exit 0): round 1 made the RESOLVED spelling win over a
+// literal spelling that only LOOKED harmless — but `protectedRelative` still
+// returns that resolved spelling immediately once it names ANY rulebook
+// path, allowed or not, and never goes on to try the literal spelling at
+// all. So the mirror case slips through: a literal path that sits under a
+// NON-allowed rulebook prefix (`.claude/hooks/`) but resolves, through a
+// symlink, to a path that happens to be ALLOWED (`.claude/rules/…`) is read
+// as fully authorized — the guard never notices that the spelling actually
+// named on the edit is the non-allowed one. Every spelling a fragment
+// carries has to be collected and judged; the edit is refused if ANY of them
+// names a rulebook path the item's allow-list does not cover.
+describe('guard-rulebook: a literal spelling outside an allowed prefix is not hidden by a resolved match inside it (RP-246 round 2)', () => {
+  it('blocks a Write to .claude/hooks/x.mjs when it is a file symlink into the allowed .claude/rules/', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await writeFile(path.join(root, '.claude', 'rules', 'x.mjs'), 'protected\n');
+    await symlink(
+      path.join(root, '.claude', 'rules', 'x.mjs'),
+      path.join(root, '.claude', 'hooks', 'x.mjs'),
+    );
+    await armed(['.claude/rules/']);
+
+    // On origin/master (base 58f9635) this exits 2. On this head (e7e098e)
+    // it exits 0: the RESOLVED spelling ".claude/rules/x.mjs" is allowed and
+    // protectedRelative returns it first, so the literal, non-allowed
+    // ".claude/hooks/x.mjs" the edit actually names is never consulted.
+    const result = await run(write(path.join(root, '.claude', 'hooks', 'x.mjs')));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks');
+  });
+
+  it('blocks an Edit to .claude/hooks/x.mjs when it is a file symlink into the allowed .claude/rules/', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await writeFile(path.join(root, '.claude', 'rules', 'x.mjs'), 'protected\n');
+    await symlink(
+      path.join(root, '.claude', 'rules', 'x.mjs'),
+      path.join(root, '.claude', 'hooks', 'x.mjs'),
+    );
+    await armed(['.claude/rules/']);
+
+    const result = await run(edit(path.join(root, '.claude', 'hooks', 'x.mjs')));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks');
+  });
+
+  it('blocks a Write to .claude/hooks/sub/y.mjs when .claude/hooks/sub is a directory symlink into the allowed .claude/rules/', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules', 'sub'), { recursive: true });
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await symlink(
+      path.join(root, '.claude', 'rules', 'sub'),
+      path.join(root, '.claude', 'hooks', 'sub'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed(['.claude/rules/']);
+
+    // The resolved leaf ".claude/rules/sub/y.mjs" is allowed; the literal
+    // leaf ".claude/hooks/sub/y.mjs" the edit actually names is not.
+    const result = await run(write(path.join(root, '.claude', 'hooks', 'sub', 'y.mjs')));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks');
+  });
+
+  it('blocks an Edit to .claude/hooks/sub/y.mjs when .claude/hooks/sub is a directory symlink into the allowed .claude/rules/', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules', 'sub'), { recursive: true });
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await symlink(
+      path.join(root, '.claude', 'rules', 'sub'),
+      path.join(root, '.claude', 'hooks', 'sub'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed(['.claude/rules/']);
+
+    const result = await run(edit(path.join(root, '.claude', 'hooks', 'sub', 'y.mjs')));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks');
+  });
+
+  it('control: still allows a plain Write to an allowed .claude/rules/x.md with no symlink involved', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
+    await armed(['.claude/rules/']);
+
+    const result = await run(write(path.join(root, '.claude', 'rules', 'x.md')));
+
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('control: still allows a Write through a symlinked directory whose target is itself inside the allowed prefix', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules', 'other'), { recursive: true });
+    await symlink(
+      path.join(root, '.claude', 'rules', 'other'),
+      path.join(root, '.claude', 'rules', 'link'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed(['.claude/rules/']);
+
+    const result = await run(write(path.join(root, '.claude', 'rules', 'link', 'y.md')));
+
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('control: the round-1 case (.claude/rules/junc/evil.mjs resolving to the non-allowed .claude/hooks/) is still refused', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
+    await mkdir(path.join(root, '.claude', 'hooks'), { recursive: true });
+    await symlink(
+      path.join(root, '.claude', 'hooks'),
+      path.join(root, '.claude', 'rules', 'junc'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    await armed(['.claude/rules/']);
+
+    const result = await run(write(path.join(root, '.claude', 'rules', 'junc', 'evil.mjs')));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/hooks');
+  });
+});
+
 /**
  * RP-215 — the realpath rescue in `canonicalPath` only re-cases a spelling
  * through the nearest EXISTING ancestor. Below the guard entirely, if
