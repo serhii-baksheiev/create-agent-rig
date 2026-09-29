@@ -309,10 +309,17 @@ const CREDENTIAL_TARGETS = new Set([
  * `$HOME` entirely — but the same prefix test that makes `isCatastrophic`
  * treat it as "reaches under `~/.ssh`" would otherwise call that upward
  * escape a credential deletion, which is exactly the misnaming this reason
- * exists to avoid. Gating on the literal segment is enough: the escape still
- * falls through to `isCatastrophic`'s own prefix match (so it stays
- * refused) — only the CREDENTIAL wording is withheld, in favour of the
- * root/home one.
+ * exists to avoid. The reverse mistake is just as real, though (RP-262):
+ * `~/.ssh/a/..` and `~/.ssh/a/../id_rsa` NEVER leave `~/.ssh`, yet a bare
+ * literal-`..` gate withholds the credential wording from them too. Callers
+ * resolve the target with `resolveTarget` (which folds `..` in one bounded
+ * pass and reports a genuine escape as `/`) before asking this function —
+ * at that point no in-subtree target carries a `..` any more, so the escape
+ * still falls through to `isCatastrophic`'s own prefix match (so it stays
+ * refused) with only the CREDENTIAL wording withheld, in favour of the
+ * root/home one. The `!target.split('/').includes('..')` guard below is now
+ * a defensive fallback for a caller that passes a target this way without
+ * resolving it first — never the primary mechanism.
  */
 const isCredentialTarget = (target) =>
   !target.split('/').includes('..') &&
@@ -783,17 +790,81 @@ export const normalizeTarget = (token) => {
 };
 
 /**
- * `catastrophicCwdTarget` is the NORMALISED target a prior `cd` in this
- * command line landed on, or `null` — the target itself, not just whether one
- * was catastrophic, so a wildcard delete after `cd ~/.ssh` can be told apart
- * from one after `cd /`: same wildcard, same block, but only one of them is a
- * credential delete.
+ * Fold a `..` segment against the one immediately before it, in ONE forward
+ * pass over the path with a stack — never recursion, never a rescan of what
+ * was already folded, so this stays bounded even for a run of thousands of
+ * `../` segments (`.claude/rules/invariants.md`, "a guard that fails open
+ * must do provably bounded work" — pinned at n=4000 in the generator's
+ * test/template/hooks.test.ts, absent in a generated rig, › "folds a long
+ * run of `..` in bounded time and still blocks the escape").
+ *
+ * `clampAtRoot: true` is for an absolute path: `/..` IS `/`, there is nowhere
+ * higher to go, so a `..` past an empty stack is simply dropped. `clampAtRoot:
+ * false` is for a `~`/`$HOME`-anchored path, where popping past an empty
+ * stack climbs OUT of the anchor into territory this guard has no name for —
+ * reported back as `escaped` rather than guessed at.
+ */
+function foldDotDot(parts, { clampAtRoot }) {
+  const stack = [];
+  let escaped = false;
+  for (const part of parts) {
+    if (part === '..') {
+      if (stack.length > 0) stack.pop();
+      else if (!clampAtRoot) escaped = true;
+    } else {
+      stack.push(part);
+    }
+  }
+  return { parts: stack, escaped };
+}
+
+/**
+ * The fully `..`-resolved form of a target. `normalizeTarget` cleans up `.`,
+ * `//` and `${HOME}` but leaves a literal `..` segment untouched — so
+ * `~/.ssh/..` (which IS `~`) never matched the exact-match `cd` check, and a
+ * target that stays inside `~/.ssh` despite spelling a `..` (`~/.ssh/a/..`)
+ * was indistinguishable from one that actually escapes it (RP-262).
+ *
+ * Only an ANCHORED path is folded — `/…`, `~…`, `$HOME…`. A plain relative
+ * target (`src/..`, `../sibling-project`) is returned exactly as
+ * `normalizeTarget` already had it: it can never resolve without knowing the
+ * working directory, and it can never spell a catastrophic target by
+ * accident either — folding it would only change what an ordinary relative
+ * `..` prints, never whether anything here blocks it.
+ *
+ * An anchor-escape (`~/..`, `$HOME/../../..`) has no home-relative name for
+ * where it lands, but it lands somewhere between the home directory and the
+ * filesystem root — the same non-credential bucket `isCatastrophic`/the
+ * upward-escape fallback below already treat root and "above home" as one
+ * category, so it resolves to `/`, which both are already exact members of.
+ */
+function resolveTarget(token) {
+  const target = normalizeTarget(token);
+  if (target.startsWith('/')) {
+    const { parts } = foldDotDot(target.slice(1).split('/').filter(Boolean), {
+      clampAtRoot: true,
+    });
+    return parts.length === 0 ? '/' : `/${parts.join('/')}`;
+  }
+  const [anchor, ...rest] = target.split('/');
+  if (anchor !== '~' && anchor !== '$HOME') return target;
+  const { parts, escaped } = foldDotDot(rest, { clampAtRoot: false });
+  if (escaped) return '/';
+  return parts.length === 0 ? anchor : `${anchor}/${parts.join('/')}`;
+}
+
+/**
+ * `catastrophicCwdTarget` is the RESOLVED (`..`-folded) target a prior `cd`
+ * in this command line landed on, or `null` — the target itself, not just
+ * whether one was catastrophic, so a wildcard delete after `cd ~/.ssh` can be
+ * told apart from one after `cd /`: same wildcard, same block, but only one
+ * of them is a credential delete.
  */
 function checkRm({ args }, catastrophicCwdTarget) {
   for (const { value } of operandsOf(args)) {
     const target = normalizeTarget(value);
     if (isCatastrophic(target)) {
-      if (isCredentialTarget(target)) {
+      if (isCredentialTarget(resolveTarget(value))) {
         return (
           'BLOCKED — this deletes SSH credentials/key material under ~/.ssh, ' +
           'which breaks authentication and cannot be recovered from a delete. If a ' +
@@ -877,7 +948,11 @@ export const inspect = (raw, brake, depth = 0) => {
     }
 
     if (command.name === 'cd') {
-      const target = normalizeTarget(operandsOf(command.args)[0]?.value ?? '');
+      // RP-262: resolved (`..`-folded), not merely normalised — `~/.ssh/..`
+      // is `~`, and an exact-match lookup against the literal string
+      // `~/.ssh/..` (which is not itself in CATASTROPHIC) let a wildcard
+      // delete right after it through uninspected.
+      const target = resolveTarget(operandsOf(command.args)[0]?.value ?? '');
       catastrophicCwdTarget = CATASTROPHIC.has(target) ? target : null;
       continue;
     }

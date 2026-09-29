@@ -282,6 +282,83 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     }
   });
 
+  // RP-262: the cd-then-wildcard route reads the `cd` target with an
+  // EXACT-match lookup (`CATASTROPHIC.has(target)`), and `normalizeTarget`
+  // folds `.` and duplicate slashes but never resolves a literal `..`
+  // segment. `~/.ssh/..` IS `~` — cd there and `rm -rf *` wipes the whole
+  // home directory — but the literal string `~/.ssh/..` is not itself in
+  // `CATASTROPHIC`, so `catastrophicCwdTarget` stays null and the wildcard
+  // delete is never even inspected. Confirmed on master: every command below
+  // exits 0 today.
+  it('does not let a `..` escape in the cd target defeat a wildcard delete', async () => {
+    for (const command of ['cd ~/.ssh/.. && rm -rf *', 'cd $HOME/.ssh/.. && rm -rf .']) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — should BLOCK (resolves to the whole home directory), exits ${result.code} on master`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-262 boundedness (.claude/rules/invariants.md, "A guard that fails open
+  // must do provably bounded work"): whatever folds `..` here must do it in
+  // ONE bounded pass. A long run of `../` must be handled fast, and it must
+  // fail CLOSED on a genuine match — never allow because resolving it looked
+  // too expensive to attempt. Enough `../` segments from `~/.ssh/` escape past
+  // the symbol itself onto the filesystem root, which is still catastrophic.
+  it('folds a long run of `..` in bounded time and still blocks the escape', async () => {
+    const longEscape = `cd ~/.ssh/${Array(4000).fill('..').join('/')} && rm -rf *`;
+    const start = Date.now();
+    const result = await run(longEscape);
+    const elapsed = Date.now() - start;
+    expect(elapsed, `took ${elapsed}ms — must stay bounded, not quadratic`).toBeLessThan(3000);
+    expect(
+      result.code,
+      `should BLOCK: a long enough run of '..' resolves onto the filesystem root, exits ${result.code} on master`,
+    ).toBe(2);
+  });
+
+  // RP-262: a `..` in a cd target is ordinary and must not become a block on
+  // its own — only an ESCAPE onto a catastrophic target is. These mirror what
+  // the guard already allows for the equivalent path without a home/root
+  // escape: a relative `..` that stays inside the project, and an rm target
+  // that names something specific rather than a wildcard.
+  it('keeps allowing an ordinary relative `..` that never escapes onto a catastrophic target', async () => {
+    for (const command of [
+      'cd ./build/.. && ls',
+      'cd src/.. && rm -rf dist/*',
+      'cd ../sibling-project && ls',
+    ]) {
+      expect((await run(command)).code, command).toBe(0);
+    }
+  });
+
+  // RP-262 related: `isCredentialTarget` withholds the credential reason from
+  // ANY target carrying a literal `..` segment, on the theory that `..`
+  // always escapes the subtree — true for `~/.ssh/..` (which IS `~`), but not
+  // for `~/.ssh/a/..` or `~/.ssh/../.ssh` (both resolve back to `~/.ssh`
+  // itself) or `~/.ssh/a/../id_rsa` (a specific key file inside it). None of
+  // these ever leaves the credential directory, yet all three get the
+  // root/home reason instead. Confirmed on master: already BLOCKED, with the
+  // wrong reason — this is a reason-content fix, not an allow/block one, and
+  // (unlike the two tests above) it lives entirely on the direct-`rm` path: a
+  // fix that only refuses a `..`-bearing `cd` before a wildcard `rm` does not
+  // touch this case at all.
+  it('names credentials, not root/home, for a `..` that resolves back inside ~/.ssh', async () => {
+    for (const command of [
+      'rm -rf ~/.ssh/a/..',
+      'rm -rf ~/.ssh/../.ssh',
+      'rm -rf ~/.ssh/a/../id_rsa',
+    ]) {
+      const result = await run(command);
+      expect(result.code, command).toBe(2);
+      expect(
+        result.stderr,
+        `${command} resolves back inside ~/.ssh — should be named a credential deletion: ${result.stderr}`,
+      ).toMatch(/credential|key material|ssh key/i);
+    }
+  });
+
   // RP-259: a functional review found a stale "removed in 0.6" reference —
   // it lived in the `init --force` usage text (see the "does not claim
   // --force was removed" case in test/e2e/init.test.ts), not in a BLOCKED
