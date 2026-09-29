@@ -792,10 +792,12 @@ export const normalizeTarget = (token) => {
 /**
  * Fold a `..` segment against the one immediately before it, in ONE forward
  * pass over the path with a stack — never recursion, never a rescan of what
- * was already folded, so this stays bounded even for a run of thousands of
- * `../` segments (`.claude/rules/invariants.md`, "a guard that fails open
- * must do provably bounded work" — pinned at n=4000 in the generator's
- * test/template/hooks.test.ts, absent in a generated rig, › "folds a long
+ * was already folded, so this stays bounded even when the stack grows to
+ * tens of thousands of segments before the `..` run folds it back
+ * (`.claude/rules/invariants.md`, "a guard that fails open must do provably
+ * bounded work" — pinned with 30,000 segments followed by 30,002 `..`,
+ * timed inside the child, in the generator's
+ * test/template/hooks.test.ts (absent in a generated rig) › "folds a long
  * run of `..` in bounded time and still blocks the escape").
  *
  * `clampAtRoot: true` is for an absolute path: `/..` IS `/`, there is nowhere
