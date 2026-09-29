@@ -130,10 +130,21 @@
 // Every line is processed once, in this order, before it ever reaches the
 // tail, the log, or a `failedTests` entry: ANSI escape codes are stripped (›
 // "strips ANSI escape codes from the identity and the tail"); an absolute
-// path under this process's own cwd is rewritten repo-relative (› "converts
-// an absolute path to the repo root inside a test identity into a
-// repo-relative one"); a PER-STREAM state machine tracks whether the line
-// sits inside a PEM private-key block — a line matching
+// path under this process's own cwd, or a verified alias of it (its own
+// realpath, or a `PWD` whose realpath agrees — `buildPrefixCandidates`,
+// above `runCheck`), is rewritten repo-relative (› "converts an absolute
+// path to the repo root inside a test identity into a repo-relative one"
+// and › "strips the prefix when the runner prints the identity anchored to
+// the REALPATH"). A `failedTests` entry ALONE gets two more passes a plain
+// line does not: an alias `buildPrefixCandidates` had no way to predict is
+// resolved by walking the path's own ancestors, bounded because it only
+// ever runs on an already-recognized, already-capped failure-summary line
+// (› "strips the prefix when the runner prints the identity anchored to the
+// LINK path, not just the realpath"), and backslashes in what remains are
+// turned to forward slashes (› "a backslash-separated identity under cwd is
+// normalized to forward slashes") — both in `normalizeFailedTestId`, above
+// `runCheck`. A PER-STREAM state machine tracks whether the line sits
+// inside a PEM private-key block — a line matching
 // `lib/secrets.mjs`'s own `private-key-block` shape (reused verbatim, never
 // hand-copied) starts redaction of every line through the matching END line
 // INCLUSIVE, or to the end of that stream's output when no END line ever
@@ -750,10 +761,133 @@ const recordOrNotify = (data) => {
   }
 };
 
+/** `realpathSync.native(cwd)`, or `null` when it cannot be resolved. */
+const computeCwdReal = (cwd) => {
+  try {
+    return realpathSync.native(cwd);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The prefixes a recorded value's cwd-anchored portion may be spelled with —
+ * built ONCE per check, never re-derived per line (module header's
+ * "Bounds"). `cwd` itself is always a candidate; `cwdReal`
+ * (`realpathSync.native(cwd)`) adds a second spelling for the case where cwd
+ * and its realpath are two on-disk names for the same directory (macOS's
+ * `/var` → `/private/var` is the case this exists for — see
+ * `check-run.test.ts`, absent in a generated rig, › "strips the prefix when
+ * the runner prints the identity anchored to the REALPATH"); `process.env.PWD`
+ * is added only when ITS OWN realpath agrees with `cwdReal` — an unrelated
+ * inherited PWD (the ordinary case for a process that never `cd`-ed) must
+ * never leak in as a candidate, while a shell that DID `cd` through a
+ * symlinked alias before invoking this script leaves exactly that agreement,
+ * and only that agreement, behind. Every candidate is added with BOTH a `/`
+ * and a `\` trailing separator, because a runner may print `<cwd>\...` even
+ * when cwd itself has no backslash in it at all — see › "a
+ * backslash-separated identity under cwd is normalized to forward slashes".
+ * Sorted longest first, so a more specific (often longer) candidate is tried
+ * before a shorter one that could otherwise match as a false partial prefix.
+ *
+ * This still misses an alias process.cwd()/PWD never carried — e.g. a
+ * checked command that reports a *different* symlinked name for the same
+ * directory than the one this process happened to start under. That case is
+ * handled separately, only for an already-extracted failing-test identity
+ * (bounded — see `resolveAliasedPath` below), never here, because THIS list
+ * is consulted on every processed line and an fs call per line would violate
+ * the module header's "Bounds". See › "strips the prefix when the runner
+ * prints the identity anchored to the LINK path, not just the realpath".
+ */
+const buildPrefixCandidates = (cwd, cwdReal) => {
+  const bases = new Set([cwd]);
+  if (cwdReal !== null) bases.add(cwdReal);
+  const pwd = process.env.PWD;
+  if (pwd && cwdReal !== null) {
+    try {
+      if (realpathSync.native(pwd) === cwdReal) bases.add(pwd);
+    } catch {
+      // an unresolvable PWD is never trusted as a candidate
+    }
+  }
+  const prefixes = new Set();
+  for (const base of bases) {
+    prefixes.add(base.endsWith('/') ? base : `${base}/`);
+    prefixes.add(base.endsWith('\\') ? base : `${base}\\`);
+  }
+  return [...prefixes].sort((a, b) => b.length - a.length);
+};
+
+// An absolute path in either POSIX (`/…`) or Windows (`C:\…`, `C:/…`,
+// `\\server\…`) spelling — the shape `resolveAliasedPath` below only ever
+// walks for.
+const ABSOLUTE_PATH_PATTERN = /^(?:[A-Za-z]:[\\/]|[\\/]{2}|[\\/])/;
+
+/**
+ * A bounded fallback for a failing-test identity whose leading path still
+ * looks absolute after `relativize` above found no candidate to strip — the
+ * case a checked command prints a symlinked alias of this process's own cwd
+ * that `buildPrefixCandidates` had no way to know about ahead of time (see
+ * its own comment). Walks the path's own ancestors, starting from the full
+ * path and shortening one segment at a time — bounded by the path's own
+ * length, so this is fs work, but it runs at most once per candidate, and a
+ * candidate exists only for an already-recognized failure-summary line,
+ * itself capped at `FAILED_TESTS_MAX` per check (module header's "Bounds") —
+ * never for the bulk of ordinary output. The first ancestor that exists on
+ * disk decides the outcome: if ITS realpath agrees with `cwdReal`, the alias
+ * is confirmed and the matched length is stripped; otherwise the path is
+ * left exactly as given, since a directory that exists but is NOT this
+ * process's own cwd under another name is genuinely a different place. See
+ * `check-run.test.ts` (absent in a generated rig) › "strips the prefix when
+ * the runner prints the identity anchored to the LINK path, not just the
+ * realpath".
+ */
+const resolveAliasedPath = (pathPart, cwdReal) => {
+  if (cwdReal === null || !ABSOLUTE_PATH_PATTERN.test(pathPart)) return pathPart;
+  let candidate = pathPart;
+  let previous = null;
+  while (candidate !== previous) {
+    if (existsSync(candidate)) {
+      try {
+        if (realpathSync.native(candidate) === cwdReal) {
+          return pathPart.slice(candidate.length).replace(/^[\\/]+/, '');
+        }
+      } catch {
+        // an unresolvable candidate is left exactly as given, below
+      }
+      break;
+    }
+    previous = candidate;
+    candidate = path.dirname(candidate);
+  }
+  return pathPart;
+};
+
+/**
+ * Converts backslashes to forward slashes in the PATH portion only (before
+ * the first ` > `) of an already-relativized failing-test identity — never
+ * applied to the tail or log text, which stay exactly what the runner
+ * printed. See `check-run.test.ts` (absent in a generated rig) › "a
+ * backslash-separated identity under cwd is normalized to forward slashes".
+ */
+const normalizeFailedTestId = (id, cwdReal) => {
+  const sepIndex = id.indexOf(' > ');
+  const pathPart = sepIndex === -1 ? id : id.slice(0, sepIndex);
+  const rest = sepIndex === -1 ? '' : id.slice(sepIndex);
+  const resolvedPathPart = resolveAliasedPath(pathPart, cwdReal);
+  return `${resolvedPathPart.split('\\').join('/')}${rest}`;
+};
+
 const runCheck = async ({ name, timeoutSeconds, command }) => {
   const cwd = process.cwd();
-  const repoPrefix = cwd.endsWith(path.sep) ? cwd : `${cwd}${path.sep}`;
-  const relativize = (value) => (value.includes(repoPrefix) ? value.split(repoPrefix).join('') : value);
+  const cwdReal = computeCwdReal(cwd);
+  const prefixCandidates = buildPrefixCandidates(cwd, cwdReal);
+  const relativize = (value) => {
+    for (const prefix of prefixCandidates) {
+      if (value.includes(prefix)) return value.split(prefix).join('');
+    }
+    return value;
+  };
 
   const commandRaw = relativize(command.join(' '));
   const commandField = findSecretValues(commandRaw).length > 0 ? REDACTED_LINE : commandRaw;
@@ -809,7 +943,12 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
       if (failedTests.length < FAILED_TESTS_MAX) {
         const id = extractFailedTestId(finalLine);
         if (id !== null) {
-          failedTests.push(id.length > FAILED_TEST_MAX_CHARS ? id.slice(0, FAILED_TEST_MAX_CHARS) : id);
+          const normalizedId = normalizeFailedTestId(id, cwdReal);
+          failedTests.push(
+            normalizedId.length > FAILED_TEST_MAX_CHARS
+              ? normalizedId.slice(0, FAILED_TEST_MAX_CHARS)
+              : normalizedId,
+          );
         }
       }
     };

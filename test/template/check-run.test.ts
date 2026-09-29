@@ -1,11 +1,11 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { GITHUB_PAT, pemHeader } from './secrets-fixtures.js';
-import { onlyOnWindows, skipUnless } from '../helpers/env.js';
+import { onlyOnWindows, skipUnless, symlinksAvailable } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -507,6 +507,136 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
       'test/e2e/uninstall.test.ts > uninstall > kept was removed',
     );
     expect(record!.data.failedTests.join(' ')).not.toContain(cwd);
+  });
+
+  // RP-290 — the relativize helper strips only the LITERAL
+  // `${process.cwd()}${path.sep}` prefix. windows-e2e and macos-e2e both
+  // showed this is not enough: on macOS the child's cwd is a REALPATH while a
+  // real runner can print the identity anchored to a SYMLINKED alias of that
+  // same directory (or vice versa) — two on-disk names for one directory,
+  // only one of which matches the literal prefix. The two cases below
+  // reproduce that mismatch on Linux, where it is otherwise unmeasured:
+  // `<tmp>/real` and a symlink `<tmp>/link -> real`, check-run itself spawned
+  // with `cwd` set to the LINK path (Node's own `process.cwd()` inside a
+  // spawned process resolves to the REALPATH regardless of which alias it was
+  // started under — verified directly against this repo's own Node/WSL
+  // before writing this pair), and a fixture runner that prints the failing
+  // test's identity anchored to one alias or the other. Both must relativize
+  // to the exact same repo-relative id — the alias the runner happened to
+  // print must never leak into the recorded evidence.
+  describe('a symlinked cwd — the recorded id must not depend on which alias the runner printed', () => {
+    it('strips the prefix when the runner prints the identity anchored to the REALPATH', async (ctx) => {
+      skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+      const parentDir = await freshCwd();
+      const realDir = path.join(parentDir, 'real');
+      const linkDir = path.join(parentDir, 'link');
+      await mkdir(realDir, { recursive: true });
+      await symlink(realDir, linkDir);
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(realDir, 'runner.mjs', RUNNER_SOURCE);
+      const resolvedReal = await realpath(linkDir);
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          ...runnerCommand(runnerPath, {
+            lines: [
+              ` FAIL  ${resolvedReal}/test/e2e/uninstall.test.ts > uninstall > kept was removed`,
+            ],
+            exitCode: 1,
+          }),
+        ],
+        { cwd: linkDir, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const record = await latestCheckResult(runDir);
+      expect(record!.data.failedTests).toContain(
+        'test/e2e/uninstall.test.ts > uninstall > kept was removed',
+      );
+    });
+
+    it('strips the prefix when the runner prints the identity anchored to the LINK path, not just the realpath', async (ctx) => {
+      skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+      const parentDir = await freshCwd();
+      const realDir = path.join(parentDir, 'real');
+      const linkDir = path.join(parentDir, 'link');
+      await mkdir(realDir, { recursive: true });
+      await symlink(realDir, linkDir);
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(realDir, 'runner.mjs', RUNNER_SOURCE);
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          ...runnerCommand(runnerPath, {
+            lines: [` FAIL  ${linkDir}/test/e2e/uninstall.test.ts > uninstall > kept was removed`],
+            exitCode: 1,
+          }),
+        ],
+        { cwd: linkDir, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const record = await latestCheckResult(runDir);
+      expect(record!.data.failedTests).toContain(
+        'test/e2e/uninstall.test.ts > uninstall > kept was removed',
+      );
+    });
+  });
+
+  // RP-290 — a Windows runner prints a backslash-separated identity (the
+  // literal-prefix strip above leaves the SEPARATORS untouched, only the
+  // matched prefix is removed), and `test\e2e\uninstall.test.ts > s > t`
+  // recorded verbatim is not the same identity as the forward-slash form
+  // every other platform records — a fresh diagnostician correlating this
+  // against the source tree, or against a duplicate failure reported from a
+  // different OS, would see two different strings for one test. Both cases
+  // below can be built and asserted on any platform (the runner's OWN output
+  // is fully hand-crafted, never the real OS path separator), which is what
+  // makes this reproducible off Windows too: a cwd-prefix immediately
+  // followed by backslash-separated segments, and a cwd-prefix followed by a
+  // forward slash and THEN backslash-separated segments (the shape a runner
+  // that joins its own root with `/` but reports sub-paths with `\` would
+  // produce).
+  describe('a backslash-separated identity under cwd is normalized to forward slashes', () => {
+    it('converts `<cwd>\\test\\e2e\\...` (backslash immediately after the stripped prefix) to forward slashes', async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          ...runnerCommand(runnerPath, {
+            lines: [` FAIL  ${cwd}\\test\\e2e\\uninstall.test.ts > s > t`],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const record = await latestCheckResult(runDir);
+      expect(record!.data.failedTests).toContain('test/e2e/uninstall.test.ts > s > t');
+    });
+
+    it('converts `<cwd>/test\\e2e\\...` (a forward slash then backslash-separated segments) to forward slashes', async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          ...runnerCommand(runnerPath, {
+            lines: [` FAIL  ${cwd}/test\\e2e\\uninstall.test.ts > s > t`],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+      const record = await latestCheckResult(runDir);
+      expect(record!.data.failedTests).toContain('test/e2e/uninstall.test.ts > s > t');
+    });
   });
 
   it('never invents a failedTests entry when the output carries no recognizable failure-shaped line', async () => {
