@@ -46,11 +46,38 @@ const stopFlagScript = path.join(
 // reports is therefore proof that ONE run leaked one — read the path and the
 // JSON it names before assuming it was this run when several are in flight on
 // one machine.
-export default async function setup(): Promise<() => Promise<void>> {
-  const { homesOf } = (await import(pathToFileURL(stopFlagScript).href)) as {
-    homesOf: (env?: NodeJS.ProcessEnv) => string[];
-  };
-  const homes = homesOf();
+//
+// RP-296: `test/template/rig-run-dir-scrub.test.ts` › "holds with the
+// variable exported around the whole vitest process" spawns a NESTED vitest
+// (env `RIG_SCRUB_TEST_CHILD=1`) reusing this repo's own vitest.config.ts, so
+// the nested run also executes this same global setup. That nested teardown
+// would snapshot the real homes at nested-setup time and compare again at
+// nested-teardown time — but the same real homes are shared with every OTHER
+// test file of the same outer `pnpm test`, several of which legitimately arm
+// and clear the flag while the nested child is alive, so the nested
+// snapshot/teardown pair races the outer run's own tests and can report a
+// leak that is not its own. The marker means "this is the nested child" — it
+// skips the audit entirely, because the outer run's own (unmarked) audit
+// already owns anything this child could leak. See
+// `unattended-flag-leak-audit-nested.test.ts` › "the nested RIG_SCRUB_TEST_CHILD
+// marker suppresses the RP-271 leak audit".
+export async function auditFor(
+  options: { env?: NodeJS.ProcessEnv; homes?: string[] } = {},
+): Promise<() => Promise<void>> {
+  const env = options.env ?? process.env;
+
+  if (env.RIG_SCRUB_TEST_CHILD) {
+    return async () => {};
+  }
+
+  let homes = options.homes;
+  if (homes === undefined) {
+    const { homesOf } = (await import(pathToFileURL(stopFlagScript).href)) as {
+      homesOf: (env?: NodeJS.ProcessEnv) => string[];
+    };
+    homes = homesOf();
+  }
+
   const snapshot = await snapshotUnattendedFlags(homes);
 
   return async () => {
@@ -64,4 +91,8 @@ export default async function setup(): Promise<() => Promise<void>> {
         'override (homesOf, stop-flag.mjs). Wrap the arm/act/clear sequence in try/finally.',
     );
   };
+}
+
+export default function setup(): Promise<() => Promise<void>> {
+  return auditFor();
 }
