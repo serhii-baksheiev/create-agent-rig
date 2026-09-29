@@ -123,7 +123,13 @@
 //     vitest failure summary (` FAIL  <id>`), a bullet (`× <id>`/`✗ <id>`), or
 //     TAP (`not ok N - <id>`) — never invented from other output; ›
 //     "never invents a failedTests entry when the output carries no
-//     recognizable failure-shaped line".
+//     recognizable failure-shaped line";
+//   - each of those three patterns is a single, unambiguous linear scan of
+//     the line, with no split it needs to try more than one way — see the
+//     patterns' own comment, above their definition, for why the earlier
+//     shape was quadratic in a long run of whitespace; › "finishes quickly
+//     for 20 FAIL-, ×- and not-ok-shaped lines each carrying a
+//     60,000-character whitespace run".
 //
 // --- Redaction and normalisation -------------------------------------------
 //
@@ -261,14 +267,41 @@ const FAILED_TEST_MAX_CHARS = 300;
 const LINE_MAX_BYTES = 64 * 1024;
 
 const WIN32 = process.platform === 'win32';
+const DARWIN = process.platform === 'darwin';
 
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
 const ANSI_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]/g;
 const stripAnsi = (text) => text.replace(ANSI_PATTERN, '');
 
-const FAIL_PATTERN = /^\s*FAIL\s+(.+?)\s*$/;
-const BULLET_PATTERN = /^\s*[×✗]\s+(.+?)\s*$/;
-const TAP_PATTERN = /^\s*not ok\s+\d+\s*-\s*(.+?)\s*$/;
+// RP-290 review round 3 (security-scanner, reproduced on Linux/WSL) — these
+// three used to be `/^\s*FAIL\s+(.+?)\s*$/`-shaped: a non-greedy capture
+// followed by a trailing `\s*$`, where the capture, the preceding `\s+`(/`\s*`)
+// and the trailing `\s*` all accept the SAME character (space) with no fixed
+// boundary between them. A line carrying a long run of spaces that the regex
+// ultimately fails to match in full (this project's own fixture: `FAIL a` +
+// 60,000 spaces + a bare `\r` + `y`, where `y` is not whitespace and `.`
+// does not match `\r` without `s`) makes the engine retry every split of that
+// run between the three quantifiers before giving up — quadratic in the run's
+// length, measured at 26–56s for a single 60,000-space line (module header's
+// "Bounds"). Each pattern below removes the ambiguity instead of budgeting
+// around it: `\S` (a single, non-quantified character) marks where the
+// captured identity starts, so there is exactly one way to split `\s+`
+// (or the TAP pattern's `\s*-\s*`) from the capture — no run of whitespace is
+// ever tried more than one way — and the capture itself is `\S.*` with the
+// `s` flag, a single greedy scan straight to end-of-string with nothing left
+// to backtrack into. The TAP pattern's `not ok N` + no dash at all (the
+// fixture's own `not ok 1 - a` + 60,000 spaces case, minus the dash) still
+// costs only a single linear scan of the run — `\s*-\s*` has only ONE
+// variable-length group active at a time (the second is never reached until
+// the literal `-` is found), never two overlapping ones. Trailing whitespace
+// that used to be excluded by the old pattern's own trailing `\s*$` is
+// trimmed instead in `extractFailedTestId`, below. See `check-run.test.ts`
+// (absent in a generated rig) › "finishes quickly for 20 FAIL-, ×- and
+// not-ok-shaped lines each carrying a 60,000-character whitespace run" and ›
+// "keeps extracting a failing-test identity with trailing whitespace".
+const FAIL_PATTERN = /^\s*FAIL\s+(\S.*)$/s;
+const BULLET_PATTERN = /^\s*[×✗]\s+(\S.*)$/s;
+const TAP_PATTERN = /^\s*not ok\s+\d+\s*-\s*(\S.*)$/s;
 
 // The BEGIN-line shape a private-key block starts with — reused from
 // `lib/secrets.mjs`'s own vocabulary, never a hand-copied second pattern.
@@ -280,14 +313,20 @@ const PRIVATE_KEY_HEADER_PATTERN = SECRET_VALUE_PATTERNS.find(
 // state machine that needs it.
 const PRIVATE_KEY_END_PATTERN = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
 
-/** A failing test identity from one already-processed line, or `null`. */
+/**
+ * A failing test identity from one already-processed line, or `null`. Each
+ * pattern's capture is a greedy `\S.*` (see the patterns' own comment) that
+ * no longer excludes trailing whitespace the way the old trailing `\s*$` did
+ * — `trimEnd()` here restores that, cheaply, on the capture alone rather
+ * than reintroducing a trailing quantifier into the pattern itself.
+ */
 const extractFailedTestId = (line) => {
   const fail = FAIL_PATTERN.exec(line);
-  if (fail) return fail[1];
+  if (fail) return fail[1].trimEnd();
   const bullet = BULLET_PATTERN.exec(line);
-  if (bullet) return bullet[1];
+  if (bullet) return bullet[1].trimEnd();
   const tap = TAP_PATTERN.exec(line);
-  if (tap) return tap[1];
+  if (tap) return tap[1].trimEnd();
   return null;
 };
 
@@ -791,8 +830,18 @@ const computeCwdReal = (cwd) => {
 // under `/private/...` (what `computeCwdReal` returns there) may still be
 // printed by a checked command using the OS's own short alias instead. This
 // is a STRING rule over this process's own, already-computed `cwdReal` —
-// never a new filesystem probe — so it costs nothing extra to apply
-// unconditionally.
+// never a new filesystem probe.
+//
+// security-scanner, reproduced on Linux (RP-290 round 3) — this used to be
+// applied unconditionally, on any platform whose cwdReal happened to start
+// with one of these prefixes. On Linux `/private/var` is an ordinary,
+// unrelated directory — nothing makes it a symlink alias of `/var` the way
+// macOS's own convention does — so stripping `/private` there manufactures a
+// prefix candidate for a DIFFERENT directory, and a value genuinely anchored
+// under a real `/private/var/...` tree would be misrelativized against
+// `/var/...` instead. `buildPrefixCandidates` now only adds the stripped
+// spelling when `DARWIN` is true, where the convention this block encodes
+// actually holds.
 const MACOS_PRIVATE_PREFIXES = ['/private/var/', '/private/tmp/', '/private/etc/'];
 
 /**
@@ -808,11 +857,13 @@ const MACOS_PRIVATE_PREFIXES = ['/private/var/', '/private/tmp/', '/private/etc/
  * `cwdReal` — an unrelated inherited PWD (the ordinary case for a process
  * that never `cd`-ed) must never leak in as a candidate, while a shell that
  * DID `cd` through a symlinked alias before invoking this script leaves
- * exactly that agreement, and only that agreement, behind; and, when
- * `cwdReal` sits under macOS's own `/private/var`, `/private/tmp` or
- * `/private/etc`, the same path with the leading `/private` removed is added
- * too (`MACOS_PRIVATE_PREFIXES` above — a string rule, not a probe). Every
- * candidate is added with BOTH a `/` and a `\` trailing separator, because a
+ * exactly that agreement, and only that agreement, behind; and, ONLY on
+ * macOS (`DARWIN`) and only when `cwdReal` sits under its own `/private/var`,
+ * `/private/tmp` or `/private/etc`, the same path with the leading
+ * `/private` removed is added too (`MACOS_PRIVATE_PREFIXES` above — a string
+ * rule, not a probe, and its own comment states why the platform gate
+ * matters: the identical prefix names an unrelated, ordinary directory on
+ * Linux). Every candidate is added with BOTH a `/` and a `\` trailing separator, because a
  * runner may print `<cwd>\...` even when cwd itself has no backslash in it at
  * all — see › "a backslash-separated identity under cwd is normalized to
  * forward slashes". Sorted longest first, so a more specific (often longer)
@@ -836,9 +887,11 @@ const buildPrefixCandidates = (cwd, cwdReal) => {
   const bases = new Set([cwd]);
   if (cwdReal !== null) {
     bases.add(cwdReal);
-    for (const privatePrefix of MACOS_PRIVATE_PREFIXES) {
-      if (cwdReal.startsWith(privatePrefix)) {
-        bases.add(cwdReal.slice('/private'.length));
+    if (DARWIN) {
+      for (const privatePrefix of MACOS_PRIVATE_PREFIXES) {
+        if (cwdReal.startsWith(privatePrefix)) {
+          bases.add(cwdReal.slice('/private'.length));
+        }
       }
     }
   }

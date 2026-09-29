@@ -459,6 +459,38 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
     expect(record!.data.failedTests).toContain('test/foo.test.ts > suite > another thing');
   });
 
+  // RP-290 security-scanner — the fix for the quadratic-backtracking shape
+  // below ("bounds the cost of failure-summary-shaped lines with a long
+  // whitespace run") is expected to trim trailing whitespace with a plain
+  // `trimEnd()` call rather than the `\s*$` regex anchor it replaces. This
+  // pins the behaviour that call must reproduce for all three failure-shaped
+  // prefixes, so it stays green across that change.
+  it('keeps extracting a failing-test identity with trailing whitespace', async () => {
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, {
+          lines: [
+            ' FAIL  test/a.test.ts > s > t   ',
+            '  × test/b.test.ts > u   ',
+            'not ok 3 - c   ',
+          ],
+          exitCode: 1,
+        }),
+      ],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+    const record = await latestCheckResult(runDir);
+    expect(record!.data.failedTests).toContain('test/a.test.ts > s > t');
+    expect(record!.data.failedTests).toContain('test/b.test.ts > u');
+    expect(record!.data.failedTests).toContain('c');
+  });
+
   it('strips ANSI escape codes from the identity and the tail', async () => {
     const cwd = await freshCwd();
     const runDir = await freshRunDir();
@@ -712,6 +744,81 @@ process.exit(Number(config.exitCode ?? 0));
         for (const entry of record!.data.failedTests) {
           expect(entry.length).toBeLessThanOrEqual(300);
         }
+      },
+    );
+  });
+
+  /**
+   * Builds, INSIDE the child (same E2BIG reason `DEEP_PATH_RUNNER_SOURCE`
+   * above is built there rather than passed through argv), `count` lines of
+   * each of the three failure-shaped prefixes `FAIL_PATTERN`/
+   * `BULLET_PATTERN`/`TAP_PATTERN` recognize — ` FAIL `, `×`, `not ok N -` —
+   * each carrying a `padLength`-character run of ordinary spaces, then a `\r`,
+   * then a single non-whitespace tail character. security-scanner (RP-290,
+   * measured at 99adf5b): all three patterns end in a lazy `(.+?)` followed
+   * by `\s*$`; `.` does not match a line terminator, so the lazy group can
+   * never expand past the `\r` — the match never succeeds at all — and the
+   * two-sided backtracking between the greedy `\s*` and the lazy group's
+   * incremental growth costs time quadratic in `padLength` trying anyway, so
+   * the `FAILED_TESTS_MAX` cap never gets a chance to bound the cost.
+   */
+  const WHITESPACE_RUN_RUNNER_SOURCE = `
+const config = JSON.parse(process.argv[2] ?? '{}');
+const padLength = Number(config.padLength ?? 0);
+const count = Number(config.count ?? 0);
+const pad = ' '.repeat(padLength);
+for (let i = 0; i < count; i += 1) {
+  process.stdout.write('FAIL a' + pad + '\\ry\\n');
+}
+for (let i = 0; i < count; i += 1) {
+  process.stdout.write('× a' + pad + '\\ry\\n');
+}
+for (let i = 0; i < count; i += 1) {
+  process.stdout.write('not ok 1 - a' + pad + '\\ry\\n');
+}
+process.exit(Number(config.exitCode ?? 1));
+`;
+
+  describe('bounds the cost of failure-summary-shaped lines with a long whitespace run', () => {
+    it(
+      'finishes quickly for 20 FAIL-, ×- and not-ok-shaped lines each carrying a 60,000-character whitespace run',
+      { timeout: 180_000 },
+      async () => {
+        const cwd = await freshCwd();
+        const runDir = await freshRunDir();
+        const runnerPath = await writeFixture(
+          cwd,
+          'whitespace-run-runner.mjs',
+          WHITESPACE_RUN_RUNNER_SOURCE,
+        );
+        const start = Date.now();
+        await runCheckRun(
+          [
+            '--name',
+            'unit',
+            '--',
+            process.execPath,
+            runnerPath,
+            JSON.stringify({ padLength: 60_000, count: 20, exitCode: 1 }),
+          ],
+          { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+        );
+        const elapsedMs = Date.now() - start;
+        // Measured directly against 99adf5b (Linux, WSL): a single ` FAIL  a`
+        // + 60,000 spaces + `\r` + `y` line costs ~1.4s against FAIL_PATTERN
+        // alone, and 20 repetitions of just one of the three shapes already
+        // cost 26s (FAIL), 27s (×) and 56s (not-ok) run standalone — this
+        // fixture carries all three (60 lines total), so the unfixed code
+        // costs on the order of two minutes end to end here; an 8s bound is
+        // not a close call either way.
+        expect(elapsedMs).toBeLessThan(8_000);
+
+        // Non-vacuity: this must still be an ordinary failing run that
+        // finished, not a crash — the timing bound above proves nothing if
+        // check-run never got to process the output at all.
+        const record = await latestCheckResult(runDir);
+        expect(record, 'no check-result event was recorded').toBeDefined();
+        expect(record!.data.outcome).toBe('fail');
       },
     );
   });
