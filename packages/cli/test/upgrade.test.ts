@@ -2113,18 +2113,24 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // would otherwise give (105/62 manifest entries, either way).
   // RP-290: `.claude/scripts/check-run.mjs` joined the process layer, so both
   // figures moved by one (104→105, 61→62; 106/63 entries counting `kept[]`).
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 105 manifest entries to 62', async () => {
+  // RP-247: `.claude/hooks/lib/canonical-path.mjs` (the extracted, testable
+  // `canonicalPath` helper `guard-rulebook.mjs` now imports) joined the
+  // process layer too, so both figures moved by one again (105→106, 62→63)
+  // — landing, by coincidence, on the exact pair RP-290's comment names for
+  // "counting `kept[]`": that was a different count (`kept[]` still is not
+  // counted here) that happened to share these two numbers.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 106 manifest entries to 63', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(105);
+    expect(Object.keys(before!.files).length).toBe(106);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(62);
+    expect(Object.keys(after!.files).length).toBe(63);
   });
 });
 

@@ -21,6 +21,7 @@
     ".claude/hooks/guard-subagent-model.mjs",
     ".claude/hooks/warn-subagent-routing.mjs",
     ".claude/hooks/lib/edit-input.mjs",
+    ".claude/hooks/lib/canonical-path.mjs",
     ".claude/hooks/lib/hook-input.mjs",
     ".claude/skills/check-premises/SKILL.md",
     ".claude/skills/worktree-task/SKILL.md",

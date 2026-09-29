@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { runNodeTimed } from '../helpers/child-timing.js';
 import { CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
 
 /**
@@ -690,5 +691,162 @@ describe('editFragments: normalisePath resolves a Win32 verbatim/device path the
     ])('%s: %s resolves to %s', async (_label, input, expected) => {
       expect(await filePathOf(input)).toBe(expected);
     });
+  });
+});
+
+/**
+ * RP-247 — security-scanner finding on PR #302, pre-existing (not introduced
+ * by any RP-244 round above). `normalisePath` converts every backslash to a
+ * forward slash and then runs `path.posix.normalize` over the whole
+ * remaining string — including a long RELATIVE `..` run that carries no
+ * verbatim/UNC/drive-root prefix at all, so none of the RP-244 clamp-at-root
+ * branches above apply to it, and the DRIVE-RELATIVE branch
+ * (`clampAtDriveRoot`'s `DRIVE_RELATIVE_PREFIX` case) normalises its
+ * remainder the same unclamped way. `path.posix.normalize`'s handling of a
+ * long run of `../` segments is quadratic in the number of segments, and
+ * every edit surface (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`) feeds its
+ * path straight into it with no cap at all. A killed hook is an ALLOW
+ * (`.claude/rules/invariants.md`, "fail-open guards"), so a `file_path` that
+ * is a crafted `../` run of this shape blocks the whole synchronous hook
+ * process — every guard that reads `editFragments`, not only
+ * `guard-rulebook` — for as long as `normalisePath` takes to return.
+ *
+ * Measured on this branch (WSL/ext4; the ticket's own NTFS numbers are
+ * worse — ~0.8 s at 128 KB, >90 s at 1 MB):
+ *
+ *   ~96 KB  (32,768 segments)   ~240–260 ms
+ *   ~128 KB (43,690 segments)   ~430–500 ms
+ *   ~160 KB (54,613 segments)   ~2.1 s
+ *   ~180 KB (61,440 segments)   ~4.2 s
+ *   ~200 KB (68,266 segments)   ~4.3–8.0 s   (all three forms below)
+ *   ~220 KB (75,093 segments)   ~7.5 s
+ *   ~256 KB (87,381 segments)   ~9.4–11.9 s
+ *
+ * No cap exists on `normalisePath`'s input today — unlike every `MAX_*`
+ * budget elsewhere in this file that bounds `apply_patch` inspection. The
+ * planned fix (RP-247) caps the input before normalising, the same shape as
+ * `MAX_PATCH_PATH_COMPONENTS`: a bound crossed refuses the edit rather than
+ * doing unbounded work, naming the limit and a split-and-retry remedy
+ * (`.claude/rules/invariants.md`, "the remedy belongs to the refusal").
+ */
+describe('editFragments: normalisePath does bounded work over a relative `..` run, instead of growing without bound (RP-247)', () => {
+  const BOUND_MS = 2000;
+  // ~200 KB of `../`-shaped segments: comfortably past every measurement
+  // above 2s taken while drafting these tests, and comfortably under this
+  // file's 15s testTimeout (vitest.config.ts) even at the slowest of them.
+  const SEGMENT_COUNT = 68_266;
+
+  const writePayload = (filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'Write',
+    tool_input: { file_path: filePath, content: 'x' },
+  });
+
+  const timedFragment = async (filePath: string) => {
+    const { editFragments } = await load();
+    const start = process.hrtime.bigint();
+    const [fragment] = editFragments(writePayload(filePath));
+    const elapsedMs = Number(process.hrtime.bigint() - start) / 1e6;
+    return { fragment, elapsedMs };
+  };
+
+  it.each([
+    ['a POSIX-style relative run', '../'.repeat(SEGMENT_COUNT) + 'x'],
+    ['a Windows-style relative run', '..\\'.repeat(SEGMENT_COUNT) + 'x'],
+    ['a drive-relative run', 'C:' + '..\\'.repeat(SEGMENT_COUNT) + 'x'],
+  ])(
+    '%s of ~200 KB is refused quickly, naming the limit and a split-and-retry remedy, instead of taking seconds to normalise',
+    async (_label, filePath) => {
+      const { fragment, elapsedMs } = await timedFragment(filePath);
+
+      expect(
+        elapsedMs,
+        `normalisePath took ${elapsedMs.toFixed(1)}ms for a ~200 KB relative ".." run — it must be capped, not run to completion`,
+      ).toBeLessThan(BOUND_MS);
+      expect(
+        fragment?.inspectionRefusal,
+        'no refusal at all — the whole string was normalised instead',
+      ).toBeTruthy();
+      expect(fragment?.inspectionRefusal).toMatch(/limit/i);
+      expect(
+        fragment?.remedy,
+        'a bound crossed must carry a remedy, same as MAX_PATCH_PATH_COMPONENTS above',
+      ).toBeTruthy();
+      expect(fragment?.remedy).toMatch(/split|smaller/i);
+    },
+  );
+
+  describe('ordinary, shallow relative `..` spellings are unchanged from today', () => {
+    it.each([
+      ['a few `..` segments, POSIX form', 'a/b/../../c', 'c'],
+      ['a few `..` segments, Windows form', '..\\..\\x', '../../x'],
+    ])('%s: %s stays %s', async (_label, input, expected) => {
+      const { fragment } = await timedFragment(input);
+      expect(fragment?.filePath).toBe(expected);
+    });
+  });
+});
+
+describe('the guards block a huge relative `..` run before it can do unbounded work (RP-247)', () => {
+  it('guard-secret-file refuses a Write whose file_path is a ~200 KB relative `..` run, quickly', async () => {
+    const filePath = '../'.repeat(68_266) + 'x';
+    // In-child measurement (RP-158): the assertion below bounds the GUARD's
+    // own work, not the parent's wall clock around spawning it — under
+    // contention the latter also counts scheduler queueing that has nothing
+    // to do with the guard. See child-timing.test.ts for the contract.
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-secret-file.mjs'), {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: filePath, content: 'x' },
+      }),
+    });
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.elapsedMs).toBeLessThan(5000);
+  });
+});
+
+/**
+ * RP-247 round 2 — security-scanner HOLD on PR #350, head `3a7379c`, and the
+ * decision that followed it. The round-2 diagnosis first read as "three more
+ * of `normalisePath`'s branches (`DRIVE_ROOT_PREFIX`, the verbatim-drive
+ * branch, the UNC/verbatim-UNC branch) build their result with no component
+ * bound at all" and proposed capping them the same way the plain-relative
+ * and `DRIVE_RELATIVE_PREFIX` branches already are. That cap was built and
+ * broke three RP-244 tests, which pin those exact branches clamping a
+ * 200,000-segment `../` run cleanly — and security then measured all three
+ * branches as LINEAR, not quadratic: 200k components ran in 159–331 ms
+ * through both hooks. So capping them was never a safety requirement; it is
+ * NOT done, and the decision is recorded here rather than only in a commit
+ * message, because this file is the one that would otherwise "explain" a cap
+ * that no longer exists.
+ *
+ * The actual bypass on PR #350 was `guard-rulebook`'s `canonicalPath` failing
+ * OPEN once its own bound was crossed — pinned separately in
+ * `guard-rulebook.test.ts` ("canonicalPath fails closed …", RP-247 round 2),
+ * including the native-Win32 security-scanner repro. That fix is what closes
+ * the bypass; nothing here needs to.
+ *
+ * What stays pinned in THIS file is round 1's own behaviour: a plain POSIX
+ * absolute path with a huge component count is refused by `normalisePath`'s
+ * existing bound check on its fallback branch — unrelated to the
+ * rejected cap above, and already green before this revision.
+ */
+describe('editFragments: a plain POSIX absolute path with a huge component count is refused (RP-247 round 1, POSIX fallback branch)', () => {
+  it('a POSIX absolute path of 1000 components is refused, naming the limit and a split-and-retry remedy', async () => {
+    const { editFragments } = await load();
+    const filePath = '/abs/' + 'x/'.repeat(1000) + 'evil.md';
+    const [fragment] = editFragments({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: filePath, content: 'x' },
+    });
+
+    expect(fragment?.inspectionRefusal).toBeTruthy();
+    expect(fragment?.inspectionRefusal).toMatch(/component/i);
+    expect(fragment?.inspectionRefusal).toMatch(/limit/i);
+    expect(fragment?.remedy).toBeTruthy();
+    expect(fragment?.remedy).toMatch(/split|smaller/i);
   });
 });

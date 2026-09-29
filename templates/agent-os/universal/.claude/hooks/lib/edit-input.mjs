@@ -51,7 +51,11 @@ const MAX_SPLICE_OPERATIONS = 1_000;
 const MAX_PATCH_SECTIONS = 128;
 /** A MultiEdit is capped before it is mapped — bounded work, never a spread of input. */
 const MAX_MULTI_EDITS = 256;
-const MAX_PATCH_PATH_COMPONENTS = 512;
+// RP-247: exported — `guard-rulebook.mjs`'s `canonicalPath` mirrors this same
+// bound rather than carrying its own number, so the two guards agree on one
+// figure instead of two that can drift apart (`.claude/rules/invariants.md`,
+// "one mechanism, one implementation").
+export const MAX_PATCH_PATH_COMPONENTS = 512;
 
 /**
  * The surfaces this normaliser answers for. A tool outside the set is one the
@@ -89,6 +93,50 @@ const unreadableToolInput = (toolName) =>
         appliesToAll: true,
       };
 
+/**
+ * RP-247: counts path separators in one forward pass over the raw string,
+ * bailing out the moment the count would exceed the bound — bounded work
+ * regardless of how long the remainder of the string is, rather than first
+ * splitting the whole input into an array (or handing it to
+ * `path.posix.normalize`, whose handling of a long run of `..` segments is
+ * quadratic) before ever checking its size. `MAX_PATCH_PATH_COMPONENTS` is
+ * reused rather than a second number: a real path (Win32 verbatim
+ * ≤32,767 characters, Linux `PATH_MAX` 4096) never comes close to it, so an
+ * ordinary edit is unaffected.
+ */
+export function exceedsPathComponentBound(raw) {
+  let count = 1;
+  for (let i = 0; i < raw.length; i += 1) {
+    const ch = raw.charCodeAt(i);
+    if (ch === 47 /* '/' */ || ch === 92 /* '\\' */) {
+      count += 1;
+      if (count > MAX_PATCH_PATH_COMPONENTS) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * The one refusal for a `file_path`/`notebook_path` whose component count
+ * crosses `MAX_PATCH_PATH_COMPONENTS` before it ever reaches
+ * `path.posix.normalize` — shared by every direct edit surface below, the
+ * same way `unreadableToolInput` is (RP-247). Exported: `guard-rulebook.mjs`
+ * reuses its `inspectionRefusal`/`remedy` wording for the component bound
+ * `canonical-path.mjs` enforces on a RESOLVED path, rather than hand-writing
+ * a second copy of the same sentence — one spelling of one refusal
+ * (`.claude/rules/invariants.md`, "one mechanism, one implementation";
+ * RP-247 round 3).
+ */
+export function pathComponentOverflowFragment() {
+  return {
+    filePath: '',
+    fragment: '',
+    inspectionRefusal: `path component count exceeds the ${MAX_PATCH_PATH_COMPONENTS}-component inspection limit`,
+    remedy: 'Split it into a smaller edit and retry.',
+    appliesToAll: true,
+  };
+}
+
 export function editFragments(input) {
   const toolName = input?.tool_name;
   const rawToolInput = input?.tool_input;
@@ -121,9 +169,11 @@ export function editFragments(input) {
   }
   const toolInput = rawToolInput ?? {};
   if (toolName === 'Write' || toolName === 'Edit') {
+    const filePath = normalisePath(toolInput.file_path);
+    if (filePath === null) return [pathComponentOverflowFragment()];
     return [
       {
-        filePath: normalisePath(toolInput.file_path),
+        filePath,
         fragment: String(
           (toolName === 'Write' ? toolInput.content : toolInput.new_string) ?? '',
         ),
@@ -138,6 +188,7 @@ export function editFragments(input) {
   if (toolName === 'MultiEdit') {
     if (!Array.isArray(toolInput.edits)) return [];
     const filePath = normalisePath(toolInput.file_path);
+    if (filePath === null) return [pathComponentOverflowFragment()];
     if (toolInput.edits.length > MAX_MULTI_EDITS) {
       return [
         {
@@ -154,9 +205,11 @@ export function editFragments(input) {
     }));
   }
   if (toolName === 'NotebookEdit') {
+    const filePath = normalisePath(toolInput.notebook_path);
+    if (filePath === null) return [pathComponentOverflowFragment()];
     return [
       {
-        filePath: normalisePath(toolInput.notebook_path),
+        filePath,
         fragment: String(toolInput.new_source ?? ''),
       },
     ];
@@ -601,20 +654,48 @@ const DRIVE_RELATIVE_PREFIX = /^[A-Za-z]:(?!\/)/;
 // at — keeps a `..` in the remainder from ever reaching back far enough to
 // cancel the marker itself; an empty remainder (a bare `C:`) is left as-is
 // rather than turned into `C:.`, unchanged from before this round.
+// RP-247 round 2: security-scanner measured that a huge component count
+// reaching `guard-rulebook`'s `canonicalPath` uncapped — not the absolute
+// branches here being uncapped — was the actual vulnerability (PR #350: a
+// native-Windows junction alias, and independently an ordinary short
+// `file_path` resolved against a merely deep `cwd`, both bypassed the
+// rulebook because `canonicalPath` failed OPEN past its own bound). That is
+// fixed at the source, in `guard-rulebook.mjs`'s `canonicalPath`: past the
+// bound it now returns `null`, never the raw path, and `guard-rulebook`
+// refuses the edit while armed. So the bound here stays where round 1 put
+// it — only on the two RELATIVE `path.posix.normalize` calls, the plain
+// fallback below and DRIVE_RELATIVE_PREFIX — because those are the only
+// calls that are actually quadratic. DRIVE_ROOT_PREFIX just below, and the
+// verbatim/UNC branch in `normalisePath`, normalise an ABSOLUTE string
+// (one that starts with `/`), which clamps a `..` run at the root in one
+// linear pass — measured at 200,000 segments by the RP-244 tests above —
+// so capping them here would only refuse a spelling `canonicalPath` can
+// already resolve (or safely refuse) on its own, for no performance reason.
 function clampAtDriveRoot(slashed) {
   if (DRIVE_ROOT_PREFIX.test(slashed)) {
     return slashed.slice(0, 2) + path.posix.normalize(slashed.slice(2));
   }
   if (DRIVE_RELATIVE_PREFIX.test(slashed)) {
     const remainder = slashed.slice(2);
-    return remainder === '' ? slashed : slashed.slice(0, 2) + path.posix.normalize(remainder);
+    if (remainder === '') return slashed;
+    if (exceedsPathComponentBound(remainder)) return null;
+    return slashed.slice(0, 2) + path.posix.normalize(remainder);
   }
+  if (exceedsPathComponentBound(slashed)) return null;
   return path.posix.normalize(slashed);
 }
 
 function normalisePath(value) {
   const raw = String(value ?? '').trim();
   if (raw === '') return '';
+  // `null` here is a sentinel distinct from every valid return of this
+  // function (including `''`) — `clampAtDriveRoot` returns it once its own
+  // bound is crossed (RP-247); every caller below checks for it and returns
+  // `pathComponentOverflowFragment()` instead of a normal fragment. A path
+  // that crosses the bound only after `guard-rulebook`'s own `resolve()`
+  // (a relative `file_path` combined with a deep `cwd`, say) is not caught
+  // here at all — that is `canonicalPath`'s job, not this function's
+  // (RP-247 round 2).
   const driveMatch = WIN32_VERBATIM_DRIVE_PREFIX.exec(raw);
   if (driveMatch) {
     const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
@@ -636,6 +717,14 @@ function canonicalPatchPath(value) {
   const raw = String(value ?? '').replaceAll('\\', '/');
   const normalised = normalisePath(raw);
   if (
+    // RP-247: `normalisePath` returns `null`, not a string, once its own
+    // component bound is crossed — reached here only in principle, since
+    // every apply_patch path already spent `overPathComponentBudget` (the
+    // per-patch aggregate, same bound) before `repositoryPatchPath` ever
+    // calls this function; kept as the same "cannot safely resolve" outcome
+    // the other conditions below already produce, so a future caller cannot
+    // reintroduce the unbounded case by skipping that aggregate check.
+    normalised === null ||
     normalised === '' ||
     raw.startsWith('/') ||
     raw.startsWith('//') ||

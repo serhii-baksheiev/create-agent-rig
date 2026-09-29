@@ -492,7 +492,22 @@ describe('create-agent-rig uninstall', () => {
   // entries the count is defined to mean. The fix subtracts the `kept` paths
   // as well — the formula is now `preserved.length - unverifiedCount -
   // keptCount` (`packages/cli/src/index.ts`) — so the number this test pins
-  // stays 15.
+  // stayed 15, until RP-247 below.
+  //
+  // RP-247: `guard-rulebook.mjs` — one of the 7 direct hooks — now imports a
+  // NEW file, `.claude/hooks/lib/canonical-path.mjs` (the extracted,
+  // testable `canonicalPath` helper), pushing the real-import count from 6
+  // to 7 (alongside `edit-input.mjs`, `hook-input.mjs`,
+  // `unattended-flag.mjs`, `git-env.mjs`, `stop-flag.mjs`,
+  // `lib/shell-tools.mjs`) — measured against the built CLI: the per-path
+  // line for `.claude/hooks/lib/canonical-path.mjs` reads "imported by
+  // .claude/hooks/guard-rulebook.mjs, itself needed …", the genuinely-traced
+  // wording, never the "protected because" precaution one. 7 direct hooks +
+  // 7 real imports + 2 non-dependency entries (`settings.json`,
+  // `guard-secret-file.mjs`) = 16. The precaution-only count is unaffected
+  // at 11: `canonical-path.mjs` did not exist before, so it moves from
+  // "nothing to count" straight to the traced bucket, never through the
+  // precaution one.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -514,7 +529,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(15 genuinely referenced or imported; 11 kept only as a precaution',
+        '(16 genuinely referenced or imported; 11 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',
