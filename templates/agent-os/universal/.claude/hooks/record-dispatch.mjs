@@ -44,7 +44,7 @@
 // checked (`CLAUDE_PROJECT_DIR`, or `cwd`, sanitised through `CONTROL_CHARS_RE`
 // — a Unicode-general-category-based class, not an explicit range list; see
 // that constant's own doc comment for exactly what it strips —
-// so the line stays one line and carries no invisible-rendering character) —
+// so the line stays one line) —
 // never the other checkout's `runDir` or flag content, and never more than
 // that one line. Still exits 0, stdout stays empty, and nothing is written to
 // any journal; any error inside this probe is swallowed, exactly like every
@@ -549,7 +549,7 @@ const MAX_NOTICE_LENGTH = 512;
  *     (`\x7f`), and C1 control (`\x80`-`\x9f`, including CSI `\x9b`);
  *   `\p{Cf}` — format characters: ALM, the zero-width range U+200B-U+200F,
  *     the bidi-embedding/override range U+202A-U+202E, the word-joiner/
- *     isolate range U+2060-U+2069, BOM (U+FEFF), SOFT HYPHEN (U+00AD), and
+ *     isolate range U+2060-U+2064 and U+2066-U+2069, BOM (U+FEFF), SOFT HYPHEN (U+00AD), and
  *     the assigned "Trojan Source" tag characters (U+E0001, U+E0020-U+E007F);
  *   `\p{Zl}`/`\p{Zp}` — the Unicode line/paragraph separators (U+2028/
  *     U+2029);
