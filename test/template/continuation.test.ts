@@ -1540,6 +1540,90 @@ describe('RP-297 — free-text path token trigger is shape-based, not any forwar
     });
   });
 
+  // RP-297 post-cap fix — gate rounds 3/3 spent, operator act recorded; both
+  // round-3 reviewers held on the SAME point in the fix that landed for round
+  // 3's "first segment only" requirement above. `HOME_ROOT_SEGMENT` is now
+  // `/(?:^[^\w/\\]*)(users|home|wsl\.localhost|wsl\$)[\\/]/i` — anchored to
+  // the very start of the token, with only a run of NON-WORD, non-slash
+  // characters allowed before the root name. That over-corrects: the prefix
+  // class excludes ordinary letters, so the MOMENT a word character (a flag
+  // name, a label, a drive letter, a lone variable name) sits in front of the
+  // root — `--dir=Users/alice/proj`, `path:home/alice/x`, `C:Users/alice` —
+  // the anchor can never reach the root at all, and the token survives
+  // verbatim with `alice` intact. This is the same class of leak round 2 and
+  // round 3 each fixed for the tilde/scheme boundary checks (a real prefix a
+  // person types under pressure defeats an anchor that only tolerates
+  // punctuation) — it is the home-root check's turn.
+  describe('RP-297 round 4 — a word-bearing prefix before the home root must not defeat the (now start-anchored) home-root check', () => {
+    const leaks: Array<[string, string]> = [
+      ['a tilde-less --dir= flag', '--dir=Users/alice/proj'],
+      ['a --cwd= flag', '--cwd=home/alice/proj'],
+      ['a path: label', 'path:home/alice/x'],
+      ['a label: prefix', 'label:Users/alice/x'],
+      ['a bare variable assignment', 'x=Users/alice'],
+      ['a comma-joined leading token', 'a,Users/alice/proj'],
+      ['a parenthesised comma-joined token', '(x,home/alice)'],
+      ['a cwd= flag in front of a wsl.localhost root', 'cwd=wsl.localhost/Ubuntu/home/alice'],
+      ['a dotted single-letter prefix', 'x.Users/alice'],
+      ['a drive-letter-shaped prefix with no separator', 'C:Users/alice'],
+      ['a file: label', 'file:Users/alice/x'],
+    ];
+
+    for (const [label, token] of leaks) {
+      it(`redacts ${label} (${token}), not just a punctuation-only prefix`, async () => {
+        const { composeNote } = (await load('continuation.mjs')) as {
+          composeNote: (input: Record<string, unknown>) => string;
+        };
+        const diagnosis = `at ${token} y`;
+        const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+        const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+        expect(line).not.toMatch(/alice/);
+      });
+    }
+  });
+
+  describe('RP-297 round 4 — survival guards: a home-root NAME that is not actually the first path segment must not be over-redacted', () => {
+    it('leaves a home root buried past the first two segments untouched (a/b/home/c)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at a/b/home/c y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a file named exactly "Users.ts" untouched — no path separator follows the root name (src/Users.ts)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at src/Users.ts y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a directory that merely STARTS WITH "users" untouched, not a whole segment (usersvc/x.ts)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at usersvc/x.ts y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+
+    it('leaves a directory that merely STARTS WITH "home" untouched, not a whole segment (homepage/a.md)', async () => {
+      const { composeNote } = (await load('continuation.mjs')) as {
+        composeNote: (input: Record<string, unknown>) => string;
+      };
+      const diagnosis = 'at homepage/a.md y';
+      const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+      const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+      expect(line).toBe(`diagnosis: ${diagnosis}`);
+    });
+  });
+
   describe('RP-297 round 3 — pinning comment claims that had no test of their own', () => {
     it('leaves an ordinary identifier containing a tilde untouched (foo~bar)', async () => {
       const { composeNote } = (await load('continuation.mjs')) as {
