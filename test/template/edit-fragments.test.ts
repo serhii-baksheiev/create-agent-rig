@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { runNodeTimed } from '../helpers/child-timing.js';
 import { CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
 
 /**
@@ -789,32 +790,63 @@ describe('editFragments: normalisePath does bounded work over a relative `..` ru
 describe('the guards block a huge relative `..` run before it can do unbounded work (RP-247)', () => {
   it('guard-secret-file refuses a Write whose file_path is a ~200 KB relative `..` run, quickly', async () => {
     const filePath = '../'.repeat(68_266) + 'x';
-    const start = Date.now();
-    const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
-      const child = execFile(
-        process.execPath,
-        [path.join(hooksDir, 'guard-secret-file.mjs')],
-        { env: { ...process.env } },
-        (error, _stdout, stderr) => {
-          resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
-        },
-      );
-      if (!child.stdin) return reject(new Error('no stdin'));
-      child.stdin.write(
-        JSON.stringify({
-          hook_event_name: 'PreToolUse',
-          tool_name: 'Write',
-          tool_input: { file_path: filePath, content: 'x' },
-        }),
-      );
-      child.stdin.end();
+    // In-child measurement (RP-158): the assertion below bounds the GUARD's
+    // own work, not the parent's wall clock around spawning it — under
+    // contention the latter also counts scheduler queueing that has nothing
+    // to do with the guard. See child-timing.test.ts for the contract.
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-secret-file.mjs'), {
+      input: JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: filePath, content: 'x' },
+      }),
     });
-    const elapsedMs = Date.now() - start;
 
-    expect(
-      elapsedMs,
-      `took ${elapsedMs}ms — guard-secret-file must not wait on an uncapped normalisePath`,
-    ).toBeLessThan(2000);
     expect(result.code, result.stderr).toBe(2);
+    expect(result.elapsedMs).toBeLessThan(5000);
+  });
+});
+
+/**
+ * RP-247 round 2 — security-scanner HOLD on PR #350, head `3a7379c`, and the
+ * decision that followed it. The round-2 diagnosis first read as "three more
+ * of `normalisePath`'s branches (`DRIVE_ROOT_PREFIX`, the verbatim-drive
+ * branch, the UNC/verbatim-UNC branch) build their result with no component
+ * bound at all" and proposed capping them the same way the plain-relative
+ * and `DRIVE_RELATIVE_PREFIX` branches already are. That cap was built and
+ * broke three RP-244 tests, which pin those exact branches clamping a
+ * 200,000-segment `../` run cleanly — and security then measured all three
+ * branches as LINEAR, not quadratic: 200k components ran in 159–331 ms
+ * through both hooks. So capping them was never a safety requirement; it is
+ * NOT done, and the decision is recorded here rather than only in a commit
+ * message, because this file is the one that would otherwise "explain" a cap
+ * that no longer exists.
+ *
+ * The actual bypass on PR #350 was `guard-rulebook`'s `canonicalPath` failing
+ * OPEN once its own bound was crossed — pinned separately in
+ * `guard-rulebook.test.ts` ("canonicalPath fails closed …", RP-247 round 2),
+ * including the native-Win32 security-scanner repro. That fix is what closes
+ * the bypass; nothing here needs to.
+ *
+ * What stays pinned in THIS file is round 1's own behaviour: a plain POSIX
+ * absolute path with a huge component count is refused by `normalisePath`'s
+ * existing bound check on its fallback branch — unrelated to the
+ * rejected cap above, and already green before this revision.
+ */
+describe('editFragments: a plain POSIX absolute path with a huge component count is refused (RP-247 round 1, POSIX fallback branch)', () => {
+  it('a POSIX absolute path of 1000 components is refused, naming the limit and a split-and-retry remedy', async () => {
+    const { editFragments } = await load();
+    const filePath = '/abs/' + 'x/'.repeat(1000) + 'evil.md';
+    const [fragment] = editFragments({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: filePath, content: 'x' },
+    });
+
+    expect(fragment?.inspectionRefusal).toBeTruthy();
+    expect(fragment?.inspectionRefusal).toMatch(/component/i);
+    expect(fragment?.inspectionRefusal).toMatch(/limit/i);
+    expect(fragment?.remedy).toBeTruthy();
+    expect(fragment?.remedy).toMatch(/split|smaller/i);
   });
 });

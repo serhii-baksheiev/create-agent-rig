@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
+import { runNodeTimed } from '../helpers/child-timing.js';
 import { needsGitRoot, onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -1272,59 +1273,98 @@ describe('guard-rulebook: a `//`-prefixed path is refused only when it resolves 
 });
 
 /**
- * RP-247 — security-scanner finding on PR #302, pre-existing (not introduced
- * by any RP-244 round above). `canonicalPath` resolves symlinks in the
- * nearest EXISTING ancestor of a payload path by walking upward one
- * `dirname` at a time, catching `ENOENT` at each missing level and calling
- * `realpathSync.native` again — one native filesystem call per path
- * COMPONENT that does not exist. A crafted `file_path` with many components
- * that do not exist (`C:\a\a\a\…` / `/a/a/a/…`) makes this walk grow with the
- * component count, and `protectedRelative` — which calls `canonicalPath`
- * unconditionally, for EVERY fragment, before this guard ever checks whether
- * the unattended flag is armed — runs it on every Write/Edit this hook sees.
- * A killed hook is an ALLOW (`.claude/rules/invariants.md`, "fail-open
- * guards"), so a slow `canonicalPath` is itself the vulnerability: this hook
- * sits on the PreToolUse path of every edit, attended or not.
+ * RP-247 round 2 — security-scanner HOLD on PR #350, head `3a7379c`, and the
+ * decision that followed it.
  *
- * Measured on this branch (WSL/ext4; the ticket's own numbers, taken on
- * NTFS, are worse — ~366 ms at 8 KB, ~11 s at 64 KB, >25 s at 128 KB of
- * `C:\a\a\…`):
+ * Round 1 gave `canonicalPath` its own defensive bound check
+ * (`exceedsPathComponentBound(resolved)`, reusing `edit-input.mjs`'s own
+ * budget) so the realpath walk itself can no longer grow with the crafted
+ * path's component count. But past the bound, `canonicalPath` returned
+ * `filePath` — the RAW, UNRESOLVED string — instead of refusing.
+ * `protectedRelative` reads that unresolved string as "not under the
+ * rulebook": the lexical spelling never starts with a rulebook prefix, only
+ * the REAL, resolved location might. Two reproductions of the same gap, both
+ * found on PR #350's head rather than guessed:
  *
- *   16,000 components   ~0.6–0.8 s
- *   24,000 components   ~1.4 s
- *   32,000 components   ~1.8 s
- *   48,000 components   ~3.1 s
- *   64,000 components   ~5.2 s
- *   96,000 components   ~15.0 s
- *  128,000 components   ~24.2 s
+ *  1. Native Windows, a real junction: `root/alias` made to alias
+ *     `root/.claude`, then a Write to `alias/rules/` + 520 nested components
+ *     + `evil.md` exits 0 armed — blocked at base (slow, but blocked by the
+ *     rulebook match), ALLOWED at this head (fast, but silently wrong).
+ *     Security's exact repro used a lowercased-drive spelling of `root`
+ *     directly under `.claude/rules/`, no alias needed — pinned below,
+ *     win32-only, alongside the alias variant.
+ *  2. `canonicalPath` calls plain `resolve(filePath)`, which — for a
+ *     RELATIVE `file_path` — resolves against `process.cwd()`, a value
+ *     `edit-input.mjs`'s OWN bound check never sees (it only counts
+ *     separators in the raw string the payload sent). So a `file_path` that
+ *     is SHORT — never refused on the way in — can still push `resolve()`
+ *     past the component bound once combined with a deep `cwd`, reproducing
+ *     the same gap with no symlink and no Windows dependency at all: an
+ *     ordinary, real, 520-level-deep directory on any filesystem gets the
+ *     same silent "not under the rulebook" answer while armed. Pinned below
+ *     first, since it is Linux-runnable.
  *
- * No cap exists on component count in `canonicalPath` or `protectedRelative`
- * today, and no refusal is possible either way: at every size above, the
- * hook simply spends the measured time and then answers `0` — nothing under
- * the rulebook, because the crafted path never resolves under `root` — never
- * refusing at all, armed or not. The planned fix (RP-247) bounds the walk
- * and refuses past the cap, the same shape as `MAX_PATCH_PATH_COMPONENTS` in
- * `edit-input.mjs`: a bound crossed names the limit and a split-and-retry
- * remedy rather than doing unbounded work.
+ * A companion diagnosis proposed capping `normalisePath`'s remaining absolute
+ * branches (`DRIVE_ROOT_PREFIX`, the verbatim-drive branch, the UNC branch)
+ * the same way its relative branches already are — that cap broke three
+ * RP-244 tests pinning those branches clamping a 200,000-segment `../` run
+ * cleanly, and security then measured all three as LINEAR (159–331 ms at
+ * 200k components), so nothing there needed a bound. That cap is NOT part of
+ * the fix; `edit-fragments.test.ts` records the decision where the rejected
+ * design would otherwise have been pinned. The fix here — the only one
+ * needed — is `canonicalPath` failing CLOSED once `resolve()` crosses the
+ * bound: a sentinel `main()` reads and refuses, while armed, with the same
+ * limit-plus-remedy shape `edit-input.mjs` already uses. That closes both
+ * reproductions above without normalisePath needing to know about the
+ * component bound at all for an absolute spelling.
  */
-describe("guard-rulebook: canonicalPath does bounded work over a path's component count, instead of growing without bound (RP-247)", () => {
-  it('refuses a Write to a many-component nonexistent path quickly, naming the limit and a split-and-retry remedy', async () => {
+describe('guard-rulebook: canonicalPath fails closed when resolve() crosses the component bound, even for a short relative file_path (RP-247 round 2)', () => {
+  const buildDeepCwd = async () => {
+    // 520 levels: past MAX_PATCH_PATH_COMPONENTS (512, edit-input.mjs) on
+    // its own, so `resolve('x.md')` against this cwd crosses the bound
+    // regardless of `root`'s own path length.
+    const segments = Array.from({ length: 520 }, (_, index) => `d${index}`);
+    const dir = path.join(root, ...segments);
+    await mkdir(dir, { recursive: true });
+    return dir;
+  };
+
+  it('refuses a Write of a short relative file_path once the deep cwd pushes resolve() past the bound', async () => {
     await armed([]);
-    const components = Array.from({ length: 64_000 }, () => 'a').join('/');
-    const target = path.join(root, components, 'final.txt');
+    const cwd = await buildDeepCwd();
 
-    const start = Date.now();
-    const result = await run(write(target));
-    const elapsedMs = Date.now() - start;
+    // In-child measurement (RP-158): bound the GUARD's own work, not the
+    // parent's wall clock around spawning it. See child-timing.test.ts.
+    const result = await runNodeTimed(hookPath, {
+      input: JSON.stringify(write('x.md')),
+      env: { ...process.env, ...env() },
+      cwd,
+    });
 
-    expect(
-      elapsedMs,
-      `took ${elapsedMs}ms — canonicalPath must not grow with the path's component count`,
-    ).toBeLessThan(2000);
+    expect(result.elapsedMs).toBeLessThan(5000);
     expect(result.code, result.stderr).toBe(2);
     expect(result.stderr).toMatch(/component/i);
     expect(result.stderr).toMatch(/limit/i);
     expect(result.stderr).toMatch(/split|smaller/i);
+  });
+
+  // The refusal above is conditioned on the unattended flag, the same way
+  // every other guard-rulebook refusal is (`describe('guard-rulebook:
+  // attended sessions are untouched', …)` elsewhere in this file) — this
+  // hook does not newly become an access-control layer for attended
+  // sessions just because RP-247 gives it a bound. Pinned explicitly rather
+  // than assumed, because the planned fix could in principle have chosen
+  // otherwise.
+  it('an unarmed session still allows it — the refusal above applies only while the flag is armed', async () => {
+    const cwd = await buildDeepCwd();
+
+    const result = await runNodeTimed(hookPath, {
+      input: JSON.stringify(write('x.md')),
+      env: { ...process.env, ...env() },
+      cwd,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
   });
 
   it('still resolves an ordinary, shallow path normally — unchanged from today', async () => {
@@ -1332,6 +1372,51 @@ describe("guard-rulebook: canonicalPath does bounded work over a path's componen
     const target = path.join(root, 'src', 'a', 'b', 'x.ts');
     const result = await run(write(target));
     expect(result.code, result.stderr).toBe(0);
+  });
+
+  // security-scanner's exact repro on PR #350, native Win32: a Write, armed,
+  // to the LOWERCASED-drive spelling of `root` + `.claude\rules\` + 520
+  // nested `x\` components + `evil.md`. Win32-only because `root` is a real
+  // drive-letter path only there — the point being tested is `canonicalPath`
+  // failing closed on an ABSOLUTE, drive-shaped spelling, not the
+  // relative+deep-cwd form already pinned above.
+  it('blocks a Write past the component bound through the lowercased-drive spelling of .claude/rules (security-scanner repro)', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed([]);
+    const match = /^([A-Za-z]):(.*)$/.exec(root);
+    const [, drive, rest] = match ?? [];
+    if (drive === undefined || rest === undefined) {
+      throw new Error(`root is not a drive-letter path, cannot build the repro: ${root}`);
+    }
+    const lowercasedRoot = `${drive.toLowerCase()}:${rest}`;
+    const target = `${lowercasedRoot}\\.claude\\rules\\` + 'x\\'.repeat(520) + 'evil.md';
+
+    const result = await run(write(target));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/component/i);
+    expect(result.stderr).toMatch(/limit/i);
+    expect(result.stderr).toMatch(/split|smaller/i);
+  });
+
+  // The junction-alias variant of the same repro (`aliasedRoot()`, defined
+  // above): the LEXICAL spelling never starts with the rulebook prefix — it
+  // goes through `home/checkout-alias`, not `root/.claude` — so only a real
+  // symlink resolution would show this path lands in the rulebook, and that
+  // resolution is exactly what crossing the component bound must not
+  // silently skip past.
+  it('blocks a Write through a symlink/junction alias into the rulebook, past the component bound', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    await armed([]);
+    const alias = await aliasedRoot();
+    const target = `${alias}\\.claude\\rules\\` + 'x\\'.repeat(520) + 'evil.md';
+
+    const result = await run(write(target));
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/component/i);
+    expect(result.stderr).toMatch(/limit/i);
+    expect(result.stderr).toMatch(/split|smaller/i);
   });
 });
 

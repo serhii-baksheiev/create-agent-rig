@@ -101,13 +101,19 @@
 // The rule it enforces is stated in `.claude/rules/autonomy.md`, "Never".
 import { realpathSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { editFragments, exceedsPathComponentBound } from './lib/edit-input.mjs';
+import { editFragments, exceedsPathComponentBound, MAX_PATCH_PATH_COMPONENTS } from './lib/edit-input.mjs';
 import { RULEBOOK_PREFIXES, canonicalRulebookPath, isRulebookPath, readUnattended } from '../scripts/unattended-flag.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 export { RULEBOOK_PREFIXES, isRulebookPath };
 
 const EDIT_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'apply_patch']);
+
+// RP-247 round 2: `protectedRelative`'s third outcome — `canonicalPath`
+// crossed the component bound, so this fragment's real, resolved location is
+// unknown. A `Symbol`, not a string or `undefined`, so it can never collide
+// with an actual rulebook path or with "never judged".
+const COMPONENT_OVERFLOW = Symbol('componentOverflow');
 
 const toPosix = (value) => String(value ?? '').replaceAll('\\', '/');
 
@@ -130,23 +136,36 @@ const canonicalRoot = (root) => {
   }
 };
 
-/** Resolve symlinks in the nearest existing ancestor, preserving a missing tail. */
+/**
+ * Resolve symlinks in the nearest existing ancestor, preserving a missing
+ * tail. Returns `null` — never the raw `filePath` — once the resolved path
+ * crosses the component bound (RP-247 round 2).
+ *
+ * RP-247 round 1 returned `filePath` here past the bound: the raw,
+ * UNRESOLVED string. `protectedRelative` reads that as "not under the
+ * rulebook" — the lexical spelling itself rarely starts with a rulebook
+ * prefix, only the REAL, resolved location might — so a fail-OPEN fallback
+ * on the one path meant to catch a resolved rulebook location made this
+ * exactly the case `.claude/rules/invariants.md` warns against:
+ * "refusing to inspect is not allowing". Security-scanner demonstrated it on
+ * PR #350 with a real Win32 junction aliasing `.claude`, and independently
+ * with no symlink at all — a short, ordinary `file_path` resolved against a
+ * merely deep `cwd`, which `edit-input.mjs`'s own bound never sees, since it
+ * only counts separators in the raw string the payload sent, not what
+ * `resolve()` does with it. `null` is `protectedRelative`'s signal to refuse
+ * rather than to treat this fragment as harmless.
+ */
 const canonicalPath = (filePath) => {
   const resolved = resolve(filePath);
-  // RP-247: this walk spends one `realpathSync.native` call per path
-  // component that does not exist on disk — a crafted `file_path` with many
-  // such components (`/a/a/a/…`) would otherwise make it grow with the
-  // component count instead of the file's actual depth, and this hook calls
-  // it (via `protectedRelative`, below) for every fragment before it ever
-  // checks whether the unattended flag is armed. `exceedsPathComponentBound`
-  // is `edit-input.mjs`'s own bound, reused rather than a second number
-  // (`.claude/rules/invariants.md`, "one mechanism, one implementation") —
-  // every edit surface already refuses a `file_path` this long before a
-  // fragment carrying it ever reaches this function, so this is a second,
-  // defensive application of the same bound: past it, give up immediately,
-  // exactly as the "no further progress" fallback below already does,
-  // instead of spending the walk.
-  if (exceedsPathComponentBound(resolved)) return filePath;
+  // This walk spends one `realpathSync.native` call per path component that
+  // does not exist on disk — a crafted `file_path` with many such
+  // components (`/a/a/a/…`) would otherwise make it grow with the component
+  // count instead of the file's actual depth, and this hook calls it (via
+  // `protectedRelative`, below) for every fragment before it ever checks
+  // whether the unattended flag is armed. `exceedsPathComponentBound` is
+  // `edit-input.mjs`'s own bound, reused rather than a second number
+  // (`.claude/rules/invariants.md`, "one mechanism, one implementation").
+  if (exceedsPathComponentBound(resolved)) return null;
   let cursor = resolved;
   const tail = []; // pushed nearest-missing-first; reversed once, joined once — never `unshift`, never spread
   for (;;) {
@@ -191,14 +210,25 @@ export const isAllowed = (rel, allow) =>
 // the allow-list. See the generator's `test/template/guard-rulebook.test.ts` (absent in a generated rig) ›
 // "guard-rulebook: an allow-list entry is judged by its literal spelling,
 // not the one the payload folds to (RP-215 round 2)".
+//
+// RP-247 round 2: a THIRD return value, `COMPONENT_OVERFLOW` — distinct from
+// a rulebook path (a string) and from "outside the rulebook, never judged"
+// (`undefined`) — for the one case neither of those two readings fits:
+// `canonicalPath(filePath)` crossed the component bound, so the REAL,
+// resolved location is unknown, and every literal spelling this function
+// also tried (`filePath`, `rawFilePath`) failed to name a rulebook path on
+// its own. That is not "never judged"; it is "could not be judged", and
+// `.claude/rules/invariants.md` reads the two differently: refuse it while
+// armed, the same as every other case this file cannot resolve.
 const protectedRelative = (roots, filePath, rawFilePath) => {
-  const candidates = [...new Set([filePath, rawFilePath, canonicalPath(filePath)].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
+  const canonical = canonicalPath(filePath);
+  const candidates = [...new Set([filePath, rawFilePath, canonical].filter((spelling) => typeof spelling === 'string' && spelling !== ''))]
     .flatMap((spelling) => roots.map((root) => relativeTo(root, spelling)));
   for (const candidate of candidates) {
-    const canonical = canonicalRulebookPath(candidate);
-    if (canonical !== undefined) return canonical;
+    const rel = canonicalRulebookPath(candidate);
+    if (rel !== undefined) return rel;
   }
-  return undefined;
+  return canonical === null ? COMPONENT_OVERFLOW : undefined;
 };
 
 // RP-244 round 3: a `//`-prefixed normalised path is undecidable ONLY when it
@@ -274,10 +304,32 @@ function main() {
   const unjudgeable = fragments.find(({ filePath }) => isUnjudgeablePath(comparisonRoots, filePath));
 
   const paths = [];
+  let componentOverflow = false;
   for (const { filePath, rawFilePath } of fragments) {
     if (typeof filePath !== 'string' || filePath === '') continue;
     const rel = protectedRelative(comparisonRoots, filePath, rawFilePath);
+    if (rel === COMPONENT_OVERFLOW) {
+      componentOverflow = true;
+      continue;
+    }
     if (rel !== undefined && !paths.includes(rel)) paths.push(rel);
+  }
+  // RP-247 round 2: checked before the "nothing under the rulebook" bail-out
+  // below — a fragment `canonicalPath` could not resolve within the
+  // component bound is not "never judged", the same distinction
+  // `protectedRelative` now draws. `.claude/rules/invariants.md`, "Refusing
+  // to inspect is not allowing": the same limit-plus-remedy wording
+  // `edit-input.mjs`'s `pathComponentOverflowFragment()` uses, since both
+  // report the same bound.
+  if (componentOverflow) {
+    const mode = readUnattended(unattendedEnv);
+    if (!mode.on) return 0; // attended session
+    process.stderr.write(
+      'BLOCKED — cannot safely inspect this unattended edit: ' +
+        `path component count exceeds the ${MAX_PATCH_PATH_COMPONENTS}-component inspection limit\n` +
+        'Split it into a smaller edit and retry.\n',
+    );
+    return 2;
   }
   if (paths.length === 0 && !unjudgeable) return 0; // nothing under the rulebook: never judged
 

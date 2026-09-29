@@ -649,16 +649,23 @@ const DRIVE_RELATIVE_PREFIX = /^[A-Za-z]:(?!\/)/;
 // at — keeps a `..` in the remainder from ever reaching back far enough to
 // cancel the marker itself; an empty remainder (a bare `C:`) is left as-is
 // rather than turned into `C:.`, unchanged from before this round.
-// RP-247: `path.posix.normalize` is only quadratic in the RELATIVE case — a
-// leading `..` run it cannot clamp at a root, so each one stays in the
-// output and the run keeps growing. The DRIVE_ROOT_PREFIX branch above and
-// the UNC branch in `normalisePath` below both normalise an ABSOLUTE string
+// RP-247 round 2: security-scanner measured that a huge component count
+// reaching `guard-rulebook`'s `canonicalPath` uncapped — not the absolute
+// branches here being uncapped — was the actual vulnerability (PR #350: a
+// native-Windows junction alias, and independently an ordinary short
+// `file_path` resolved against a merely deep `cwd`, both bypassed the
+// rulebook because `canonicalPath` failed OPEN past its own bound). That is
+// fixed at the source, in `guard-rulebook.mjs`'s `canonicalPath`: past the
+// bound it now returns `null`, never the raw path, and `guard-rulebook`
+// refuses the edit while armed. So the bound here stays where round 1 put
+// it — only on the two RELATIVE `path.posix.normalize` calls, the plain
+// fallback below and DRIVE_RELATIVE_PREFIX — because those are the only
+// calls that are actually quadratic. DRIVE_ROOT_PREFIX just below, and the
+// verbatim/UNC branch in `normalisePath`, normalise an ABSOLUTE string
 // (one that starts with `/`), which clamps a `..` run at the root in one
-// linear pass instead — already exercised at 200,000 segments by the
-// RP-244 tests above, and left untouched here. Only the two RELATIVE
-// branches — this function's plain fallback, and its DRIVE_RELATIVE_PREFIX
-// case, which has no root to clamp at — get the bound, checked before the
-// `path.posix.normalize` call each one makes.
+// linear pass — measured at 200,000 segments by the RP-244 tests above —
+// so capping them here would only refuse a spelling `canonicalPath` can
+// already resolve (or safely refuse) on its own, for no performance reason.
 function clampAtDriveRoot(slashed) {
   if (DRIVE_ROOT_PREFIX.test(slashed)) {
     return slashed.slice(0, 2) + path.posix.normalize(slashed.slice(2));
@@ -679,7 +686,11 @@ function normalisePath(value) {
   // `null` here is a sentinel distinct from every valid return of this
   // function (including `''`) — `clampAtDriveRoot` returns it once its own
   // bound is crossed (RP-247); every caller below checks for it and returns
-  // `pathComponentOverflowFragment()` instead of a normal fragment.
+  // `pathComponentOverflowFragment()` instead of a normal fragment. A path
+  // that crosses the bound only after `guard-rulebook`'s own `resolve()`
+  // (a relative `file_path` combined with a deep `cwd`, say) is not caught
+  // here at all — that is `canonicalPath`'s job, not this function's
+  // (RP-247 round 2).
   const driveMatch = WIN32_VERBATIM_DRIVE_PREFIX.exec(raw);
   if (driveMatch) {
     const slashed = raw.replace(WIN32_VERBATIM_DRIVE_PREFIX, '$1').replaceAll('\\', '/');
