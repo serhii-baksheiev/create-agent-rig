@@ -6,9 +6,5 @@
   {
     "file": "test/template/remove-fixture.test.ts",
     "reason": "A comment naming the call shape the helper replaces, not a removal."
-  },
-  {
-    "file": "test/template/unattended-flag-leak-audit-persistence-window.test.ts",
-    "reason": "RP-288 pinned Red test (failure-diagnostician finding, Jira comment 21563); its afterEach removes the fixture homes it creates directly rather than through removeFixture. The test file specifies auditFor's new recheck-window seam and is not edited by the Green step that implements it."
   }
 ]

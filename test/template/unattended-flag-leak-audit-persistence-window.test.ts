@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 import { auditFor } from '../helpers/unattended-flag-leak-audit.js';
 
 /**
@@ -17,32 +18,30 @@ import { auditFor } from '../helpers/unattended-flag-leak-audit.js';
  * flag-free file failed the audit in 4 of 121 runs, beside a green peer
  * suite that armed and correctly cleared its own scoped flag in that window.
  *
- * New acceptance: teardown reports only flags that PERSIST. A candidate
- * still "new" at the first check is re-checked ONCE more after a bounded
- * window — long enough to outlast the longest legitimate arm; the doctor
- * guard batch this repo runs can itself take up to a 30 s timeout, so ~35 s
- * is the suggested default (bounded: at least 31 s, at most 60 s — test (c)
- * below). Only a candidate still present at the SECOND check is reported.
+ * Acceptance: teardown reports only flags that PERSIST. A candidate still
+ * "new" at the first check is re-checked ONCE more after a bounded window —
+ * long enough to outlast the longest legitimate arm; the doctor guard batch
+ * this repo runs can itself take up to a 30 s timeout, so ~35 s is the
+ * default (bounded: at least 31 s, at most 60 s — test (c) below). Only a
+ * candidate still present at the SECOND check is reported.
  *
- * The injection point this file specifies, and that does not exist on
- * `auditFor` today (this file is Red against the current implementation —
- * see each test's own comment for exactly how): two new, optional
- * `auditFor(options)` fields, alongside the existing `env`/`homes`:
+ * The injection point this file exercises, on `auditFor`'s own options
+ * (`test/helpers/unattended-flag-leak-audit.ts`) — two optional fields
+ * alongside the existing `env`/`homes`:
  *
  *   - `recheckWindowMs?: number` — how long to wait before the second check;
  *     defaults to a value in `[31_000, 60_000]` ms (test (c)).
- *   - `sleep?: (ms: number) => Promise<void>` — the delay primitive the
- *     teardown calls with `recheckWindowMs`, defaulting to a real
- *     `setTimeout`-based wait so a normal run genuinely waits out the
- *     window. Every test below injects a synchronous fake instead, so
- *     nothing here actually waits in real time.
+ *   - `sleep?: (ms: number) => Promise<void>` — the delay primitive teardown
+ *     calls with `recheckWindowMs`, defaulting to a real `setTimeout`-based
+ *     wait so a normal run genuinely waits out the window. Every test below
+ *     injects a synchronous fake instead, so nothing here actually waits in
+ *     real time.
  *
- * Expected teardown shape (not yet implemented, specified here for the
- * implementer): on a non-empty first `newUnattendedFlags(snapshot)` result,
- * `await sleep(recheckWindowMs)`, then re-run `newUnattendedFlags(snapshot)`
- * against the SAME original snapshot; only the SECOND result is ever
- * reported (thrown on). If the first result is already empty, `sleep` must
- * never be called at all — there is nothing to wait out.
+ * Teardown's shape: on a non-empty first `newUnattendedFlags(snapshot)`
+ * result, `await sleep(recheckWindowMs)`, then re-run
+ * `newUnattendedFlags(snapshot)` against the SAME original snapshot; only the
+ * SECOND result is ever reported (thrown on). If the first result is already
+ * empty, `sleep` is never called at all — there is nothing to wait out.
  *
  * Independent-oracle rule (`.claude/rules/invariants.md`): every planted
  * flag name below is the same literal, unsubstituted
@@ -50,23 +49,11 @@ import { auditFor } from '../helpers/unattended-flag-leak-audit.js';
  * test/template/unattended-flag-audit-helper.test.ts already hand-writes —
  * never derived from unattended-flag.mjs's own hashing.
  *
- * Sandbox: every home here is a fresh `mkdtemp` directory, removed in
- * `afterEach` below; nothing in this file ever reads or writes the real
- * home, and no `sleep` here is the real one — every window is fake.
+ * Sandbox: every home here is a fresh `mkdtemp` directory, removed through
+ * the shared `removeFixture` (test/helpers/remove-fixture.ts) in `afterEach`
+ * below; nothing in this file ever reads or writes the real home, and no
+ * `sleep` here is the real one — every window is fake.
  */
-
-type AuditForOptions = {
-  env?: NodeJS.ProcessEnv;
-  homes?: string[];
-  recheckWindowMs?: number;
-  sleep?: (ms: number) => Promise<void>;
-};
-
-// Structural typing, not a cast: `AuditForOptions` is a superset of
-// `auditFor`'s current parameter type, so this compiles today even though
-// `auditFor` does not read the two new fields yet — the point of a
-// seam-first Red test.
-const callAuditFor = (options: AuditForOptions) => auditFor(options);
 
 const homes: string[] = [];
 const tempHome = async (): Promise<string> => {
@@ -76,7 +63,7 @@ const tempHome = async (): Promise<string> => {
 };
 
 afterEach(async () => {
-  await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
+  await Promise.all(homes.splice(0).map((home) => removeFixture(home)));
 });
 
 async function plantFlag(home: string, name: string): Promise<string> {
@@ -108,7 +95,7 @@ describe('RP-288: the RP-271 audit re-checks a candidate over a bounded window b
       await rm(target, { force: true });
     });
 
-    const teardown = await callAuditFor({ homes: [home], recheckWindowMs: 35_000, sleep });
+    const teardown = await auditFor({ homes: [home], recheckWindowMs: 35_000, sleep });
     await plantFlag(home, '__PROJECT_NAME__-a1a1a1a1a1a1a1a1-loop-UNATTENDED');
 
     await expect(teardown()).resolves.toBeUndefined();
@@ -122,7 +109,7 @@ describe('RP-288: the RP-271 audit re-checks a candidate over a bounded window b
       calls.push(ms);
     });
 
-    const teardown = await callAuditFor({ homes: [home], recheckWindowMs: 35_000, sleep });
+    const teardown = await auditFor({ homes: [home], recheckWindowMs: 35_000, sleep });
     const planted = await plantFlag(home, '__PROJECT_NAME__-b2b2b2b2b2b2b2b2-loop-UNATTENDED');
 
     let caught: unknown;
@@ -148,7 +135,7 @@ describe('RP-288: the RP-271 audit re-checks a candidate over a bounded window b
     });
 
     // No recheckWindowMs override — exercises the module's own default.
-    const teardown = await callAuditFor({ homes: [home], sleep });
+    const teardown = await auditFor({ homes: [home], sleep });
     await plantFlag(home, '__PROJECT_NAME__-c3c3c3c3c3c3c3c3-loop-UNATTENDED');
 
     await expect(teardown()).rejects.toThrow(/RP-271/);

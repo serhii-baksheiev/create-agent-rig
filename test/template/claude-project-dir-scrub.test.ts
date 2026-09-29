@@ -45,10 +45,10 @@ describe('the harness scrubs CLAUDE_PROJECT_DIR before any test runs', () => {
     // A nested vitest, filtered to the in-process test above, with the
     // variable exported the way a session's `export` leaks it. Skipped
     // inside that child so the nesting stops at one level — same guard
-    // rig-run-dir-scrub.test.ts uses, and the same reason
-    // unattended-flag-leak-audit.ts's own auditFor() skips the RP-271 audit
-    // for this marker.
-    if (process.env.RIG_SCRUB_TEST_CHILD) return;
+    // rig-run-dir-scrub.test.ts uses, and the same exact-match ('1', never
+    // merely truthy — RP-288, RP-295 comment 21408) gate
+    // unattended-flag-leak-audit.ts's own auditFor() uses for this marker.
+    if (process.env.RIG_SCRUB_TEST_CHILD === '1') return;
     const result = await runNode(
       [
         path.join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs'),

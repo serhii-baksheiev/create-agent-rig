@@ -117,6 +117,18 @@ describe('the default export (the vitest globalSetup entry) end to end, through 
       const planted = await plantFlag(home, '__PROJECT_NAME__-1122334455667788-loop-UNATTENDED');
 
       const pending = teardown();
+      // RP-288 (code-reviewer): attach the settle handler to `pending`
+      // immediately, in the same synchronous turn it is created — not after
+      // `waitForTimerRegistration`/`advanceTimersByTimeAsync` below have
+      // already let the event loop turn over. Otherwise `pending` is a
+      // rejected promise with no handler attached for however many real and
+      // fake ticks those two calls take, and whether that counts as an
+      // "unhandled rejection" depends on event-loop ordering this test must
+      // not depend on.
+      const settled = pending.then(
+        () => undefined,
+        (e: unknown) => e,
+      );
       await waitForTimerRegistration();
       expect(
         vi.getTimerCount(),
@@ -124,12 +136,7 @@ describe('the default export (the vitest globalSetup entry) end to end, through 
       ).toBeGreaterThan(0);
       await vi.advanceTimersByTimeAsync(RECHECK_WINDOW_MS);
 
-      let caught: unknown;
-      try {
-        await pending;
-      } catch (err) {
-        caught = err;
-      }
+      const caught = await settled;
       expect(
         caught,
         'the default export teardown should have thrown the RP-271 leak error',
