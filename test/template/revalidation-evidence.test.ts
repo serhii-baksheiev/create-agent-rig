@@ -898,6 +898,71 @@ describe('D. the loop skill points at the outcome command and the report', () =>
   });
 });
 
+// RP-300 part A — evidence: `.claude/runs/rel111-RP-262/events.jsonl` and
+// `.claude/runs/rel111-RP-289/events.jsonl` (both dated 2026-09-29) show a
+// BEFORE_PR hold on `claim:scope` re-entered with the IDENTICAL detection id
+// across two consecutive re-entries once already answered
+// `actionChanged: false` (RP-289: id `40a35c09…` at seq 6 and again at seq
+// 16, resolved both times by the same outcome shape) — so "compare the
+// detection id" is a real, decidable signal, not a hypothetical. The same
+// evidence also shows a detection id that does NOT repeat once the shared
+// base itself moves (RP-262: `196b823f…` at a CURRENT read, then a
+// DIFFERENT id `b4101e6b…` once the checkpoint next reported CHANGED, in the
+// same busy release loop where master advanced between re-entries) — the
+// path below pins that pr-ship step 1 states BOTH halves: what to do when
+// the id (and its sources) repeats, and that a new id/source is a fresh
+// hold, never a silent continue.
+describe('E. pr-ship step 1 — a repeated identical revalidation hold is not re-litigated forever (RP-300)', () => {
+  const section = (text: string, from: string, to: string): string => {
+    const start = text.indexOf(from);
+    const end = text.indexOf(to, start);
+    expect(start, `anchor ${JSON.stringify(from)} not found in pr-ship/SKILL.md`).toBeGreaterThan(
+      -1,
+    );
+    expect(end, `anchor ${JSON.stringify(to)} not found in pr-ship/SKILL.md`).toBeGreaterThan(
+      start,
+    );
+    return text.slice(start, end);
+  };
+
+  const holdSection = async (): Promise<string> => {
+    const skill = await read(path.join(universal, '.claude', 'skills', 'pr-ship', 'SKILL.md'));
+    return section(
+      skill,
+      'Exit 2 here is a HOLD',
+      "generator's `test/template/revalidate.test.ts`",
+    );
+  };
+
+  it('says a repeated hold is compared by its detection id', async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/detection id/i);
+  });
+
+  it("says the comparison also covers the hold's sources, not the id alone", async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/detection id[\s\S]{0,200}sources?/i);
+  });
+
+  it('says a matching id+sources already paired with a typed actionChanged=false proceeds ONCE with that documented resolution, never a second re-read', async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/actionChanged[\s\S]{0,40}false/i);
+    expect(text).toMatch(/\bonce\b/i);
+  });
+
+  it('says any NEW id or source is a fresh HOLD, not a silent continue', async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/new id or source|new (?:detection )?id[\s\S]{0,60}new source/i);
+    expect(text).toMatch(/\bHOLD\b/);
+  });
+
+  it('says the raw detection and its outcome both stay in the journal', async () => {
+    const text = await holdSection();
+    expect(text).toMatch(/raw detection/i);
+    expect(text).toMatch(/journal/i);
+  });
+});
+
 describe('the report finds the runs where the loop declared them', () => {
   const SINCE = '2026-08-20T00:00:00.000Z';
   const AFTER = '2026-08-21T12:00:00.000Z';

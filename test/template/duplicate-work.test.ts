@@ -974,6 +974,100 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
   });
 });
 
+// RP-300 part B — a resumed claim (a second controller session picking up
+// where an earlier, interrupted one left off, per the item's own
+// continuation note — `continuation.mjs`, `journal/2026-09.md`: "a second
+// Codex session resumed it from the continuation note and reached gate
+// SHIP") must not report its own prior pushed branch as duplicate work. The
+// header's own documented Limits already say own-work exclusion is
+// exact-string on the CURRENT branch name alone, which is exactly what
+// misses here: a resumed checkout legitimately checks out a NEW local branch
+// name that TRACKS the previously-pushed remote branch (or is later pointed
+// at it with `git branch --set-upstream-to`), rather than reusing the exact
+// same local branch name. This block pins the narrowest available
+// mechanical proof of "own" for that case — the checkout's own configured
+// upstream (`@{upstream}`), something only an action taken BY this checkout
+// can set, never another controller's branch — WITHOUT weakening detection
+// of a genuinely different branch that happens to carry the same ticket id
+// alongside it (the second test below).
+describe("own-work exclusion also recognises the current branch's upstream tracking branch, not only its literal name (RP-300)", () => {
+  let root: string;
+  let origin: string;
+
+  beforeAll(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'duplicate-work-upstream-'));
+    origin = path.join(root, 'origin.git');
+    await mkdir(origin);
+    await git(['init', '--bare', '-b', 'master'], origin);
+    const seed = await mkdtemp(path.join(root, 'seed-'));
+    await git(['init', '-q', '-b', 'master'], seed);
+    await writeFile(path.join(seed, 'README.md'), 'seed\n');
+    await git(['add', '-A'], seed);
+    await git(['commit', '-q', '-m', 'seed'], seed);
+    await git(['push', '-q', origin, 'master'], seed);
+  }, 30_000);
+
+  it("exit 0, verdict clean — a resumed checkout's current branch TRACKS the remote branch that already carries the ticket id", async () => {
+    // Session 1's own prior work, pushed under its original name.
+    await pushOtherBranch(root, origin, 'feat/rp-9040-original');
+
+    // Session 2's resumption: a FRESH clone, checked out onto a NEW local
+    // branch name that TRACKS the remote branch session 1 pushed — never the
+    // identical local branch name the existing exact-string exclusion already
+    // covers.
+    const resumeDir = await mkdtemp(path.join(root, 'resume-'));
+    await git(['clone', '-q', origin, resumeDir], root);
+    await git(['fetch', '-q', 'origin'], resumeDir);
+    await git(
+      ['checkout', '-q', '-b', 'feat/rp-9040-resumed', '--track', 'origin/feat/rp-9040-original'],
+      resumeDir,
+    );
+
+    const gh = await ghListing([]);
+    try {
+      const parsed = await runCliJson(resumeDir, 'RP-9040', hermeticEnv());
+      expect(parsed.verdict, JSON.stringify(parsed)).toBe('clean');
+      expect(parsed.matches, JSON.stringify(parsed)).toEqual([]);
+
+      const text = await runCli(resumeDir, ['--ticket', 'RP-9040'], hermeticEnv());
+      expect(text.code, text.out).toBe(0);
+    } finally {
+      gh.restore();
+    }
+  });
+
+  it('exit 2, verdict duplicate-work — a DIFFERENT branch carrying the same ticket id is still reported, even though the current branch tracks its OWN (unrelated) upstream for that id', async () => {
+    // "Mine" — what a resumed session tracks, exactly like the previous test.
+    await pushOtherBranch(root, origin, 'feat/rp-9041-mine');
+    // Another controller's rival branch for the SAME ticket id — pushed
+    // independently, never tracked by this checkout.
+    await pushOtherBranch(root, origin, 'feat/rp-9041-rival');
+
+    const resumeDir = await mkdtemp(path.join(root, 'resume-'));
+    await git(['clone', '-q', origin, resumeDir], root);
+    await git(['fetch', '-q', 'origin'], resumeDir);
+    await git(
+      ['checkout', '-q', '-b', 'feat/rp-9041-resumed', '--track', 'origin/feat/rp-9041-mine'],
+      resumeDir,
+    );
+
+    const gh = await ghListing([]);
+    try {
+      const parsed = await runCliJson(resumeDir, 'RP-9041', hermeticEnv());
+      expect(parsed.verdict, JSON.stringify(parsed)).toBe('duplicate-work');
+      const mineMatch = parsed.matches.find((m) => m.ref === 'feat/rp-9041-mine');
+      const rivalMatch = parsed.matches.find((m) => m.ref === 'feat/rp-9041-rival');
+      expect(mineMatch, JSON.stringify(parsed)).toBeUndefined();
+      expect(rivalMatch, JSON.stringify(parsed)).toBeDefined();
+
+      const text = await runCli(resumeDir, ['--ticket', 'RP-9041'], hermeticEnv());
+      expect(text.code, text.out).toBe(2);
+    } finally {
+      gh.restore();
+    }
+  });
+});
+
 describe('duplicate-work.mjs is wired into the workflow layer', () => {
   it('layers.json lists the script under the workflow array', async () => {
     const manifest = JSON.parse(

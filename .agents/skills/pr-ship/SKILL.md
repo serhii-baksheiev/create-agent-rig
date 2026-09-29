@@ -146,8 +146,22 @@ blockers.
    point, neither mode or both, a base that is not a revision, or a queue config
    that does not resolve — plus, on the owner-directed path, the four refusals
    above): fix the call or the config — the message says which. Its limits are its own header's; the
-   cited-path set is a labelled assumption, not a recorded fact. Pinned in the
-   generator's `test/template/revalidate.test.ts` (absent in a generated rig) ›
+   cited-path set is a labelled assumption, not a recorded fact.
+
+   **A repeated hold at this checkpoint is compared by its detection id, and
+   the comparison covers the hold's sources too — not the id alone.** Two
+   re-entries whose id AND `source` list both match, and which already carry a
+   typed `actionChanged: false` outcome recorded for that exact pairing,
+   proceed ONCE on that documented resolution rather than opening a second
+   re-read. Any NEW id or a NEW source set is a fresh HOLD — re-read, never a
+   silent continue — whatever moved to produce it, including an unrelated
+   merge to the default branch. The fast path covers only the drift already
+   answered; it is never licence to stop re-reading after one hold has been
+   answered. Either way, both the raw detection
+   and its typed outcome stay in the journal, so the report can always tell a
+   fast-pathed HOLD from a fresh re-read.
+
+   Pinned in the generator's `test/template/revalidate.test.ts` (absent in a generated rig) ›
    "continues when only updatedAt moved and still reports the marker evidence"
    and `test/template/content-blind-revalidation.test.ts` › "refuses a deleted
    tracked claim in a fresh run without take-up markers".

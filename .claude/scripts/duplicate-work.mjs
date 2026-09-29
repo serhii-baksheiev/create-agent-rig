@@ -42,10 +42,13 @@
 // `#220` in a title, or a `<type>/220-` branch token — because a loose number
 // is common English text, not a ticket reference.
 //
-// The current checkout's own branch, and any open, SAME-REPOSITORY PR whose
-// `headRefName` is that branch, are excluded: that is this controller's own
-// work, not a duplicate. A fork PR naming the same branch is NOT excluded —
-// `headRefName` alone does not prove the PR belongs to this repository.
+// The current checkout's own branch, the checkout's own configured upstream
+// tracking branch (`@{u}`, remote prefix stripped — a resumed checkout picking
+// up a previous session's pushed branch under a new local name), and any
+// open, SAME-REPOSITORY PR whose `headRefName` is the current branch, are
+// excluded: that is this controller's own work, not a duplicate. A fork PR
+// naming the same branch is NOT excluded — `headRefName` alone does not prove
+// the PR belongs to this repository.
 //
 // Exit codes:
 //   0  clean          — every APPLICABLE source was read and nothing else
@@ -120,14 +123,23 @@
 //   rig) › "a journal write failure still prints the verdict, and the exit
 //   code is the verdict's — never the usage-refusal 1".
 // - Own-work exclusion is exact-string: the checkout's current branch name,
-//   and a same-repository PR's `headRefName` equal to it. A rename, a fork
-//   working the same ticket under a differently-spelled branch, or a
-//   detached HEAD (`git rev-parse --abbrev-ref HEAD` answers the literal
-//   string `HEAD`, which matches no real branch name) is not recognised as
-//   "own" — pinned, not just documented: `test/template/duplicate-work.test.ts`
-//   (absent in a generated rig) › "detached HEAD — own-work exclusion
-//   misses, so the checkout's own branch is (mis)reported as a duplicate
-//   (pinned current behaviour)".
+//   the checkout's own configured upstream tracking branch name (`@{u}`, the
+//   remote prefix stripped) when one is set, and a same-repository PR's
+//   `headRefName` equal to the current branch name. The upstream form is what
+//   a RESUMED checkout needs — a second session picking up a previous one's
+//   pushed branch typically checks out a new local branch name that TRACKS
+//   the old one, rather than reusing its exact name — pinned:
+//   `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
+//   "own-work exclusion also recognises the current branch's upstream
+//   tracking branch, not only its literal name (RP-300)". A branch rename
+//   with no upstream configured, a fork working the same ticket under a
+//   differently-spelled branch, or a detached HEAD (`git rev-parse
+//   --abbrev-ref HEAD` answers the literal string `HEAD`, which matches no
+//   real branch name, and `@{u}` fails outright on a detached HEAD) is still
+//   not recognised as "own" — pinned, not just documented:
+//   `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
+//   "detached HEAD — own-work exclusion misses, so the checkout's own branch
+//   is (mis)reported as a duplicate (pinned current behaviour)".
 // - A same-id branch under a naming convention `matchesTicket` does not
 //   recognise (no boundary-bounded occurrence of the id anywhere in the ref)
 //   is not seen — an untested design limit: fuzzy title matching is
@@ -211,6 +223,7 @@ export const matchesTicket = (id, text) => {
 export const classify = ({
   ticket,
   ownBranch = null,
+  ownUpstreamBranch = null,
   branches = { status: 'unavailable', refs: [] },
   prs = { status: 'unavailable', items: [] },
 } = {}) => {
@@ -218,7 +231,7 @@ export const classify = ({
 
   if (branches.status === 'read') {
     for (const ref of branches.refs ?? []) {
-      if (ref === ownBranch) continue;
+      if (ref === ownBranch || ref === ownUpstreamBranch) continue;
       if (matchesTicket(ticket, ref)) matches.push({ source: 'branch', ref, field: 'ref' });
     }
   }
@@ -265,6 +278,36 @@ const currentBranch = (cwd) => {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: withoutGitLocation(),
     }).trim();
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * The checkout's own configured upstream tracking branch (`@{u}`), with the
+ * remote prefix stripped (`origin/feat/rp-9040-original` →
+ * `feat/rp-9040-original`) — the remote's branch NAME, comparable against
+ * `git ls-remote --heads origin`'s own bare names. `null` when no upstream is
+ * configured, or when it cannot be told for any other reason (no repo, a
+ * detached HEAD). Setting this is an action only this checkout itself can
+ * take (`git checkout --track` or `git branch --set-upstream-to`) — never
+ * another controller's branch, which is exactly why it is safe to exclude:
+ * see the RP-300 own-work exclusion tests.
+ */
+const ownUpstreamBranch = (cwd) => {
+  try {
+    const ref = execFileSync(
+      'git',
+      ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'],
+      {
+        cwd,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: withoutGitLocation(),
+      },
+    ).trim();
+    const slash = ref.indexOf('/');
+    return slash === -1 ? null : ref.slice(slash + 1);
   } catch {
     return null;
   }
@@ -481,10 +524,17 @@ if (invokedDirectly()) {
 
   const cwd = process.cwd();
   const ownBranch = currentBranch(cwd);
+  const ownUpstream = ownUpstreamBranch(cwd);
   const origin = originStatus(cwd);
   const branches = remoteBranches(cwd, origin);
   const prs = openPrs(parsed.ticket, cwd, origin);
-  const result = classify({ ticket: parsed.ticket, ownBranch, branches, prs });
+  const result = classify({
+    ticket: parsed.ticket,
+    ownBranch,
+    ownUpstreamBranch: ownUpstream,
+    branches,
+    prs,
+  });
   const exitCode = EXIT_CODES[result.verdict];
 
   // Printed BEFORE the journal write below, deliberately: exit 1 must never
