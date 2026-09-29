@@ -1113,6 +1113,165 @@ describe('RP-224 round 4 — coarse free-text path scrub, whole-field secret red
   });
 });
 
+// RP-297 — `isFreeTextPathToken`'s coarse scan triggered on ANY token merely
+// CONTAINING a forward slash, so an N/N fraction and a repo-relative evidence
+// path (a test id, a gate-round count) were scrubbed to `[path]` — and the
+// scrub then consumes everything from that token's own start to the end of
+// the segment, swallowing whatever followed it too. The reported case:
+// `--diagnosis "Gate rounds 3/3 exhausted … (agents-md-region-uninstall.test.ts:367 says …"`
+// published as `diagnosis: Gate rounds [path]` — the fraction "3/3" started
+// the scrub and everything after it, including the test identity, was lost.
+//
+// The fix: a free-text token starts a path span only when it starts with
+// `~`, `/`, or `\`, or CONTAINS a `\`, or carries a drive-letter prefix
+// (`C:\` / `C:/`) — never merely for containing `/` — while a token whose
+// path carries a `..` segment is still treated as a path, because that shape
+// can climb out of the repo regardless of which separator it uses.
+describe('RP-297 — free-text path token trigger is shape-based, not any forward slash', () => {
+  it('leaves an N/N fraction in diagnosis untouched, with the trailing text intact', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis = 'Gate rounds 3/3 exhausted, retry needed';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('leaves a repo-relative test identity in diagnosis untouched, with the trailing text intact', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis = 'see packages/cli/test/x.test.ts:367 for the failing assertion';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('leaves a sentence mixing an N/N fraction and a repo-relative test identity untouched, verbatim — the reported RP-297 shape', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const diagnosis =
+      'Gate rounds 3/3 exhausted (agents-md-region-uninstall.test.ts:367 says neither marker matched)';
+    const note = composeNote({ ticket: 'RP-1', stop: 'escalation', diagnosis });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).toBe(`diagnosis: ${diagnosis}`);
+  });
+
+  it('still scrubs an absolute POSIX path in diagnosis (/home/alice/x)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'log written to /home/alice/x for review',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a tilde-prefixed path in diagnosis (~/x)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'backup kept under ~/x afterward',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('~/x');
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a relative path carrying a backslash in diagnosis (home\\alice)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'moved into home\\alice quietly',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a backslash drive-letter path in diagnosis (C:\\Users\\alice)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'trace shows C:\\Users\\alice today',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a forward-slash drive-letter path in diagnosis (C:/Users/alice)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'trace shows C:/Users/alice today',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toMatch(/alice/);
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a UNC path in diagnosis (\\\\server\\share\\x)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'checkout lives at \\\\server\\share\\x currently',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('\\\\server\\share\\x');
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a slash-separated relative path that climbs out of the repo with .. segments (../../etc/passwd)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'config read from ../../etc/passwd unexpectedly',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('../../etc/passwd');
+    expect(line).toContain('[path]');
+  });
+
+  it('still scrubs a relative path with an embedded .. segment mid-path (a/../../b)', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'resolved to a/../../b during the walk',
+    });
+    const line = note.split('\n').find((l) => l.startsWith('diagnosis: ')) as string;
+    expect(line).not.toContain('a/../../b');
+    expect(line).toContain('[path]');
+  });
+});
+
 // --- readRunEvidence -----------------------------------------------------
 
 // RP-224 round 2 — code-reviewer r1 HOLD (checklist item 6, continuation.mjs:218):

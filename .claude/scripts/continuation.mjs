@@ -241,25 +241,40 @@
 //   below already covers it for `diagnosis`/`remaining`, which is the only
 //   place a person types a home-directory path by hand.
 // - `diagnosis` and `remaining` go through ONE MORE pass after the five
-//   structured patterns above: any WHITESPACE-DELIMITED token that contains
-//   `/` or `\`, or starts with `~`, and is not an `http://`/`https://` URL,
-//   starts a scrubbed span. The span begins at the token's own first
-//   character (so a leading hard delimiter — an opening `"`, for
-//   instance — stays outside it, because the text is first split on hard
-//   delimiters and each delimiter-free segment is scrubbed on its own) and
-//   runs to the next hard delimiter or the end of the field — the same
-//   "consume through whitespace" rule the five structured patterns already
-//   use, and for the same reason: this is the coarse, safe-direction
-//   backstop for every shape the five named patterns do not recognise —
-//   `smb://…`, `vscode-remote://…`, a drive-less rooted Windows path
-//   (`\Users\alice\x`), a tilde path naming a user directly (`~alice/x`), a
-//   bare `~\x`, and the digit-prefixed drive path above (`9C:\Users\alice`,
-//   which the structured `DRIVE_PATH` pattern deliberately excludes). It is
-//   coarser on purpose: it does not distinguish a relative path from an
-//   absolute one, and it can swallow trailing prose the five structured
-//   patterns would have left alone (a plain word after a scrubbed tilde path,
-//   for instance) — over-scrubbing diagnosis/remaining text is the accepted
-//   trade for never under-scrubbing it. It runs ONLY on these two fields,
+//   structured patterns above: any WHITESPACE-DELIMITED token whose SHAPE
+//   looks like a path — not merely one that contains a `/` anywhere, which
+//   is what RP-297 fixed (see below) — starts a scrubbed span. A token
+//   triggers this pass when it starts with `~`, `/`, or `\`; or contains a
+//   `\` anywhere; or carries a drive-letter prefix (`C:\`/`C:/`); or
+//   contains a `..` path segment; or is a non-`http(s)` URI scheme
+//   (`file://`, `smb://`, `vscode-remote://`, …); or is an
+//   environment-variable-style reference (`$HOME`, `%USERPROFILE%`) that
+//   also carries a path separator — and it is not an `http://`/`https://`
+//   URL. The span begins at the token's own first character (so a leading
+//   hard delimiter — an opening `"`, for instance — stays outside it,
+//   because the text is first split on hard delimiters and each
+//   delimiter-free segment is scrubbed on its own) and runs to the next hard
+//   delimiter or the end of the field — the same "consume through
+//   whitespace" rule the five structured patterns already use, and for the
+//   same reason: this is the coarse, safe-direction backstop for every shape
+//   the five named patterns do not recognise — `smb://…`, `vscode-remote://…`,
+//   a drive-less rooted Windows path (`\Users\alice\x`), a tilde path naming
+//   a user directly (`~alice/x`), a bare `~\x`, and the digit-prefixed drive
+//   path above (`9C:\Users\alice`, which the structured `DRIVE_PATH` pattern
+//   deliberately excludes). It is coarser on purpose: it does not
+//   distinguish a relative path from an absolute one, and it can swallow
+//   trailing prose the five structured patterns would have left alone (a
+//   plain word after a scrubbed tilde path, for instance) —
+//   over-scrubbing diagnosis/remaining text is the accepted trade for never
+//   under-scrubbing it, UP TO the shape the trigger itself recognises: a
+//   relative, separator-less token such as `Users/alice/x` — no leading
+//   separator, no backslash, no `..` segment, no recognised scheme — is now
+//   OUTSIDE that shape and survives verbatim, same as an N/N fraction
+//   (`3/3`) or a repo-relative test identity
+//   (`packages/cli/test/x.test.ts:367`); see `test/template/
+//   continuation.test.ts` (absent in a generated rig), `describe('RP-297 —
+//   free-text path token trigger is shape-based, not any forward slash')`.
+//   It runs ONLY on these two fields,
 //   never on a structured one, because a structured field's caller
 //   constructs the value rather than typing it under pressure. Bounded, not
 //   linear: the field is split once on hard delimiters (a native
@@ -414,11 +429,49 @@ const scrubPaths = (text) =>
 // delimiter) outside the span it scrubs.
 const HARD_DELIMITER_SPLIT = /(["'`|<>⏎])/g;
 const HTTP_URL_PREFIX = /^https?:\/\//i;
+// A non-http(s) URI scheme (`file://`, `smb://`, `vscode-remote://`, …) —
+// checked only after HTTP_URL_PREFIX has already excluded http(s) itself.
+const SCHEME_URI_PREFIX = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+// A drive-letter path (`C:\…` / `C:/…`), including a bare single-letter
+// prefix that itself carries no leading separator otherwise.
+const DRIVE_LETTER_PREFIX = /^[A-Za-z]:[\\/]/;
+// `$HOME/x`, `%USERPROFILE%\x` — an environment-variable-style path
+// reference, recognised only when it is ALSO followed somewhere by a path
+// separator (so a bare `$5` or `%done%` is not mistaken for one).
+const ENV_VAR_PREFIX = /^[$%]/;
 
-/** Does this whitespace-delimited token start a coarse free-text path span? */
+/** Does this token contain a literal `..` path segment (split on `/` and `\`)? */
+const hasDotDotSegment = (token) => token.split(/[\\/]/).includes('..');
+
+/**
+ * Does this whitespace-delimited token start a coarse free-text path span?
+ *
+ * RP-297: this used to trigger on ANY token merely CONTAINING a `/`, which
+ * misread an N/N fraction (`3/3`) and a repo-relative evidence identity
+ * (`packages/cli/test/x.test.ts:367`) as a path — and the scrub then
+ * consumes everything from that token's own start to the end of the
+ * segment, so the trailing text (a test id, a line number) was lost too.
+ * The rule is now SHAPE-based: a token starts a path span only when it
+ * starts with `~`, `/`, or `\`; or contains a `\` anywhere; or carries a
+ * drive-letter prefix (`C:\`/`C:/`); or contains a `..` path segment (which
+ * can climb out of the repo regardless of which separator it uses); or is a
+ * non-http(s) URI (`file://`, `smb://`, `vscode-remote://`, …); or is an
+ * environment-variable-style reference (`$HOME`, `%USERPROFILE%`) that also
+ * carries a path separator somewhere in the token. A relative,
+ * separator-less token such as `Users/alice/x` — no leading separator, no
+ * backslash, no `..` segment — is deliberately NOT one of these shapes and
+ * now survives verbatim; see `test/template/continuation.test.ts` (absent
+ * in a generated rig), `describe('RP-297 — …')`.
+ */
 const isFreeTextPathToken = (token) => {
   if (HTTP_URL_PREFIX.test(token)) return false;
-  return token.startsWith('~') || token.includes('/') || token.includes('\\');
+  if (token.startsWith('~') || token.startsWith('/') || token.startsWith('\\')) return true;
+  if (token.includes('\\')) return true;
+  if (DRIVE_LETTER_PREFIX.test(token)) return true;
+  if (hasDotDotSegment(token)) return true;
+  if (SCHEME_URI_PREFIX.test(token)) return true;
+  if (ENV_VAR_PREFIX.test(token) && (token.includes('/') || token.includes('\\'))) return true;
+  return false;
 };
 
 /**
