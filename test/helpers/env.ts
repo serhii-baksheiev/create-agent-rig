@@ -127,18 +127,18 @@ export const fifosAvailable = (): { ok: boolean; reason: string } => ({
 /**
  * Can this process spawn a child whose working directory is very deep?
  * Windows refuses to start a process whose cwd exceeds MAX_PATH (about 260
- * characters) — measured directly (RP-247): a spawn with a cwd 40 levels
- * deep succeeds, one 60 levels deep returns ENOENT before the child ever
- * runs, at all. A fixture that builds a cwd hundreds of levels deep to push
- * `resolve()` past a component bound therefore fails to spawn at all there,
- * for a reason that has nothing to do with the guard under test — not a
+ * characters), and macOS refuses to create a path longer than its PATH_MAX
+ * (1024 bytes). A fixture that builds a cwd hundreds of levels deep to push
+ * `resolve()` past a component bound therefore fails there before the guard
+ * runs, for a reason that has nothing to do with the guard under test — not a
  * guard defect to report.
  */
 export const deepCwdSpawnAvailable = (): { ok: boolean; reason: string } => ({
-  ok: process.platform !== 'win32',
+  ok: process.platform !== 'win32' && process.platform !== 'darwin',
   reason:
-    'Windows cannot start a process whose cwd exceeds MAX_PATH (about 260 characters); this ' +
-    'fixture builds a cwd hundreds of levels deep, so the spawn itself fails before the guard runs',
+    'Windows cannot start a process whose cwd exceeds MAX_PATH (about 260 characters) and macOS ' +
+    'cannot create a path past PATH_MAX (1024 bytes); this fixture builds a cwd hundreds of ' +
+    'levels deep, so it fails before the guard runs',
 });
 
 /**

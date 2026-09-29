@@ -20,18 +20,15 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * work first, has not met that bar either, and a killed hook is still an
  * ALLOW.
  *
- * `canonicalPath` cannot be imported directly from `guard-rulebook.mjs`
- * today: that file calls `process.exit(main())` at module top level, so
+ * `canonicalPath` is not imported from `guard-rulebook.mjs`: that file calls `process.exit(main())` at module top level, so
  * importing it in-process would kill the test worker the same way
  * `edit-input.mjs` and `hook-input.mjs` were split out to avoid exactly
- * that. The planned fix extracts it into a side-effect-free module,
+ * that. It lives in a side-effect-free module,
  * `templates/agent-os/universal/.claude/hooks/lib/canonical-path.mjs`,
  * exporting `canonicalPath(filePath, { realpath } = {})` with `realpath`
  * defaulting to `realpathSync.native` — injectable here so the tests below
  * can pin the WALK's own bound directly (call counts), not merely its final
  * answer, and can do so without a real filesystem for the over-bound case.
- *
- * This module does not exist yet: every test below fails at import.
  *
  * Non-vacuity — the mutation this suite exists to catch: moving the
  * `exceedsPathComponentBound(resolved)` check from before the walk's `for`
@@ -116,7 +113,7 @@ describe('canonicalPath: bounded work over the component count, pinned in-proces
       await removeFixture(dir);
     });
 
-    it('a path just under the bound resolves normally, with the default realpath', async () => {
+    it('an ordinary in-bound path resolves normally, with the default realpath', async () => {
       const { canonicalPath } = await load();
       // `dir` is already canonical (realpath'd above); `x.md` itself need
       // not exist — canonicalPath's job is resolving the nearest EXISTING

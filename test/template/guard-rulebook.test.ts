@@ -1428,20 +1428,14 @@ describe('guard-rulebook: canonicalPath fails closed when resolve() crosses the 
   });
 
   // RP-247 round 3 — a THIRD gap in `canonicalPath`, found while fixing the
-  // round-2 bound: the extracted implementation seeds the walk's `tail` with
-  // `basename(resolved)` and starts `cursor` at `dirname(resolved)`,
-  // skipping a `realpath` attempt on the full resolved path (leaf included).
-  // That skip was made to keep the round-3 component-count pin at ≤101
-  // calls — but a `file_path` whose own LEAF is a symlink is never resolved
-  // by a walk that never tries the leaf itself: `canonicalPath('src/link.md')`
-  // returns the lexical `src/link.md` unchanged even when that symlink
+  // round-2 bound: a variant of the extracted walk that skipped the
+  // `realpath` attempt on the full resolved path (leaf included) was
+  // rejected, because a `file_path` whose own LEAF is a symlink is never
+  // resolved by a walk that never tries the leaf itself: `canonicalPath('src/link.md')`
+  // would return the lexical `src/link.md` unchanged even when that symlink
   // points at `.claude/rules/x.md`, so a Write through such a link never
-  // matches the rulebook prefix. No huge component count needed — this is a
-  // POSIX-only fixture (`symlinksAvailable`) because building it needs a
-  // real symlink, which an ordinary Windows CI account cannot create
-  // (`symlinksAvailable`'s own reason, `env.ts`); the walk logic itself is
-  // platform-neutral, and the win32-only cases above already cover the
-  // Windows-specific reproductions of the OTHER two gaps.
+  // matches the rulebook prefix. No huge component count is needed. The case
+  // runs wherever `symlinksAvailable` says a symlink can be created.
   it('blocks a Write to a symlink file whose target is inside the rulebook', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await mkdir(path.join(root, '.claude', 'rules'), { recursive: true });
