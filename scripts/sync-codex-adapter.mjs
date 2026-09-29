@@ -45,6 +45,30 @@ const REASONING_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
  */
 const CLAUDE_ONLY_HOOKS = new Set(['guard-subagent-model.mjs', 'warn-subagent-routing.mjs']);
 
+/**
+ * RP-266: these four guards' Windows wrapper had three unbounded waits (`git
+ * rev-parse --show-toplevel`, the stdin copy, `$child.WaitForExit()`) and no
+ * `timeout` in `.claude/settings.json`, so a host stall on any of them ended
+ * only at the harness's own default hook timeout — which resolves to ALLOW
+ * (docs/decisions/fail-open-guards.md). Each stage below now carries an
+ * explicit millisecond bound and kills the whole process tree on expiry.
+ */
+const BOUNDED_STAGE_GUARDS = new Set([
+  'guard-secret-file.mjs',
+  'guard-rulebook.mjs',
+  'block-no-verify.mjs',
+  'guard-bash.mjs',
+]);
+
+// Measured on hosted Windows runners (RP-111): these guards have taken
+// ~20-30s per invocation under load, so the guard/child stage needs
+// headroom; git and stdin are fast local operations and get a tighter bound.
+// Sum (50 000 ms) stays under the 60 s `.claude/settings.json` timeout for
+// these four hooks (see `codexHooks` below).
+const GIT_STAGE_TIMEOUT_MS = 5_000;
+const STDIN_STAGE_TIMEOUT_MS = 5_000;
+const GUARD_STAGE_TIMEOUT_MS = 40_000;
+
 const slash = (value) => value.replaceAll('\\', '/');
 
 // RP-177 retired the `init` override layer and the per-stack overlays — there
@@ -177,27 +201,74 @@ function windowsHookCommand(command) {
   const argumentsLine = isRecordDispatch(command)
     ? "$startInfo.Arguments = '\"' + $hookPath + '\" --harness=codex'"
     : "$startInfo.Arguments = '\"' + $hookPath + '\"'";
+  const bounded = BOUNDED_STAGE_GUARDS.has(hookFileOf(command));
   // PowerShell owns its stdin, so `& node` receives an empty stream. Copy the
   // original bytes into a child process explicitly; parsing and re-encoding the
   // JSON here would make the wrapper a second implementation of the hook input.
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    '$repoRoot = git rev-parse --show-toplevel',
-    'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
-    '$env:CLAUDE_PROJECT_DIR = $repoRoot',
-    `$hookPath = Join-Path $repoRoot '${hook}'`,
-    '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
-    "$startInfo.FileName = 'node'",
-    argumentsLine,
-    '$startInfo.UseShellExecute = $false',
-    '$startInfo.RedirectStandardInput = $true',
-    '$child = [System.Diagnostics.Process]::Start($startInfo)',
-    '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
-    '$child.StandardInput.Close()',
-    '$child.WaitForExit()',
-    'exit $child.ExitCode',
-  ].join('; ');
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
+  const script = bounded
+    ? [
+        "$ErrorActionPreference = 'Stop'",
+        // RP-266 follow-up: `$env:RIG_CODEX_WRAPPER_TIMEOUT_MS` is a test-only
+        // knob that can only LOWER a stage's bound, never raise it — `$rigMs`
+        // starts at the largest possible value, so an absent/unparsable
+        // override leaves every `-lt` comparison below false and every stage
+        // at its real production default.
+        '$rigRaw = $env:RIG_CODEX_WRAPPER_TIMEOUT_MS',
+        '$rigMs = [int]::MaxValue',
+        "if ($rigRaw -match '^[0-9]+$') { $rigMs = [int]$rigRaw }",
+        `$gitBoundMs = ${GIT_STAGE_TIMEOUT_MS}`,
+        '$gitOverridden = $rigMs -lt $gitBoundMs',
+        'if ($gitOverridden) { $gitBoundMs = $rigMs }',
+        '$gitInfo = New-Object System.Diagnostics.ProcessStartInfo',
+        "$gitInfo.FileName = 'cmd.exe'",
+        "$gitInfo.Arguments = '/c git rev-parse --show-toplevel'",
+        '$gitInfo.UseShellExecute = $false',
+        '$gitInfo.RedirectStandardOutput = $true',
+        '$gitProc = [System.Diagnostics.Process]::Start($gitInfo)',
+        `if ($gitOverridden) { $gitOk = $gitProc.WaitForExit($gitBoundMs) } else { $gitOk = $gitProc.WaitForExit(${GIT_STAGE_TIMEOUT_MS}) }`,
+        'if (-not $gitOk) { taskkill /PID $gitProc.Id /T /F 2>$null | Out-Null; [Console]::Error.WriteLine("codex wrapper: git rev-parse timed out after $gitBoundMs ms"); exit 2 }',
+        '$repoRoot = $gitProc.StandardOutput.ReadToEnd().Trim()',
+        'if ($gitProc.ExitCode -ne 0) { exit $gitProc.ExitCode }',
+        '$env:CLAUDE_PROJECT_DIR = $repoRoot',
+        `$hookPath = Join-Path $repoRoot '${hook}'`,
+        '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
+        "$startInfo.FileName = 'node'",
+        argumentsLine,
+        '$startInfo.UseShellExecute = $false',
+        '$startInfo.RedirectStandardInput = $true',
+        '$child = [System.Diagnostics.Process]::Start($startInfo)',
+        `$stdinBoundMs = ${STDIN_STAGE_TIMEOUT_MS}`,
+        '$stdinOverridden = $rigMs -lt $stdinBoundMs',
+        'if ($stdinOverridden) { $stdinBoundMs = $rigMs }',
+        '$copyTask = [Console]::OpenStandardInput().CopyToAsync($child.StandardInput.BaseStream)',
+        `if ($stdinOverridden) { $stdinOk = $copyTask.Wait($stdinBoundMs) } else { $stdinOk = $copyTask.Wait(${STDIN_STAGE_TIMEOUT_MS}) }`,
+        'if (-not $stdinOk) { taskkill /PID $child.Id /T /F 2>$null | Out-Null; [Console]::Error.WriteLine("codex wrapper: stdin timed out after $stdinBoundMs ms"); exit 2 }',
+        '$child.StandardInput.Close()',
+        `$guardBoundMs = ${GUARD_STAGE_TIMEOUT_MS}`,
+        '$guardOverridden = $rigMs -lt $guardBoundMs',
+        'if ($guardOverridden) { $guardBoundMs = $rigMs }',
+        `if ($guardOverridden) { $guardOk = $child.WaitForExit($guardBoundMs) } else { $guardOk = $child.WaitForExit(${GUARD_STAGE_TIMEOUT_MS}) }`,
+        'if (-not $guardOk) { taskkill /PID $child.Id /T /F 2>$null | Out-Null; [Console]::Error.WriteLine("codex wrapper: guard timed out after $guardBoundMs ms"); exit 2 }',
+        'exit $child.ExitCode',
+      ]
+    : [
+        "$ErrorActionPreference = 'Stop'",
+        '$repoRoot = git rev-parse --show-toplevel',
+        'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
+        '$env:CLAUDE_PROJECT_DIR = $repoRoot',
+        `$hookPath = Join-Path $repoRoot '${hook}'`,
+        '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
+        "$startInfo.FileName = 'node'",
+        argumentsLine,
+        '$startInfo.UseShellExecute = $false',
+        '$startInfo.RedirectStandardInput = $true',
+        '$child = [System.Diagnostics.Process]::Start($startInfo)',
+        '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
+        '$child.StandardInput.Close()',
+        '$child.WaitForExit()',
+        'exit $child.ExitCode',
+      ];
+  const encoded = Buffer.from(script.join('; '), 'utf16le').toString('base64');
   return `powershell.exe -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
 }
 
