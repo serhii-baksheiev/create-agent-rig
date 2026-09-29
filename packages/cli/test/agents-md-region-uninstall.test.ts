@@ -363,9 +363,9 @@ describe('planUninstall / applyUninstall — a non-UTF-8 byte in the region file
  * malformed" are pinned here: the marker lines removed wholesale (no begin/
  * end line left at all), and the WHOLE FILE converted to CRLF — the file
  * still visibly HAS marker-looking lines, but `wholeLineIndexesOf`
- * (agents-md-region.ts) requires an exact `\n` immediately after a marker to
- * count it as a whole line, and CRLF puts a `\r` there instead, so neither
- * marker is recognised. In both cases `locateRegion` returns `null` and the
+ * (agents-md-region.ts) counts a marker only as a whole line followed by
+ * `\n` or the end of the file, and CRLF puts a `\r` after the begin marker,
+ * so the begin marker is not recognised. In both cases `locateRegion` returns `null` and the
  * only way out (short of a hand-edit restoring valid markers) is `--detach`.
  */
 describe('planUninstall / applyUninstall — a region-tracked AGENTS.md with its markers destroyed stays preserved forever, only --detach releases it (RP-270, documented limit)', () => {
