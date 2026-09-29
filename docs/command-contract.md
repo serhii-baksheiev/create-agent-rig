@@ -1058,8 +1058,12 @@ managed region (RP-256 slice 2)".
 Two limits of region tracking are stated here rather than fixed (RP-270).
 First, a region whose markers the user removed wholesale, or an AGENTS.md
 converted to CRLF as a whole, is `preserved` on every plan, so it keeps the
-manifest alive on every ordinary uninstall. The region body is compared by
-hash, with no line-ending leniency. Only `--detach` releases the manifest,
+manifest alive on every ordinary uninstall. In both cases the markers are no
+longer found: a marker counts only as a whole line ending in `
+`, so after a
+CRLF conversion neither marker is recognised (`wholeLineIndexesOf` in
+`packages/cli/src/lib/agents-md-region.ts`), and the plan reports the
+markers as missing or malformed. Only `--detach` releases the manifest,
 and it leaves the file as it is. Pinned by
 `packages/cli/test/agents-md-region-uninstall.test.ts` › "limit: %s —
 planned preserved (never kept) and held on every ordinary run; only --detach
