@@ -595,6 +595,229 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     ).toBe(2);
   });
 
+  // RP-309 gate round 2 (PR #357 review): `foldRelativeCwd` re-splits,
+  // re-joins and spreads the WHOLE tracked anchor on every single relative
+  // `cd` it resolves — there is no bound tying that per-call cost to how many
+  // `cd`s the command line has already folded. A command line with one deep
+  // anchored prefix followed by many CHEAP-looking relative `cd`s (`cd b &&
+  // cd ..`, which lands back exactly where it started) pays the anchor's full
+  // length on every one of them: anchor length × chain length, not anchor
+  // length + chain length. That is exactly the quadratic hazard
+  // `.claude/rules/invariants.md` ("A guard that fails open must do provably
+  // bounded work") names — a hook that times out does not block, so every
+  // rule silently switches off for that command. Measured directly against
+  // this hook: killed at the probe's own 20s ceiling, nowhere near returning.
+  // Measured in the child (RP-158), never by the parent's wall clock around
+  // the spawn.
+  it('resolves a relative cd chain against a long anchored prefix in bounded time, not quadratically (RP-309 gate round 2)', async () => {
+    const anchor = 'a/'.repeat(40_000);
+    const chain = `cd ~/${anchor} && ` + 'cd b && cd .. && '.repeat(12_000) + 'rm -rf ~';
+    // Killed well under vitest's own 15s project timeout, so a hang reports
+    // THIS assertion's message rather than a bare framework timeout.
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: the anchored cd lands under ~, and 'rm -rf ~' wipes the home directory (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 gate round 2 (code-reviewer round 2): the N=2000 chain above
+  // passes even on the quadratic `foldRelativeCwd` — at that size the
+  // quadratic cost is small enough (a few million element copies) to finish
+  // well inside the bound, so it cannot tell a linear fold from one that
+  // re-copies the whole tracked path on every `cd`. This chain is 20× longer
+  // AND never pops, so the tracked anchor grows to 40,000 segments and stays
+  // there — a quadratic fold pays for the full, ever-growing anchor on every
+  // one of the 40,000 pushes, rather than a bounded amount of work per `cd`.
+  // Measured directly: ~92s on this quadratic code, ~161ms on the code before
+  // RP-309 (which did no relative-cd folding at all). This EXTENDS the N=2000
+  // test above, which stays exactly as it is — this is the case that actually
+  // separates linear from quadratic. Measured in the child (RP-158), never by
+  // the parent's wall clock around the spawn.
+  it('resolves a long, non-popping relative cd chain in bounded time, not quadratically (RP-309 gate round 2)', async () => {
+    const chain = 'cd ~ && ' + 'cd a;'.repeat(40_000) + 'rm -rf /';
+    // Killed well under vitest's own 15s project timeout, so a hang reports
+    // THIS assertion's message rather than a bare framework timeout.
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: 'rm -rf /' is catastrophic regardless of cwd tracking (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 gate round 2: `resolveCwdTarget` reads the RAW first token
+  // (`command.args[0]`) specifically so `cd -` (return to $OLDPWD) can be told
+  // apart from a bare `cd` (lands at $HOME) — but that also means a leading
+  // FLAG (`-P`, `-L`, `--`) is read as if it were the target itself, and the
+  // real path one argument later is never looked at. With nothing tracked yet
+  // `resolveCwdTarget` falls through every anchor check and returns null, so
+  // the anchored `cd` behind the flag is invisible to the wildcard-delete
+  // check that follows; with something already tracked, the flag is instead
+  // folded in as if it were a relative PATH SEGMENT (`cd ~ && cd -P /` tracks
+  // `~/-P`, not `/`). Confirmed on head 0ac2fa3: every command below exits 0
+  // today.
+  it('reads the cd target past a `-P`/`-L`/`--` flag, not the flag itself (RP-309 gate round 2)', async () => {
+    for (const command of [
+      'cd -P ~ && rm -rf *',
+      'cd -L / && rm -rf *',
+      'cd -- ~ && rm -rf *',
+      'cd -P /etc && rm -rf *',
+      'cd -- ~/.ssh && rm -rf *',
+      'cd ~ && cd -P / && rm -rf *',
+      'cd -L ~ && rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — should BLOCK (the flag hides the real anchored target), exits ${result.code} on head`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-309 gate round 2: `resolveCwdTarget`'s anchor test
+  // (`/^(\/|~|\$HOME)/`) reads the operand BEFORE `normalizeTarget` folds a
+  // BRACED `${HOME}` down to `$HOME` — so the ordinary spelling once anything
+  // needs concatenating onto it (`${HOME}/.ssh`) never matches the anchor
+  // test at all, and is treated as an unanchored relative cd instead.
+  // Confirmed on head 0ac2fa3: every command below exits 0 today.
+  it('recognises a braced `${HOME}` as an anchor for cd tracking, not just the bare `$HOME` spelling (RP-309 gate round 2)', async () => {
+    for (const command of [
+      'cd ${HOME} && rm -rf *',
+      'cd "${HOME}" && rm -rf *',
+      'cd ${HOME}/.ssh && rm -rf *',
+      'cd ~ && cd ${HOME} && rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — should BLOCK (\${HOME} is an anchor), exits ${result.code} on head`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-309 gate round 2: `foldRelativeCwd` only special-cases a `..`
+  // segment; a literal `.` (a bare `cd .`, or the artifact `normalizeTarget`
+  // still returns for a purely-dot operand like `.`/`./` — a KNOWN case that
+  // function does not fold away) is pushed onto the tracked stack as an
+  // ordinary segment instead of being dropped as a no-op. The tracked target
+  // then carries a literal `.` segment that is never an exact member of
+  // `CATASTROPHIC`, so the wildcard-delete check that follows never fires —
+  // and a later `..` pops the `.` placeholder instead of the real segment
+  // underneath it, leaving the tracked target one level too deep. Confirmed
+  // on head 0ac2fa3: every command below exits 0 today.
+  it('folds a no-op `cd .`/`cd ./` into the tracked anchor instead of leaving a literal dot segment (RP-309 gate round 2)', async () => {
+    for (const command of [
+      'cd ~ && cd . && rm -rf *',
+      'cd / && cd ./ && rm -rf *',
+      'cd ~/p && cd . && cd .. && rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — should BLOCK (cd . is a no-op; the tracked target is unchanged), exits ${result.code} on head`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-309 gate round 2: the fixes above must not start blocking the
+  // ordinary cases they sit right next to — a flagged RELATIVE cd (nothing
+  // anchored at all yet) and a no-op `cd .` off a non-catastrophic anchored
+  // directory.
+  it('keeps allowing a flagged relative cd and a no-op `cd .` off a non-catastrophic anchor (RP-309 gate round 2)', async () => {
+    for (const command of [
+      'cd -P src && rm -rf dist/*',
+      'cd -- build && rm -rf *',
+      'cd ~/project && cd . && rm -rf *',
+    ]) {
+      expect((await run(command)).code, command).toBe(0);
+    }
+  });
+
+  // RP-309 gate round 2 (owner-controller decision, "the escape check"): the
+  // wildcard/escape check only ever compares an `rm` operand against the
+  // WHITELISTED literal strings `*`, `.`, `./*`, `./`, `..`, `../*` — never
+  // against the tracked cwd folded together with the operand. So `rm -rf
+  // ..`/`rm -rf ../*` are recognised only when the tracked cwd ITSELF is
+  // already catastrophic (`~`, `/`, …); when it is an ordinary subdirectory
+  // (`~/project`) the same operands resolve to the catastrophic PARENT (`~`,
+  // `~/*`) without ever being compared against it. Confirmed on head 0ac2fa3:
+  // the three BLOCK cases below all exit 0 today; the ALLOW case already
+  // exits 0 and must keep doing so once the resolution above is added.
+  it('resolves a `..`/`../*` rm operand against the tracked cwd, not only against an already-catastrophic one (RP-309 gate round 2)', async () => {
+    for (const command of [
+      'cd ~/project && rm -rf ..',
+      'cd ~/project && rm -rf ../*',
+      'cd /srv && rm -rf ../*',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — should BLOCK (resolves to a catastrophic parent), exits ${result.code} on head`,
+      ).toBe(2);
+    }
+    const allowed = await run('cd ~/project/build && rm -rf ../dist');
+    expect(
+      allowed.code,
+      'cd ~/project/build && rm -rf ../dist resolves to ~/project/dist, which is not catastrophic — must stay allowed',
+    ).toBe(0);
+  });
+
+  // RP-309 gate round 2: a bare `pushd` (no operand) does not cd anywhere —
+  // it SWAPS the top two entries of the directory stack, landing wherever the
+  // OTHER stack entry already was, which this guard cannot know. Tracking
+  // treats an empty operand as "lands at $HOME" for BOTH `cd` and `pushd`
+  // alike, so a bare `pushd` is tracked exactly like `cd ~` — wrongly, since
+  // a bare `pushd` must clear tracking the same way `cd -`/`~user`/an
+  // unanchored relative cd already do, not invent an anchor. A bare `cd` is
+  // unaffected: it genuinely does land at $HOME. Confirmed on head 0ac2fa3:
+  // `pushd && rm -rf *` exits 2 today (wrongly treated as landing at $HOME),
+  // and must exit 0.
+  it('does not treat a bare `pushd` (no operand) as landing at $HOME — it swaps the stack, not cd (RP-309 gate round 2)', async () => {
+    const result = await run('pushd && rm -rf *');
+    expect(
+      result.code,
+      `pushd && rm -rf * — a bare pushd swaps the stack rather than landing at $HOME, so tracking must clear, exits ${result.code} on head`,
+    ).toBe(0);
+    // a bare `cd` is unaffected — it genuinely lands at $HOME
+    expect((await run('cd && rm -rf *')).code).toBe(2);
+  });
+
+  // RP-309 gate round 2: `resolveCwdTarget`'s own doc comment points readers
+  // at "the file header's own limits list" for `~user`, `cd -` and `popd` —
+  // but the header's "The limits, stated exactly" section (the block this
+  // file's own credibility claim at its top says is tested TWICE: that the
+  // limit is documented, and that the command really does pass) never
+  // actually names any of the three; only a function-level doc comment near
+  // `resolveCwdTarget`, further down the file, does. A pointer at a section
+  // that does not carry what it claims is a dead pointer. Confirmed on head
+  // 0ac2fa3: the header section sliced out below does not mention `cd -` or
+  // `popd`.
+  it('names `cd -`/`popd` inside the header\'s own "The limits, stated exactly" section, not only in a function doc comment (RP-309 gate round 2)', async () => {
+    const source = await readFile(path.join(hooksDir, 'guard-bash.mjs'), 'utf8');
+    const start = source.indexOf('The limits, stated exactly');
+    expect(start, 'the header limits heading must exist').toBeGreaterThan(-1);
+    const nextHeading = source.indexOf('// ── ', start + 1);
+    const limitsSection = source.slice(start, nextHeading === -1 ? undefined : nextHeading);
+    expect(limitsSection, 'the header limits section should name `cd -`').toMatch(/cd -(?!-)/);
+    expect(limitsSection, 'the header limits section should name `popd`').toMatch(/popd/i);
+  });
+
   it('a malformed payload or a non-Bash tool is none of its business', async () => {
     expect((await runHookFull('guard-bash.mjs', { tool_name: 'Write' }, noKillSwitch)).code).toBe(
       0,
