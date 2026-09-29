@@ -206,7 +206,8 @@
  *     against an adversarially large journal.
  *   - ORPHAN DISPATCH-ENDS (RP-294) — `record-dispatch.mjs` marks a
  *     `dispatch-end` `orphan: true` when its `agentRef` has no earlier
- *     `dispatch-start` anywhere in the run's own journal (a harness-internal
+ *     `dispatch-start` anywhere in the run's own journal AND the payload carries
+ *     no valid `agent_type` (a harness-internal
  *     `SubagentStop`, not a real agent dispatch). This script trusts that
  *     explicit flag rather than re-deriving "orphan" from its own pairing
  *     miss — a `dispatch-end` with no matching start but no `orphan` field

@@ -1244,7 +1244,7 @@ describe('token-report.mjs dispatch pairing', () => {
 });
 
 // RP-294: the RP-231 controller run (rel110-20260928-213527, read-only
-// evidence, never committed here) journaled ~25 dispatch-end events with no
+// evidence, never committed here) journaled a run of dispatch-end events with no
 // matching dispatch-start — harness-internal SubagentStop firings, not real
 // agent dispatches. `record-dispatch.mjs` now marks such a record
 // `orphan: true` at write time (see dispatch-journal.test.ts, absent in a

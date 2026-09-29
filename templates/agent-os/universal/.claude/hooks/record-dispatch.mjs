@@ -76,9 +76,9 @@
 //
 // ORPHAN DISPATCH-ENDS (RP-294): the RP-231 controller run
 // (rel110-20260928-213527, read-only evidence, never committed here)
-// journaled ~25 `dispatch-end` events with no matching `dispatch-start`
+// journaled a run of `dispatch-end` events with no matching `dispatch-start`
 // anywhere in the run — harness-internal `SubagentStop` firings. The payload
-// SHAPE is what that evidence actually recorded, not a guess: those ~25
+// SHAPE is what that evidence actually recorded, not a guess: those
 // orphan ends carried no `agent_type` at all, while every real, paired end in
 // the same journal echoed back the payload's own `agent_type`. So `orphan:
 // true` is written only when BOTH hold (RP-294 round 2, B4): no earlier
@@ -536,7 +536,7 @@ const MAX_NOTICE_LENGTH = 512;
 /**
  * Every character this hook strips from the checked root before it is ever
  * formatted into the RP-287 mismatch notice, so the notice always stays one
- * line and never carries an invisible-rendering character. RP-294 round 3
+ * line. RP-294 round 3
  * (a security-scanner SHIP-with-advisory finding at ac42ae4) replaced the
  * round-1/round-2 approach — an explicit, enumerated range list — with
  * Unicode GENERAL CATEGORIES, because enumeration kept missing individual
@@ -550,7 +550,7 @@ const MAX_NOTICE_LENGTH = 512;
  *   `\p{Cf}` — format characters: ALM, the zero-width range U+200B-U+200F,
  *     the bidi-embedding/override range U+202A-U+202E, the word-joiner/
  *     isolate range U+2060-U+2069, BOM (U+FEFF), SOFT HYPHEN (U+00AD), and
- *     the "Trojan Source" tag-character range (U+E0000-U+E007F);
+ *     the assigned "Trojan Source" tag characters (U+E0001, U+E0020-U+E007F);
  *   `\p{Zl}`/`\p{Zp}` — the Unicode line/paragraph separators (U+2028/
  *     U+2029);
  *   plus SEVEN characters that render just as invisibly but sit OUTSIDE
@@ -711,8 +711,7 @@ function checkedRootOf(env) {
  * handful of characters that render just as invisibly but sit outside those
  * categories) — see that constant's own doc comment for exactly what it
  * strips — each becoming `?`, so a root path carrying one can never split
- * this into more than the one line the tests require, and can never make the
- * printed line misrepresent the bytes actually present.
+ * this into more than the one line the tests require.
  */
 function writeMismatchNotice(env) {
   const root = checkedRootOf(env).replace(CONTROL_CHARS_RE, '?');
