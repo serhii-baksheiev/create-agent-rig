@@ -249,33 +249,27 @@
 // - `diagnosis` and `remaining` go through ONE MORE pass after the five
 //   structured patterns above: any WHITESPACE-DELIMITED token whose SHAPE
 //   looks like a path — not merely one that contains a `/` anywhere, which
-//   is what RP-297 round 1 fixed (see below) — starts a scrubbed span. A
-//   token triggers this pass when: it starts with `/` or `\`; or it
-//   contains a `\` anywhere; or it carries a `~` at a BOUNDARY — its own
-//   start, or after any character that is not a word character, `.`, or
-//   `-` (`TILDE_BOUNDARY`); or it contains a `..` path segment
-//   (`hasDotDotSegment`); or it carries a non-`http(s)` URI scheme at a
-//   boundary (`file://`, `smb://`, `vscode-remote://`, …
-//   — `hasNonHttpSchemeUri`); or it carries an environment-variable-style
-//   reference (`$HOME`, `%USERPROFILE%`) at a boundary that ALSO carries a
-//   path separator somewhere in the token (`ENV_VAR_BOUNDARY`); or its first
-//   path segment names a known home root — `Users`, `home`, `wsl.localhost`,
-//   `wsl$`, case-insensitive — at a boundary, immediately followed by a
-//   path separator (`HOME_ROOT_SEGMENT`) — and, throughout, a token that
-//   itself STARTS WITH `http://`/`https://` is excluded first and skips
-//   every other check (`HTTP_URL_PREFIX`). RP-297 round 2 — security-scanner
-//   HOLD on PR #351 (head e50df6e) — is why every one of these triggers
-//   except the two whole-token membership tests (`includes('\\')`,
-//   `hasDotDotSegment`) is a BOUNDARY match rather than a token-start match:
-//   a token-start-only check is defeated by leading punctuation a person
-//   types under pressure — a paren, a bracket, a `--flag=`, a `label:` — in
-//   front of the shape, which is exactly what round 1's checks missed for
-//   `(~alice/x)`, `--dir=~alice/x`, `path:~alice/x`, `(smb://…)`,
-//   `url=smb://…`, `(vscode-remote://…)`, `(%USERPROFILE%/…)`,
-//   `($HOME/…)`, and `--cwd=$HOME/…`; and is why `HOME_ROOT_SEGMENT` exists
-//   at all — a token with NO leading separator whatsoever, like
-//   `Users/alice/proj`, still names a home directory in its very first
-//   segment and is scrubbed the same as `/Users/alice/proj` would have been.
+//   is what RP-297 round 1 fixed — starts a scrubbed span. The FINAL trigger
+//   set, after rounds 2 and 3 (see the block comments above `TILDE_BOUNDARY`
+//   and `HOME_ROOT_SEGMENT` for the exact regexes and what each round
+//   changed and why): a token triggers this pass when it starts with `/` or
+//   `\`; or contains a `\` anywhere; or carries a `~` after its own start or
+//   any non-word character (`TILDE_BOUNDARY`); or contains a `..` path
+//   segment (`hasDotDotSegment`); or carries a non-`http(s)` URI scheme
+//   (`file://`, `smb://`, `vscode-remote://`, …) after its own start or any
+//   non-alphanumeric character (`hasNonHttpSchemeUri`/
+//   `SCHEME_URI_AT_BOUNDARY`); or carries an environment-variable-style
+//   reference (`$HOME`, `%USERPROFILE%`) after its own start or any
+//   non-word character, ALSO carrying a path separator somewhere in the
+//   token (`ENV_VAR_BOUNDARY`); or its FIRST path segment — after stripping
+//   any leading run of characters that are neither a word character nor a
+//   path separator — names a known home root: `Users`, `home`,
+//   `wsl.localhost`, `wsl$`, case-insensitive (`HOME_ROOT_SEGMENT`). There is
+//   no longer a whole-token exclusion for a token that itself starts with
+//   `http://`/`https://` — round 3 deleted it (see the block comment above
+//   `isFreeTextPathToken`) because it hid a SECOND, non-http(s) shape later
+//   in the same token; only `hasNonHttpSchemeUri` excludes http(s)
+//   specifically, by scheme name, wherever it appears.
 //   The span begins at the token's own first character (so a leading hard
 //   delimiter — an opening `"`, for instance — stays outside it, because the
 //   text is first split on hard delimiters and each delimiter-free segment
@@ -291,13 +285,20 @@
 //   over-scrubbing diagnosis/remaining text is the accepted trade for never
 //   under-scrubbing it. UP TO the shapes the triggers above actually
 //   recognise, though: an UNROOTED token with none of them — no leading
-//   separator, no backslash, no `~`/scheme/env-var/home-root boundary, no
-//   `..` segment — survives verbatim, same as an N/N fraction (`3/3`) or a
-//   repo-relative test identity (`packages/cli/test/x.test.ts:367`, NOT
-//   `Users/alice/x`, which the home-root trigger now catches); see
-//   `test/template/continuation.test.ts` (absent in a generated rig),
-//   `describe('RP-297 — free-text path token trigger is shape-based, not
-//   any forward slash')`. It runs ONLY on these two fields,
+//   separator, no backslash, no `~`/scheme/env-var boundary, no `..`
+//   segment, no home-root FIRST segment — survives verbatim, same as an
+//   N/N fraction (`3/3`), a repo-relative test identity
+//   (`packages/cli/test/x.test.ts:367`, NOT `Users/alice/x`, which
+//   `HOME_ROOT_SEGMENT` catches), a git ref (`HEAD~2`, `origin/feature-x~1`
+//   — a tilde after a WORD character is not a boundary), an SSH git remote
+//   (`git@github.com:org/repo` — no `://`, so no scheme trigger), an
+//   ordinary identifier that merely contains the trigger characters
+//   (`foo~bar`, `myhome/x`), or a repo-relative path with a home-root NAME
+//   as an inner segment, not its first (`src/users/list.ts`,
+//   `lib/home/x.ts`); see `test/template/continuation.test.ts` (absent in a
+//   generated rig), `describe('RP-297 — free-text path token trigger is
+//   shape-based, not any forward slash')`, every nested `describe` by name.
+//   It runs ONLY on these two fields,
 //   never on a structured one, because a structured field's caller
 //   constructs the value rather than typing it under pressure. Bounded, not
 //   linear: the field is split once on hard delimiters (a native
@@ -451,7 +452,6 @@ const scrubPaths = (text) =>
 // own array entries so `scrubFreeText` can leave a leading quote (or other
 // delimiter) outside the span it scrubs.
 const HARD_DELIMITER_SPLIT = /(["'`|<>⏎])/g;
-const HTTP_URL_PREFIX = /^https?:\/\//i;
 
 // RP-297 round 2 — security-scanner HOLD on PR #351 (head e50df6e): every
 // shape trigger below used to be anchored to the TOKEN'S OWN START
@@ -459,27 +459,72 @@ const HTTP_URL_PREFIX = /^https?:\/\//i;
 // pressure — a paren, a bracket, a `--flag=`, a `label:` — sat in front of
 // the shape and defeated the check entirely. Every trigger that isn't
 // already a whole-token membership test (`includes('\\')`,
-// `hasDotDotSegment`) is now a BOUNDARY match instead: it fires at the
-// token's own start OR after any character that is not itself part of an
-// identifier the shape could legitimately continue (a word character, and
-// for the tilde trigger also `.`/`-`) — so `(~alice/x)`, `--dir=~alice/x`,
-// and `path:~alice/x` all trigger the same as a bare `~alice/x` would, while
-// an ordinary identifier that happens to contain the same character, like
-// `foo~bar` or `myhome/x`, does not.
+// `hasDotDotSegment`) is now a BOUNDARY match instead — see each constant
+// below for exactly what counts as one, since round 3 tightened three of
+// them further (below).
+//
+// RP-297 round 3 — code-reviewer and security-scanner both HOLD on the
+// round-2 fix (review at 14bc59d): three of round 2's own boundary
+// definitions were themselves too narrow, and one whole-token
+// short-circuit hid a second, later shape in the same token —
+// `test/template/continuation.test.ts` (absent in a generated rig),
+// `describe('RP-297 round 3 — …')`, by name below each fix:
+//
+//   - `TILDE_BOUNDARY` excluded `.` and `-` from counting as a boundary
+//     (to let a version-ish run like `v1.2-3` continue through unbroken),
+//     which also meant `-~alice/x` and `.~alice/x` read as ONE identifier
+//     and the tilde shape never fired — › "RP-297 round 3 — a tilde after
+//     `.` or `-` must still be redacted, not treated as one unbroken
+//     identifier". A tilde after a WORD character must still survive
+//     (`HEAD~2`, `foo~bar`) — › "leaves a git detached-HEAD-relative ref
+//     untouched" and › "leaves an ordinary identifier containing a tilde
+//     untouched (foo~bar)" — so the fix drops only the `.`/`-` exclusions,
+//     not the word-character one.
+//   - `SCHEME_URI_AT_BOUNDARY` excluded `-`, `.`, and `+` from counting as a
+//     boundary too (so `vscode-remote://` isn't misread as two schemes),
+//     which also meant a LEADING `-`/`./`+` before the scheme name hid the
+//     whole scheme — › "RP-297 round 3 — a scheme URI after `-`, `.`, or
+//     `+` must still be redacted". Replaced with a lookbehind that excludes
+//     only an alphanumeric predecessor, so `vscode-remote://` still matches
+//     as ONE scheme (the greedy capture consumes the internal `-` before
+//     the boundary check ever runs again) while `-smb://…`/`.smb://…`/
+//     `+smb://…` now match too.
+//   - `isFreeTextPathToken`'s own top line, `if (HTTP_URL_PREFIX.test(token))
+//     return false`, was a WHOLE-TOKEN short-circuit: a token that STARTS
+//     WITH http(s) returned `false` immediately, before any other trigger
+//     ever ran — so a SECOND, non-http(s) shape later in the same token
+//     (`https://ok/,smb://alice-pc/share`, `https://x/(~alice/y)`,
+//     `HTTP://x/~alice`) was never seen — › "RP-297 round 3 — a later
+//     non-http(s) scheme or tilde inside a token that STARTS with
+//     http(s):// must still be redacted". Deleted outright rather than
+//     narrowed: nothing else needs it — `hasNonHttpSchemeUri` already
+//     excludes an http(s) scheme match SPECIFICALLY (by name, not by
+//     token position), and no other trigger reacts to the substring
+//     `http`/`https` at all — so a bare, wrapped http(s) URL with no OTHER
+//     shape in the token still survives on its own: ›
+//     "leaves a parenthesised http:// URL untouched
+//     ((http://example.invalid/a))".
 
 // A `~`-prefixed path, at the token's own start or after any character
-// that is not a word character, `.`, or `-`.
-const TILDE_BOUNDARY = /(?:^|[^\w.-])~/;
+// that is not a word character — round 3 dropped the `.`/`-` exclusions
+// round 2 had (see the block comment above).
+const TILDE_BOUNDARY = /(?:^|[^\w])~/;
 
 // A non-http(s) URI scheme (`file://`, `smb://`, `vscode-remote://`, …), at
-// the token's own start or after any character that cannot itself be part
-// of a scheme name. Every boundary match in the token is walked (not just
-// tested) so an `http`/`https` scheme found at one boundary does not hide a
-// DIFFERENT, non-http(s) scheme found at another; `HTTP_URL_PREFIX` above
-// only excludes a token that itself STARTS WITH http(s) — a wrapped one
-// (`(http://…)`) does not start with it and needs this per-scheme check
-// too.
-const SCHEME_URI_AT_BOUNDARY = /(?:^|[^A-Za-z0-9+.-])([A-Za-z][A-Za-z0-9+.-]*):\/\//g;
+// the token's own start or after any character that is not itself
+// alphanumeric — round 3 replaced round 2's wider exclusion set (which also
+// excluded `-`/`.`/`+`, so those couldn't PRECEDE a new scheme either) with
+// a lookbehind that excludes only a letter or digit, so the scheme name's
+// OWN internal `-`/`.`/`+` (`vscode-remote`) still reads as one scheme —
+// the greedy capture below consumes it before the lookbehind is ever
+// re-checked at a later position — while a `-`/`.`/`+` immediately BEFORE
+// the scheme name no longer hides it. Every match in the token is walked
+// (not just tested), so an `http`/`https` scheme found at one match does
+// not hide a DIFFERENT, non-http(s) scheme found at another — this is what
+// lets a token that itself starts with `https://` still be redacted for a
+// LATER, non-http(s) scheme in the same token (see the round 3 block
+// comment above `isFreeTextPathToken` no longer short-circuits on one).
+const SCHEME_URI_AT_BOUNDARY = /(?<![A-Za-z0-9])([A-Za-z][A-Za-z0-9+.-]*):\/\//g;
 const HTTP_SCHEME_NAME = /^https?$/i;
 
 /**
@@ -506,13 +551,19 @@ const hasNonHttpSchemeUri = (token) => {
 // "Limits" section), not a claim that a `$`-prefixed number is safe.
 const ENV_VAR_BOUNDARY = /(?:^|[^\w])[$%]/;
 
-// A token's first path segment naming a known home root — `Users`, `home`,
-// `wsl.localhost`, or `wsl$` (case-insensitive) — at the token's own start
-// or after any non-word character, immediately followed by a path
-// separator: the same roots an absolute Windows/POSIX/WSL path would have
-// used had the caller typed the leading separator, so `Users/alice/proj`
-// is treated the same as `/Users/alice/proj` would have been.
-const HOME_ROOT_SEGMENT = /(?:^|[^\w])(users|home|wsl\.localhost|wsl\$)[\\/]/i;
+// A token's FIRST path segment naming a known home root — `Users`, `home`,
+// `wsl.localhost`, or `wsl$` (case-insensitive) — after stripping any
+// leading run of characters that are neither a word character nor a path
+// separator, immediately followed by a path separator: the same roots an
+// absolute Windows/POSIX/WSL path would have used had the caller typed the
+// leading separator, so `Users/alice/proj` and `(Users/alice/x)` are
+// treated the same as `/Users/alice/proj` would have been. Anchored to the
+// token's OWN start (`^`) rather than matched at any boundary — round 3:
+// the round-2 version fired on `users`/`home`/… as ANY segment, which
+// over-redacted a genuinely repo-relative path like `src/users/list.ts` —
+// › "RP-297 round 3 — the home-root rule applies only to the FIRST path
+// segment, after any leading punctuation".
+const HOME_ROOT_SEGMENT = /(?:^[^\w/\\]*)(users|home|wsl\.localhost|wsl\$)[\\/]/i;
 
 /** Does this token contain a literal `..` path segment (split on `/` and `\`)? */
 const hasDotDotSegment = (token) => token.split(/[\\/]/).includes('..');
@@ -525,28 +576,29 @@ const hasDotDotSegment = (token) => token.split(/[\\/]/).includes('..');
  * identity (`packages/cli/test/x.test.ts:367`) as a path — and the scrub
  * then consumes everything from that token's own start to the end of the
  * segment, so the trailing text (a test id, a line number) was lost too.
- * RP-297 round 2: the shape checks that replaced it were themselves
- * anchored to the token's own start, so leading punctuation defeated them
- * (see the block comment above `TILDE_BOUNDARY`); every shape below except
- * the two whole-token membership tests is now a boundary match instead. A
- * token starts a path span when it starts with `/` or `\`; or contains a
- * `\` anywhere; or carries a `~` at a boundary; or contains a `..` path
- * segment (which can climb out of the repo regardless of which separator it
- * uses); or carries a non-http(s) URI scheme at a boundary (`file://`,
- * `smb://`, `vscode-remote://`, …); or carries an environment-variable-style
- * reference (`$HOME`, `%USERPROFILE%`) at a boundary that ALSO carries a
- * path separator somewhere in the token; or has a first path segment naming
- * a known home root (`Users`, `home`, `wsl.localhost`, `wsl$`) at a
- * boundary. A token with none of these shapes — no leading separator, no
- * backslash, no `..` segment, no recognised scheme, no home-root segment —
- * survives verbatim, the same as a repo-relative test identity:
+ * RP-297 rounds 2 and 3 replaced it with the SHAPE-based triggers below —
+ * see the block comments above `TILDE_BOUNDARY` and `HOME_ROOT_SEGMENT` for
+ * what each one catches and which test pins it. A token starts a path span
+ * when: it starts with `/` or `\`; or it contains a `\` anywhere; or it
+ * carries a `~` at a boundary (`TILDE_BOUNDARY`); or it contains a `..`
+ * path segment (`hasDotDotSegment`, which can climb out of the repo
+ * regardless of which separator it uses); or it carries a non-http(s) URI
+ * scheme at a boundary (`hasNonHttpSchemeUri`); or it carries an
+ * environment-variable-style reference at a boundary that ALSO carries a
+ * path separator somewhere in the token (`ENV_VAR_BOUNDARY`); or its FIRST
+ * path segment names a known home root (`HOME_ROOT_SEGMENT`). A token with
+ * none of these shapes — no leading separator, no backslash, no `..`
+ * segment, no recognised scheme, no home-root FIRST segment — survives
+ * verbatim, the same as a repo-relative test identity:
  * `test/template/continuation.test.ts` (absent in a generated rig) ›
  * "leaves a repo-relative test identity in diagnosis untouched, with the
  * trailing text intact" (`packages/cli/test/x.test.ts:367` — NOT
- * `Users/alice/x`, which the home-root rule above now catches).
+ * `Users/alice/x`, which `HOME_ROOT_SEGMENT` catches, and NOT
+ * `src/users/list.ts`, which it deliberately does not, since `users` there
+ * is not the FIRST segment — › "leaves a repo-relative path with \"users\"
+ * as an INNER segment untouched").
  */
 const isFreeTextPathToken = (token) => {
-  if (HTTP_URL_PREFIX.test(token)) return false;
   if (token.startsWith('/') || token.startsWith('\\')) return true;
   if (token.includes('\\')) return true;
   if (TILDE_BOUNDARY.test(token)) return true;
