@@ -856,11 +856,79 @@ function resolveTarget(token) {
 }
 
 /**
+ * Fold a RELATIVE `cd`/`pushd` operand against an already-tracked, resolved
+ * anchor (`~…`, `$HOME…` or `/…`) — a second `cd` on the same command line
+ * resolving relative to where the first one landed, rather than resetting
+ * the tracking to "unknown" the moment the operand itself carries no anchor
+ * (RP-309). Reuses `foldDotDot` (RP-262) against the CURRENT tracked
+ * target's own parts, never against a replayed history of every `cd` this
+ * command line has run — so a chain of N relative `cd`s costs work
+ * proportional to N, the same bound RP-262 already established for a single
+ * `cd`'s own `..` run (`.claude/rules/invariants.md`, "A guard that fails
+ * open must do provably bounded work" — pinned with a 2000-`cd`-deep chain
+ * in test/template/hooks.test.ts (absent in a generated rig) › "resolves a
+ * long chain of relative cds in bounded time and still blocks the escape").
+ */
+function foldRelativeCwd(priorTarget, operand) {
+  const clampAtRoot = priorTarget.startsWith('/');
+  const anchor = priorTarget.startsWith('~')
+    ? '~'
+    : priorTarget.startsWith('$HOME')
+      ? '$HOME'
+      : '/';
+  const priorParts =
+    anchor === '/'
+      ? priorTarget.split('/').filter(Boolean)
+      : priorTarget.slice(anchor.length).split('/').filter(Boolean);
+  const relativeParts = normalizeTarget(operand)
+    .split('/')
+    .filter((part) => part !== '');
+  const { parts, escaped } = foldDotDot([...priorParts, ...relativeParts], { clampAtRoot });
+  if (escaped) return '/';
+  if (anchor === '/') return parts.length === 0 ? '/' : `/${parts.join('/')}`;
+  return parts.length === 0 ? anchor : `${anchor}/${parts.join('/')}`;
+}
+
+/**
+ * What a `cd`/`pushd` operand resolves the command line's tracked cwd to,
+ * given whatever anchored target a PRIOR `cd`/`pushd` already resolved (or
+ * `null` when nothing is tracked yet). Tracks the position whether or not it
+ * is itself catastrophic — `cd ~/project` is not, but a later `cd ..` off it
+ * needs somewhere real to fold against — and lets the caller decide
+ * catastrophic-ness at the point a wildcard delete actually asks.
+ *
+ * Three spellings this deliberately still cannot resolve, so tracking is
+ * cleared rather than guessed at (RP-309, and see the file header's own
+ * limits list):
+ *   - `cd -` returns to `$OLDPWD`, a directory this guard has no way to know
+ *     without running a real shell;
+ *   - `~user` (a tilde naming ANOTHER account's home, not the caller's own)
+ *     is never resolved — only a bare `~`/`$HOME` is;
+ *   - a relative operand with nothing anchored yet: it can never spell a
+ *     catastrophic target by accident, and there is no tracked anchor to
+ *     fold it against.
+ * `popd` is not tracked at all — only `cd`/`pushd` change `catastrophicCwdTarget`.
+ *
+ * A subshell-local `cd`/`pushd` is not told apart from the outer shell's own tracked directory (`( cd ~/.ssh )`) either — tracking still updates when the subshell closes, which over-blocks a wildcard delete written after it. That is the safe direction, so it stays a documented limit rather than a fix.
+ */
+function resolveCwdTarget(operand, priorTarget) {
+  if (operand === '-') return null; // `cd -`: $OLDPWD, unknowable here
+  const target = operand === '' ? '~' : operand; // a bare `cd` lands at $HOME
+  if (/^~[^/]/.test(target)) return null; // `~user`: another account's home
+  if (/^(\/|~|\$HOME)/.test(target)) return resolveTarget(target);
+  if (!priorTarget) return null; // no tracked anchor to fold a relative cd against
+  return foldRelativeCwd(priorTarget, target);
+}
+
+/**
  * `catastrophicCwdTarget` is the RESOLVED (`..`-folded) target a prior `cd`
  * in this command line landed on, or `null` — the target itself, not just
  * whether one was catastrophic, so a wildcard delete after `cd ~/.ssh` can be
  * told apart from one after `cd /`: same wildcard, same block, but only one
- * of them is a credential delete.
+ * of them is a credential delete. It may equally be a NON-catastrophic
+ * target (`cd ~/project`) tracked purely so a later relative `cd` has
+ * somewhere to fold against — `isCatastrophic` below is what actually gates
+ * the block, not the mere presence of a tracked value.
  */
 function checkRm({ args }, catastrophicCwdTarget) {
   for (const { value } of operandsOf(args)) {
@@ -887,8 +955,27 @@ function checkRm({ args }, catastrophicCwdTarget) {
         'filesystem root, which reaches the same place as deleting it outright.'
       );
     }
-    // `cd / && rm -rf *` is `rm -rf /*` with the target hidden in a prior segment.
-    if (catastrophicCwdTarget && (target === '*' || target === '.' || target === './*')) {
+    // `cd / && rm -rf *` is `rm -rf /*` with the target hidden in a prior
+    // segment. `isCatastrophic` (not mere presence of a tracked value) is
+    // what gates this — `catastrophicCwdTarget` may equally hold an ordinary,
+    // non-catastrophic cwd (`~/project`) tracked only so a later relative
+    // `cd` has somewhere to fold against (RP-309).
+    //
+    // The wildcard/escape set: `*` and the two spellings `normalizeTarget`
+    // already folds onto `.` (`.` itself, `./*`), PLUS three it does NOT fold
+    // — `./` stays `./` rather than collapsing to `.`, and an upward `..`/
+    // `../*` off an already-catastrophic cwd names the same delete another
+    // way (RP-309; all three previously slipped through uninspected).
+    if (
+      catastrophicCwdTarget &&
+      isCatastrophic(catastrophicCwdTarget) &&
+      (target === '*' ||
+        target === '.' ||
+        target === './*' ||
+        target === './' ||
+        target === '..' ||
+        target === '../*')
+    ) {
       if (isCredentialTarget(catastrophicCwdTarget)) {
         return (
           'BLOCKED — an earlier segment changed directory into SSH credentials/key ' +
@@ -949,13 +1036,26 @@ export const inspect = (raw, brake, depth = 0) => {
       continue;
     }
 
-    if (command.name === 'cd') {
+    if (command.name === 'cd' || command.name === 'pushd') {
       // RP-262: resolved (`..`-folded), not merely normalised — `~/.ssh/..`
       // is `~`, and an exact-match lookup against the literal string
       // `~/.ssh/..` (which is not itself in CATASTROPHIC) let a wildcard
       // delete right after it through uninspected.
-      const target = resolveTarget(operandsOf(command.args)[0]?.value ?? '');
-      catastrophicCwdTarget = CATASTROPHIC.has(target) ? target : null;
+      //
+      // RP-309: `pushd` changes the working directory exactly like `cd`
+      // does, so it is tracked the same way. And a RELATIVE operand is
+      // folded against whatever anchored target a PRIOR `cd`/`pushd` on
+      // this same command line already landed on, instead of unconditionally
+      // resetting tracking to "unknown" — see `resolveCwdTarget`.
+      //
+      // The RAW first token, not `operandsOf`: that helper treats anything
+      // starting with `-` as a flag and drops it, which would make `cd -`
+      // (return to $OLDPWD) indistinguishable from a bare `cd` (lands at
+      // $HOME) — the two must resolve differently (RP-309).
+      catastrophicCwdTarget = resolveCwdTarget(
+        command.args[0]?.value ?? '',
+        catastrophicCwdTarget,
+      );
       continue;
     }
 
