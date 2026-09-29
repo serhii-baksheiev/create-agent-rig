@@ -1050,9 +1050,8 @@ describe('token-report.mjs CLI wiring resolution: bounded reads, not bounded sta
 // FIFO with no writer on the other end blocks inside `open()` itself — the
 // `isFile()` guard that would otherwise reject a non-regular file is never
 // reached, because the call before it never returns. POSIX-only: Windows has
-// no `mkfifo`, and the fixture below is skipped (not failed) wherever
-// `mkfifo` itself is unavailable, since there is nothing this checkout can
-// pin without it.
+// no `mkfifo`, so the fixture below is skipped on Windows through the shared
+// `fifosAvailable` helper, which checks the platform, not the binary.
 
 describe('token-report.mjs CLI wiring resolution: a FIFO with no writer must not block open() (RP-292 gate round 3)', () => {
   const BOUND_MS = 8_000;
