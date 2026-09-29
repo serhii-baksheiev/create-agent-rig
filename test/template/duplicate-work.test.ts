@@ -993,8 +993,8 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
 // (`isOwnPr`: `headRefName === ownBranch && !isCrossRepository`), with no
 // script change at all. The two tests below characterise that existing,
 // unchanged behaviour — they are expected to pass today, and stay green once
-// the loop skill's resumption prose (pinned separately, in
-// `test/template/continuation.test.ts` or `skills.test.ts`) tells a resuming
+// the loop skill's resumption prose (pinned in the describe block below)
+// tells a resuming
 // session to check out that way.
 describe("own-work exclusion, via the procedural fix: checking out the continuation note's branch BY ITS OWN NAME (RP-300 round 2)", () => {
   let root: string;

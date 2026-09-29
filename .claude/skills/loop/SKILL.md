@@ -876,10 +876,10 @@ automatically carries a `failed-check: <name> exit <code>; tests: <id1>,
 it.
 
 A session resuming from a continuation note checks out the note's `branch:`
-line by its own name — `git checkout <branch>` (no `-b`, no rename), which
-creates a local branch of that same name tracking `origin/<branch>`. Do this
-even though the branch does not exist locally yet; do not rename it and do
-not track it under a new local name. This is not a style preference:
+line by its own name — `git checkout <branch>` (no `-b`, no rename). When
+exactly one remote carries that branch, git creates a local branch of the
+same name tracking it; do this even when the branch does not exist locally
+yet, and do not track it under a new local name. This is not a style preference:
 `duplicate-work.mjs`'s own-work exclusion is exact-string, so only checking
 out the branch under its own name lets it recognise the resumed branch (and
 its open PR) as this session's own work rather than reporting it as a

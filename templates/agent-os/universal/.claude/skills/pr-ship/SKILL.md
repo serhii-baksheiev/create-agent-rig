@@ -146,7 +146,10 @@ blockers.
    `--action-changed false` outcome, citing the earlier outcome —
    `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket
    <item-id> --action-changed false --note 'same id/sources as <earlier
-   note>; re-confirmed, no re-read needed'` — and come back through step 0.
+   note>; re-confirmed, no re-read needed'` — and continue this same gate run
+   from step 2. Do not go back through step 0 for it: that counts another
+   gate round for drift already answered, and re-entering re-detects the same
+   id, so the loop would end only when the rounds run out.
    Any NEW id or a NEW source set is still a fresh HOLD with a full re-read;
    the shortcut is only in what an already-matched repeat's own outcome has
    to redo, never in whether it gets recorded at all. This is frozen
@@ -156,7 +159,7 @@ blockers.
    a later re-entry's detection event, even one carrying the identical id.
    Pinned in the generator's `test/template/revalidation-evidence.test.ts` (absent in a generated rig) › "typedResolutionOf does not resolve a later repeat of the same detection id — each repeat needs its own outcome (resolvedAt >= detectionAt)".
 
-   Distinct from that mechanism citation: a missing, untracked, unreadable or
+   A missing, untracked, unreadable or
    unsupported claim is `UNVERIFIABLE`, exits 2, and stops automatic progress;
    so is a tracker whose adapter the command cannot READ, which means the
    question was never put rather than that the claim record is unreadable.
