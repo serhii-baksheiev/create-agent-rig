@@ -212,16 +212,29 @@
 // which also means Node's default `SIGINT`/`SIGTERM`/`SIGHUP` handling
 // (immediate teardown of THIS process, `finally` never runs) would leave the
 // checked command running unattended, and its capture temp files behind, the
-// moment an operator hits Ctrl-C on a required check. So, for the duration of
-// the child's run only, this process installs its own handler for those
-// three signals on POSIX (`SIGINT`/`SIGBREAK` on win32, which has no
-// SIGTERM/SIGHUP to catch) that does exactly what a timeout does — kill the
-// child's whole tree — plus closes and removes this run's own capture files,
-// removes the handlers, and exits with the POSIX `128 + signal number`
-// convention. See › "kills the checked command and removes its own capture
-// files, rather than dying immediately and leaking both" (POSIX-only — there
-// is no Windows equivalent of a signal delivered to a single pid rather than
-// its process group to measure).
+// moment an operator hits Ctrl-C on a required check. So this process
+// installs its own handler for those three signals on POSIX (`SIGINT`/
+// `SIGBREAK` on win32, which has no SIGTERM/SIGHUP to catch), kept installed
+// through the direct child's own run AND the read-back that follows it (RP-295
+// item B — a signal landing after the direct child has already closed, while
+// the two capture files still exist, must still reach this handler) — that
+// does exactly what a timeout does — kill the child's whole tree,
+// unconditionally, every time this handler runs — plus closes and removes
+// this run's own capture files, removes the handlers, and exits with the
+// POSIX `128 + signal number` convention. RP-295 gate round 3 (controller,
+// blocker C) — an earlier revision skipped the tree kill once the direct
+// child had already closed, reasoning there was "no process (tree) left to
+// kill"; that missed that `killChildTree` on POSIX signals the whole PROCESS
+// GROUP, not the direct child's own pid alone, and a group persists — with no
+// pid-reuse risk — for as long as any member of it (a backgrounded worker the
+// checked command spawned and left running) is still alive, even after the
+// direct child itself has exited. The kill is unconditional again. See ›
+// "kills the checked command and removes its own capture files, rather than
+// dying immediately and leaking both" and › "kills a still-alive backgrounded
+// process from the checked command's own process group, even though the
+// direct child already closed" (both POSIX-only — there is no Windows
+// equivalent of a signal delivered to a single pid rather than its process
+// group to measure).
 //
 // --- Temp capture files ------------------------------------------------------
 //
@@ -1076,13 +1089,20 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
     return (rawLine, meta) => {
       const overLimit = Boolean(meta && meta.overLimit);
       let finalLine;
+      let lineMarker;
       if (overLimit) {
         // The line text itself is already the fixed `[redacted: line over …
         // bytes]` marker — `LINE_MAX_BYTES` applies ahead of and independent
         // from this PEM/credential logic (module header's "Bounds"), so there
         // is no raw body left to scan here; only the state-machine transition
-        // below still applies to this line.
+        // below still applies to this line — taken from `makeLineFeeder`'s own
+        // incremental, chunk-bounded `lastLineMarker` (RP-295 gate round 3,
+        // security-scanner): re-scanning an over-limit line's full raw text
+        // here would be exactly the unbounded-per-line work `invariants.md`'s
+        // bounded-work rule refuses, which is why the incremental, small-tail
+        // tracking below exists in the first place.
         finalLine = rawLine;
+        lineMarker = meta && meta.lastLineMarker;
       } else {
         // A BEGIN header appearing anywhere in this line is caught by
         // `findSecretValues` on its own (the header IS a credential shape,
@@ -1095,11 +1115,33 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
           : findSecretValues(relativized).length > 0
             ? REDACTED_LINE
             : relativized;
+        // RP-295 gate round 3 (security-scanner, regression vs base a4d55a8)
+        // — a line under `LINE_MAX_BYTES` is already held WHOLE, in
+        // `rawLine`/`relativized` above, so the marker transition for such a
+        // line is taken from ONE scan of the WHOLE line — exactly what base
+        // a4d55a8 did — never from `makeLineFeeder`'s incremental,
+        // `OVERFLOW_TAIL_CHARS`-bounded `lastLineMarker`. That incremental
+        // tracking exists to bound an OVER-LIMIT line's per-chunk cost (kept
+        // for the `overLimit` branch above); applied here too, its small
+        // rolling tail could push a long-padded header's own `-----BEGIN `
+        // prefix out of view before the segment carrying the rest of the
+        // padding (and `PRIVATE KEY-----`) ever arrived, on a line that never
+        // comes anywhere near the 64 KiB cap that incremental tracking is
+        // for. Bounded exactly like `findSecretValues` just above it: one
+        // scan of at most `LINE_MAX_BYTES` characters. See
+        // `check-run.test.ts` (absent in a generated rig) › "a long-padded
+        // BEGIN header straddles the 64 KiB read-chunk boundary on a
+        // NORMAL-length line".
+        const beginIndex = lastMatchIndex(relativized, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
+        const endIndex = lastMatchIndex(relativized, PRIVATE_KEY_END_PATTERN_GLOBAL);
+        lineMarker =
+          beginIndex === -1 && endIndex === -1 ? null : beginIndex > endIndex ? 'begin' : 'end';
       }
 
       // RP-295 gate round 2 (reviewer, reproduced on head a861085) — armed
-      // after this line iff `makeLineFeeder` reports this line's LAST marker
-      // (across every incoming chunk — chunk-boundary- and ANSI-safe, see its
+      // after this line iff the LAST marker found for it (whole-line for a
+      // normal-length line, above; `makeLineFeeder`'s incremental,
+      // chunk-boundary- and ANSI-safe tracking for an over-limit one, per its
       // own comment above `makeLineFeeder`) was a BEGIN; a line with no
       // marker at all leaves `inPemBlock` exactly as it was entering the
       // line. This single check replaces what used to be two separate,
@@ -1116,8 +1158,8 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
       // stripping ANSI, not on the raw segment", and "closes the block on
       // that same line, so a normal FAIL line and the line after it are not
       // swallowed".
-      if (meta && meta.lastLineMarker === 'begin') inPemBlock = true;
-      else if (meta && meta.lastLineMarker === 'end') inPemBlock = false;
+      if (lineMarker === 'begin') inPemBlock = true;
+      else if (lineMarker === 'end') inPemBlock = false;
 
       logBuffer.push(`${finalLine}\n`);
       tailLines.push(finalLine);
@@ -1179,7 +1221,6 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
     }
 
     if (child) {
-      let childClosed = false;
       let timer = null;
       if (timeoutSeconds !== null) {
         timer = setTimeout(() => {
@@ -1191,13 +1232,7 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
       const onInterrupt = (signalName) => {
         removeInterruptHandlers();
         if (timer) clearTimeout(timer);
-        // RP-295 (advisory) — the child has already closed; there is no
-        // process (tree) left to kill, and `killChildTree` would either be a
-        // harmless no-op (POSIX: `process.kill(-pid, ...)` on an exited
-        // group) or, worse, target a DIFFERENT process the OS has since
-        // reused that same pid for. The capture files still get cleaned up
-        // below either way.
-        if (!childClosed) killChildTree(child);
+        killChildTree(child);
         for (const fd of [stdoutFd, stderrFd]) {
           if (fd !== null) {
             try {
@@ -1227,11 +1262,9 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
 
       [exitCode, signal, spawnError] = await new Promise((resolve) => {
         child.on('error', (error) => {
-          childClosed = true;
           resolve([null, null, error]);
         });
         child.on('close', (code, sig) => {
-          childClosed = true;
           resolve([code, sig, null]);
         });
       });

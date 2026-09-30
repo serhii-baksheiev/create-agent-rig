@@ -817,14 +817,38 @@ const composeCappedTextField = (value) => truncateField(composeFreeTextField(val
  * with a ~1900-character failed-check block", and › "keeps a failed-check
  * line intact, ahead of the whole-note cap, even when diagnosis/remaining
  * filler alone nearly fills the note".
+ *
+ * RP-295 gate round 3 (controller, blocker B) — `identityText` being a
+ * "protected floor" used to mean "never sliced", full stop, with nothing
+ * capping `identityText` itself against `NOTE_CAP` first: a `ticket` field
+ * up to `RAW_FIELD_CAP` (2000) characters, plus the `rig-continuation
+ * v1`/`ticket: `/`stop: ` lines built around it, can already exceed
+ * `NOTE_CAP` on its own — before `restText`/`failedCheckText` are even
+ * considered — and the function returned that over-long `identityText`
+ * unmodified, in direct contradiction of "the result is always `<=
+ * NOTE_CAP`" above. `identityText` is now bounded to `NOTE_CAP` FIRST, from
+ * the end, with the existing truncation suffix, before it is treated as a
+ * floor for anything else — this keeps the `rig-continuation v1` line
+ * (`identityText`'s own first line) intact, since only the un-truncated part
+ * near its end, never its start, is ever cut. See `continuation.test.ts`
+ * (absent in a generated rig) › "keeps the whole note within NOTE_CAP (2000)
+ * for a ~1993-character ticket", › "keeps the whole note within NOTE_CAP
+ * (2000) for a ~2503-character ticket", and › "keeps the whole note within
+ * NOTE_CAP (2000) for a ~5003-character ticket".
  */
 const capNote = (identityText, restText, failedCheckText) => {
-  const prefixText = restText ? `${identityText}\n${restText}` : identityText;
+  const boundedIdentityText =
+    identityText.length > NOTE_CAP
+      ? `${identityText.slice(0, Math.max(0, NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length))}${NOTE_TRUNCATION_SUFFIX}`
+      : identityText;
+
+  const prefixText = restText ? `${boundedIdentityText}\n${restText}` : boundedIdentityText;
   const full = failedCheckText ? `${prefixText}\n${failedCheckText}` : prefixText;
   if (full.length <= NOTE_CAP) return full;
 
-  // `identityText` is the protected floor — never sliced, whatever remains.
-  let remaining = NOTE_CAP - identityText.length;
+  // `boundedIdentityText` is the protected floor — never sliced further,
+  // whatever remains.
+  let remaining = NOTE_CAP - boundedIdentityText.length;
 
   let failedCheckOut = '';
   if (failedCheckText) {
@@ -859,7 +883,7 @@ const capNote = (identityText, restText, failedCheckText) => {
     }
   }
 
-  return `${identityText}${restOut}${failedCheckOut}`;
+  return `${boundedIdentityText}${restOut}${failedCheckOut}`;
 };
 
 /**

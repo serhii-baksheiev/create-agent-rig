@@ -2615,6 +2615,64 @@ describe('continuation.mjs CLI — the failed-check line built from a check-run.
     expect(note, 'the stop line was cut away by the whole-note cap').toContain('stop: escalation');
   });
 
+  // RP-295 gate round 3 (controller, blocker B) — `capNote` treats
+  // `identityText` as a protected floor it never slices, "whatever remains"
+  // (its own comment) — but nothing caps `identityText` ITSELF against
+  // `NOTE_CAP` first. `composeTextField(ticket)` only cuts a RAW field to
+  // `RAW_FIELD_CAP` (2000 characters — the SAME number as `NOTE_CAP`, but a
+  // different budget: one bounds a single field, the other the WHOLE note),
+  // so a ticket anywhere near that width, plus the `rig-continuation
+  // v1`/`ticket: `/`stop: ` scaffolding built around it, already exceeds
+  // `NOTE_CAP` on its own — before `restText`/`failedCheckText` are even
+  // considered. `capNote` then returns `identityText` unmodified (plus
+  // whatever the already-negative remaining budget still lets through),
+  // producing a note LONGER than `NOTE_CAP`, in direct contradiction of this
+  // function's own contract ("The result is always `<= NOTE_CAP`"). Each
+  // ticket below matches continuation.mjs's own CLI shape, `TICKET_SHAPE`
+  // (`/^[A-Z][A-Z0-9_]+-\d+$/`): one letter, a middle run of digits, a dash,
+  // then a trailing digit.
+  it('keeps the whole note within NOTE_CAP (2000) for a ~1993-character ticket — under RAW_FIELD_CAP, so composeTextField does not even truncate it', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const ticket = `A${'0'.repeat(1990)}-1`;
+    expect(ticket.length).toBe(1993);
+    const note = composeNote({ ticket, stop: 'escalation' });
+    expect(
+      note.length,
+      `a 1993-character ticket alone produced a ${note.length}-character note`,
+    ).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away').toContain('rig-continuation v1');
+  });
+
+  it('keeps the whole note within NOTE_CAP (2000) for a ~2503-character ticket — over RAW_FIELD_CAP, so the ticket field itself is truncated first', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const ticket = `A${'0'.repeat(2500)}-1`;
+    expect(ticket.length).toBe(2503);
+    const note = composeNote({ ticket, stop: 'escalation' });
+    expect(
+      note.length,
+      `a 2503-character ticket alone produced a ${note.length}-character note`,
+    ).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away').toContain('rig-continuation v1');
+  });
+
+  it('keeps the whole note within NOTE_CAP (2000) for a ~5003-character ticket — far past RAW_FIELD_CAP', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const ticket = `A${'0'.repeat(5000)}-1`;
+    expect(ticket.length).toBe(5003);
+    const note = composeNote({ ticket, stop: 'escalation' });
+    expect(
+      note.length,
+      `a 5003-character ticket alone produced a ${note.length}-character note`,
+    ).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away').toContain('rig-continuation v1');
+  });
+
   // RP-295 — "no test runs real check-run output through continuation end to
   // end". Every test above seeds the journal directly with `run-journal.mjs`'s
   // `recordEvent`, independent of `check-run.mjs` itself; this is the one
@@ -2702,18 +2760,34 @@ describe('continuation.mjs is wired into the workflow layer', () => {
   // `.claude/rules/invariants.md`'s "state the limits, and test them", a rule
   // this specific belongs where a fresh reader who has only skimmed the top
   // of the file would find it.
-  it('the module header states that a spawn-error record never overwrites a prior record for the same check name', async () => {
+  // RP-295 gate round 3 (controller, advisory) — the old version of this test
+  // asserted only `/overwrit/i` anywhere in the header, which a header could
+  // satisfy with ANY sentence containing that fragment — including one that
+  // states the opposite rule, or one about an unrelated overwrite entirely.
+  // Pinned as the actual, current sentence instead (whitespace-normalised,
+  // `//` comment markers stripped, same shape as the loop-skill "exact
+  // sentence" test elsewhere in this file): a real oracle that goes red the
+  // moment this specific claim is reworded or removed, not merely whenever
+  // the word disappears.
+  it('the module header states, in this exact sentence, that a later spawn-error record never overwrites a prior fail or pass record for the same check name', async () => {
     const source = await readFile(scriptPath('continuation.mjs'), 'utf8');
     const headerEnd = source.indexOf('\nimport ');
     expect(headerEnd, 'could not find the end of the module header (first import)').toBeGreaterThan(
       -1,
     );
     const header = source.slice(0, headerEnd);
-    expect(header, 'the module header never mentions spawn-error at all').toMatch(/spawn-error/i);
+    const normalized = header
+      .split('\n')
+      .map((line) => line.replace(/^\s*\/\/\s?/, ''))
+      .join(' ')
+      .replace(/\s+/g, ' ');
     expect(
-      header,
-      'the module header does not state that a spawn-error never overwrites a prior record for the same name',
-    ).toMatch(/overwrit/i);
+      normalized,
+      'the module header no longer states, in this sentence, that a later spawn-error record ' +
+        'never overwrites a prior fail/pass record for the same check name',
+    ).toContain(
+      'a later `spawn-error` record for a check name never overwrites a PRIOR `fail` (or `pass`) record for the same name',
+    );
   });
 
   // RP-224 round 2 — code-reviewer r1 advisory: "loose regex in the skill

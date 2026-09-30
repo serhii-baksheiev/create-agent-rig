@@ -2170,20 +2170,23 @@ describe('a BEGIN header followed by more than 256 characters on the SAME over-l
 
 // --- a BEGIN header split across the 64 KiB read-CHUNK boundary --------------
 //
-// RP-295 gate round 2 (reviewer, reproduced on head a861085) — `sawBeginHeader`
-// (the feeder's own comment, above `makeLineFeeder`) tests each incoming RAW
-// segment for `PRIVATE_KEY_HEADER_PATTERN` as it streams in from
-// `passThroughAndProcess`'s `createReadStream`, whose default `highWaterMark`
-// is 64 KiB (65536 bytes) — the exact byte count this module also uses for
-// `LINE_MAX_BYTES`. A BEGIN header whose own bytes straddle that on-disk read
-// boundary is split into two segments, NEITHER of which contains the whole
-// header shape on its own, so `sawBeginHeader` never becomes true — this is
-// independent of, and in addition to, the >256-char-tail gap the "more than
-// 256 characters" describe above already covers (there, the header is intact
-// within ONE segment; here, the header itself is cut in half). 65526 filler
-// bytes ahead of the header lands the chunk split exactly 10 bytes into the
-// 31-byte header text, and 2000 filler bytes after it push the header out of
-// the small rolling tail window too, so neither state-machine path sees it.
+// RP-295 gate round 2 (reviewer, reproduced on head a861085) — `appendSegment`
+// (above `makeLineFeeder`) matches `PRIVATE_KEY_HEADER_PATTERN`/
+// `PRIVATE_KEY_END_PATTERN` against `tail + segment` as each chunk streams in
+// from `passThroughAndProcess`'s `createReadStream`, whose default
+// `highWaterMark` is 64 KiB (65536 bytes) — the exact byte count this module
+// also uses for `LINE_MAX_BYTES` — and records whichever marker's LAST match
+// wins as this line's `lastLineMarker`. A BEGIN header whose own bytes
+// straddle that on-disk read boundary is split into two segments, NEITHER of
+// which contains the whole header shape on its own; this pins that
+// `lastLineMarker` still comes back `'begin'` once both segments have been
+// fed — independent of, and in addition to, the >256-char-tail gap the "more
+// than 256 characters" describe above already covers (there, the header is
+// intact within ONE segment; here, the header itself is cut in half). 65526
+// filler bytes ahead of the header lands the chunk split exactly 10 bytes
+// into the 31-byte header text, and 2000 filler bytes after it push the
+// header out of the small rolling tail window too — both gaps this
+// tail-carrying design closes together.
 
 const PEM_STRADDLE_CHUNK_RUNNER_SOURCE = `
 const config = JSON.parse(process.argv[2] ?? '{}');
@@ -2248,14 +2251,13 @@ describe('a BEGIN header whose own bytes straddle the 64 KiB read-chunk boundary
 // --- a BEGIN header carrying an embedded ANSI code ---------------------------
 //
 // RP-295 gate round 2 (reviewer, reproduced on head a861085) — `appendSegment`
-// tests the RAW segment against `PRIVATE_KEY_HEADER_PATTERN` with no ANSI
-// stripping first (unlike the non-overLimit branch in `runCheck`, which always
-// strips ANSI before matching). An ANSI escape code embedded inside the header
+// strips ANSI escape codes from `tail + segment` (`stripAnsi`, ahead of both
+// `lastMatchIndex` calls) before ever matching `PRIVATE_KEY_HEADER_PATTERN`
+// against it — this pins that an ANSI escape code embedded inside the header
 // itself — early in an over-length line, more than 256 characters from its
-// end, so the small rolling tail cannot see it either — breaks the raw regex
-// match (`[A-Z0-9 ]*` does not admit the escape's `\x1b`/`[`/digits/`m`), so
-// `sawBeginHeader` never becomes true even though the header, once stripped,
-// is exactly the shape `findSecretValues` would flag.
+// end, so the small rolling tail cannot see it either — still lets
+// `lastLineMarker` come back `'begin'` once the escape is stripped, exactly
+// the shape `findSecretValues` would flag.
 
 describe('a BEGIN header carrying an embedded ANSI code, followed by more than 256 characters on the SAME over-length line', () => {
   it(
@@ -2308,16 +2310,18 @@ describe('a BEGIN header carrying an embedded ANSI code, followed by more than 2
 
 // --- a complete BEGIN..END pair sits early inside one over-limit line -------
 //
-// RP-295 gate round 2 (reviewer, reproduced on head a861085) — the overLimit
-// branch only ever sets `inPemBlock = true` from `meta.sawBeginHeader` when
-// NEITHER a BEGIN nor an END marker is found in the small rolling `tail`. A
-// complete key (BEGIN, body, END) sitting early in a single over-limit line,
-// followed by enough filler to push BOTH markers out of that tail window,
-// leaves `sawBeginHeader` true (correctly, from the per-segment scan) but
-// blind to the END that already closed the block on the SAME line — so
-// `inPemBlock` stays wrongly armed for every line that follows, swallowing a
-// legitimate FAIL identity along with the (imaginary) rest of a key that
-// already ended.
+// RP-295 gate round 2 (reviewer, reproduced on head a861085) — `runCheck`'s
+// `makeProcessLine` arms `inPemBlock` from `meta.lastLineMarker === 'begin'`
+// and disarms it from `'end'`, one check covering both directions rather than
+// only "no marker at all found in the small rolling `tail`". This pins that,
+// for a complete key (BEGIN, body, END) sitting early in a single over-limit
+// line, followed by enough filler to push BOTH markers out of that tail
+// window, `lastLineMarker` still comes back `'end'` — not `'begin'` — for
+// this line, because `appendSegment` evaluates the WHOLE incoming segment
+// (however large), not only the small rolling `tail`; so `inPemBlock`
+// correctly closes rather than staying wrongly armed for every line that
+// follows, swallowing a legitimate FAIL identity along with the (imaginary)
+// rest of a key that already ended.
 
 const PEM_COMPLETE_THEN_OVERFLOW_RUNNER_SOURCE = `
 const config = JSON.parse(process.argv[2] ?? '{}');
@@ -2438,6 +2442,155 @@ describe('a line carries END followed by a NEW BEGIN, both within the tail windo
       ).not.toContain(secondKeyBody);
       expect(logContent, 'text after the final END did not survive').toContain('after-ok');
     },
+  );
+});
+
+// --- a long-padded BEGIN header straddles the read-chunk boundary on a -----
+// --- NORMAL-length line (never over the 64 KiB LINE_MAX_BYTES cap) ---------
+//
+// RP-295 gate round 3 (security-scanner, regression vs base a4d55a8) —
+// `appendSegment`'s rolling `tail` is truncated to the last `OVERFLOW_TAIL_CHARS`
+// (256) RAW characters at the END of every segment (`tail = (tail +
+// segment).slice(-OVERFLOW_TAIL_CHARS)`), REGARDLESS of whether the marker
+// match on THIS segment succeeded. A private-key header whose own padding
+// (`[A-Z0-9 ]*` between `-----BEGIN ` and `PRIVATE KEY-----`) is longer than
+// that 256-character window, and whose bytes straddle a disk-read chunk
+// boundary such that MORE than 256 characters of padding land in the FIRST
+// segment ahead of the split, has its own `-----BEGIN ` prefix pushed
+// entirely out of `tail` before the second segment (carrying the rest of the
+// padding and the `PRIVATE KEY-----` literal) ever arrives — the
+// reconstructed `tail + segment` for the second segment starts mid-padding,
+// with no `-----BEGIN ` literal left for the pattern to match at all, so
+// `lastLineMarker` never becomes `'begin'`, `inPemBlock` never arms, and the
+// key body on the lines that follow goes out completely unredacted. This is
+// independent of every existing straddle/overflow test in this file: those
+// use a SHORT, exact-match header (31 bytes, well under the 256-character
+// tail window) and/or an OVER-LIMIT line (`LINE_MAX_BYTES`, 64 KiB) whose own
+// redaction is unrelated to this bug; here the header itself carries the
+// padding, and the LINE as a whole stays well under the 64 KiB per-line cap
+// — "still under the line limit", per the blocker's own wording — so the
+// `[redacted: line over 65536 bytes]` marker never applies at all.
+//
+// The boundary this straddles is a FILE-level running byte offset, not a
+// per-line one: a filler line, terminated by its own newline (so
+// `makeLineFeeder`'s per-line `tail` resets to empty, per `resetLine`),
+// accumulates enough prior bytes that the 64 KiB read-chunk boundary falls
+// inside the very NEXT (short) line's own header, more than 256 characters
+// into the header's own padding.
+
+/** A short filler line, then a header (+ small suffix) on its OWN line, then each of `afterLines` — built INSIDE the child, never passed through argv, so a multi-KB header/filler pair never risks an OS argument-length limit. */
+const PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE = `
+const config = JSON.parse(process.argv[2] ?? '{}');
+process.stdout.write('F'.repeat(Number(config.priorLineBytes ?? 0)) + '\\n');
+process.stdout.write(config.header + (config.suffix ?? '') + '\\n');
+for (const line of config.afterLines ?? []) {
+  process.stdout.write(\`\${line}\\n\`);
+}
+process.exit(Number(config.exitCode ?? 0));
+`;
+
+// The default `highWaterMark` `passThroughAndProcess`'s `createReadStream`
+// reads with — the same byte count `LINE_MAX_BYTES` uses.
+const READ_CHUNK_BOUNDARY = 64 * 1024;
+// Comfortably past `OVERFLOW_TAIL_CHARS` (256): this many of the header's own
+// padding characters must land BEFORE the boundary for its `-----BEGIN `
+// prefix to be pushed out of the rolling `tail` before the second segment
+// (carrying the rest of the padding and `PRIVATE KEY-----`) ever arrives.
+const HEADER_BYTES_BEFORE_BOUNDARY = 300;
+
+/**
+ * `priorLineBytes` for `PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE` so the
+ * header's OWN line starts exactly `HEADER_BYTES_BEFORE_BOUNDARY` bytes
+ * before `READ_CHUNK_BOUNDARY` — the header straddles the boundary, while the
+ * header's own LINE (header + a short suffix) stays far under the 64 KiB
+ * per-line cap, since only the ONE preceding filler line, not this one,
+ * carries the bulk of the bytes.
+ */
+const priorLineBytesForStraddle = (): number => {
+  const headerStart = READ_CHUNK_BOUNDARY - HEADER_BYTES_BEFORE_BOUNDARY;
+  // the filler line is `'F'.repeat(priorLineBytes) + '\\n'` — priorLineBytes
+  // bytes of 'F' plus one newline byte lands the header at `headerStart`.
+  return headerStart - 1;
+};
+
+describe('a long-padded BEGIN header straddles the 64 KiB read-chunk boundary on a NORMAL-length line', () => {
+  const BODY_LINE = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
+  const END_LINE = '-----END RSA PRIVATE KEY-----';
+
+  const expectStraddleRedacted = (header: string) => {
+    return async () => {
+      // Sanity check on the fixture itself, not on check-run.mjs: the header
+      // must actually straddle the boundary (part before, part after) for
+      // this test to exercise the bug at all.
+      expect(
+        header.length,
+        'the header is not long enough to straddle the boundary',
+      ).toBeGreaterThan(HEADER_BYTES_BEFORE_BOUNDARY);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'pem-normal-line-straddle-runner.mjs',
+        PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE,
+      );
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            priorLineBytes: priorLineBytesForStraddle(),
+            header,
+            afterLines: [BODY_LINE, END_LINE, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+      const tail = record!.data.tail ?? '';
+
+      expect(
+        logContent,
+        'the key body leaked into the log — a long-padded BEGIN header straddling the read-chunk ' +
+          'boundary on a normal-length line never armed the block',
+      ).not.toContain(BODY_LINE);
+      expect(tail, 'the key body leaked into the tail').not.toContain(BODY_LINE);
+      expect(logContent, 'the END line leaked into the log').not.toContain(END_LINE);
+      expect(tail, 'the END line leaked into the tail').not.toContain(END_LINE);
+      expect(
+        logContent,
+        'the line after END was swallowed — the log never reached "after-ok"',
+      ).toContain('after-ok');
+      expect(
+        tail,
+        'the line after END was swallowed — the tail never reached "after-ok"',
+      ).toContain('after-ok');
+    };
+  };
+
+  it(
+    'redacts the body and END line when the header is padded with 400 spaces',
+    { timeout: 20_000 },
+    expectStraddleRedacted(pemHeader(' '.repeat(400))),
+  );
+
+  it(
+    'redacts the body and END line when the header is padded with 400 uppercase letters',
+    { timeout: 20_000 },
+    expectStraddleRedacted(pemHeader('A'.repeat(400))),
+  );
+
+  it(
+    'redacts the body and END line when the header is padded with ~120 ANSI reset codes (stripped to nothing, but RAW-length long enough to straddle)',
+    { timeout: 20_000 },
+    expectStraddleRedacted(pemHeader('\u001b[0m'.repeat(120))),
   );
 });
 
@@ -2831,6 +2984,141 @@ describe('a signal arriving after the checked command closes, before read-back f
         leftover,
         `capture files leaked after a SIGINT during read-back: ${leftover.join(', ')}`,
       ).toEqual([]);
+    },
+  );
+});
+
+// --- a SIGINT arriving after the direct child closes must still kill a -----
+// --- leftover process in its OWN process group (RP-295 gate round 3,    ---
+// --- blocker C) ---------------------------------------------------------
+//
+// RP-295 gate round 2 added, inside `onInterrupt`: `if (!childClosed)
+// killChildTree(child);` — its own comment reasons that once the child has
+// closed there is "no process (tree) left to kill", so the call would be a
+// harmless no-op or, worse, hit a DIFFERENT process the OS has since reused
+// that pid for. That reasoning holds for the DIRECT child's own pid, but
+// `killChildTree` on POSIX never signals that pid alone — it signals the
+// WHOLE PROCESS GROUP (`process.kill(-child.pid, 'SIGKILL')`, the module
+// header's "Timeout kills the whole process tree"), spawned `detached: true`
+// exactly so a hung WORKER the checked command spawned is killed along with
+// it. A process group is not torn down the moment its LEADER (the direct
+// child) exits — it persists for as long as ANY member is still alive, and
+// POSIX never reuses a process-group id while a member of it still lives, so
+// the "different process reusing the pid" risk the comment names does not
+// apply to the GROUP id the way it does to a single pid. A checked command
+// that backgrounds a worker and exits itself — an ordinary shape (a shell's
+// own `&` job control; a runner that detaches a long-lived watcher) — leaves
+// that worker alive in the SAME group, and this guard now refuses to kill it
+// the moment a SIGINT lands after the direct child has already closed,
+// exactly the leak `killChildTree` exists to prevent. Controller decision
+// (gate round 3): REVERT the guard to base (pre-round-2) behaviour —
+// `killChildTree(child)` unconditionally, every time `onInterrupt` runs.
+//
+// This reuses the SAME deterministic seam as "a signal arriving after the
+// checked command closes, before read-back finishes" above
+// (`DELAY_READBACK_PRELOAD_SOURCE`, `CHECK_RUN_TEST_READBACK_DELAY_MS`) to
+// land the SIGINT inside the narrow window where `childClosed` is already
+// `true` but cleanup has not yet finished, and the SAME
+// spawn-a-same-group-grandchild shape as "--timeout kills the whole process
+// tree, not only the direct child" above (`GRANDCHILD_SOURCE`) for the
+// leftover process itself — except here the DIRECT child exits immediately
+// after spawning it, rather than being killed by a `--timeout`.
+
+/** Spawns a grandchild in its OWN (inherited) process group — no `detached` of its own — then exits immediately, well before any interrupt this test sends. */
+const CLOSING_PARENT_SOURCE = `
+import { spawn } from 'node:child_process';
+const grandchildPath = process.argv[2];
+const pidFile = process.argv[3];
+spawn(process.execPath, [grandchildPath, pidFile], { stdio: 'ignore' });
+process.exit(0);
+`;
+
+describe('a SIGINT arriving after the direct child has closed must still kill a leftover process in its OWN process group', () => {
+  it(
+    "kills a still-alive backgrounded process from the checked command's own process group, even though the direct child already closed",
+    { timeout: 20_000 },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnPosix().ok, onlyOnPosix().reason);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const grandchildPath = await writeFixture(cwd, 'grandchild.mjs', GRANDCHILD_SOURCE);
+      const parentPath = await writeFixture(cwd, 'closing-parent.mjs', CLOSING_PARENT_SOURCE);
+      const preloadPath = await writeFixture(
+        cwd,
+        'delay-readback-preload.mjs',
+        DELAY_READBACK_PRELOAD_SOURCE,
+      );
+      const pidFile = path.join(cwd, 'grandchild.pid');
+
+      const checkRunProcess = spawn(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preloadPath).href,
+          CHECK_RUN,
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          parentPath,
+          grandchildPath,
+          pidFile,
+        ],
+        {
+          cwd,
+          env: hermeticEnv({
+            RIG_RUN_DIR: runDir,
+            CHECK_RUN_TEST_READBACK_DELAY_MS: '5000',
+          }),
+        },
+      );
+
+      // The grandchild writes its own pid almost immediately, and the direct
+      // child (CLOSING_PARENT_SOURCE) exits right after spawning it — poll
+      // briefly for the pid file rather than assuming it has already landed.
+      let pidText = '';
+      for (let i = 0; i < 30 && pidText === ''; i += 1) {
+        try {
+          pidText = (await readFile(pidFile, 'utf8')).trim();
+        } catch {
+          // not written yet
+        }
+        if (pidText === '') await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      expect(pidText, 'the grandchild never wrote its pid file').not.toBe('');
+      const grandchildPid = Number(pidText);
+
+      // The direct child closes almost immediately; the 5s artificial
+      // read-back delay guarantees check-run is still inside the window
+      // between the child's own `close` event and this run's cleanup —
+      // `childClosed` is already `true` by the time this SIGINT lands.
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      process.kill(checkRunProcess.pid!, 'SIGINT');
+
+      await new Promise<void>((resolve) => checkRunProcess.on('close', () => resolve()));
+
+      const isAlive = (): boolean => {
+        try {
+          process.kill(grandchildPid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+
+      // Allow up to ~3s of polling after check-run has already returned.
+      let alive = isAlive();
+      for (let i = 0; i < 30 && alive; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        alive = isAlive();
+      }
+      expect(
+        alive,
+        `a leftover process (pid ${grandchildPid}) from the checked command's own process group ` +
+          'was still alive after a SIGINT arriving once the direct child had already closed — ' +
+          '`childClosed` wrongly skipped the process-group kill',
+      ).toBe(false);
     },
   );
 });
