@@ -138,3 +138,26 @@ particular, `MAX_PATCH_PATH_COMPONENTS` counts destination path components
 across the whole patch, so the file capacity of one patch decreases as path
 depth increases. When that bound is reached, split the edit into multiple
 smaller patches.
+
+## Windows wrapper stage bounds (RP-266)
+
+On Windows, the four guard hooks that gate an edit or a shell command
+(`guard-secret-file`, `guard-rulebook`, `block-no-verify`, `guard-bash`) run
+inside a generated wrapper that bounds every stage of its own work —
+resolving the repository root, copying stdin to the guard, and waiting on the
+guard itself. Once any one stage's bound is crossed, the wrapper kills that
+stage's whole process tree and blocks with exit 2, naming the stage that
+expired in its stderr message, unconditionally — never silently falling
+through to a harness default that would treat the hang as an allow (see
+generator's `test/template/codex.test.ts` (absent in a generated rig) ›
+"bounds every Windows wrapper stage for %s, kills the process tree on expiry,
+and names the timed-out stage (RP-266)" and › "wraps every kill in %s's
+wrapper so it cannot throw, and reports the timeout unconditionally once a
+bound expired (RP-266 follow-up)"). `$env:RIG_CODEX_WRAPPER_TIMEOUT_MS` is a
+test-only override: it can only LOWER a stage's own bound, selected through
+`[Math]::Min(...)` against that stage's named default, and a malformed or
+absent value leaves every stage at its real production default rather than
+raising one or throwing (see generator's `test/template/codex.test.ts`
+(absent in a generated rig) › "lets a test-only RIG_CODEX_WRAPPER_TIMEOUT_MS
+override lower %s's per-stage bounds through Math.Min alone, and never raise
+them (RP-266 follow-up)").

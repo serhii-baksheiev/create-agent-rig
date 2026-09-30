@@ -1,6 +1,15 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { homedir, hostname, tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -9,6 +18,7 @@ import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env
 import { runNodeTimed } from '../helpers/child-timing.js';
 import {
   deepCwdSpawnAvailable,
+  gitStubAvailable,
   needsGitRoot,
   onlyOnWindows,
   skipUnless,
@@ -1078,6 +1088,139 @@ describe('guard-rulebook: apply_patch never hides a rulebook removal (RP-214)', 
     await writeFile(target, '// real hook file\n');
     const result = await run(deletePatch('.claude/hooks/guard-bash.mjs'));
     expect(result.code, result.stderr).toBe(0);
+  });
+
+  // RP-322 — a failure-diagnostician traced a flake back to this same
+  // repository-root resolution: `edit-input.mjs`'s `patchFragments` runs
+  // `git rev-parse --show-toplevel` with a bare 1-second timeout
+  // (`edit-input.mjs`, just above where `patchFragments` builds its budget),
+  // and the catch a few lines below leaves `budget.repoRoot` null on ANY
+  // failure, including a timeout under host load or a cold process start.
+  // From that point every fragment in the patch — however ordinary its
+  // destination — resolves to the pathless global refusal "patch destination
+  // is outside the repository or cannot be resolved safely" instead of the
+  // destination-specific judgment the RP-214 tests above exercise.
+  // `unattended-flag.mjs` runs the very same command with a 10-second bound
+  // (its own `GIT_ROOT_TIMEOUT_MS`, inside `gitCheckoutToplevel`). These
+  // tests make `git` itself slow with a real stub script on PATH — never a
+  // mock of the guard's own code — so what they measure is the guard's
+  // actual behaviour under load, not an assumption about its internals.
+  describe('a slow git must not turn an ordinary destination into an unresolvable one (RP-322)', () => {
+    let stubDir: string;
+    let realGitPath: string;
+
+    beforeEach(async (ctx) => {
+      skipUnless(ctx, gitStubAvailable().ok, gitStubAvailable().reason);
+      realGitPath = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+      stubDir = await mkdtemp(path.join(tmpdir(), 'rp322-git-stub-'));
+    });
+
+    afterEach(async () => {
+      if (stubDir) await removeFixture(stubDir);
+    });
+
+    /** Installs a `git` on PATH that sleeps `delaySeconds` before exec'ing the real binary. */
+    const installSlowGit = async (delaySeconds: number) => {
+      const stubPath = path.join(stubDir, 'git');
+      await writeFile(stubPath, `#!/bin/sh\nsleep ${delaySeconds}\nexec "${realGitPath}" "$@"\n`);
+      await chmod(stubPath, 0o755);
+    };
+
+    const runWithSlowGit = (payload: object) =>
+      runHookFull(payload, {
+        ...env(),
+        PATH: `${stubDir}${path.delimiter}${process.env.PATH ?? ''}`,
+      });
+
+    it('allows an ordinary allowed Delete File destination even when git itself takes 1.5s to answer', async () => {
+      await installSlowGit(1.5);
+      const target = path.join(root, 'src', 'a.txt');
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, 'ordinary file\n');
+      await armed(['src/']);
+      const result = await runWithSlowGit(deletePatch('src/a.txt'));
+      expect(result.code, result.stderr).toBe(0);
+    }, 15_000);
+
+    it('still refuses a Delete File of a rulebook path BY NAME under a slow git, not by the generic unresolvable-destination refusal', async () => {
+      await installSlowGit(1.5);
+      const settingsPath = path.join(root, '.claude', 'settings.json');
+      await mkdir(path.dirname(settingsPath), { recursive: true });
+      await writeFile(settingsPath, '{}\n');
+      await armed(['src/']);
+      const result = await runWithSlowGit({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        cwd: root,
+        tool_input: {
+          command:
+            '*** Begin Patch\n*** Delete File: .claude/settings.json\n*** Add File: src/b.txt\n+hello\n*** End Patch\n',
+        },
+      });
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain('.claude/settings.json');
+      expect(result.stderr).not.toMatch(/cannot be resolved safely/);
+    }, 15_000);
+
+    it('still refuses when cwd is not a git repository at all, flag armed — the fix must not weaken this control', async () => {
+      const nonGitDir = await mkdtemp(path.join(tmpdir(), 'rp322-nogit-'));
+      try {
+        await armed(['src/']);
+        const result = await run({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          cwd: nonGitDir,
+          tool_input: { command: '*** Begin Patch\n*** Delete File: src/a.txt\n*** End Patch\n' },
+        });
+        expect(result.code, result.stderr).toBe(2);
+        expect(result.stderr).toMatch(/cannot be resolved safely/);
+      } finally {
+        await removeFixture(nonGitDir);
+      }
+    });
+
+    it('tolerates the same order-of-magnitude git delay unattended-flag.mjs already tolerates, checked behaviourally rather than by importing either bound', async () => {
+      await installSlowGit(3);
+      await armed(['src/']);
+      // Independent oracle (`.claude/rules/invariants.md`, "the
+      // independent-oracle invariant"): unattended-flag.mjs's own
+      // `git rev-parse --show-toplevel` call (`gitCheckoutToplevel`, run by
+      // `requireRoot` inside its `verify` subcommand) is a second,
+      // differently-coded resolver of "this checkout's git root" — probed
+      // here as a black box, by spawning its CLI and reading whether it
+      // succeeds, never by importing `GIT_ROOT_TIMEOUT_MS` or any constant
+      // out of edit-input.mjs. `verify` is a pure read (unlike `on`, it never
+      // calls `writeUnattended`, which mirrors into the real password-database
+      // home no fixture `HOME` can redirect — RP-271/RP-263) — reading the
+      // flag `armed()` above already wrote directly into this fixture's own
+      // home. If both edit-input.mjs and unattended-flag.mjs survive the same
+      // real delay, edit-input.mjs's own bound is at least the same order of
+      // magnitude — this does not pin the exact figure, only the class.
+      const slowGitEnv = {
+        ...process.env,
+        HOME: home,
+        PATH: `${stubDir}${path.delimiter}${process.env.PATH ?? ''}`,
+      };
+      const verifyOutput = execFileSync(
+        process.execPath,
+        [
+          path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs'),
+          'verify',
+          '--item',
+          'AR-51',
+          '--root',
+          root,
+        ],
+        { env: slowGitEnv, encoding: 'utf8', timeout: 8000 },
+      );
+      expect(verifyOutput).toMatch(/armed|loop-UNATTENDED/);
+
+      const target = path.join(root, 'src', 'a.txt');
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, 'ordinary file\n');
+      const result = await runWithSlowGit(deletePatch('src/a.txt'));
+      expect(result.code, result.stderr).toBe(0);
+    }, 15_000);
   });
 });
 

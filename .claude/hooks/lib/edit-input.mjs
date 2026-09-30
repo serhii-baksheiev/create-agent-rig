@@ -48,6 +48,12 @@ const MAX_TOTAL_MOVED_FILE_BYTES = 1024 * 1024;
 const MAX_TOTAL_HUNK_LINES = 10_000;
 const MAX_OUTPUT_LINES = 20_000;
 const MAX_SPLICE_OPERATIONS = 1_000;
+// Bound on `git rev-parse --show-toplevel` when resolving an apply_patch
+// destination. It matches the bound unattended-flag.mjs uses for the same
+// call. At 1000 ms, a git slowed by host load or a Windows process start
+// timed out and every in-repo destination was refused as unresolvable
+// (RP-322). Past the bound the destination is still refused.
+const GIT_ROOT_TIMEOUT_MS = 10_000;
 const MAX_PATCH_SECTIONS = 128;
 /** A MultiEdit is capped before it is mapped — bounded work, never a spread of input. */
 const MAX_MULTI_EDITS = 256;
@@ -290,7 +296,7 @@ function patchFragments(command, payloadCwd) {
     const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
       ? path.resolve(payloadCwd)
       : process.cwd();
-    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: 1000, env: withoutGitLocation() }).trim());
+    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_ROOT_TIMEOUT_MS, env: withoutGitLocation() }).trim());
     budget.patchCwd = realpathSync(requestedCwd);
     if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
   } catch { /* moved inspection below refuses without a trusted root and cwd */ }

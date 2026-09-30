@@ -105,12 +105,14 @@
 // Codex dispatch are different `dispatchGroups` rows (different `harness`),
 // each carrying only its own harness's usage object; the other harness's slot
 // stays `null` on that row rather than a merged/zeroed total.
-import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { execFile, execFileSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { fifosAvailable, skipUnless } from '../helpers/env.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -159,7 +161,8 @@ const journal = (await import(pathToFileURL(path.join(scriptsDir, 'run-journal.m
 // Only imported once the module exists — every test below fails on this
 // import until then, which is the expected Red-step reason.
 let reportModule: {
-  tokenReportOf: (input: { runs: unknown[]; since: string }) => Report;
+  tokenReportOf: (input: { runs: unknown[]; since: string; wiring?: Wiring }) => Report;
+  render: (report: Report) => string;
 } | null = null;
 try {
   reportModule = (await import(pathToFileURL(reportScript).href)) as typeof reportModule;
@@ -215,12 +218,57 @@ interface TicketGroup {
   occurrences: Occurrence[];
 }
 
+// RP-292 — dispatch/hook witness availability, made explicit rather than
+// inferred by the reader from the absence of a `usage` object. `wiring` is
+// read from the repository's own `.claude/settings.json` /
+// `.codex/hooks.json` (whether a `record-dispatch.mjs` command is declared
+// under SubagentStart/SubagentStop for that harness), rooted at the `--runs`
+// directory's own checkout — never the CLI's `cwd` — and is `'unknown'`
+// rather than `'not-configured'` when that directory is not itself inside a
+// git checkout (there is nothing to read, not "read and found absent").
+// `state` is derived from JOURNALLED EVENTS ONLY — configuration can never by
+// itself produce `'witnessed'` — and `'trusted'` is never a reported state:
+// Codex does not run project-level hooks for an untrusted project, so an
+// absence of Codex dispatch evidence is explained in `reason`, never
+// claimed as a trust verdict this script cannot observe.
+type WiringState = 'configured' | 'not-configured' | 'unknown';
+interface Wiring {
+  claude: WiringState;
+  codex: WiringState;
+}
+interface UsageEvidenceHarness {
+  wiring: WiringState;
+  state: 'witnessed' | 'configured-no-witness' | 'not-configured' | 'unknown';
+  reason: string;
+  // Tally, by the `usageUnavailable` reason code record-dispatch.mjs journals,
+  // of every dispatch-end this harness journalled that named one — e.g.
+  // `{ 'transcript-path-missing': 1 }`. `{}` when none did.
+  unavailableReasons: Record<string, number>;
+}
+interface UsageEvidence {
+  claude: UsageEvidenceHarness;
+  codex: UsageEvidenceHarness;
+  // Controller (parent session) usage is never measured by this script —
+  // record-dispatch.mjs only journals SubagentStart/SubagentStop, never the
+  // controller's own turn — so this is a fixed statement, not a computation.
+  controller: { available: false; reason: string };
+}
+
 interface Report {
   since: string;
   runs: { read: number; skipped: Array<{ run: string; why: string }> };
   dispatchGroups: DispatchGroup[];
   tickets: TicketGroup[];
+  usageEvidence: UsageEvidence;
   money: { line: string; estimate: null };
+  // RP-294: a dispatch-end whose agentRef has no dispatch-start anywhere
+  // earlier in the same run is journaled with `orphan: true`
+  // (`record-dispatch.mjs`) — a harness-internal SubagentStop this script
+  // must never count as a real agent dispatch. `orphanEnds` is the total
+  // count of such records across every run read, summed independently of
+  // `dispatchGroups`/`tickets[].occurrences[].dispatches`, both of which
+  // exclude them entirely.
+  orphanEnds: number;
 }
 
 const SINCE = '2026-09-01T00:00:00.000Z';
@@ -328,6 +376,133 @@ const codexUsage = (over: Partial<CodexUsage> = {}): CodexUsage => ({
   reasoningOutputTokens: 60,
   ...over,
 });
+
+// --- RP-292 gate round 2 — CLI wiring resolution fixtures --------------
+//
+// The CLI's own `wiring` input (see the header's WIRING section) is computed
+// only by the CLI, from the `--runs` directory's OWN git checkout — never
+// `tokenReportOf`'s pure `wiring` parameter the tests above inject directly.
+// Every test below exercises that resolver end to end, through the CLI, with
+// a REAL git checkout built by `git init` under a temp dir — never the
+// repository this test suite itself lives in.
+
+// Mirrors token-report.mjs's own (currently unexported) constants — read
+// through reportModule when it exposes them, so this stays correct the day
+// they are exported, and falls back to the value this gate round's own
+// review read from the source otherwise.
+const WIRING_FILE_MAX_BYTES =
+  (reportModule as unknown as { WIRING_FILE_MAX_BYTES?: number } | null)?.WIRING_FILE_MAX_BYTES ??
+  256 * 1024;
+const UNAVAILABLE_REASON_DISTINCT_CODES_MAX =
+  (reportModule as unknown as { UNAVAILABLE_REASON_DISTINCT_CODES_MAX?: number } | null)
+    ?.UNAVAILABLE_REASON_DISTINCT_CODES_MAX ?? 20;
+const UNAVAILABLE_REASON_CODE_MAX_LENGTH =
+  (reportModule as unknown as { UNAVAILABLE_REASON_CODE_MAX_LENGTH?: number } | null)
+    ?.UNAVAILABLE_REASON_CODE_MAX_LENGTH ?? 200;
+
+const WIRED_CLAUDE_SETTINGS = JSON.stringify({
+  hooks: {
+    SubagentStart: [
+      {
+        hooks: [
+          { type: 'command', command: 'node .claude/hooks/record-dispatch.mjs --harness=claude' },
+        ],
+      },
+    ],
+  },
+});
+
+const UNWIRED_CLAUDE_SETTINGS = JSON.stringify({
+  hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'node some-other-hook.mjs' }] }] },
+});
+
+const WIRED_CODEX_HOOKS = JSON.stringify({
+  hooks: {
+    SubagentStart: [
+      {
+        hooks: [
+          { type: 'command', command: 'node .claude/hooks/record-dispatch.mjs --harness=codex' },
+        ],
+      },
+    ],
+  },
+});
+
+/** A fresh, bare `git init` checkout with its own `.claude/runs` directory —
+ * the `--runs` value every wiring-resolution test below passes to the CLI.
+ * No commit is needed: `git rev-parse --show-toplevel` resolves right after
+ * `git init`. */
+const wiringCheckout = async (): Promise<{ checkoutDir: string; runsDir: string }> => {
+  const checkoutDir = await mkdtemp(path.join(tmpdir(), 'token-report-wiring-'));
+  execFileSync('git', ['init', '-q', checkoutDir], { env: withoutGitLocation() });
+  const runsDir = path.join(checkoutDir, '.claude', 'runs');
+  await mkdir(runsDir, { recursive: true });
+  return { checkoutDir, runsDir };
+};
+
+/** A main checkout with a linked worktree (`git worktree add`) — shaped like
+ * a real rig checkout: a commit is required first, or `git worktree add`
+ * has no HEAD to branch from. */
+const linkedWorktreeCheckout = async (): Promise<{ main: string; worktree: string }> => {
+  const base = await mkdtemp(path.join(tmpdir(), 'token-report-worktree-'));
+  const main = path.join(base, 'main');
+  await mkdir(main, { recursive: true });
+  execFileSync('git', ['init', '-q', '-b', 'main', main], { env: withoutGitLocation() });
+  await writeFile(path.join(main, 'seed.txt'), 'seed\n');
+  execFileSync('git', ['add', '-A'], { cwd: main, env: withoutGitLocation() });
+  execFileSync(
+    'git',
+    ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', 'commit', '-q', '-m', 'seed'],
+    { cwd: main, env: withoutGitLocation() },
+  );
+  const worktree = path.join(base, 'worktree');
+  execFileSync('git', ['worktree', 'add', '-q', '-b', 'task-1', worktree], {
+    cwd: main,
+    env: withoutGitLocation(),
+  });
+  return { main, worktree };
+};
+
+/** A checkout whose git directory lives OUTSIDE the working tree
+ * (`git init --separate-git-dir`) — a shape `--git-common-dir`'s own parent
+ * does not identify correctly, distinct from the ordinary case where `.git`
+ * is a plain subdirectory of the checkout. */
+const separateGitDirCheckout = async (): Promise<{ checkoutDir: string; gitDir: string }> => {
+  const base = await mkdtemp(path.join(tmpdir(), 'token-report-separate-git-dir-'));
+  const checkoutDir = path.join(base, 'checkout');
+  const gitDir = path.join(base, 'external-git');
+  await mkdir(checkoutDir, { recursive: true });
+  execFileSync('git', ['init', '-q', `--separate-git-dir=${gitDir}`, checkoutDir], {
+    env: withoutGitLocation(),
+  });
+  return { checkoutDir, gitDir };
+};
+
+/** Spawns the CLI with a hard child-process timeout (SIGKILL) so a genuinely
+ * unbounded read inside it cannot hang this test suite — the read-bound
+ * regression test needs the CLI to finish well inside this bound, not merely
+ * "eventually". */
+const cliBounded = (
+  args: string[],
+  env: NodeJS.ProcessEnv,
+  timeoutMs: number,
+): Promise<{ code: number; out: string; killed: boolean; elapsedMs: number }> =>
+  new Promise((resolvePromise) => {
+    const startedAt = Date.now();
+    execFile(
+      process.execPath,
+      [reportScript, ...args],
+      { env, timeout: timeoutMs, killSignal: 'SIGKILL' },
+      (error, stdout, stderr) => {
+        resolvePromise({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          out: stdout + stderr,
+          killed: Boolean((error as { signal?: string } | null)?.signal),
+          elapsedMs: Date.now() - startedAt,
+        });
+      },
+    );
+  });
 
 describe('token-report.mjs is read-only', () => {
   it('leaves the run-directory tree byte-identical after tokenReportOf and the CLI both run', async () => {
@@ -494,6 +669,730 @@ describe('token-report.mjs money line', () => {
     expect(group.dispatches).toEqual({ ended: 2, noEndObserved: 0 });
     expect(group.usage.claude).toBeNull();
     expect(data.money.line).toBe('usage unavailable; monetary cost unavailable');
+  });
+});
+
+// RP-292: today `dispatches: 'unavailable'` and a bare absent `usage` slot
+// read identically whether record-dispatch.mjs was never wired, was wired
+// but the subagent produced no evidence, or — for Codex — was skipped
+// silently because the project was untrusted. `usageEvidence` makes that
+// distinction explicit. `wiring` is injected directly into `tokenReportOf`
+// for every test below except the CLI-auto-detection test, mirroring how
+// `runs` is already injected rather than read from a live checkout.
+describe('token-report.mjs usageEvidence: dispatch/hook witness availability made explicit', () => {
+  it('reports configured-no-witness, with a reason that configuration is not execution, when the hook is wired but no dispatch was ever observed', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-A',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.state).toBe('configured-no-witness');
+    expect(data.usageEvidence.claude.reason).toMatch(/configuration is not execution/i);
+  });
+
+  it('reports not-configured — a different state and reason than configured-no-witness — when the hook is not wired and no dispatch was observed', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-B',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+    const runs = await readRuns(runsDir);
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const configured = reportModule!.tokenReportOf({
+      runs,
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+    const notConfigured = reportModule!.tokenReportOf({
+      runs,
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'not-configured' },
+    });
+
+    expect(configured.usageEvidence, JSON.stringify(configured)).toBeDefined();
+    expect(notConfigured.usageEvidence, JSON.stringify(notConfigured)).toBeDefined();
+    expect(notConfigured.usageEvidence.claude.state).toBe('not-configured');
+    expect(notConfigured.usageEvidence.claude.state).not.toBe(
+      configured.usageEvidence.claude.state,
+    );
+    expect(notConfigured.usageEvidence.claude.reason).not.toBe(
+      configured.usageEvidence.claude.reason,
+    );
+  });
+
+  it('reports witnessed from a dispatch-start alone, even when the hook is not wired in configuration — witness comes only from events', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-C',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'not-configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.state).toBe('witnessed');
+  });
+
+  it('never reports witnessed from configuration alone, for either harness, when the run journals no dispatch event at all', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-D',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.state).not.toBe('witnessed');
+    expect(data.usageEvidence.codex.state).not.toBe('witnessed');
+    expect(data.usageEvidence.claude.state).toBe('configured-no-witness');
+    expect(data.usageEvidence.codex.state).toBe('configured-no-witness');
+  });
+
+  it('tallies usageUnavailable reason codes per harness in usageEvidence and in the rendered evidence line, while the money line keeps its exact existing sentence', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-E',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: 'transcript-path-missing',
+    });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.unavailableReasons).toEqual({
+      'transcript-path-missing': 1,
+    });
+    expect(data.money).toEqual({
+      line: 'usage unavailable; monetary cost unavailable',
+      estimate: null,
+    });
+
+    const text = reportModule!.render(data);
+    expect(text).toMatch(/transcript-path-missing=1/);
+  });
+
+  it('renders the usage evidence line before the money line, which stays last, and leaves money as exactly {line, estimate}', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-F',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usage: claudeUsage(),
+    });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    expect(Object.keys(data.money).sort()).toEqual(['estimate', 'line']);
+    expect(data.money).toEqual({
+      line: 'usage measured; monetary cost unavailable',
+      estimate: null,
+    });
+
+    const text = reportModule!.render(data);
+    const lines = text.trimEnd().split('\n');
+    const evidenceIndex = lines.findIndex((line) => /usage evidence/i.test(line));
+    expect(evidenceIndex, text).toBeGreaterThanOrEqual(0);
+    expect(lines[lines.length - 1]).toBe(data.money.line);
+    expect(evidenceIndex).toBeLessThan(lines.length - 1);
+  });
+
+  it('the CLI reports wiring as unknown, never not-configured, for a --runs directory that is not itself part of a git checkout', async () => {
+    // runsRoot() is a bare mkdtemp under the OS temp dir — never a git
+    // checkout on its own — the same fixture every other test in this file
+    // already uses as --runs, deliberately reused here rather than a new
+    // fixture, so this pins the CLI's default behaviour, not a special case.
+    const runsDir = await runsRoot();
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.claude.wiring).toBe('unknown');
+    expect(data.usageEvidence.claude.wiring).not.toBe('not-configured');
+    expect(data.usageEvidence.codex.wiring).toBe('unknown');
+    expect(data.usageEvidence.codex.wiring).not.toBe('not-configured');
+  });
+
+  it('states that controller (parent session) usage is unavailable, and why — only subagent dispatches are journalled', async () => {
+    const runsDir = await runsRoot();
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'unknown', codex: 'unknown' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.controller.available).toBe(false);
+    expect(data.usageEvidence.controller.reason).toMatch(/subagent/i);
+    expect(data.usageEvidence.controller.reason).toMatch(/controller|parent session/i);
+  });
+
+  it('a hostile usageUnavailable code carrying a control character reaches neither the text nor the --json output raw', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-HOSTILE',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: 'transcript\u009b-path-missing',
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T4 });
+
+    const textResult = await cli(['--runs', runsDir, '--since', SINCE]);
+    expect(textResult.code, textResult.out).toBe(0);
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this assertion
+    expect(textResult.stdout).not.toMatch(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/);
+
+    const jsonResult = await cli(['--runs', runsDir, '--since', SINCE, '--json']);
+    expect(jsonResult.code, jsonResult.out).toBe(0);
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this assertion
+    expect(jsonResult.stdout).not.toMatch(/[\x7f-\x9f]/);
+    expect(() => JSON.parse(jsonResult.stdout)).not.toThrow();
+  });
+});
+
+describe('token-report.mjs usageEvidence codex parity', () => {
+  it('reports configured-no-witness with a reason naming that project-hook trust is not observed and untrusted hooks are skipped silently, and never reports the state "trusted"', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-CODEX-A',
+      now: T1,
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T2 });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.codex.state).toBe('configured-no-witness');
+    expect(data.usageEvidence.codex.reason).toMatch(/trust/i);
+    expect(data.usageEvidence.codex.reason).toMatch(/untrusted hooks?.*skipped silently/i);
+
+    const text = reportModule!.render(data);
+    const wholeOutput = `${text}${JSON.stringify(data)}`;
+    expect(wholeOutput).not.toMatch(/"trusted"/);
+    expect(data.usageEvidence.claude.state).not.toBe('trusted');
+    expect(data.usageEvidence.codex.state).not.toBe('trusted');
+  });
+
+  it('a dispatch-end carrying usageUnavailable rollout-identity-mismatch tallies the same way a Claude code does', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-CODEX-B',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'codex', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'codex',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: 'rollout-identity-mismatch',
+    });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'not-configured', codex: 'configured' },
+    });
+
+    expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
+    expect(data.usageEvidence.codex.state).toBe('witnessed');
+    expect(data.usageEvidence.codex.unavailableReasons).toEqual({
+      'rollout-identity-mismatch': 1,
+    });
+  });
+});
+
+// RP-292 gate round 2 — blocker 1 (security): the wiring resolver bounds
+// itself on `statSync(...).size`, never on bytes actually read. A checkout
+// whose `.claude/settings.json` is a symlink to a Linux virtual file (here
+// `/proc/self/pagemap`) reports a `stat` size that does not describe how much
+// `readFileSync` will actually pull from it, so the size guard lets an
+// effectively unbounded read through. Linux-only, and skipped rather than
+// failed where the fixture file does not exist (there is nothing this
+// checkout can pin on a platform without it).
+describe('token-report.mjs CLI wiring resolution: bounded reads, not bounded stat size (RP-292 gate round 2)', () => {
+  const PAGEMAP = '/proc/self/pagemap';
+  const BOUND_MS = 8_000;
+
+  it.runIf(existsSync(PAGEMAP))(
+    'finishes within a bound and reports claude wiring as unknown when .claude/settings.json is a symlink to /proc/self/pagemap, instead of reading it without bound',
+    async () => {
+      const { checkoutDir, runsDir } = await wiringCheckout();
+      await symlink(PAGEMAP, path.join(checkoutDir, '.claude', 'settings.json'));
+
+      const result = await cliBounded(
+        ['--runs', runsDir, '--since', SINCE, '--json'],
+        withoutGitLocation(),
+        BOUND_MS,
+      );
+
+      expect(
+        result.killed,
+        `CLI had to be killed after ${result.elapsedMs}ms without finishing — a stat-size bound does not bound an unbounded read of a virtual file: ${result.out.slice(0, 500)}`,
+      ).toBe(false);
+      expect(result.code, result.out).toBe(0);
+      const data = JSON.parse(result.out) as Report;
+      expect(data.usageEvidence.claude.wiring).toBe('unknown');
+    },
+    BOUND_MS + 5_000,
+  );
+
+  it.runIf(existsSync(PAGEMAP))(
+    'finishes within a bound and reports codex wiring as unknown when .codex/hooks.json is a symlink to /proc/self/pagemap, instead of reading it without bound',
+    async () => {
+      const { checkoutDir, runsDir } = await wiringCheckout();
+      await mkdir(path.join(checkoutDir, '.codex'), { recursive: true });
+      await symlink(PAGEMAP, path.join(checkoutDir, '.codex', 'hooks.json'));
+
+      const result = await cliBounded(
+        ['--runs', runsDir, '--since', SINCE, '--json'],
+        withoutGitLocation(),
+        BOUND_MS,
+      );
+
+      expect(
+        result.killed,
+        `CLI had to be killed after ${result.elapsedMs}ms without finishing — a stat-size bound does not bound an unbounded read of a virtual file: ${result.out.slice(0, 500)}`,
+      ).toBe(false);
+      expect(result.code, result.out).toBe(0);
+      const data = JSON.parse(result.out) as Report;
+      expect(data.usageEvidence.codex.wiring).toBe('unknown');
+    },
+    BOUND_MS + 5_000,
+  );
+});
+
+// RP-292 gate round 3 — blocker (code + security): `recordDispatchConfiguredIn`
+// calls `openSync(filePath, 'r')` before it ever checks `stat.isFile()`, so a
+// FIFO with no writer on the other end blocks inside `open()` itself — the
+// `isFile()` guard that would otherwise reject a non-regular file is never
+// reached, because the call before it never returns. POSIX-only: Windows has
+// no `mkfifo`, so the fixture below is skipped on Windows through the shared
+// `fifosAvailable` helper, which checks the platform, not the binary.
+
+describe('token-report.mjs CLI wiring resolution: a FIFO with no writer must not block open() (RP-292 gate round 3)', () => {
+  const BOUND_MS = 8_000;
+
+  it(
+    'finishes within a bound and reports claude wiring as unknown when .claude/settings.json is a FIFO with no writer, instead of blocking forever inside open()',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const { checkoutDir, runsDir } = await wiringCheckout();
+      const fifoPath = path.join(checkoutDir, '.claude', 'settings.json');
+      execFileSync('mkfifo', [fifoPath]);
+
+      const result = await cliBounded(
+        ['--runs', runsDir, '--since', SINCE, '--json'],
+        withoutGitLocation(),
+        BOUND_MS,
+      );
+
+      expect(
+        result.killed,
+        `CLI had to be killed after ${result.elapsedMs}ms without finishing — opening a FIFO with no writer blocks inside open(), before the isFile() check that would otherwise reject it ever runs: ${result.out.slice(0, 500)}`,
+      ).toBe(false);
+      expect(result.code, result.out).toBe(0);
+      const data = JSON.parse(result.out) as Report;
+      expect(data.usageEvidence.claude.wiring).toBe('unknown');
+    },
+    BOUND_MS + 5_000,
+  );
+
+  it(
+    'finishes within a bound and reports codex wiring as unknown when .codex/hooks.json is a symlink to a FIFO with no writer, instead of blocking forever inside open()',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const { checkoutDir, runsDir } = await wiringCheckout();
+      const fifoPath = path.join(checkoutDir, 'codex-hooks.fifo');
+      execFileSync('mkfifo', [fifoPath]);
+      await mkdir(path.join(checkoutDir, '.codex'), { recursive: true });
+      await symlink(fifoPath, path.join(checkoutDir, '.codex', 'hooks.json'));
+
+      const result = await cliBounded(
+        ['--runs', runsDir, '--since', SINCE, '--json'],
+        withoutGitLocation(),
+        BOUND_MS,
+      );
+
+      expect(
+        result.killed,
+        `CLI had to be killed after ${result.elapsedMs}ms without finishing — opening a FIFO with no writer blocks inside open(), before the isFile() check that would otherwise reject it ever runs: ${result.out.slice(0, 500)}`,
+      ).toBe(false);
+      expect(result.code, result.out).toBe(0);
+      const data = JSON.parse(result.out) as Report;
+      expect(data.usageEvidence.codex.wiring).toBe('unknown');
+    },
+    BOUND_MS + 5_000,
+  );
+});
+
+// RP-292 gate round 3 — advisory pin: the byte cap in
+// `recordDispatchConfiguredIn` is decided on TOTAL BYTES READ, never on
+// whether the truncated buffer happens to parse. A file whose first
+// `WIRING_FILE_MAX_BYTES` bytes already ARE a complete, validly wired config
+// — followed by more whitespace that pushes the file's total size past the
+// cap — must still read as 'unknown'. Dropping the `total >
+// WIRING_FILE_MAX_BYTES` check (deciding from JSON.parse succeeding or
+// failing instead) would make this go red, because the truncated buffer
+// parses to a fully wired config.
+describe('token-report.mjs CLI wiring resolution: the byte cap is decided on total bytes read, not on parse success (RP-292 gate round 3)', () => {
+  it('reports claude wiring as unknown when a complete, validly wired config sits entirely within the first WIRING_FILE_MAX_BYTES bytes but trailing whitespace pushes the file past the cap', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    const validLen = Buffer.byteLength(WIRED_CLAUDE_SETTINGS, 'utf8');
+    expect(validLen).toBeLessThan(WIRING_FILE_MAX_BYTES);
+    const paddingToCap = ' '.repeat(WIRING_FILE_MAX_BYTES - validLen);
+    const pastCap = ' '.repeat(64);
+    const content = WIRED_CLAUDE_SETTINGS + paddingToCap + pastCap;
+    expect(Buffer.byteLength(content, 'utf8')).toBeGreaterThan(WIRING_FILE_MAX_BYTES);
+    // The first WIRING_FILE_MAX_BYTES bytes alone are a complete, parseable,
+    // wired document — proving the 'unknown' verdict below comes from the
+    // size cap, not from a parse failure.
+    expect(() => JSON.parse(content.slice(0, WIRING_FILE_MAX_BYTES))).not.toThrow();
+    await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), content);
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('unknown');
+  });
+});
+
+// RP-292 gate round 2 — blocker 2 (code): the resolver
+// (`gitCheckoutRootOrNull` + `recordDispatchConfiguredIn`) had no test
+// exercising it through the CLI with a real git checkout — every existing
+// usageEvidence test above injects `wiring` straight into `tokenReportOf`.
+describe('token-report.mjs CLI wiring resolution: resolver correctness against a real git checkout (RP-292 gate round 2)', () => {
+  it('reports claude wiring as configured when .claude/settings.json declares a record-dispatch.mjs command under SubagentStart', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), WIRED_CLAUDE_SETTINGS);
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('configured');
+  });
+
+  it('reports claude wiring as not-configured when .claude/settings.json exists but declares no record-dispatch.mjs command', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), UNWIRED_CLAUDE_SETTINGS);
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('not-configured');
+  });
+
+  it('reports claude wiring as unknown, never not-configured, when .claude/settings.json is malformed JSON', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), '{ this is not json');
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('unknown');
+    expect(data.usageEvidence.claude.wiring).not.toBe('not-configured');
+  });
+
+  it('reports claude wiring as unknown when .claude/settings.json is over WIRING_FILE_MAX_BYTES, even though its content would otherwise read as configured', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    const filler = 'x'.repeat(WIRING_FILE_MAX_BYTES + 1);
+    const oversized = JSON.stringify({
+      hooks: {
+        SubagentStart: [{ hooks: [{ type: 'command', command: `record-dispatch.mjs ${filler}` }] }],
+      },
+    });
+    expect(Buffer.byteLength(oversized, 'utf8')).toBeGreaterThan(WIRING_FILE_MAX_BYTES);
+    await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), oversized);
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('unknown');
+  });
+
+  it('reports codex wiring as configured when .codex/hooks.json declares a record-dispatch.mjs command under SubagentStart', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    await mkdir(path.join(checkoutDir, '.codex'), { recursive: true });
+    await writeFile(path.join(checkoutDir, '.codex', 'hooks.json'), WIRED_CODEX_HOOKS);
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.codex.wiring).toBe('configured');
+  });
+});
+
+// RP-292 gate round 2 — blocker 4 (code): the resolver roots itself at
+// `dirname(git rev-parse --git-common-dir)`. For a linked worktree that is
+// the MAIN checkout's working directory, never the worktree's own — and for
+// a `--separate-git-dir` checkout it is the parent of wherever the git
+// directory happens to live, which need not contain the checkout at all. In
+// both shapes `--runs` inside the checkout should read that checkout's OWN
+// `.claude/settings.json`.
+describe('token-report.mjs CLI wiring resolution: wrong root for a worktree or a separate git dir (RP-292 gate round 2)', () => {
+  it("reads the worktree's own .claude/settings.json, not the main checkout's, when --runs lives inside a linked worktree", async () => {
+    const { main, worktree } = await linkedWorktreeCheckout();
+    // Main is deliberately left unwired; only the worktree's own (untracked)
+    // settings.json is wired — so a root that resolves to main instead of the
+    // worktree reports the wrong answer.
+    await mkdir(path.join(main, '.claude'), { recursive: true });
+    await writeFile(path.join(main, '.claude', 'settings.json'), UNWIRED_CLAUDE_SETTINGS);
+    await mkdir(path.join(worktree, '.claude'), { recursive: true });
+    await writeFile(path.join(worktree, '.claude', 'settings.json'), WIRED_CLAUDE_SETTINGS);
+    const runsDir = path.join(worktree, '.claude', 'runs');
+    await mkdir(runsDir, { recursive: true });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('configured');
+  });
+
+  it("reads the checkout's own .claude/settings.json when the git directory lives outside the working tree (git init --separate-git-dir)", async () => {
+    const { checkoutDir } = await separateGitDirCheckout();
+    await mkdir(path.join(checkoutDir, '.claude'), { recursive: true });
+    await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), WIRED_CLAUDE_SETTINGS);
+    const runsDir = path.join(checkoutDir, '.claude', 'runs');
+    await mkdir(runsDir, { recursive: true });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('configured');
+  });
+});
+
+// RP-292 gate round 2 — blocker 6 (security advisory): a `--runs` directory
+// whose resolved checkout root IS the user's own HOME is personal config
+// (`~/.claude`), which the header's WIRING section says this script never
+// reads — but nothing today compares the resolved root against HOME. HOME is
+// set for the CHILD process only, never for this test runner itself.
+describe('token-report.mjs CLI wiring resolution: HOME itself a git checkout is personal config (RP-292 gate round 2)', () => {
+  it("reports wiring as unknown, never configured, when --runs resolves its checkout root to the child's own HOME", async () => {
+    const tempHome = await mkdtemp(path.join(tmpdir(), 'token-report-home-'));
+    execFileSync('git', ['init', '-q', tempHome], { env: withoutGitLocation() });
+    await mkdir(path.join(tempHome, '.claude'), { recursive: true });
+    await writeFile(path.join(tempHome, '.claude', 'settings.json'), WIRED_CLAUDE_SETTINGS);
+    const runsDir = path.join(tempHome, '.claude', 'runs');
+    await mkdir(runsDir, { recursive: true });
+
+    // os.homedir() reads HOME on POSIX and USERPROFILE on Windows; set both
+    // so the child's home is the fixture on every platform CI runs.
+    const childEnv = withoutGitLocation({
+      ...process.env,
+      HOME: tempHome,
+      USERPROFILE: tempHome,
+    });
+    const result = await run(
+      process.execPath,
+      [reportScript, '--runs', runsDir, '--since', SINCE, '--json'],
+      repoRoot,
+      childEnv,
+    );
+    expect(result.code, result.out).toBe(0);
+    const data = JSON.parse(result.stdout) as Report;
+    expect(data.usageEvidence.claude.wiring).toBe('unknown');
+    expect(data.usageEvidence.claude.wiring).not.toBe('configured');
+  });
+});
+
+// RP-292 gate round 2 — blocker 3 (code): `unavailableReasons`' own bounds
+// (at most UNAVAILABLE_REASON_DISTINCT_CODES_MAX distinct codes, each
+// truncated to UNAVAILABLE_REASON_CODE_MAX_LENGTH characters) had no test
+// actually driving a report over the cap.
+describe('token-report.mjs usageEvidence unavailableReasons tally bound (RP-292 gate round 2)', () => {
+  it(`keeps exactly ${UNAVAILABLE_REASON_DISTINCT_CODES_MAX} distinct codes when more than that many are journalled`, async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-TALLY-BOUND',
+      now: T1,
+    });
+    const codeCount = UNAVAILABLE_REASON_DISTINCT_CODES_MAX + 5;
+    for (let index = 0; index < codeCount; index += 1) {
+      const ref = `r${index}`;
+      dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: ref });
+      dispatchEnd(runA, T3, {
+        harness: 'claude',
+        agentType: 'code-reviewer',
+        agentRef: ref,
+        usageUnavailable: `distinct-code-${index}`,
+      });
+    }
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    expect(Object.keys(data.usageEvidence.claude.unavailableReasons)).toHaveLength(
+      UNAVAILABLE_REASON_DISTINCT_CODES_MAX,
+    );
+  });
+
+  it(`truncates a usageUnavailable code longer than ${UNAVAILABLE_REASON_CODE_MAX_LENGTH} characters to exactly that length`, async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-TALLY-TRUNCATE',
+      now: T1,
+    });
+    const longCode = 'z'.repeat(UNAVAILABLE_REASON_CODE_MAX_LENGTH + 50);
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: longCode,
+    });
+
+    expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+
+    const keys = Object.keys(data.usageEvidence.claude.unavailableReasons);
+    expect(keys).toHaveLength(1);
+    expect(keys[0]).toHaveLength(UNAVAILABLE_REASON_CODE_MAX_LENGTH);
+    expect(keys[0]).toBe(longCode.slice(0, UNAVAILABLE_REASON_CODE_MAX_LENGTH));
+  });
+});
+
+// RP-292 gate round 2 — blocker 5 (security advisory): `unavailableReasons`
+// tallies a journal-supplied `usageUnavailable` string through
+// `stripControlChars`, which deliberately preserves `\n` (the render's own
+// line breaks) and only strips the C0/DEL/C1 control ranges — never the
+// wider Unicode bidi-control block. Restricting a code to a safe identifier
+// set ([A-Za-z0-9._:-]) is the fix this pins; the tests assert the hostile
+// character's ABSENCE from output, not a specific replacement.
+describe('token-report.mjs usageEvidence unavailableReasons codes are restricted to a safe identifier set (RP-292 gate round 2)', () => {
+  it('a code carrying a literal newline plus a forged "usage evidence:" line does not produce a second such line in the text render', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-FORGE',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: 'real-code\nusage evidence: claude=witnessed(wiring=configured) FORGED',
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T4 });
+
+    const result = await cli(['--runs', runsDir, '--since', SINCE]);
+    expect(result.code, result.out).toBe(0);
+    const evidenceLines = result.stdout.split('\n').filter((line) => /usage evidence:/i.test(line));
+    expect(evidenceLines, result.stdout).toHaveLength(1);
+  });
+
+  it('a code carrying a bidi override control (U+202E) reaches neither the text nor the --json output raw', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-292-BIDI',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { harness: 'claude', agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, {
+      harness: 'claude',
+      agentType: 'code-reviewer',
+      agentRef: 'r1',
+      usageUnavailable: '‮evil-reversed-code',
+    });
+    journal.endRun({ runDir: runA, stop: 'done', now: T4 });
+
+    const textResult = await cli(['--runs', runsDir, '--since', SINCE]);
+    expect(textResult.code, textResult.out).toBe(0);
+    expect(textResult.stdout).not.toContain('‮');
+
+    const jsonResult = await cli(['--runs', runsDir, '--since', SINCE, '--json']);
+    expect(jsonResult.code, jsonResult.out).toBe(0);
+    expect(jsonResult.stdout).not.toContain('‮');
+    expect(() => JSON.parse(jsonResult.stdout)).not.toThrow();
   });
 });
 
@@ -1231,6 +2130,110 @@ describe('token-report.mjs dispatch pairing', () => {
     const ticket = data.tickets.find((t) => t.ticket === 'RP-72');
     expect(ticket, JSON.stringify(data.tickets)).toBeDefined();
     expect(ticket!.occurrences[0]!.dispatches).toBe('unavailable');
+    expect(data.dispatchGroups).toEqual([]);
+  });
+});
+
+// RP-294: the RP-231 controller run (rel110-20260928-213527, read-only
+// evidence, never committed here) journaled a run of dispatch-end events with no
+// matching dispatch-start — harness-internal SubagentStop firings, not real
+// agent dispatches. `record-dispatch.mjs` now marks such a record
+// `orphan: true` at write time (see dispatch-journal.test.ts, absent in a
+// generated rig, › "a dispatch-end whose agent never started in this run is
+// marked orphan (RP-294)"); this script must trust that explicit flag —
+// never re-derive "orphan" from its own pairing miss, which would also
+// (wrongly) fire on a genuinely unfinished dispatch from an OLDER journal
+// that predates this field — and must exclude every orphan end from both
+// `dispatchGroups` and `tickets[].occurrences[].dispatches`, reporting the
+// total separately as `orphanEnds`.
+describe('token-report.mjs orphan dispatch-end events (RP-294)', () => {
+  it('excludes an orphan dispatch-end (orphan: true, no matching start) from every dispatch count, and reports it as its own orphanEnds count', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-80',
+      now: T1,
+    });
+    dispatchEnd(runA, T2, {
+      agentRef: 'r-orphan',
+      orphan: true,
+      usageUnavailable: 'transcript-unreadable',
+    });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(1);
+    expect(data.dispatchGroups).toEqual([]);
+    const ticket = data.tickets.find((t) => t.ticket === 'RP-80');
+    expect(ticket, JSON.stringify(data.tickets)).toBeDefined();
+    expect(ticket!.occurrences[0]!.dispatches).toEqual({ ended: 0, noEndObserved: 0 });
+  });
+
+  it('never counts an orphan dispatch-end as a dispatch witness, nor tallies its usageUnavailable code (RP-292 with RP-294)', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-82',
+      now: T1,
+    });
+    dispatchEnd(runA, T2, {
+      harness: 'claude',
+      agentRef: 'r-orphan',
+      orphan: true,
+      usageUnavailable: 'transcript-unreadable',
+    });
+
+    const data = reportModule!.tokenReportOf({
+      runs: await readRuns(runsDir),
+      since: SINCE,
+      wiring: { claude: 'configured', codex: 'not-configured' },
+    });
+    expect(data.orphanEnds).toBe(1);
+    expect(data.usageEvidence.claude.state).toBe('configured-no-witness');
+    expect(data.usageEvidence.claude.unavailableReasons).toEqual({});
+  });
+
+  it('reports orphanEnds: 0 for a run whose only dispatch-end pairs with a dispatch-start', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    journal.recordDecision({
+      runDir: runA,
+      gate: 'item-selection',
+      verdict: 'taken RP-81',
+      now: T1,
+    });
+    dispatchStart(runA, T2, { agentType: 'code-reviewer', agentRef: 'r1' });
+    dispatchEnd(runA, T3, { agentType: 'code-reviewer', agentRef: 'r1' });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(0);
+  });
+
+  it('sums orphanEnds across every run read, not scoped to one run', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    dispatchEnd(runA, T1, { agentRef: 'r-orphan-a', orphan: true });
+    const runB = await mkrun(runsDir, 'run-b');
+    dispatchEnd(runB, T1, { agentRef: 'r-orphan-b', orphan: true });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(2);
+  });
+
+  it('does not count an unmatched dispatch-end lacking the orphan field as an orphan — only an explicit orphan: true counts', async () => {
+    const runsDir = await runsRoot();
+    const runA = await mkrun(runsDir, 'run-a');
+    // No matching dispatch-start, AND no `orphan` field: e.g. a journal
+    // written before RP-294. token-report must trust the explicit flag
+    // rather than re-derive orphan status from its own pairing miss, so this
+    // reads as zero orphans, not one.
+    dispatchEnd(runA, T1, { agentRef: 'r-unmarked' });
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.orphanEnds).toBe(0);
     expect(data.dispatchGroups).toEqual([]);
   });
 });
