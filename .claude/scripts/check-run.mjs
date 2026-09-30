@@ -519,7 +519,9 @@ const OVERFLOW_TAIL_CHARS = 256;
  *
  * `lastLineMarker` (`'begin' | 'end' | null`) is the one piece of PEM
  * knowledge this otherwise-agnostic feeder carries, and it is what the
- * PEM state machine in `runCheck` (below) arms/disarms from — RP-295 gate
+ * PEM state machine in `runCheck` (below) arms/disarms from for an
+ * OVER-LIMIT line only; a normal-length line takes its transition from one
+ * scan of the whole line instead (RP-295 gate round 3) — RP-295 gate
  * round 2 (reviewer, reproduced on head a861085): the round-1 shape
  * (`sawBeginHeader`, a per-line bool set from testing each RAW segment
  * against `PRIVATE_KEY_HEADER_PATTERN` alone) had three independent gaps —

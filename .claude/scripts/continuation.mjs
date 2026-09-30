@@ -802,7 +802,7 @@ const composeCappedTextField = (value) => truncateField(composeFreeTextField(val
  *
  * The priority this now encodes, in order, per `.claude/rules/autonomy.md`'s
  * escalation format and `invariants.md`'s bounded-work rule: `identityText`
- * is a fixed, NEVER-truncated floor; the failed-check block is reserved
+ * is the floor, cut only when it alone exceeds `NOTE_CAP` (see below); the failed-check block is reserved
  * next, in full when it fits, or truncated (with the existing suffix)
  * instead of ever touching identity when it alone would not otherwise fit;
  * whatever remains — always `>= 0` — goes to `restText` (the

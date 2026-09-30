@@ -3017,8 +3017,8 @@ describe('a signal arriving after the checked command closes, before read-back f
 // This reuses the SAME deterministic seam as "a signal arriving after the
 // checked command closes, before read-back finishes" above
 // (`DELAY_READBACK_PRELOAD_SOURCE`, `CHECK_RUN_TEST_READBACK_DELAY_MS`) to
-// land the SIGINT inside the narrow window where `childClosed` is already
-// `true` but cleanup has not yet finished, and the SAME
+// land the SIGINT inside the narrow window after the direct child has
+// closed but before cleanup has finished, and the SAME
 // spawn-a-same-group-grandchild shape as "--timeout kills the whole process
 // tree, not only the direct child" above (`GRANDCHILD_SOURCE`) for the
 // leftover process itself — except here the DIRECT child exits immediately
@@ -3092,7 +3092,7 @@ describe('a SIGINT arriving after the direct child has closed must still kill a 
       // The direct child closes almost immediately; the 5s artificial
       // read-back delay guarantees check-run is still inside the window
       // between the child's own `close` event and this run's cleanup —
-      // `childClosed` is already `true` by the time this SIGINT lands.
+      // the direct child has already closed by the time this SIGINT lands.
       await new Promise((resolve) => setTimeout(resolve, 1000));
       process.kill(checkRunProcess.pid!, 'SIGINT');
 
@@ -3117,7 +3117,7 @@ describe('a SIGINT arriving after the direct child has closed must still kill a 
         alive,
         `a leftover process (pid ${grandchildPid}) from the checked command's own process group ` +
           'was still alive after a SIGINT arriving once the direct child had already closed — ' +
-          '`childClosed` wrongly skipped the process-group kill',
+          'the process-group kill was skipped',
       ).toBe(false);
     },
   );
