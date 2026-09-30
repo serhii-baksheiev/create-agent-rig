@@ -142,6 +142,21 @@ export const deepCwdSpawnAvailable = (): { ok: boolean; reason: string } => ({
 });
 
 /**
+ * Can a `git` stub be built and put on PATH? The fixture writes a POSIX shell
+ * script (`#!/bin/sh`, a `sleep`, then `exec` into the real binary found
+ * through `which git`) and marks it executable — none of which Windows can do
+ * the same way: no shebang interpretation, no POSIX `exec`, and `which` is not
+ * a native command. RP-322's slow-git fixtures need this to make `git` itself
+ * slow without touching the guard's own code.
+ */
+export const gitStubAvailable = (): { ok: boolean; reason: string } => ({
+  ok: process.platform !== 'win32',
+  reason:
+    'building a `git` stub (shebang script + chmod +x + `which git` to find the real binary) needs a ' +
+    'POSIX shell; Windows has no shebang interpretation and no native `which`',
+});
+
+/**
  * Can this process create a hard link? Ordinary NTFS accounts usually can,
  * but not always — some Windows configurations (and some restricted
  * filesystems) require a privilege an ordinary CI account lacks, the same
