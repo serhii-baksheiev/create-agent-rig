@@ -59,17 +59,23 @@
 //     know without running a real shell;
 //   - `~user` (a tilde naming ANOTHER account's home, not the caller's own)
 //     is never resolved — only a bare `~`/`$HOME` is;
-//   - `popd` is never tracked at all — only `cd`/`pushd` change it;
+//   - `popd` is never tracked at all — only `cd`/`pushd` change it. This
+//     guard does not MODEL the real directory stack at all: it tracks a
+//     single `{ anchor, parts }` position across the whole command line,
+//     never a stack of entries;
 //   - a bare `pushd` (no operand), `pushd -n DIR` (pushes DIR WITHOUT cd-ing
 //     there) and `pushd +N`/`pushd -N` (rotate the stack to its Nth entry —
-//     with the single entry this guard ever tracks, that rotation FAILS in
-//     real bash exactly like a bare `pushd` on an empty stack does) all
-//     leave the cwd exactly where it was, so tracking is left exactly where
-//     it was too, rather than cleared or guessed at (RP-309 gate round 3) —
-//     a bare `cd` is unaffected, since it genuinely lands at $HOME. A
-//     POPULATED real shell stack can make any of these land somewhere this
-//     guard cannot see either way; keeping the OLD tracking over-blocks a
-//     wildcard delete that follows, which is the safe direction;
+//     which FAILS in real bash whenever nothing has been pushed onto the
+//     stack yet, the ordinary case here) leave the tracked position
+//     UNCHANGED rather than cleared or guessed at (RP-309 gate round 3) — a
+//     bare `cd` is unaffected, since it genuinely lands at $HOME;
+//   - `pushd`/`popd` never LOWER an already-tracked catastrophic position to
+//     an ordinary one either (RP-309 gate round 3, post-cap): a real,
+//     POPULATED directory stack can move the shell somewhere this guard
+//     cannot see either way, so over-blocking a wildcard delete that follows
+//     is the safe direction — but a `pushd` into a directory that is ITSELF
+//     catastrophic still replaces whatever was tracked before it, exactly
+//     like `cd` does;
 //   - a subshell-local `cd`/`pushd` is not told apart from the outer shell's own tracked directory (`( cd ~/.ssh )`) either —
 //     tracking still updates when the subshell closes, which over-blocks a
 //     wildcard delete written after it. That is the safe direction, so it
@@ -879,16 +885,7 @@ function resolveTarget(token) {
 }
 
 /**
- * The `cd`/`pushd` OPERAND, read past whatever precedes it (RP-309 gate
- * round 2), and — `pushd` only — past the spellings that never actually cd
- * anywhere at all (RP-309 gate round 3): `-n` suppresses the directory
- * change entirely, so the DIRECTORY argument that follows it is not a real
- * cd target either, and `+N`/`-N` (digits only) rotate the stack to its Nth
- * entry rather than naming a directory — both are reported as `unmoved`
- * before either is read as an ordinary flag or token, which is what the
- * generic flag-skip below would otherwise do to `-n` (skip it and read DIR
- * as if `-n` were `-P`) and what the "not a `-`-prefixed token at all" path
- * would do to `+N` (read `+1` itself as a literal relative path segment).
+ * The `cd` OPERAND, read past whatever precedes it (RP-309 gate round 2):
  * `--` ends option parsing without being an operand itself; any OTHER token
  * starting with `-` that is more than one character (`-P`, `-L`, `-e`, `-@`,
  * …) is an option and is skipped rather than read as the target — the
@@ -896,9 +893,11 @@ function resolveTarget(token) {
  * path one argument later was never looked at. A LONE `-` before any operand
  * is `$OLDPWD` and is reported as its own kind, because it must resolve
  * differently from a bare `cd` (`$HOME`) — see `advanceCwd`. No token left
- * at all is reported as `bare`.
+ * at all is reported as `bare`. `cd`'s own grammar is otherwise unchanged
+ * from before RP-309 gate round 3 — only `pushd` (`pushdOperand` below) got
+ * a stricter grammar, because only `pushd` turned out to have one.
  */
-function cdOperand(name, args) {
+function cdOperand(args) {
   let sawDashDash = false;
   for (const { value } of args) {
     if (!sawDashDash) {
@@ -907,15 +906,62 @@ function cdOperand(name, args) {
         continue;
       }
       if (value === '-') return { kind: 'oldpwd' };
-      if (name === 'pushd' && (value === '-n' || /^[+-]\d+$/.test(value))) {
-        return { kind: 'unmoved' };
-      }
       if (value.length > 1 && value.startsWith('-')) continue; // -P, -L, -e, -@…
     }
     return { kind: 'token', value };
   }
   return { kind: 'bare' };
 }
+
+/**
+ * `pushd`'s own argument grammar (RP-309 gate round 3, post-cap) — real bash
+ * accepts exactly `pushd [-n] [dir]` or `pushd [-n] [+N | -N]`, nothing else:
+ *
+ *   - `-n` suppresses the directory change entirely (the DIRECTORY argument
+ *     that may follow it is pushed onto the stack, never cd-ed to), so it is
+ *     reported as `unmoved` the moment it is seen — nothing after it can
+ *     change that, unlike an ordinary flag;
+ *   - a digits-only `+N`/`-N` rotates the stack to its Nth entry rather than
+ *     naming a directory, and — with only the ONE position this guard ever
+ *     tracks — that rotation FAILS in real bash exactly like a bare `pushd`
+ *     on an empty stack does, so it is `unmoved` too;
+ *   - `--` ends option parsing without being an operand itself;
+ *   - exactly ONE bare directory operand is a real `pushd DIR` and is
+ *     reported as `token`;
+ *   - anything else is a command real bash REJECTS outright (`invalid
+ *     number`/`too many arguments`), which leaves the cwd exactly where it
+ *     was — so it is `unmoved`, not a skipped flag the way `cd`'s own
+ *     `-P`/`-L` are. That covers every OTHER `-`/`+`-prefixed token (`-P`,
+ *     `-L`, `-x`, the combined `-nP`, a non-digit `+x`, …) and a SECOND bare
+ *     operand (`pushd DIR1 DIR2`) alike — `cd`'s generic flag-skip would
+ *     have treated the former as an ordinary option and read the token after
+ *     it as the real DIR, and would have silently accepted the latter as if
+ *     the second operand were never there.
+ *
+ * No token left at all is `bare` — a real, populated stack SWAPS the top two
+ * entries, which this guard cannot know either; see `advanceCwd`.
+ */
+function pushdOperand(args) {
+  let sawDashDash = false;
+  let dir = null;
+  for (const { value } of args) {
+    if (!sawDashDash) {
+      if (value === '--') {
+        sawDashDash = true;
+        continue;
+      }
+      if (value === '-') return { kind: 'oldpwd' };
+      if (value === '-n') return { kind: 'unmoved' }; // suppresses the cd entirely
+      if (/^[+-]\d+$/.test(value)) return { kind: 'unmoved' }; // stack rotation, not a dir
+      if (value.startsWith('-') || value.startsWith('+')) return { kind: 'unmoved' }; // bash rejects it
+    }
+    if (dir !== null) return { kind: 'unmoved' }; // a second operand: "too many arguments"
+    dir = value;
+  }
+  return dir === null ? { kind: 'bare' } : { kind: 'token', value: dir };
+}
+
+const cdOperandFor = (name, args) => (name === 'pushd' ? pushdOperand(args) : cdOperand(args));
 
 /**
  * Fold a relative operand's OWN segments onto a tracked `{ anchor, parts }`
@@ -988,8 +1034,39 @@ function cwdTargetString(cwd) {
 const MAX_CATASTROPHIC_DEPTH = 8;
 
 /**
+ * The longest single `/`-separated segment among every literal entry in
+ * `CATASTROPHIC` — `Applications` (12 characters) is the longest today.
+ * Derived rather than a second hand-picked number (`.claude/rules/
+ * invariants.md`, "one spelling of a fact"): whichever member is longest,
+ * this bound moves with it automatically. Used by `classifyPosition` below
+ * to answer "not catastrophic" from a single segment's OWN LENGTH, in
+ * constant time (`String#length` is O(1) — no join, no scan of the
+ * characters) — every real member of `CATASTROPHIC` is a short, literal
+ * name, so a `parts` segment longer than this can never equal one, whatever
+ * `MAX_CATASTROPHIC_DEPTH` allows through on segment COUNT alone (RP-309
+ * gate round 3, post-cap).
+ */
+const MAX_CATASTROPHIC_PART_LENGTH = Math.max(
+  0,
+  ...[...CATASTROPHIC].flatMap((entry) => entry.split('/').filter(Boolean).map((part) => part.length)),
+);
+
+/**
  * Classify a `{ anchor, parts }` position as catastrophic/credential WITHOUT
- * joining the whole `parts` array when it is long (RP-309 gate round 3).
+ * joining the whole `parts` array when it is long (RP-309 gate round 3) —
+ * bounded by LENGTH as well as by COUNT (RP-309 gate round 3, post-cap): a
+ * `parts` array within `MAX_CATASTROPHIC_DEPTH` entries can still carry a
+ * single, individually enormous segment (a tracked `cd` anchor built from
+ * one huge path component), and joining `parts` into a string to compare
+ * against `CATASTROPHIC` would pay for that segment's full length on every
+ * call — repeated once per `rm` segment/operand on a long command line, that
+ * is quadratic in segment length rather than in segment count. So any
+ * segment longer than `MAX_CATASTROPHIC_PART_LENGTH` answers "not
+ * catastrophic" from its own `.length` alone (O(1) per segment, O(depth)
+ * total — `depth` already bounded by `MAX_CATASTROPHIC_DEPTH`), before ever
+ * joining anything; the joined prefix this function goes on to build is
+ * therefore never more than `MAX_CATASTROPHIC_DEPTH *
+ * MAX_CATASTROPHIC_PART_LENGTH` characters.
  *
  * Being (still) inside the `~/.ssh`/`$HOME/.ssh` subtree is decided from
  * `parts[0]` alone, however many segments follow — a tracked position never
@@ -998,14 +1075,18 @@ const MAX_CATASTROPHIC_DEPTH = 8;
  * an operand's own `..` before ever reading the tracked stack), so nothing
  * past `.ssh` can walk back out of the subtree — see `isCredentialTarget`'s
  * own doc comment for why a literal `..` would otherwise defeat this exact
- * shortcut. Everything else beyond `MAX_CATASTROPHIC_DEPTH` is answered
- * "not catastrophic" from the depth alone; within it, the join is cheap
+ * shortcut. Everything else beyond `MAX_CATASTROPHIC_DEPTH`, or carrying a
+ * segment beyond `MAX_CATASTROPHIC_PART_LENGTH`, is answered "not
+ * catastrophic" without ever joining; within both bounds, the join is cheap
  * enough to just do and compare against the real sets.
  */
 function classifyPosition(anchor, parts) {
   const inSshSubtree = (anchor === '~' || anchor === '$HOME') && parts[0] === '.ssh';
   if (inSshSubtree) return { catastrophic: true, credential: true };
   if (parts.length > MAX_CATASTROPHIC_DEPTH) return { catastrophic: false, credential: false };
+  if (parts.some((part) => part.length > MAX_CATASTROPHIC_PART_LENGTH)) {
+    return { catastrophic: false, credential: false };
+  }
   const target = cwdTargetString({ anchor, parts });
   return { catastrophic: isCatastrophic(target), credential: isCredentialTarget(target) };
 }
@@ -1031,21 +1112,16 @@ function classifyPosition(anchor, parts) {
  * `~user`, `popd`, a bare `pushd`, `pushd -n`/`+N`/`-N`, a subshell-local
  * `cd`, `builtin cd`).
  */
-function advanceCwd(cwd, name, args) {
-  const operand = cdOperand(name, args);
-  if (operand.kind === 'oldpwd') return null; // `cd -`/`pushd -`: $OLDPWD
-  if (operand.kind === 'unmoved') return cwd; // RP-309 gate round 3: `pushd -n DIR`/`pushd +N`/`pushd -N` never move the cwd
-  if (operand.kind === 'bare') {
-    // A bare `cd` genuinely lands at $HOME. A bare `pushd` SWAPS the
-    // directory stack rather than landing at $HOME — with nothing tracked
-    // yet there is nothing to swap to either (tracking stays cleared), and
-    // with something already tracked, a bare `pushd` on the one-entry stack
-    // this guard ever builds FAILS in real bash and leaves the cwd exactly
-    // where it was (RP-309 gate round 3) — both read as "leave cwd exactly
-    // as it is", i.e. `cwd` itself, whether that is `null` or tracked.
-    return name === 'pushd' ? cwd : { anchor: '~', parts: [] };
-  }
-  const raw = operand.value.replace(/\$\{HOME\}/g, '$HOME');
+/**
+ * The position a fresh `cd`/`pushd` OPERAND resolves to, given whatever was
+ * already tracked (`cwd`, or `null`) — the anchored/relative resolution RP-309
+ * (gate round 2) already had, factored out so `advanceCwd` can compare it
+ * against the position it would REPLACE before committing to the replacement
+ * (RP-309 gate round 3, post-cap: `pushd` never downgrades — see below).
+ * `null` means "cannot be resolved" (a `~user` operand, or a relative operand
+ * with no tracked anchor to fold against), exactly as before.
+ */
+function computeCdTarget(cwd, raw) {
   if (/^~[^/]/.test(raw)) return null; // `~user`: another account's home
   if (/^(\/|~|\$HOME)/.test(raw)) {
     const resolved = resolveTarget(raw);
@@ -1059,6 +1135,40 @@ function advanceCwd(cwd, name, args) {
   const next = { anchor: cwd.anchor, parts: cwd.parts };
   foldRelativeSegments(next, raw);
   return next;
+}
+
+function advanceCwd(cwd, name, args) {
+  const operand = cdOperandFor(name, args);
+  if (operand.kind === 'oldpwd') return null; // `cd -`/`pushd -`: $OLDPWD
+  if (operand.kind === 'unmoved') return cwd; // RP-309 gate round 3: `pushd -n DIR`/`pushd +N`/`pushd -N` never move the cwd
+  if (operand.kind === 'bare') {
+    // A bare `cd` genuinely lands at $HOME. A bare `pushd` SWAPS the
+    // directory stack rather than landing at $HOME — with nothing tracked
+    // yet there is nothing to swap to either (tracking stays cleared), and
+    // with something already tracked, a bare `pushd` on the one-entry stack
+    // this guard ever builds FAILS in real bash and leaves the cwd exactly
+    // where it was (RP-309 gate round 3) — both read as "leave cwd exactly
+    // as it is", i.e. `cwd` itself, whether that is `null` or tracked.
+    return name === 'pushd' ? cwd : { anchor: '~', parts: [] };
+  }
+  const raw = operand.value.replace(/\$\{HOME\}/g, '$HOME');
+  const candidate = computeCdTarget(cwd, raw);
+  // RP-309 gate round 3 (post-cap, controller design decision): `pushd` never
+  // DOWNGRADES an already-tracked CATASTROPHIC position to an ordinary one —
+  // a real, populated directory stack can make `pushd DIR` land somewhere
+  // this guard cannot see either way (the same reasoning `unmoved`/`bare`
+  // already use above), so keeping the OLD tracking over-blocks a wildcard
+  // delete that follows, which is the safe direction. A `pushd` into a
+  // directory that is ITSELF catastrophic still replaces the old tracking,
+  // exactly like `cd` does — there is nothing to preserve by keeping the old
+  // one over a new one that is just as bad. `cd` is unaffected: it always
+  // replaces, matching its own real semantics exactly.
+  if (name === 'pushd' && cwd && classifyPosition(cwd.anchor, cwd.parts).catastrophic) {
+    const stillCatastrophic =
+      candidate !== null && classifyPosition(candidate.anchor, candidate.parts).catastrophic;
+    if (!stillCatastrophic) return cwd;
+  }
+  return candidate;
 }
 
 /**
