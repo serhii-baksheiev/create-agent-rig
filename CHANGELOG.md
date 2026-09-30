@@ -14,6 +14,157 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## 1.1.1
+
+**1.1.1 is a corrective hardening patch on the 1.1 line.** It closes fail-open
+gaps in `guard-bash` and `guard-rulebook` that an accidental (not adversarial)
+command or path spelling could still slip through, fixes review-flagged
+corners of the workflow layer's own scripts (`continuation.mjs`,
+`token-report.mjs`, `record-dispatch.mjs`, `check-run.mjs`, the `loop` and
+`pr-ship` skills, `implementation-agent`), and tightens two CLI/hook edges — `init`'s
+AGENTS.md write, and a hook's git-lookup timeout — found while running the
+1.1.0 release loop itself. **The 1.1 contract is unchanged:** no new CLI flag,
+command, `doctor` check id, manifest key, or JSON key the command contract
+covers. `token-report.mjs`
+gains two additive report fields, `usageEvidence` and `orphanEnds` — these are
+workflow-layer script output, not part of the CLI contract.
+
+### Added
+
+- **`token-report` states whether dispatch usage was actually witnessed, only
+  configured, or unknown, and why.** Each harness's report gains a
+  `usageEvidence` field: `witnessed` comes only from a recorded dispatch
+  event — never from wiring alone, and never from an orphan end (see
+  RP-294 below) — otherwise the state is `configured-no-witness`,
+  `not-configured`, or `unknown`, each with a reason and a bounded tally of
+  the `usageUnavailable` codes seen. A fixed `controller` entry in
+  `usageEvidence` states that parent-session usage is never journalled, only subagent dispatches. This is
+  an additive report field, not a CLI contract change (RP-292).
+
+### Fixed
+
+- **`guard-bash` folds a `..` escape in an anchored `cd` or `rm` target before
+  judging it.** `cd ~/.ssh/.. && rm -rf *` walks back to `~` and used to slip
+  past the catastrophic-path check because the raw, unfolded target was
+  compared instead of where it actually resolves; the fold is a single
+  bounded pass with no recursion and no unbounded array growth, and a plain
+  relative `..` in an ordinary project command is unaffected (RP-262).
+
+- **`guard-bash` now also tracks a bare `cd`, a relative `cd` after an
+  anchored one, the `./`/`..`/`../*` operands, and `pushd`, so a home wipe
+  spelled through any of them is refused the same way `cd ~ && rm -rf *`
+  already was.** `cd` and `pushd` update one bounded tracked position (a
+  single location, not a model of the shell's directory stack); a `pushd` or
+  `popd` never lowers an already-tracked catastrophic position back to an
+  ordinary one; the original cd-only tracking keeps running alongside the new
+  tracker as a floor, so nothing the 1.1.0 guard blocked is allowed; and a
+  `..` `rm` operand is resolved against the tracked cwd before it is judged.
+  Stated, pinned limits: `cd -` clears tracking, `~user` is never resolved
+  (a `pushd` to one keeps an already-catastrophic tracking), `popd` is never
+  tracked, a bare, `-n` or `+N` `pushd` leaves tracking unchanged, a
+  subshell-local cd is not told apart from the outer shell (over-blocks), and
+  `builtin cd` is not tracked (RP-309).
+
+- **`guard-rulebook` now judges every spelling of a path — its resolved
+  location and every literal spelling it was given — and refuses if any one
+  of them names a non-allowed rulebook path; a resolved, allow-listed path no
+  longer authorizes a literal spelling that actually names something else.**
+  This closes the case 1.0.1's own entry named as not caught: a Windows
+  admin-share UNC repository root (`\\host\C$\...`), where a write spelled
+  through the local-drive form of the same file (`C:\...`) is now recognised
+  as the rulebook too, via a new pure `adminShareDriveSpelling` helper. The
+  same every-spelling rule also covers a symlink or junction under an allowed
+  prefix that resolves into `.claude/hooks` (RP-246).
+
+- **Two fail-open guards now refuse instead of doing unbounded work on a
+  pathological path, rather than risking the hook timeout that resolves to
+  allow.** A relative path past 512 components is refused — naming the limit
+  and a split-and-retry remedy — before it is filesystem-normalized, and
+  `guard-rulebook`'s realpath walk checks the component count first and no
+  longer builds its result with an input-sized array spread. A generated rig
+  now also installs `.claude/hooks/lib/canonical-path.mjs` (RP-247).
+
+- **The generated Windows Codex guard wrapper no longer has an unbounded
+  wait, and its four guard hooks declare a Codex-side timeout.** The git
+  lookup, the stdin copy and the guard process itself are each bounded (5 s;
+  a shared 35 s deadline), a stall is tree-killed and reported on stderr
+  instead of hanging past the harness default, and a cwd-planted
+  `git.cmd`/`node.exe` can no longer hijack the child process. The projected
+  `.codex/hooks.json` now declares `timeout: 90` on those four hooks; Claude
+  Code's own wiring is unchanged (RP-266).
+
+- **A hook's `apply_patch` repository-root lookup no longer times out under
+  ordinary host load.** It bounded `git rev-parse --show-toplevel` at
+  1000 ms; under CI or Windows process-start load that call could take over
+  1.6 s, and the resulting unset repo root made every destination look
+  unresolvable — refusing an ordinary in-repo edit with no code change
+  involved. The bound is now 10000 ms, matching the equivalent bound
+  `unattended-flag.mjs` already used for the same call (RP-322).
+
+- **A continuation note no longer swallows a file:line or a fraction as if it
+  were a path.** The free-text scrub treated any slash-bearing token as a
+  path; it now decides by shape — a leading `~`, `/` or `\`, a backslash
+  anywhere, a drive prefix, a `..` segment, a non-http(s) URI, or a
+  `$VAR`/`%VAR%` token — so `3/3` and a repo-relative `file.test.ts:367`
+  survive while home, absolute, UNC and `..`-climbing paths still redact.
+  This is the case 1.1.0 tracked as open (RP-297).
+
+- **Resuming from a continuation note and a repeated revalidation hold each
+  have a stated path in the `loop` and `pr-ship` skills.** A resumed session
+  checks out the note's branch by its own name (`git checkout <branch>`, no
+  `-b`, no rename), because `duplicate-work.mjs` recognises this session's
+  own work by the exact branch name; its behaviour is unchanged and its
+  Limits now say so. In `pr-ship` step 1, a hold that repeats the id and
+  sources of one already answered with `actionChanged: false` gets its own
+  recorded outcome and the gate run continues from step 2, instead of
+  re-entering step 0 until the rounds run out; a new id or source set is
+  still a fresh hold (RP-300).
+
+- **The dispatch journal and `token-report` no longer count a harness-internal
+  `dispatch-end` with no matching start as a dispatch.** `record-dispatch.mjs`
+  marks such an event `orphan: true` only when no earlier `dispatch-start` in
+  the run names its agent reference and the payload carries no valid agent
+  type; `token-report.mjs` now excludes orphans from every dispatch count and
+  reports them separately in an additive `orphanEnds` field (RP-294).
+
+- **`implementation-agent` no longer re-runs a reproduction a
+  `failure-diagnostician` already owns.** While a diagnostician is still
+  working a failure, the implementation agent reports back and asks for that
+  evidence instead of re-executing the same reproduction at the same head
+  (RP-291).
+
+- **`check-run` and `continuation` close review-flagged gaps in redaction and
+  failure reporting.** A PEM block's arm/disarm state now follows the
+  END and BEGIN markers in their order on a line, and is tracked across an
+  over-limit line by an incremental last-marker state, so a header split
+  across the read boundary or carrying colour codes still gets redacted; interrupt handlers stay installed through capture
+  read-back so a signal can't leak a temp file; and a failing-test identity is
+  cut cleanly at an embedded carriage return. A continuation note now reports
+  a failed check as `timed out` or `killed by <SIGNAL>` instead of an
+  uninformative unknown exit, and its failed-check lines survive the note's
+  size cap ahead of other fields (RP-295).
+
+- **`init` writes an appended `AGENTS.md` region using the file's mode read at
+  write time, and a system-level failure while writing it is reported as
+  `init`'s or `upgrade`'s own typed error.** `upgrade` already read the mode
+  this way; `init` used to read it earlier, at plan time. A Node system error
+  (for example `EACCES`) during the region write is now wrapped as
+  `InitError`/`UpgradeError` with the original message and cause preserved; a
+  programming error is rethrown unchanged rather than mis-reported the same
+  way (RP-289).
+
+### Generator repository (not a rig-facing change)
+
+- Speeds up the `tracker-credentials` doctor-mutation Windows test by linking
+  (not copying) `templates/` into the sandbox and gives the case its own
+  measured timeout budget, fixing a windows-e2e lane-budget flake seen in the
+  1.1.0 acceptance run (RP-301).
+- Hardens the unattended-flag leak audit's test isolation: `CLAUDE_PROJECT_DIR`
+  is scrubbed in test setup, a peer suite's own correctly-cleared flag is no
+  longer misreported as this run's leak (re-checked over a bounded window),
+  and the nested-vitest-child skip now reacts to its own env var only
+  (RP-288).
+
 ## 1.1.0
 
 **1.1.0 is additive on the 1.0 line.** It gives an unfinished stop a bounded

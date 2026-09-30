@@ -17,7 +17,8 @@
     "0.10.0",
     "0.10.1",
     "1.0.0",
-    "1.0.1"
+    "1.0.1",
+    "1.1.0"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -46,7 +47,8 @@
         "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546",
         "b47bdf0d7a2f6c5b2034b8f6d683ad2b3c83bd65d15baf7de9b58cc4689d0ab1",
         "e48766714f4bceb5113c7036c380dfdbe07229feaf9b57fe4168660c5c90feb2",
-        "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261"
+        "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261",
+        "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -89,7 +91,8 @@
         "a6340b95a03000b89fb27f5357cdd9c7ec12b714054b5334b61a30da600405e8",
         "dc1d9c02879e383448f2336ae6433f960f86e8f8efb4ab8ccf9a17a5f7f524c3",
         "75a5bc3e1aa3fdef96b59edc90a3cb4b996708710fe16f65038e0e21853df4e8",
-        "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3"
+        "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3",
+        "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97"
       ]
     },
     ".agents/skills/release-propose/SKILL.md": {
@@ -115,6 +118,12 @@
       "hashes": [
         "1eedb9b3429f2d032181606924815dd8befbe7a79ba209655858fcdac189793c",
         "8fc6dbdd40b81e06d939c4bc2cf3e3c1ac7debd1acf8698e56a087a220404626"
+      ]
+    },
+    ".claude/CLAUDE.md": {
+      "since": "1.1.0",
+      "hashes": [
+        "a7edaa17b624d29d919b2d93d8c29e8b3843014624a1e19a070fc5355633e6bc"
       ]
     },
     ".claude/agents/cdk-diff-reviewer.md": {
@@ -144,7 +153,8 @@
       "since": "1.0.0",
       "hashes": [
         "c3daf330246eb47beee8dae804dc0f84a7bfc626b749d0759f3491fe48627ec5",
-        "b9bc4e148835b50c791360895c2fc85d91f80e6d0d693a9fa01d83838b0fbdea"
+        "b9bc4e148835b50c791360895c2fc85d91f80e6d0d693a9fa01d83838b0fbdea",
+        "f9f7ae44be3bde38da3141a90bdcc3aa9be23971fa78b89bb83170087ecf0b1e"
       ]
     },
     ".claude/agents/implementation-agent.md": {
@@ -218,7 +228,8 @@
         "e7a513216ebbceaa7f11ec8fb611de8bb5d5925dfdfd75b779dcb7c0ee6e83cc",
         "78047f42dda65076dd2cdb73ad530553db3d4a6f3ea7f0729590ac7286323cb1",
         "5782d91c6c54155ad8bf3e107b6574b3ad4c97baa7be673a5ed252c70b387300",
-        "5ffaba69ffc9b6c39cd3c97c4f29b44627416d55793b50aa1a26ffe5efc45497"
+        "5ffaba69ffc9b6c39cd3c97c4f29b44627416d55793b50aa1a26ffe5efc45497",
+        "35313d53e26d47665ecd9484acf0a94ebe4df742f0f51a72bd3d5b8c0775bead"
       ]
     },
     ".claude/hooks/guard-core-purity.mjs": {
@@ -291,6 +302,12 @@
         "3be3d4af4a25536d2a2bac0441a1370be7efafb5f8aa737b195bdce77db0091b"
       ]
     },
+    ".claude/hooks/record-dispatch.mjs": {
+      "since": "1.1.0",
+      "hashes": [
+        "dbd17a93446b520740bde59af92eea28defc406e1d9884ef83a856610f5bc95f"
+      ]
+    },
     ".claude/hooks/warn-subagent-routing.mjs": {
       "since": "0.9.0",
       "hashes": [
@@ -361,13 +378,26 @@
         "5a37d3912ac517f250a3bead965f89639d0b3b932d7c6a04aec467e4490d4fb1"
       ]
     },
+    ".claude/scripts/check-run.mjs": {
+      "since": "1.1.0",
+      "hashes": [
+        "9b05965cfb9ac2358d419c978ed2494202e0538118829e29ae770e204aad5a22"
+      ]
+    },
+    ".claude/scripts/continuation.mjs": {
+      "since": "1.1.0",
+      "hashes": [
+        "797be3dd837b5b6a1bbf1d9a72fb2ae0d0f6064a89caa09a93173460ef76456a"
+      ]
+    },
     ".claude/scripts/decision-router.mjs": {
       "since": "0.5.0",
       "hashes": [
         "783b5b455a56c6a3e3723f3c6da861e0a945562acb686b86ab9d0e16dbd552a6",
         "c7a045d3687429c5047f09b4033ffffcecfede2edba736106f5e1048eb3cf27f",
         "8e9fe877949955e8f698701f969784b288bc95943c3bcea3bd4368db82e8e43e",
-        "6c1dcd297e1681d9b10ca452230bcad0a520be01e0ca949d82b75b74fb07153f"
+        "6c1dcd297e1681d9b10ca452230bcad0a520be01e0ca949d82b75b74fb07153f",
+        "c9eff658831ef52a374cd842ab89e47b1de0e4b56b376352fcb1c1350d57fa4c"
       ]
     },
     ".claude/scripts/detect-missed-gate.mjs": {
@@ -387,6 +417,12 @@
         "3cc6a663d104d6ee702b3131c2b6a18277e74a0f2b2380389c3e4d87f0c74d53"
       ]
     },
+    ".claude/scripts/duplicate-work.mjs": {
+      "since": "1.1.0",
+      "hashes": [
+        "08df27e23b28ee0c4f1f905ec8b4a7831810d49d8641e547a6e0cc23e886abc7"
+      ]
+    },
     ".claude/scripts/git-env.mjs": {
       "since": "0.5.0",
       "hashes": [
@@ -404,7 +440,8 @@
     ".claude/scripts/lib/gate-coverage.mjs": {
       "since": "0.6.0",
       "hashes": [
-        "1ef7f355071a747d8a8d9cd5e2072a19fe3d8c11a0e2a5f884d95a33fb95f12d"
+        "1ef7f355071a747d8a8d9cd5e2072a19fe3d8c11a0e2a5f884d95a33fb95f12d",
+        "942878c603d789d4bf17deefb764b961f28bc8794e64697ac7e0bf1b98e83ec3"
       ]
     },
     ".claude/scripts/lib/revalidation-evidence.mjs": {
@@ -449,7 +486,8 @@
         "efa193dc543237d82dcb371fa1df6483ccd43c1db88d0e218f5d89769564974c",
         "bed44df40412a7edac96914de21edc796df604ddc275ff1a02764dfcc4d4ede7",
         "b3893c365de37ef6d9d04ab933296b9fcf09a0886197d7e12313fa63eacdbd89",
-        "37eeb4bdb50d7f6b1427bd02ec9815f39ad9142f35691ffadd8c0b626c6cdb00"
+        "37eeb4bdb50d7f6b1427bd02ec9815f39ad9142f35691ffadd8c0b626c6cdb00",
+        "82018ddda2e6760b1659089ad60b83c68257e760a3e9bbba734c4ff8562501a2"
       ]
     },
     ".claude/scripts/queue/as-of.mjs": {
@@ -474,7 +512,8 @@
         "b81ae3181e02b9c1c3f0e954688490ab3db3961381c2dc397c47c651c9d07f88",
         "c9902da15d06de3e952352115db0288433520eae2caac1f70ee6e06753d1f444",
         "e31f9899d6edad127db7a2f43dafdfff2671c5c780209cccd3107e56b09c6042",
-        "915f0e73fe0842196227c2bd56ba813ed0b7e358670eeabab456cc27fbc4bc9d"
+        "915f0e73fe0842196227c2bd56ba813ed0b7e358670eeabab456cc27fbc4bc9d",
+        "a6f82491ce744c23452b600c8566a6e2e6eb95e82e36a572ad6a2219f2068f63"
       ]
     },
     ".claude/scripts/queue/gate-rounds.mjs": {
@@ -492,7 +531,8 @@
         "f84148fee47109a388a248c51d3eb40919ce341785b561dd4135b69c6fedabf3",
         "5ab8f741f17efb935b11caf245edf2b562cb887020c2a43d45464158342c933a",
         "b5349837d16de0966139f5b65e2800486592f1b24d7e87087c2b7212cead479d",
-        "b14d15e30dd74585a3470913f6a6bb0250010a8dd5561dfa2033c211ac8288cb"
+        "b14d15e30dd74585a3470913f6a6bb0250010a8dd5561dfa2033c211ac8288cb",
+        "de67256099dbe0fe64402950c40aad9771c09f1601e0345a2d0c2f60a627d352"
       ]
     },
     ".claude/scripts/queue/index.mjs": {
@@ -503,7 +543,8 @@
         "9edd70b5960f367958e8e7500150b4edd285c99869cca803e40e0537d2d347b0",
         "4cf917ac06708e1068dfe9f8bbebc9376c4748526bd669b9bea32929ba996d0a",
         "b4a0789be7ad4b401de872edb06665bca349048178b4dd6c5db848ca44f7c977",
-        "19a04cdbdfd936213cea3a9a00a583a060a4a8d0356d6a6922ae1c2f593f16f1"
+        "19a04cdbdfd936213cea3a9a00a583a060a4a8d0356d6a6922ae1c2f593f16f1",
+        "f0de17b9531f658d31e7f1196a85782089bfb642691c37859622c7084478149e"
       ]
     },
     ".claude/scripts/queue/jira.mjs": {
@@ -516,7 +557,8 @@
         "3fc8ff9a06a2e22355a660a31e2943a97f50869f7e5726f768a7931d17b64b5b",
         "f44203af187e855b9f738f8dbedfd313abf9d6a5cc29182fb46cd58d70698d7a",
         "c2f2af8ac5eadd8d35a15bcdeffe585e32c6f99b4e6ab9ace0f9d7fd9d694943",
-        "add45ea2bf2f96fbda0399afc1903bab75c251001f4d05fcbaa0b5958c8c1702"
+        "add45ea2bf2f96fbda0399afc1903bab75c251001f4d05fcbaa0b5958c8c1702",
+        "5b9690a98c289229949a5e69ea90703f3831ab7315a0d5c9faf96bc7827f50d2"
       ]
     },
     ".claude/scripts/queue/plan-md.mjs": {
@@ -578,7 +620,8 @@
     ".claude/scripts/run-journal.mjs": {
       "since": "0.5.0",
       "hashes": [
-        "4511ff2c982750e20b576fd9eca8ec6c3b4ab81874a3109392418793b82cd5c4"
+        "4511ff2c982750e20b576fd9eca8ec6c3b4ab81874a3109392418793b82cd5c4",
+        "0de50c4a842447211af70366e162fcc4802abd5c016b4dc7e4861945ca9c77dd"
       ]
     },
     ".claude/scripts/run-state.mjs": {
@@ -586,7 +629,8 @@
       "hashes": [
         "5682b4ef1e63b83e1398da4959d8b34f52aede38f896557c041687d101df015f",
         "82c83fe9a66ff1a48c9e23fdfe84eef7da0de337c420e8d870085e7078d6f5e2",
-        "c502cefafdc720d178de685e8372d2c140cb2663517c9d88b5345a9f0c50d0de"
+        "c502cefafdc720d178de685e8372d2c140cb2663517c9d88b5345a9f0c50d0de",
+        "aabc3708d4f72c8f42498c19ace549747ce5791030f0ec89f1aced50de09e326"
       ]
     },
     ".claude/scripts/stop-flag.mjs": {
@@ -594,6 +638,12 @@
       "hashes": [
         "ff4c8edbb715e7b552e8b5a5299e151871e85416568ce20ff8d8a0b4300a78a8",
         "e31d7e6c437bc010d8e144fba64bb401fc6404401ca21bcb48d6a4634796b39a"
+      ]
+    },
+    ".claude/scripts/token-report.mjs": {
+      "since": "1.1.0",
+      "hashes": [
+        "9703e553e3b9eaa36830323755d606b7b93fe96ec23cfbdbb319fb75e1595c14"
       ]
     },
     ".claude/scripts/unattended-flag.mjs": {
@@ -604,14 +654,16 @@
         "250292c9959916240bfc0fdf5987a864f6d54799de3d932dc6b85b776e62eaa9",
         "ad58b25f9ce30a1549b5047daa1e5b43c30352306aeceebacd638db86087e01f",
         "f49142e6a64d5e8a8b4c4d239247f09255d65dd9d7de2cff0267b16421509e12",
-        "1019a8b9af625f758e473f810c962457108a8e6c970e59388d9c73d835253a85"
+        "1019a8b9af625f758e473f810c962457108a8e6c970e59388d9c73d835253a85",
+        "0229a84ff263004d67f86adcc28658784a8cb1666756df92d50aa842acda60a4"
       ]
     },
     ".claude/scripts/verdict.mjs": {
       "since": "0.5.0",
       "hashes": [
         "a85ab47b6ab9a67e79ba77b47bd6bdfba4c03b66709dcb9784d4f244bed8f76a",
-        "adee6247553172d26962612c983f70ad42531eff4e4442a5c1c48a0a58c7eb42"
+        "adee6247553172d26962612c983f70ad42531eff4e4442a5c1c48a0a58c7eb42",
+        "df25c4a96a1e81838b5e27668b006d271dcbae5499c94ea7b1330921875cc6ba"
       ]
     },
     ".claude/settings.json": {
@@ -623,7 +675,8 @@
         "e588ab05bee707a099c80c9ea399008be31488e616f3db3c0598f66f3d1b3a52",
         "a180578d6e6de6a21900ff2f8a8ade2242170d16d2dd95574e5004435d870b9b",
         "44695f83e445c7da3257556a3decc70e79ef46d19da394d4d5dd4c9268c0b429",
-        "a13952579f1752862133a5746f2c0e8696b9548c2c18eb6ff0bb6a54772cea3c"
+        "a13952579f1752862133a5746f2c0e8696b9548c2c18eb6ff0bb6a54772cea3c",
+        "57a4c74b13fc2f2c05b3f075aee38defe320fceb2724f5f980842ef1f955ffd4"
       ]
     },
     ".claude/skills/check-premises/SKILL.md": {
@@ -657,7 +710,8 @@
         "a0d11ca1745095cc5b68777915161f16a6d1602c21f6d273f475d1d07c4b8546",
         "b47bdf0d7a2f6c5b2034b8f6d683ad2b3c83bd65d15baf7de9b58cc4689d0ab1",
         "e48766714f4bceb5113c7036c380dfdbe07229feaf9b57fe4168660c5c90feb2",
-        "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261"
+        "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261",
+        "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -703,7 +757,8 @@
         "a6340b95a03000b89fb27f5357cdd9c7ec12b714054b5334b61a30da600405e8",
         "dc1d9c02879e383448f2336ae6433f960f86e8f8efb4ab8ccf9a17a5f7f524c3",
         "75a5bc3e1aa3fdef96b59edc90a3cb4b996708710fe16f65038e0e21853df4e8",
-        "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3"
+        "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3",
+        "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97"
       ]
     },
     ".claude/skills/release-propose/SKILL.md": {
@@ -754,7 +809,8 @@
       "since": "1.0.0",
       "hashes": [
         "4d1209540407249c96cd6e3a5b874cf1c6c29bf382d3b88fdeb6f3eaafc5e2b6",
-        "561d2b4ac3047dc70c672becd33570d82c7a69e4813b251ca6660f5ff58c929e"
+        "561d2b4ac3047dc70c672becd33570d82c7a69e4813b251ca6660f5ff58c929e",
+        "6e4f8f5daaeeebd35fd418160d3b4708c680dc04acaba12e7ffc1f204d370d32"
       ]
     },
     ".codex/agents/implementation-agent.toml": {
@@ -804,7 +860,8 @@
         "89d999c068ef5b6e48913c15a165359e66b1f505b9f97c145d8c730cbf42d09a",
         "1fc2fc35b04fa4ad0859841af72f45695bc346d1a1a9b20ba5d971d48888a910",
         "fa9a34eb9f889910e55269b76172608b989d553583de38af34316a31f4ad570b",
-        "f3eaf4a9a2c0af418a6ecf54b6d7d32065033909907ea237d51423c9129f44a7"
+        "f3eaf4a9a2c0af418a6ecf54b6d7d32065033909907ea237d51423c9129f44a7",
+        "e1e595da8de22768ad65fd8ea4d4a9f1d2e4ebe33a5b3ce6058f9c2e7bd0c217"
       ]
     },
     ".rig/revalidation.json": {
@@ -820,7 +877,8 @@
         "406c9a0a0e58e78788a10186b9e10b48f4ed215b6d68504a4fbb71e5ee506f85",
         "93f9b4ed7a49df9c83b74fd728fb3e0f83ff7c7e84f71f51d26c89b84cd091bd",
         "615e15fed813dc1fae10c3ff498aab28096382f9e9bd5a89c72d1a6e5adb1219",
-        "c34235624226ff44bef7ae44c183fd41fd9dfbc8f1388c286edc77e1717792f5"
+        "c34235624226ff44bef7ae44c183fd41fd9dfbc8f1388c286edc77e1717792f5",
+        "6da4acad94534f8e119e54fdedbdc1670975bfa83c9b118ac7deefb0dadf0b31"
       ]
     },
     "CLAUDE.md": {
@@ -847,7 +905,8 @@
     "docs/decisions/agents-md-canonical.md": {
       "since": "0.10.0",
       "hashes": [
-        "cc5fd1853cb4519767d0fd8915cbcedafff827dccef00d3535b094ce35e67f26"
+        "cc5fd1853cb4519767d0fd8915cbcedafff827dccef00d3535b094ce35e67f26",
+        "31e1d053ab7eda646bd02d25144268fe1d5f673a95b3a66c4fdd178018dc092e"
       ]
     },
     "docs/decisions/closing-a-task.md": {
@@ -922,7 +981,8 @@
         "97bb882dd066a65a740780a836199ecef8887392c1ece02a92670ecf153988d3",
         "f4a458a8938f8517b997cd6f0a0036d4eba640cd1ff213683804e7c0e2d02d7a",
         "f7f13dc4c19c31bc950c58aa6276e67f42d41c7331510d5a5e6f60e4bfd0c38c",
-        "a15ae305f98ac1e598e0dd8804dd5269c4417208f48eddf8e379c94edf30e4ff"
+        "a15ae305f98ac1e598e0dd8804dd5269c4417208f48eddf8e379c94edf30e4ff",
+        "4aee3e2e6e70e752cc72c34ef412d4e1ad7319a36e9ff332ac5a3f8b0af83556"
       ]
     },
     "docs/decisions/two-empty-endings.md": {
