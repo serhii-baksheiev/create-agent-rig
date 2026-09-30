@@ -1275,6 +1275,136 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     expect(result.code, `should BLOCK: /Applications is catastrophic (got ${result.code})`).toBe(2);
   });
 
+  // RP-309 post-cap 3 (code-reviewer): the relative `pushd` fold used to copy
+  // the WHOLE tracked stack (`[...cwd.parts]`) before folding, to keep the
+  // pre-fold value around for a never-downgrade comparison — see
+  // `computeCdTarget`'s own doc comment. Fixing that copy away must not lose
+  // the property it was protecting, so every command below reaches its
+  // catastrophic cwd through `pushd` ALONE, never through `cd` — base's own
+  // floor (`legacyCdTarget`) only ever tracks `cd`, so it cannot rescue a
+  // broken fix here the way it does for a `cd`-reached command.
+  it('never lets pushd downgrade an already-tracked catastrophic cwd reached via pushd itself, not only via cd (RP-309 post-cap 3)', async () => {
+    for (const command of [
+      'pushd / && pushd tmp && rm -rf *',
+      'pushd ~ && pushd project && rm -rf *',
+      'pushd ~/.ssh && pushd ../proj && rm -rf *',
+      'pushd / && pushd - && rm -rf *',
+      'pushd / && pushd /tmp && rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — pushd must not downgrade the already-tracked catastrophic cwd, exits ${result.code}`,
+      ).toBe(2);
+    }
+
+    // Control: an ordinary pushd/popd sequence that never tracked anything
+    // catastrophic must stay allowed — the fix adds no new reason to block.
+    const ordinary = 'pushd /tmp/a && pushd /tmp/b && popd && rm -rf *';
+    expect((await run(ordinary)).code, ordinary).toBe(0);
+  });
+
+  // RP-309 post-cap 3 (code-reviewer): a long anchored `cd` followed by many
+  // relative `pushd`s off a NOT-catastrophic tracked position — the quadratic
+  // copy pays for the full, ever-growing tracked array on every one of them:
+  // pushd count × tracked depth, not pushd count + tracked depth. Measured
+  // directly against the pre-fix copy at this size, the equivalent `cd`-only
+  // hazard (RP-309 gate round 2) already measured ~92s at N=40,000; this is
+  // the same hazard through `pushd`. Measured in the child (RP-158), never by
+  // the parent's wall clock around the spawn.
+  it('resolves a long, non-popping relative pushd chain in bounded time, not quadratically (RP-309 post-cap 3)', async () => {
+    const chain = 'cd /tmp; ' + 'pushd a;'.repeat(128_000) + ' rm -rf /';
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: 'rm -rf /' is catastrophic regardless of cwd tracking (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 post-cap 3: the popping direction of the same hazard — one long
+  // anchored `cd` (200,000 segments) followed by 100,000 relative
+  // `pushd ..`s, each popping one tracked segment off a NOT-catastrophic
+  // position. The quadratic copy pays for the full, still-huge tracked array
+  // on every pop, not only on every push.
+  it('pops a long relative pushd chain off a long anchored prefix in bounded time, not quadratically (RP-309 post-cap 3)', async () => {
+    const anchor = '/a'.repeat(200_000);
+    const chain = `cd /tmp${anchor}; ` + 'pushd ..;'.repeat(100_000) + ' rm -rf /';
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: 'rm -rf /' is catastrophic regardless of cwd tracking (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 post-cap 3 (security-scanner): being catastrophic is NOT enough to
+  // make "copy only when catastrophic" safe on its own — the `~/.ssh` subtree
+  // is catastrophic at ANY depth, so a candidate reached from inside it stays
+  // catastrophic every time, and a fix that copies whenever the candidate is
+  // still catastrophic would copy an ever-growing array on every one of these
+  // relative pushds. `classifyPosition`'s own `~/.ssh` subtree check
+  // (`parts[0] === '.ssh'`) is what keeps this O(1) per pushd regardless of
+  // depth — see its own doc comment.
+  it('keeps deciding a catastrophic ~/.ssh position in bounded time across many relative pushds, not quadratically (RP-309 post-cap 3)', async () => {
+    const chain =
+      'cd ~/.ssh/' + 'a/'.repeat(20_000) + '; ' + 'pushd a;'.repeat(20_000) + ' rm -rf *';
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: the tracked position stays inside ~/.ssh throughout (got ${result.code})`,
+    ).toBe(2);
+  });
+
+  // RP-309 post-cap 3 (code-reviewer's own repro): a CATASTROPHIC tracked
+  // position followed by many relative pushds that never themselves become
+  // catastrophic — the never-downgrade branch of the fix, exercised at scale.
+  // `60,000` relative `pushd x`s off `~/aaa...` (not catastrophic — too deep
+  // to match `CATASTROPHIC`) must each decide "stays not-catastrophic,
+  // downgrade forgiven" in bounded time, never by copying the tracked stack.
+  // Reported directly against the pre-fix copy: killed at this probe's own
+  // 60s ceiling, nowhere near returning — this test's own 5s bound is what it
+  // must clear instead.
+  it('resolves a long chain of catastrophic-then-relative pushds in bounded time, not quadratically (RP-309 post-cap 3)', async () => {
+    const chain =
+      'cd ~/' + 'a/'.repeat(60_000) + ' && ' + 'pushd x;'.repeat(60_000) + ' cd / ; rm -rf *';
+    const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {
+      input: JSON.stringify(bash(chain)),
+      env: { ...process.env, ...noKillSwitch },
+      timeout: 8_000,
+    });
+    expect(
+      result.elapsedMs,
+      `took ${result.elapsedMs}ms (code ${result.code}) — must stay bounded, not quadratic`,
+    ).toBeLessThan(5000);
+    expect(
+      result.code,
+      `should BLOCK: the final 'cd /' is catastrophic regardless of the pushd chain (got ${result.code})`,
+    ).toBe(2);
+  });
+
   it('a malformed payload or a non-Bash tool is none of its business', async () => {
     expect((await runHookFull('guard-bash.mjs', { tool_name: 'Write' }, noKillSwitch)).code).toBe(
       0,
