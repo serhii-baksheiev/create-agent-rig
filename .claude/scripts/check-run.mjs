@@ -9,7 +9,11 @@
 // changes), and — only when `RIG_RUN_DIR` is declared — appends ONE
 // `check-result` event (`run-journal.mjs`'s `recordEvent`) carrying the
 // check's name, exit identity, up to 50 failing test identities, a bounded
-// tail on failure, and the path to a bounded full log on disk:
+// tail on failure, and the path to a bounded full log on disk. Journalling a
+// check-result here does not by itself wire the check into the
+// `gate-stop-dod` Definition-of-Done gate (RP-295, RP-290 review) — that gate
+// only runs the commands listed in `dod-checks.json`, a separate,
+// config-driven step this script neither reads nor writes.
 //
 //   node .claude/scripts/check-run.mjs --name <check> [--timeout <seconds>]
 //        -- <command> [args...]
@@ -208,16 +212,29 @@
 // which also means Node's default `SIGINT`/`SIGTERM`/`SIGHUP` handling
 // (immediate teardown of THIS process, `finally` never runs) would leave the
 // checked command running unattended, and its capture temp files behind, the
-// moment an operator hits Ctrl-C on a required check. So, for the duration of
-// the child's run only, this process installs its own handler for those
-// three signals on POSIX (`SIGINT`/`SIGBREAK` on win32, which has no
-// SIGTERM/SIGHUP to catch) that does exactly what a timeout does — kill the
-// child's whole tree — plus closes and removes this run's own capture files,
-// removes the handlers, and exits with the POSIX `128 + signal number`
-// convention. See › "kills the checked command and removes its own capture
-// files, rather than dying immediately and leaking both" (POSIX-only — there
-// is no Windows equivalent of a signal delivered to a single pid rather than
-// its process group to measure).
+// moment an operator hits Ctrl-C on a required check. So this process
+// installs its own handler for those three signals on POSIX (`SIGINT`/
+// `SIGBREAK` on win32, which has no SIGTERM/SIGHUP to catch), kept installed
+// through the direct child's own run AND the read-back that follows it (RP-295
+// item B — a signal landing after the direct child has already closed, while
+// the two capture files still exist, must still reach this handler) — that
+// does exactly what a timeout does — kill the child's whole tree,
+// unconditionally, every time this handler runs — plus closes and removes
+// this run's own capture files, removes the handlers, and exits with the
+// POSIX `128 + signal number` convention. RP-295 gate round 3 (controller,
+// blocker C) — an earlier revision skipped the tree kill once the direct
+// child had already closed, reasoning there was "no process (tree) left to
+// kill"; that missed that `killChildTree` on POSIX signals the whole PROCESS
+// GROUP, not the direct child's own pid alone, and a group persists — with no
+// pid-reuse risk — for as long as any member of it (a backgrounded worker the
+// checked command spawned and left running) is still alive, even after the
+// direct child itself has exited. The kill is unconditional again. See ›
+// "kills the checked command and removes its own capture files, rather than
+// dying immediately and leaking both" and › "kills a still-alive backgrounded
+// process from the checked command's own process group, even though the
+// direct child already closed" (both POSIX-only — there is no Windows
+// equivalent of a signal delivered to a single pid rather than its process
+// group to measure).
 //
 // --- Temp capture files ------------------------------------------------------
 //
@@ -239,6 +256,13 @@
 // It is not a general log redacter: it inherits every limit `lib/secrets.mjs`
 // states for `findSecretValues` (a text scan capped per line, not an entropy
 // analyser) rather than restating them here.
+// It does not honour backpressure on the DESTINATION side of the pass-through
+// (RP-295, item D, declined with this stated limit — RP-290 review): the
+// bounded, chunk-at-a-time SOURCE read above is what "never loading the whole
+// thing into memory at once" promises, but `passThroughAndProcess` calls
+// `dest.write(chunk)` without checking its return value or pausing the source
+// read on it, so a stalled destination reader (the caller's own stdout/stderr)
+// still lets unflushed data queue in memory without bound.
 import { spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
@@ -267,6 +291,11 @@ const FAILED_TEST_MAX_CHARS = 300;
 const LINE_MAX_BYTES = 64 * 1024;
 
 const WIN32 = process.platform === 'win32';
+// Read from `process.platform` directly, not injectable (RP-295, RP-290
+// review) — `buildPrefixCandidates`'s `/private`-stripping rule below is
+// gated on this constant, and it has no non-darwin test coverage: there is
+// no seam to make this process believe it is running on macOS while it is
+// not, so the rule can only ever be exercised on a real macOS host.
 const DARWIN = process.platform === 'darwin';
 
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
@@ -313,20 +342,72 @@ const PRIVATE_KEY_HEADER_PATTERN = SECRET_VALUE_PATTERNS.find(
 // state machine that needs it.
 const PRIVATE_KEY_END_PATTERN = /-----END [A-Z0-9 ]*PRIVATE KEY-----/;
 
+// Global variants of the two patterns above, used ONLY by `lastMatchIndex`
+// below to find where the LAST BEGIN/END marker sits on a line — never for
+// testing (`.test()` on a stateful global pattern is its own footgun; the
+// non-global originals above stay the ones every `.test()` call uses).
+const PRIVATE_KEY_HEADER_PATTERN_GLOBAL = new RegExp(PRIVATE_KEY_HEADER_PATTERN.source, 'g');
+const PRIVATE_KEY_END_PATTERN_GLOBAL = new RegExp(PRIVATE_KEY_END_PATTERN.source, 'g');
+
+// RP-295 (RP-290 review follow-up, item A) — the PEM state machine used to
+// unconditionally disarm on any END match: `if (PRIVATE_KEY_END_PATTERN.test
+// (line)) inPemBlock = false;`, with no regard for a NEW BEGIN also present
+// on the SAME line, after that END (two keys concatenated with no newline
+// between the first key's END and the second key's BEGIN). The rule this
+// pins: armed after the line iff the LAST BEGIN marker's index is greater
+// than the LAST END marker's index (a line with a marker but no counterpart
+// of the other kind reads as if the missing one were at index -1). Bounded
+// the same way the rest of this module's per-line work is: `text` is always
+// one already-bounded unit — a single line (at most `LINE_MAX_BYTES`) or, per
+// `makeLineFeeder`'s own comment below, the bounded `tail + segment` window
+// each incoming chunk is evaluated against as it streams in — so this single
+// forward scan costs the same as one `.test()` call. See `check-run.test.ts`
+// (absent in a generated rig) › "keeps the block armed for the second key
+// body when END and a new BEGIN sit on the SAME line".
+const lastMatchIndex = (text, globalPattern) => {
+  globalPattern.lastIndex = 0;
+  let last = -1;
+  let match = globalPattern.exec(text);
+  while (match !== null) {
+    last = match.index;
+    if (match[0].length === 0) globalPattern.lastIndex += 1;
+    match = globalPattern.exec(text);
+  }
+  return last;
+};
+
+// RP-295 (RP-290 review follow-up, item E, second half) — each pattern's
+// capture is `\S.*` with the `s` flag, so `.` matches an embedded `\r` too: a
+// carriage-return redraw INSIDE a single logical line (`makeLineFeeder` only
+// splits on `\n`) used to stay part of the captured identity, swallowing
+// whatever redraw junk the runner wrote after its own `\r`. The identity
+// stops at the first embedded `\r` instead — see `check-run.test.ts`
+// (absent in a generated rig) › "stops a failing-test identity at an
+// embedded \\r rather than swallowing what follows it".
+const stopAtCarriageReturn = (text) => {
+  const index = text.indexOf('\r');
+  return index === -1 ? text : text.slice(0, index);
+};
+
 /**
  * A failing test identity from one already-processed line, or `null`. Each
  * pattern's capture is a greedy `\S.*` (see the patterns' own comment) that
- * no longer excludes trailing whitespace the way the old trailing `\s*$` did
- * — `trimEnd()` here restores that, cheaply, on the capture alone rather
- * than reintroducing a trailing quantifier into the pattern itself.
+ * no longer excludes trailing whitespace the way the old trailing `\s*$` did.
+ * Trailing whitespace is trimmed by the CALLER (`runCheck`), not here — RP-295
+ * (RP-290 review follow-up, item E, first half) found that trimming the FULL
+ * capture here, ahead of the later 300-character cut in `runCheck`, could
+ * leave the STORED (cut) entry ending in whitespace anyway, whenever the cut
+ * landed on interior whitespace `trimEnd()` never touched at capture time.
+ * See › "trims trailing whitespace exposed by the 300-character cut, not
+ * only the identity's own true end".
  */
 const extractFailedTestId = (line) => {
   const fail = FAIL_PATTERN.exec(line);
-  if (fail) return fail[1].trimEnd();
+  if (fail) return stopAtCarriageReturn(fail[1]);
   const bullet = BULLET_PATTERN.exec(line);
-  if (bullet) return bullet[1].trimEnd();
+  if (bullet) return stopAtCarriageReturn(bullet[1]);
   const tap = TAP_PATTERN.exec(line);
-  if (tap) return tap[1].trimEnd();
+  if (tap) return stopAtCarriageReturn(tap[1]);
   return null;
 };
 
@@ -420,13 +501,12 @@ const parseArgs = (argv) => {
 // A small, FIXED-size rolling window (characters, not bytes — the header it
 // exists to catch is short ASCII) kept for the CURRENT pending line only,
 // regardless of whether that line is still under `LINE_MAX_BYTES` or has
-// already gone over it. It is what lets a BEGIN header sitting at the very
-// END of an over-long line still be seen once the line closes — see
-// `check-run.test.ts` (absent in a generated rig) › "still redacts the body
-// and END line that follow it, while a line after END survives" — without
-// holding the whole discarded line: `tail` is re-sliced to this many
-// characters on every append, so its own cost is O(1) per chunk, not O(line
-// length).
+// already gone over it. Carried across `appendSegment` calls so a marker
+// whose own bytes straddle two incoming chunks — a disk-read chunk boundary,
+// not only a line boundary — is still seen whole once BOTH halves have
+// arrived (see `appendSegment`'s own comment): `tail` is re-sliced to this
+// many characters on every append, so its own cost is O(1) per chunk, not
+// O(line length).
 const OVERFLOW_TAIL_CHARS = 256;
 
 /**
@@ -435,29 +515,72 @@ const OVERFLOW_TAIL_CHARS = 256;
  * (not-yet-terminated) line is ever held; a chunk is scanned once with
  * `indexOf`, never by re-splitting the whole accumulated buffer, so the cost
  * is linear in the input rather than quadratic. `onLine` is called with the
- * finalized line text and a `{ overLimit, tail }` record — `tail` is the last
- * `OVERFLOW_TAIL_CHARS` characters of the line'S OWN RAW CONTENT, kept even
- * when `overLimit` is true and the line text itself has already been replaced
- * by the fixed marker, precisely so a caller can still check what the
- * discarded END of an over-long line looked like (see `OVERFLOW_TAIL_CHARS`
- * above) without this feeder knowing anything about PEM blocks or secrets
- * itself.
+ * finalized line text and a `{ overLimit, lastLineMarker }` record.
+ *
+ * `lastLineMarker` (`'begin' | 'end' | null`) is the one piece of PEM
+ * knowledge this otherwise-agnostic feeder carries, and it is what the
+ * PEM state machine in `runCheck` (below) arms/disarms from for an
+ * OVER-LIMIT line only; a normal-length line takes its transition from one
+ * scan of the whole line instead (RP-295 gate round 3) — RP-295 gate
+ * round 2 (reviewer, reproduced on head a861085): the round-1 shape
+ * (`sawBeginHeader`, a per-line bool set from testing each RAW segment
+ * against `PRIVATE_KEY_HEADER_PATTERN` alone) had three independent gaps —
+ * a header whose own bytes straddle a disk-read chunk boundary matched
+ * NEITHER half on its own; an ANSI escape code embedded inside the header
+ * broke the raw (unstripped) match even though the header, once stripped,
+ * was the exact shape `findSecretValues` would flag; and a COMPLETE
+ * BEGIN..END pair sitting early in one over-limit line, followed by enough
+ * filler to push both markers out of a small fixed-size tail, left the
+ * state machine blind to the END that had already closed the block on that
+ * SAME line. `lastLineMarker` closes all three at once: on every
+ * `appendSegment` call, BOTH patterns are matched — via `lastMatchIndex`,
+ * above — against `stripAnsi(tail + segment)`, where `tail` is this line's
+ * rolling window as it stood BEFORE this segment was appended (so a marker
+ * split across the boundary is reassembled) and `segment` is the WHOLE new
+ * chunk, however large (not the bounded `tail` alone — a complete BEGIN..END
+ * pair sitting together within ONE chunk is seen in full here, even when
+ * later filler on the same line would otherwise push both out of `tail`).
+ * Whichever marker's LAST match index in that scan is greater becomes this
+ * line's `lastLineMarker` so far; when NEITHER matches in a given segment,
+ * the value already recorded from an earlier segment of the same line is
+ * left untouched — never reset to "no marker" just because the current
+ * segment's own bounded view no longer contains it. Reset to `null` only at
+ * `resetLine`, once per line. Bounded the same way the rest of this feeder's
+ * per-chunk work is: one linear scan per segment (`lastMatchIndex` costs the
+ * same as a single `.test()` call), no re-scan of what came before it. See
+ * `check-run.test.ts` (absent in a generated rig) › "still arms the block,
+ * even though the small rolling tail no longer contains the header once the
+ * line closes", › "still arms the block, even though neither disk-read
+ * chunk contains the whole header on its own", › "still arms the block —
+ * the header shape must be checked after stripping ANSI, not on the raw
+ * segment", and › "closes the block on that same line, so a normal FAIL
+ * line and the line after it are not swallowed".
  */
 const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
   let pending = '';
   let pendingBytes = 0;
   let overLimit = false;
   let tail = '';
+  let lastLineMarker = null;
 
   const resetLine = () => {
     pending = '';
     pendingBytes = 0;
     overLimit = false;
     tail = '';
+    lastLineMarker = null;
   };
 
   const appendSegment = (segment) => {
-    if (segment.length > 0) tail = (tail + segment).slice(-OVERFLOW_TAIL_CHARS);
+    if (segment.length > 0) {
+      const evalText = stripAnsi(tail + segment);
+      const beginIndex = lastMatchIndex(evalText, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
+      const endIndex = lastMatchIndex(evalText, PRIVATE_KEY_END_PATTERN_GLOBAL);
+      if (beginIndex !== -1 || endIndex !== -1) {
+        lastLineMarker = beginIndex > endIndex ? 'begin' : 'end';
+      }
+      tail = (tail + segment).slice(-OVERFLOW_TAIL_CHARS);
+    }
     if (overLimit) return;
     pending += segment;
     pendingBytes += Buffer.byteLength(segment, 'utf8');
@@ -470,9 +593,9 @@ const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
 
   const closeLine = () => {
     if (overLimit) {
-      onLine(`[redacted: line over ${lineMaxBytes} bytes]`, { overLimit: true, tail });
+      onLine(`[redacted: line over ${lineMaxBytes} bytes]`, { overLimit: true, lastLineMarker });
     } else {
-      onLine(pending, { overLimit: false, tail });
+      onLine(pending, { overLimit: false, lastLineMarker });
     }
     resetLine();
   };
@@ -623,10 +746,14 @@ const escapeCmdArgument = (value, doubleEscapeMetaChars = false) => {
 // that step. Besides cmd's bracket/percent/caret/quote/angle/amp/pipe set,
 // this class also carries every OTHER character cmd.exe splits a command
 // line's tokens on: `;`, `,`, `=`, and whitespace — ordinary ASCII space/tab
-// alongside every Unicode space JS's `u`-flagged `\s` matches (U+00A0,
-// U+1680, U+2000–U+200A, U+202F, U+205F, U+3000) plus `\u0085` (NEL), which
-// `\s` does not cover. Unlike an argument, this token is never wrapped in
-// quotes: see `escapeCmdBatchPath`'s own comment for why.
+// alongside every character JS's `\s` matches — the `u` flag on
+// `CMD_PATH_META_CHARS` changes nothing about what `\s` itself matches, with
+// or without it: the Space_Separator set (U+00A0, U+1680, U+2000–U+200A,
+// U+202F, U+205F, U+3000), the line terminators U+2028 and U+2029, and
+// U+FEFF (ZERO WIDTH NO-BREAK SPACE / BOM) — plus `\u0085` (NEL), which `\s`
+// does NOT cover and is listed separately below. Unlike an argument, this
+// token is never wrapped in quotes: see `escapeCmdBatchPath`'s own comment
+// for why.
 const CMD_PATH_META_CHARS = /([()%!^"<>&|;,=\s\u0085])/gu;
 
 /**
@@ -695,7 +822,12 @@ const escapeCmdBatchPath = (value) => String(value).replace(CMD_PATH_META_CHARS,
 // is refused before spawning" and, for the allowlist's own lower bound — an
 // accented Latin letter or a Cyrillic letter must still reach the named file
 // — › "a cmd.exe-routed batch path containing ordinary non-English letters
-// is not refused by the allowlist".
+// is not refused by the allowlist". Documented trade-off (RP-295, RP-290
+// review): this same allowlist also refuses ordinary, SAFE non-ASCII
+// punctuation, not only an unsafe shape — a typographic apostrophe (as in
+// "O’Brien") or full-width brackets (（）) are punctuation, not a letter, mark,
+// number or whitespace, so a resolved batch PATH containing one is refused
+// even though it poses no risk to cmd.exe.
 const CMD_PATH_ALLOWED_CHAR = /^[ -~\p{L}\p{M}\p{N}\s\u0085]$/u;
 
 /** The code point of the first character in `value` outside `CMD_PATH_ALLOWED_CHAR`, or `null` if every character is allowed. */
@@ -934,6 +1066,11 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
   const cwd = process.cwd();
   const cwdReal = computeCwdReal(cwd);
   const prefixCandidates = buildPrefixCandidates(cwd, cwdReal);
+  // Stops at the first matching prefix candidate, not every one of them
+  // (RP-295, RP-290 review): a value carrying TWO differently-spelled
+  // absolute forms of cwd on the same line (e.g. the raw cwd and its
+  // realpath, both prefix candidates) has only the FIRST form found
+  // stripped — the other survives absolute in the recorded value.
   const relativize = (value) => {
     for (const prefix of prefixCandidates) {
       if (value.includes(prefix)) return value.split(prefix).join('');
@@ -954,39 +1091,77 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
     return (rawLine, meta) => {
       const overLimit = Boolean(meta && meta.overLimit);
       let finalLine;
+      let lineMarker;
       if (overLimit) {
         // The line text itself is already the fixed `[redacted: line over …
         // bytes]` marker — `LINE_MAX_BYTES` applies ahead of and independent
         // from this PEM/credential logic (module header's "Bounds"), so there
-        // is no raw body left to scan here. Only the feeder's small rolling
-        // `tail` (the line's own last `OVERFLOW_TAIL_CHARS` characters, kept
-        // even though the line overflowed) is inspected, so a BEGIN or END
-        // header sitting at the very end of an over-long line still updates
-        // the state machine — see › "still redacts the body and END line
-        // that follow it, while a line after END survives".
+        // is no raw body left to scan here; only the state-machine transition
+        // below still applies to this line — taken from `makeLineFeeder`'s own
+        // incremental, chunk-bounded `lastLineMarker` (RP-295 gate round 3,
+        // security-scanner): re-scanning an over-limit line's full raw text
+        // here would be exactly the unbounded-per-line work `invariants.md`'s
+        // bounded-work rule refuses, which is why the incremental, small-tail
+        // tracking below exists in the first place.
         finalLine = rawLine;
-        const tailText = stripAnsi(meta.tail ?? '');
-        if (inPemBlock) {
-          if (PRIVATE_KEY_END_PATTERN.test(tailText)) inPemBlock = false;
-        } else if (PRIVATE_KEY_HEADER_PATTERN.test(tailText)) {
-          inPemBlock = !PRIVATE_KEY_END_PATTERN.test(tailText);
-        }
+        lineMarker = meta && meta.lastLineMarker;
       } else {
+        // A BEGIN header appearing anywhere in this line is caught by
+        // `findSecretValues` on its own (the header IS a credential shape,
+        // `lib/secrets.mjs`'s `private-key-block` pattern) — this line does
+        // not need its own separate "does it contain a BEGIN" check the way
+        // the state-machine transition below does.
         const relativized = relativize(stripAnsi(rawLine));
-        if (inPemBlock) {
-          finalLine = REDACTED_LINE;
-          if (PRIVATE_KEY_END_PATTERN.test(relativized)) inPemBlock = false;
-        } else if (PRIVATE_KEY_HEADER_PATTERN.test(relativized)) {
-          finalLine = REDACTED_LINE;
-          // A line whose BEGIN and END markers both sit on the SAME line
-          // must not leave the block armed for the lines that follow — see ›
-          // "redacts the one-line key, and does not swallow the FAIL
-          // identity on the line that follows it".
-          inPemBlock = !PRIVATE_KEY_END_PATTERN.test(relativized);
-        } else {
-          finalLine = findSecretValues(relativized).length > 0 ? REDACTED_LINE : relativized;
-        }
+        finalLine = inPemBlock
+          ? REDACTED_LINE
+          : findSecretValues(relativized).length > 0
+            ? REDACTED_LINE
+            : relativized;
+        // RP-295 gate round 3 (security-scanner, regression vs base a4d55a8)
+        // — a line under `LINE_MAX_BYTES` is already held WHOLE, in
+        // `rawLine`/`relativized` above, so the marker transition for such a
+        // line is taken from ONE scan of the WHOLE line — exactly what base
+        // a4d55a8 did — never from `makeLineFeeder`'s incremental,
+        // `OVERFLOW_TAIL_CHARS`-bounded `lastLineMarker`. That incremental
+        // tracking exists to bound an OVER-LIMIT line's per-chunk cost (kept
+        // for the `overLimit` branch above); applied here too, its small
+        // rolling tail could push a long-padded header's own `-----BEGIN `
+        // prefix out of view before the segment carrying the rest of the
+        // padding (and `PRIVATE KEY-----`) ever arrived, on a line that never
+        // comes anywhere near the 64 KiB cap that incremental tracking is
+        // for. Bounded exactly like `findSecretValues` just above it: one
+        // scan of at most `LINE_MAX_BYTES` characters. See
+        // `check-run.test.ts` (absent in a generated rig) › "a long-padded
+        // BEGIN header straddles the 64 KiB read-chunk boundary on a
+        // NORMAL-length line".
+        const beginIndex = lastMatchIndex(relativized, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
+        const endIndex = lastMatchIndex(relativized, PRIVATE_KEY_END_PATTERN_GLOBAL);
+        lineMarker =
+          beginIndex === -1 && endIndex === -1 ? null : beginIndex > endIndex ? 'begin' : 'end';
       }
+
+      // RP-295 gate round 2 (reviewer, reproduced on head a861085) — armed
+      // after this line iff the LAST marker found for it (whole-line for a
+      // normal-length line, above; `makeLineFeeder`'s incremental,
+      // chunk-boundary- and ANSI-safe tracking for an over-limit one, per its
+      // own comment above `makeLineFeeder`) was a BEGIN; a line with no
+      // marker at all leaves `inPemBlock` exactly as it was entering the
+      // line. This single check replaces what used to be two separate,
+      // narrower ones — a whole-line scan for the non-overLimit branch, and a
+      // small-rolling-`tail`-plus-`sawBeginHeader` fallback for the overLimit
+      // one — neither of which saw a marker split across a chunk boundary, an
+      // ANSI-interleaved header, or a complete BEGIN..END pair pushed out of
+      // a small tail by later filler on the same over-limit line. See
+      // `check-run.test.ts` (absent in a generated rig) › "keeps the block
+      // armed for the second key body when END and a new BEGIN sit on the
+      // SAME line", its over-limit variant, "still arms the block, even
+      // though neither disk-read chunk contains the whole header on its
+      // own", "still arms the block — the header shape must be checked after
+      // stripping ANSI, not on the raw segment", and "closes the block on
+      // that same line, so a normal FAIL line and the line after it are not
+      // swallowed".
+      if (lineMarker === 'begin') inPemBlock = true;
+      else if (lineMarker === 'end') inPemBlock = false;
 
       logBuffer.push(`${finalLine}\n`);
       tailLines.push(finalLine);
@@ -996,11 +1171,16 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
         const id = extractFailedTestId(finalLine);
         if (id !== null) {
           const normalizedId = normalizeFailedTestId(id);
-          failedTests.push(
+          // RP-295, item E (first half) — cut to the 300-character cap FIRST,
+          // then trim: trimming the full identity before this cut (the old
+          // order) can leave the STORED entry ending in whitespace whenever
+          // the cut itself lands on interior whitespace the earlier trim
+          // never touched.
+          const cut =
             normalizedId.length > FAILED_TEST_MAX_CHARS
               ? normalizedId.slice(0, FAILED_TEST_MAX_CHARS)
-              : normalizedId,
-          );
+              : normalizedId;
+          failedTests.push(cut.trimEnd());
         }
       }
     };
@@ -1016,6 +1196,20 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
   let signal = null;
   let spawnError = null;
   let timedOut = false;
+
+  // RP-295 (RP-290 review follow-up, item B) — hoisted out of the `if
+  // (child)` block below so the OUTER `finally` can remove these handlers
+  // only once the capture files are actually gone. Installed for the
+  // duration of the child's run AND the read-back that follows it (below,
+  // and inside `onInterrupt` itself) — never removed while there is still
+  // an unlinked capture file a SIGINT/SIGTERM could leave behind.
+  let interruptHandlers = [];
+  const removeInterruptHandlers = () => {
+    for (const [signalName, handler] of interruptHandlers) {
+      process.removeListener(signalName, handler);
+    }
+    interruptHandlers = [];
+  };
 
   try {
     stdoutFd = openSync(stdoutCapturePath, 'wx', 0o600);
@@ -1037,16 +1231,6 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
         }, timeoutSeconds * 1000);
       }
 
-      // Install for the duration of the child's run only, and removed on
-      // every exit from it (below, and inside the handler itself) — never
-      // left registered once there is nothing left to interrupt.
-      let interruptHandlers = [];
-      const removeInterruptHandlers = () => {
-        for (const [signalName, handler] of interruptHandlers) {
-          process.removeListener(signalName, handler);
-        }
-        interruptHandlers = [];
-      };
       const onInterrupt = (signalName) => {
         removeInterruptHandlers();
         if (timer) clearTimeout(timer);
@@ -1079,11 +1263,18 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
       });
 
       [exitCode, signal, spawnError] = await new Promise((resolve) => {
-        child.on('error', (error) => resolve([null, null, error]));
-        child.on('close', (code, sig) => resolve([code, sig, null]));
+        child.on('error', (error) => {
+          resolve([null, null, error]);
+        });
+        child.on('close', (code, sig) => {
+          resolve([code, sig, null]);
+        });
       });
       if (timer) clearTimeout(timer);
-      removeInterruptHandlers();
+      // RP-295, item B — NOT removed here. The child has closed, but the two
+      // capture files still exist and are read back below; a signal landing
+      // in that window must still hit `onInterrupt` so it removes them. See
+      // the outer `finally`, where these handlers are actually torn down.
     }
 
     if (stdoutFd !== null) {
@@ -1122,6 +1313,11 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
         // unique and nothing else ever reads it.
       }
     }
+    // RP-295, item B — torn down LAST, once both capture files are actually
+    // gone: a signal delivered any time before this line still reaches
+    // `onInterrupt` and removes them itself; nothing after this point still
+    // needs interrupting.
+    removeInterruptHandlers();
   }
 
   if (spawnError) {

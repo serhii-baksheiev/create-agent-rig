@@ -38,7 +38,15 @@
 // `spawn-error` record (the command never started) is never treated as a
 // test failure — › "adds NO failed-check line for a spawn-error record —
 // RP-290 review round 1: a command that never started is not a test
-// failure".
+// failure". RP-295 (RP-290 review follow-up, item C.3): a later `spawn-error`
+// record for a check name never overwrites a PRIOR `fail` (or `pass`) record
+// for the same name — only another `fail` or a `pass` may replace an
+// existing entry, so a real failure's own identity is never silently lost
+// behind a `spawn-error` that carries no `failedTests` of its own to replace
+// it with. See `readFailedChecks`, below, and `continuation.test.ts` (absent
+// in a generated rig) › "a later spawn-error for a check name does not hide
+// an earlier fail for the same name — the failing identity must not be
+// lost".
 //
 // It NEVER records: a transcript, a prompt, source code, or a credential.
 // EVERY string field this composes — `ticket`, `branch`, `pr`, `headSha`,
@@ -779,10 +787,103 @@ const composeFreeTextField = (value) => {
 /** `composeFreeTextField`, plus the per-field 500-character cap `diagnosis`/`remaining` carry. */
 const composeCappedTextField = (value) => truncateField(composeFreeTextField(value));
 
-/** Cap the WHOLE note — a backstop for a field this module does not cap on its own. */
-const capNote = (note) => {
-  if (note.length <= NOTE_CAP) return note;
-  return `${note.slice(0, NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length)}${NOTE_TRUNCATION_SUFFIX}`;
+/**
+ * Cap the WHOLE note — a backstop for a field this module does not cap on
+ * its own. RP-295 (RP-290 review follow-up, item C.1) split one joined
+ * string's front-truncation (which lost whatever sat at the very END — the
+ * failed-check block, the highest-value content this note carries) into two
+ * separately-capped parts, `prefixText`/`failedCheckText`. RP-295 gate round
+ * 2 (reviewer, reproduced on head a861085) found THAT split still had no
+ * floor under `prefixText`'s own budget: reserving room for the WHOLE
+ * `failedCheckText` first could leave `prefixText`'s slice short enough to
+ * cut into `identityText` itself — the `rig-continuation v1` marker,
+ * `ticket:` and `stop:` lines a fresh reader needs just to know what the note
+ * is even about.
+ *
+ * The priority this now encodes, in order, per `.claude/rules/autonomy.md`'s
+ * escalation format and `invariants.md`'s bounded-work rule: `identityText`
+ * is the floor, cut only when it alone exceeds `NOTE_CAP` (see below); the failed-check block is reserved
+ * next, in full when it fits, or truncated (with the existing suffix)
+ * instead of ever touching identity when it alone would not otherwise fit;
+ * whatever remains — always `>= 0` — goes to `restText` (the
+ * branch/pr/head/gate-rounds/verdict/diagnosis/remaining lines), truncated
+ * from the end the same way when it overflows what identity and the
+ * failed-check block left behind. The result is always `<= NOTE_CAP`,
+ * computed as three bounded slice-and-concatenate steps — never a second
+ * pass over the whole note. See `continuation.test.ts` (absent in a
+ * generated rig) › "keeps the version marker, ticket and stop lines intact
+ * even when a ~1975-character failed-check block leaves almost no budget for
+ * the prefix", › "keeps the version marker, ticket and stop lines intact
+ * with a ~1900-character failed-check block", and › "keeps a failed-check
+ * line intact, ahead of the whole-note cap, even when diagnosis/remaining
+ * filler alone nearly fills the note".
+ *
+ * RP-295 gate round 3 (controller, blocker B) — `identityText` being a
+ * "protected floor" used to mean "never sliced", full stop, with nothing
+ * capping `identityText` itself against `NOTE_CAP` first: a `ticket` field
+ * up to `RAW_FIELD_CAP` (2000) characters, plus the `rig-continuation
+ * v1`/`ticket: `/`stop: ` lines built around it, can already exceed
+ * `NOTE_CAP` on its own — before `restText`/`failedCheckText` are even
+ * considered — and the function returned that over-long `identityText`
+ * unmodified, in direct contradiction of "the result is always `<=
+ * NOTE_CAP`" above. `identityText` is now bounded to `NOTE_CAP` FIRST, from
+ * the end, with the existing truncation suffix, before it is treated as a
+ * floor for anything else — this keeps the `rig-continuation v1` line
+ * (`identityText`'s own first line) intact, since only the un-truncated part
+ * near its end, never its start, is ever cut. See `continuation.test.ts`
+ * (absent in a generated rig) › "keeps the whole note within NOTE_CAP (2000)
+ * for a ~1993-character ticket", › "keeps the whole note within NOTE_CAP
+ * (2000) for a ~2503-character ticket", and › "keeps the whole note within
+ * NOTE_CAP (2000) for a ~5003-character ticket".
+ */
+const capNote = (identityText, restText, failedCheckText) => {
+  const boundedIdentityText =
+    identityText.length > NOTE_CAP
+      ? `${identityText.slice(0, Math.max(0, NOTE_CAP - NOTE_TRUNCATION_SUFFIX.length))}${NOTE_TRUNCATION_SUFFIX}`
+      : identityText;
+
+  const prefixText = restText ? `${boundedIdentityText}\n${restText}` : boundedIdentityText;
+  const full = failedCheckText ? `${prefixText}\n${failedCheckText}` : prefixText;
+  if (full.length <= NOTE_CAP) return full;
+
+  // `boundedIdentityText` is the protected floor — never sliced further,
+  // whatever remains.
+  let remaining = NOTE_CAP - boundedIdentityText.length;
+
+  let failedCheckOut = '';
+  if (failedCheckText) {
+    const withSeparator = 1 + failedCheckText.length;
+    if (withSeparator <= remaining) {
+      failedCheckOut = `\n${failedCheckText}`;
+      remaining -= withSeparator;
+    } else {
+      const budget = remaining - 1 - NOTE_TRUNCATION_SUFFIX.length;
+      if (budget >= 0) {
+        failedCheckOut = `\n${failedCheckText.slice(0, budget)}${NOTE_TRUNCATION_SUFFIX}`;
+      }
+      // else: not even room for a newline + the truncation suffix after
+      // identity — bounded fallback: no failed-check block at all, rather
+      // than an unbounded write or a cut into identity.
+      remaining = 0;
+    }
+  }
+
+  let restOut = '';
+  if (restText && remaining > 0) {
+    const withSeparator = 1 + restText.length;
+    if (withSeparator <= remaining) {
+      restOut = `\n${restText}`;
+    } else {
+      const budget = remaining - 1 - NOTE_TRUNCATION_SUFFIX.length;
+      if (budget >= 0) {
+        restOut = `\n${restText.slice(0, budget)}${NOTE_TRUNCATION_SUFFIX}`;
+      }
+      // else: no room even for a newline + the suffix — drop the rest of the
+      // prefix entirely rather than exceed NOTE_CAP.
+    }
+  }
+
+  return `${boundedIdentityText}${restOut}${failedCheckOut}`;
 };
 
 /**
@@ -847,6 +948,36 @@ const renderVerdict = (verdict) => {
   return `${gate} ${answer} @ ${shortSha}${suffix}`;
 };
 
+// RP-295 (RP-290 review follow-up, item C.2) — a signal name is rendered
+// verbatim into the note, so it goes through the same allowlist shape every
+// other structured value in this module is held to rather than being passed
+// through unchecked: exactly `SIG` followed by 1-12 uppercase letters/digits
+// (`SIGTERM`, `SIGKILL`, `SIGRT35`, …). Anything else — `check-run.mjs`
+// itself only ever sets `signal` from Node's own `child.on('close', (code,
+// sig) => …)`, but this module never trusts an upstream shape it does not
+// control — is omitted rather than rendered, falling back to the bare exit
+// code below.
+const SIGNAL_NAME_PATTERN = /^SIG[A-Z0-9]{1,12}$/;
+
+/**
+ * The outcome portion of a `failed-check:` line — RP-295 (RP-290 review
+ * follow-up, item C.2). `composeFailedCheckLine` used to read only
+ * `exitCode`, never `signal`/`timedOut`, even though `check-run.mjs` records
+ * both: a timed-out or signal-killed check reports `exitCode: null` (Node's
+ * own `child.on('close', (code, sig) => …)` shape once a process is killed),
+ * which rendered as the bare, uninformative "exit unknown" — nothing told a
+ * fresh reader the check never got the chance to fail on its own. `timedOut`
+ * takes priority over `signal` (a timeout kill sets both, and "timed out" is
+ * the more specific fact — it explains WHY the process was signalled).
+ */
+const describeCheckOutcome = (check) => {
+  if (check?.timedOut === true) return 'timed out';
+  if (typeof check?.signal === 'string' && SIGNAL_NAME_PATTERN.test(check.signal)) {
+    return `killed by ${check.signal}`;
+  }
+  return `exit ${composeTextField(check?.exitCode)}`;
+};
+
 /**
  * One `failed-check: <name> exit <code>; tests: <id1>, <id2>…` line — RP-290,
  * from a `check-run.mjs` `check-result` record whose latest outcome for that
@@ -856,18 +987,21 @@ const renderVerdict = (verdict) => {
  * same way — and a REPO-RELATIVE test id (no leading `/`) is not itself a
  * shape any of the five structured path patterns matches, so it survives
  * intact rather than becoming `[path]`. `tests:` reads `unknown` when the
- * record named no failing test id at all, never an empty string.
+ * record named no failing test id at all, never an empty string. The outcome
+ * portion renders "timed out" or "killed by <SIGNAL>" instead of a bare
+ * "exit unknown" where `check-run.mjs` recorded one — see
+ * `describeCheckOutcome` above.
  */
 const composeFailedCheckLine = (check) => {
   const name = composeTextField(check?.name);
-  const exitCode = composeTextField(check?.exitCode);
+  const outcome = describeCheckOutcome(check);
   const ids = Array.isArray(check?.failedTests)
     ? check.failedTests
         .filter((id) => typeof id === 'string' && id.trim() !== '')
         .map((id) => composeTextField(id))
     : [];
   const testsField = ids.length > 0 ? ids.join(', ') : 'unknown';
-  return `failed-check: ${name} exit ${exitCode}; tests: ${testsField}`;
+  return `failed-check: ${name} ${outcome}; tests: ${testsField}`;
 };
 
 /** `failedChecks` renders as zero or more `failed-check:` lines, never guessed when absent. */
@@ -901,10 +1035,10 @@ export const composeNote = ({
     );
   }
 
-  const lines = [
-    'rig-continuation v1',
-    `ticket: ${composeTextField(ticket)}`,
-    `stop: ${stop}`,
+  // Split from the rest of the prefix so `capNote` can protect it as a fixed
+  // floor — see that function's own comment.
+  const identityLines = ['rig-continuation v1', `ticket: ${composeTextField(ticket)}`, `stop: ${stop}`];
+  const restLines = [
     `branch: ${composeTextField(branch)}`,
     `pr: ${composeTextField(pr)}`,
     `head: ${composeTextField(headSha)}`,
@@ -912,10 +1046,10 @@ export const composeNote = ({
     `latest-verdict: ${renderVerdict(verdict)}`,
     `diagnosis: ${composeCappedTextField(diagnosis)}`,
     `remaining: ${composeCappedTextField(remaining)}`,
-    ...renderFailedCheckLines(failedChecks),
   ];
+  const failedCheckText = renderFailedCheckLines(failedChecks).join('\n');
 
-  return capNote(lines.join('\n'));
+  return capNote(identityLines.join('\n'), restLines.join('\n'), failedCheckText);
 };
 
 /**
@@ -1005,6 +1139,15 @@ export const readFailedChecks = (runDir) => {
       if (event.kind !== CHECK_RESULT_KIND) continue;
       const data = event.data;
       if (!data || typeof data.name !== 'string') continue;
+      // RP-295 (RP-290 review follow-up, item C.3) — a `spawn-error` record
+      // never overwrites a PRIOR record for the same name: `spawn-error` is
+      // filtered out below regardless (a command that never started is not
+      // a test failure), so letting it become "latest" for a name that had
+      // already failed would lose that failure's own identity with nothing
+      // more informative to replace it. Only another `fail` or a `pass`
+      // record may replace an existing entry — a `spawn-error` is recorded
+      // only when it is the FIRST thing seen for that name.
+      if (data.outcome === 'spawn-error' && latestByName.has(data.name)) continue;
       latestByName.set(data.name, data);
     }
     return Array.from(latestByName.values()).filter((data) => data.outcome === 'fail');

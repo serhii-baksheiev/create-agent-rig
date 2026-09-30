@@ -2381,6 +2381,332 @@ describe('continuation.mjs CLI — the failed-check line built from a check-run.
     expect(result.code, result.out).toBe(0);
     expect(result.stdout).not.toContain('failed-check:');
   });
+
+  // RP-295 (RP-290 review follow-up, item C.3) — `readFailedChecks` keeps
+  // only the LATEST `check-result` record per check NAME
+  // (`latestByName.set(data.name, data)`), then filters to `outcome ===
+  // 'fail'`. A `spawn-error` record for a name that previously FAILED
+  // becomes the "latest" and is then filtered OUT entirely (spawn-error is
+  // never a failure line) — so the earlier failure's own identity is lost
+  // with NO replacement, not superseded by anything more informative. The
+  // chosen rule this test pins (KISS: "keep the most informative" over
+  // "show both"): a `spawn-error` record never overwrites a prior `fail` (or
+  // `pass`) record for the same name — only another `fail` or a `pass` may
+  // replace it.
+  it('a later spawn-error for a check name does not hide an earlier fail for the same name — the failing identity must not be lost', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-check-'));
+    await recordCheckResult(runDir, {
+      name: 'unit',
+      outcome: 'fail',
+      exitCode: 1,
+      failedTests: ['test/a.test.ts > s > one'],
+      tail: 'boom',
+      now: '2026-01-01T00:00:01.000Z',
+    });
+    const { recordEvent } = (await load('run-journal.mjs')) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+    };
+    await recordEvent({
+      runDir,
+      kind: 'check-result',
+      data: {
+        schema: 1,
+        name: 'unit',
+        command: 'pnpm test:unit',
+        outcome: 'spawn-error',
+        exitCode: 127,
+        signal: null,
+        timedOut: false,
+        failedTests: [],
+        log: 'checks/unit-2.log',
+      },
+      now: '2026-01-01T00:00:02.000Z',
+    });
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(
+      result.stdout,
+      'the earlier fail identity was lost behind a later spawn-error for the same check name',
+    ).toContain('failed-check: unit exit 1; tests: test/a.test.ts > s > one');
+  });
+
+  // RP-295 (RP-290 review follow-up, item C.1) — `failed-check:` lines are
+  // appended LAST (`renderFailedCheckLines`, at the end of `composeNote`'s
+  // fixed `lines` array), so they are the FIRST thing `capNote` cuts once
+  // the whole note exceeds `NOTE_CAP` (2000 characters) — `capNote` just
+  // slices from the front, keeping whatever came first regardless of value.
+  // `diagnosis`/`remaining` are each capped at only 500 characters on their
+  // own, yet reliably fill most of that budget with low-value free text
+  // while the higher-value failed-check identity — the whole reason this
+  // line exists — gets truncated out from under it.
+  it('keeps a failed-check line intact, ahead of the whole-note cap, even when diagnosis/remaining filler alone nearly fills the note', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const fillerId = (n: number): string =>
+      `test/cap/case-${n}.test.ts > suite > ${'z'.repeat(280)}`;
+    const lastId = `test/cap/case-last.test.ts > suite > ${'z'.repeat(240)} END-MARKER`;
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'd'.repeat(3000),
+      remaining: 'r'.repeat(3000),
+      failedChecks: [
+        { name: 'unit', exitCode: 1, failedTests: [fillerId(1), fillerId(2), lastId] },
+      ],
+    });
+    expect(note.length).toBeLessThanOrEqual(2000);
+    expect(
+      note,
+      "the failed-check line's own tail (the most specific failing-test identity) was cut by the whole-note cap, while low-value diagnosis/remaining filler text survived intact",
+    ).toContain('END-MARKER');
+  });
+
+  // RP-295 (RP-290 review follow-up, item C.2) — `composeFailedCheckLine`
+  // only ever reads `check?.name`, `check?.exitCode` and `check?.failedTests`
+  // — never `signal`/`timedOut`, even though `check-run.mjs` records both.
+  // `composeTextField(null)` renders `exitCode: null` (check-run's own shape
+  // for a timed-out/signal-killed check, since `child.on('close', (code,
+  // sig) => ...)` reports `code: null` when the process was killed) as the
+  // bare word "unknown" — so a timed-out check's own failed-check line reads
+  // "exit unknown" with NOTHING telling a fresh reader it was a timeout at
+  // all, let alone which signal.
+  it('renders "timed out" in the failed-check line for a timed-out check, instead of a bare "exit unknown"', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        { name: 'unit', exitCode: null, signal: 'SIGKILL', timedOut: true, failedTests: [] },
+      ],
+    });
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `a timed-out check renders no timeout wording at all: ${line}`).toMatch(
+      /timed out/i,
+    );
+  });
+
+  it('renders "killed by SIGTERM" in the failed-check line for a signal-killed (non-timeout) check', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        { name: 'unit', exitCode: null, signal: 'SIGTERM', timedOut: false, failedTests: [] },
+      ],
+    });
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `a signal-killed check renders no signal wording at all: ${line}`).toMatch(
+      /killed by SIGTERM/i,
+    );
+  });
+
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — `SIGNAL_NAME_PATTERN`
+  // (`/^SIG[A-Z0-9]{1,12}$/`) is the allowlist `describeCheckOutcome` holds a
+  // `signal` value to before ever rendering "killed by <SIGNAL>" verbatim into
+  // the note. A `signal` value shaped like an injection attempt — an embedded
+  // newline carrying a forged-looking line, or a lowercase spelling — must
+  // fail that allowlist and fall back to the bare "exit <code>" rendering
+  // instead, exactly as `describeCheckOutcome`'s own comment already intends.
+  // This pins that fallback with an independent oracle (the note must
+  // literally not contain a forged/injected line), rather than trusting the
+  // same regex the production code itself uses.
+  it('never renders "killed by" with an injected value when signal carries an embedded newline', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        {
+          name: 'unit',
+          exitCode: 1,
+          signal: 'SIGTERM\nforged: line',
+          timedOut: false,
+          failedTests: [],
+        },
+      ],
+    });
+    expect(note, 'an injected "forged: line" survived into the note').not.toContain('forged: line');
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `an unvalidated signal value still rendered "killed by": ${line}`).not.toMatch(
+      /killed by/i,
+    );
+  });
+
+  it('never renders "killed by" for a lowercase signal spelling ("sigterm")', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      failedChecks: [
+        { name: 'unit', exitCode: 1, signal: 'sigterm', timedOut: false, failedTests: [] },
+      ],
+    });
+    const line = note.split('\n').find((l) => l.startsWith('failed-check: '));
+    expect(line, note).toBeDefined();
+    expect(line, `a lowercase signal spelling still rendered "killed by": ${line}`).not.toMatch(
+      /killed by/i,
+    );
+  });
+
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — `capNote`
+  // reserves room for the WHOLE `failedCheckText` ahead of `prefixText` (see
+  // its own comment), but places no floor under `prefixText`'s own budget: a
+  // `failedCheckText` large enough to consume nearly the whole `NOTE_CAP`
+  // leaves `budget` too small to keep even the note's own identifying header
+  // — the `rig-continuation v1` marker line, `ticket:`, and `stop:` — intact.
+  // A fresh reader who has only this note, and no other context, needs those
+  // three lines to even know what the note is about and why it stopped.
+  it('keeps the version marker, ticket and stop lines intact even when a ~1975-character failed-check block leaves almost no budget for the prefix', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // "failed-check: unit exit 1; tests: " is 34 characters; a 1941-character
+    // id brings the one failed-check line to 1975 characters.
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'd'.repeat(3000),
+      remaining: 'r'.repeat(3000),
+      failedChecks: [{ name: 'unit', exitCode: 1, failedTests: ['z'.repeat(1941)] }],
+    });
+    expect(note.length).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away by the whole-note cap').toContain(
+      'rig-continuation v1',
+    );
+    expect(note, 'the ticket line was cut away by the whole-note cap').toContain('ticket: RP-1');
+    expect(note, 'the stop line was cut away by the whole-note cap').toContain('stop: escalation');
+  });
+
+  it('keeps the version marker, ticket and stop lines intact with a ~1900-character failed-check block', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    // 34 + 1866 = 1900 characters for the one failed-check line.
+    const note = composeNote({
+      ticket: 'RP-1',
+      stop: 'escalation',
+      diagnosis: 'd'.repeat(3000),
+      remaining: 'r'.repeat(3000),
+      failedChecks: [{ name: 'unit', exitCode: 1, failedTests: ['z'.repeat(1866)] }],
+    });
+    expect(note.length).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away by the whole-note cap').toContain(
+      'rig-continuation v1',
+    );
+    expect(note, 'the ticket line was cut away by the whole-note cap').toContain('ticket: RP-1');
+    expect(note, 'the stop line was cut away by the whole-note cap').toContain('stop: escalation');
+  });
+
+  // RP-295 gate round 3 (controller, blocker B) — `capNote` treats
+  // `identityText` as a protected floor it never slices, "whatever remains"
+  // (its own comment) — but nothing caps `identityText` ITSELF against
+  // `NOTE_CAP` first. `composeTextField(ticket)` only cuts a RAW field to
+  // `RAW_FIELD_CAP` (2000 characters — the SAME number as `NOTE_CAP`, but a
+  // different budget: one bounds a single field, the other the WHOLE note),
+  // so a ticket anywhere near that width, plus the `rig-continuation
+  // v1`/`ticket: `/`stop: ` scaffolding built around it, already exceeds
+  // `NOTE_CAP` on its own — before `restText`/`failedCheckText` are even
+  // considered. `capNote` then returns `identityText` unmodified (plus
+  // whatever the already-negative remaining budget still lets through),
+  // producing a note LONGER than `NOTE_CAP`, in direct contradiction of this
+  // function's own contract ("The result is always `<= NOTE_CAP`"). Each
+  // ticket below matches continuation.mjs's own CLI shape, `TICKET_SHAPE`
+  // (`/^[A-Z][A-Z0-9_]+-\d+$/`): one letter, a middle run of digits, a dash,
+  // then a trailing digit.
+  it('keeps the whole note within NOTE_CAP (2000) for a ~1993-character ticket — under RAW_FIELD_CAP, so composeTextField does not even truncate it', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const ticket = `A${'0'.repeat(1990)}-1`;
+    expect(ticket.length).toBe(1993);
+    const note = composeNote({ ticket, stop: 'escalation' });
+    expect(
+      note.length,
+      `a 1993-character ticket alone produced a ${note.length}-character note`,
+    ).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away').toContain('rig-continuation v1');
+  });
+
+  it('keeps the whole note within NOTE_CAP (2000) for a ~2503-character ticket — over RAW_FIELD_CAP, so the ticket field itself is truncated first', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const ticket = `A${'0'.repeat(2500)}-1`;
+    expect(ticket.length).toBe(2503);
+    const note = composeNote({ ticket, stop: 'escalation' });
+    expect(
+      note.length,
+      `a 2503-character ticket alone produced a ${note.length}-character note`,
+    ).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away').toContain('rig-continuation v1');
+  });
+
+  it('keeps the whole note within NOTE_CAP (2000) for a ~5003-character ticket — far past RAW_FIELD_CAP', async () => {
+    const { composeNote } = (await load('continuation.mjs')) as {
+      composeNote: (input: Record<string, unknown>) => string;
+    };
+    const ticket = `A${'0'.repeat(5000)}-1`;
+    expect(ticket.length).toBe(5003);
+    const note = composeNote({ ticket, stop: 'escalation' });
+    expect(
+      note.length,
+      `a 5003-character ticket alone produced a ${note.length}-character note`,
+    ).toBeLessThanOrEqual(2000);
+    expect(note, 'the version marker line was cut away').toContain('rig-continuation v1');
+  });
+
+  // RP-295 — "no test runs real check-run output through continuation end to
+  // end". Every test above seeds the journal directly with `run-journal.mjs`'s
+  // `recordEvent`, independent of `check-run.mjs` itself; this is the one
+  // small e2e-style test that chains the REAL scripts together: a fake,
+  // vitest-shaped failing command run through the real check-run.mjs, then
+  // the real continuation.mjs CLI reading the SAME run directory.
+  it('a real check-run.mjs failure flows into a continuation note carrying its failed-check identity (end to end)', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-e2e-run-'));
+    const fakeTestPath = path.join(repoDir, 'fake-vitest.mjs');
+    await writeFile(
+      fakeTestPath,
+      "process.stdout.write(' FAIL  test/e2e/example.test.ts > suite > does the thing\\n');\n" +
+        'process.exit(1);\n',
+    );
+
+    const checkRunResult = await run(
+      process.execPath,
+      [scriptPath('check-run.mjs'), '--name', 'unit', '--', process.execPath, fakeTestPath],
+      repoDir,
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(checkRunResult.code, checkRunResult.out).not.toBe(0);
+
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'escalation'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).toContain(
+      'failed-check: unit exit 1; tests: test/e2e/example.test.ts > suite > does the thing',
+    );
+  });
 });
 
 // --- wired into the workflow layer -----------------------------------------
@@ -2402,6 +2728,66 @@ describe('continuation.mjs is wired into the workflow layer', () => {
         `loop/SKILL.md does not mention the stop kind "${kind}" near continuation.mjs`,
       ).toMatch(new RegExp(`\\b${kind}\\b`, 'i'));
     }
+  });
+
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — §6a documents
+  // the `failed-check:` line as always `failed-check: <name> exit <code>;
+  // tests: <id1>, <id2>…`, but `describeCheckOutcome` (continuation.mjs) also
+  // renders "timed out" and "killed by <SIGNAL>" in that same position for a
+  // timed-out or signal-killed check — neither form is documented, so a
+  // reader relying on §6a alone would not recognise either shape when it
+  // appears.
+  it('§6a documents both the "timed out" and "killed by <SIGNAL>" forms of the failed-check line, not only "exit <code>"', async () => {
+    const content = await readFile(skillPath('loop'), 'utf8');
+    const markerIndex = content.indexOf('failed-check: <name> exit <code>');
+    expect(markerIndex, '§6a no longer documents the failed-check line at all').toBeGreaterThan(-1);
+    const window = content.slice(Math.max(0, markerIndex - 200), markerIndex + 500);
+    expect(window, '§6a never mentions the "timed out" form of the failed-check line').toMatch(
+      /timed out/i,
+    );
+    expect(
+      window,
+      '§6a never mentions the "killed by <SIGNAL>" form of the failed-check line',
+    ).toMatch(/killed by/i);
+  });
+
+  // RP-295 gate round 2 (reviewer, reproduced on head a861085) — the
+  // no-overwrite rule ("a `spawn-error` record never overwrites a PRIOR
+  // record for the same name") lives only in an inline comment beside
+  // `readFailedChecks`'s own implementation, not in the module HEADER where
+  // every other stated limit of this module is documented (see the header's
+  // own citations of `continuation.test.ts` throughout). Per
+  // `.claude/rules/invariants.md`'s "state the limits, and test them", a rule
+  // this specific belongs where a fresh reader who has only skimmed the top
+  // of the file would find it.
+  // RP-295 gate round 3 (controller, advisory) — the old version of this test
+  // asserted only `/overwrit/i` anywhere in the header, which a header could
+  // satisfy with ANY sentence containing that fragment — including one that
+  // states the opposite rule, or one about an unrelated overwrite entirely.
+  // Pinned as the actual, current sentence instead (whitespace-normalised,
+  // `//` comment markers stripped, same shape as the loop-skill "exact
+  // sentence" test elsewhere in this file): a real oracle that goes red the
+  // moment this specific claim is reworded or removed, not merely whenever
+  // the word disappears.
+  it('the module header states, in this exact sentence, that a later spawn-error record never overwrites a prior fail or pass record for the same check name', async () => {
+    const source = await readFile(scriptPath('continuation.mjs'), 'utf8');
+    const headerEnd = source.indexOf('\nimport ');
+    expect(headerEnd, 'could not find the end of the module header (first import)').toBeGreaterThan(
+      -1,
+    );
+    const header = source.slice(0, headerEnd);
+    const normalized = header
+      .split('\n')
+      .map((line) => line.replace(/^\s*\/\/\s?/, ''))
+      .join(' ')
+      .replace(/\s+/g, ' ');
+    expect(
+      normalized,
+      'the module header no longer states, in this sentence, that a later spawn-error record ' +
+        'never overwrites a prior fail/pass record for the same check name',
+    ).toContain(
+      'a later `spawn-error` record for a check name never overwrites a PRIOR `fail` (or `pass`) record for the same name',
+    );
   });
 
   // RP-224 round 2 — code-reviewer r1 advisory: "loose regex in the skill
