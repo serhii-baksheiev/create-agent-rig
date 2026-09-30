@@ -1180,6 +1180,101 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     expect(limitsSection, 'the header limits section should name `popd`').toMatch(/popd/i);
   });
 
+  // RP-309 post-cap (controller design decision, differential): every gate
+  // round so far found a NEW command the `{ anchor, parts }` tracker mistracks
+  // while base (58f9635) — a single `catastrophicCwdTarget` string, updated
+  // only by `cd`, never by `pushd` — still caught it. Rather than chase each
+  // shape one at a time, the fix makes "head never allows what base blocked"
+  // true BY CONSTRUCTION: base's own `cd`-only tracking runs alongside the
+  // newer tracker as a second, independent opinion, and `checkRm` blocks when
+  // EITHER says the cwd is catastrophic. This is that floor, exercised
+  // directly against base's own reasoning:
+  //   - `cd - /`/`cd -C x /`: base's crude `operandsOf` either drops the `-`
+  //     as a bare flag or eats `x` as `-C`'s value, so base's own reading
+  //     still lands on the `/` that follows — the newer tracker's own `cd`
+  //     grammar reads a different (or no) operand instead;
+  //   - `pushd nonexistent_rp309`/`pushd -`/`pushd ../nonexistent`/
+  //     `pushd ../proj`: base never even looks at `pushd` — it is not `cd`,
+  //     so base's tracking is simply UNCHANGED by it, which means a `cd`'s
+  //     catastrophic tracking survives every one of these untouched;
+  //   - `cd ~ && pushd project`: the newer tracker's own bug — a relative
+  //     `pushd` folds through `computeCdTarget`, which shared `cwd.parts` by
+  //     reference rather than copying it, so the "never downgrade" check
+  //     read the ALREADY-mutated position and could never fire.
+  // Two round-3 pushd regressions are re-run here too, as a belt-and-suspenders
+  // check that the fix does not regress them.
+  it('never allows a command the base guard blocked (RP-309 post-cap, differential)', async () => {
+    for (const command of [
+      'cd / ; cd - / ; rm -rf *',
+      'cd / ; cd -C x / ; rm -rf *',
+      'cd / ; pushd nonexistent_rp309 ; rm -rf *',
+      'cd / && pushd - && rm -rf *',
+      'cd /usr ; pushd ../nonexistent ; rm -rf *',
+      'cd ~/.ssh ; pushd ../proj ; rm -rf *',
+      'cd ~ && pushd project && rm -rf *',
+      // round-3 pushd regressions, re-checked as a floor rather than assumed:
+      'cd ~/.ssh ; pushd -P /tmp ; rm -rf *',
+      'cd / ; pushd /tmp /var ; rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — base (58f9635) blocks this; head must too, exits ${result.code}`,
+      ).toBe(2);
+    }
+
+    // Ordinary work must stay allowed: the floor adds a second reason to
+    // BLOCK, never a new reason to allow less.
+    for (const command of [
+      'cd ~/project && rm -rf *',
+      'cd src && cd .. && rm -rf dist/*',
+      'pushd /tmp/build && rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(result.code, `${command} — must stay allowed, exits ${result.code}`).toBe(0);
+    }
+  });
+
+  // RP-309 post-cap, round 2 (code-reviewer/prose-reviewer at 95ac06c): a
+  // `popd` between a catastrophic `cd`/`pushd` and the wildcard `rm` is
+  // ordinary noise for BOTH trackers — base never tracked `pushd`/`popd` at
+  // all, and the legacy tracker restored above copies that exactly, so it
+  // stays untouched by either the earlier `pushd` or the `popd`. The
+  // shared-array bug this same round's fix already closes is what let the
+  // NEWER tracker's own relative `pushd` (`tmp`, `project`, `lib`, `ssh`,
+  // `../project`) silently downgrade a catastrophic position before the
+  // "never downgrade" check ever read it — `popd` here changes nothing new,
+  // it only proves the fix holds with an extra, unrelated segment in between.
+  it('never allows a command the base guard blocked, with an intervening popd or rotation (RP-309 post-cap, round 2)', async () => {
+    for (const command of [
+      'cd / && pushd tmp && popd && rm -rf *',
+      'cd ~ && pushd project && popd && rm -rf *',
+      'cd /usr && pushd lib && popd && rm -rf *',
+      'cd /etc && pushd ssh && popd && rm -rf *',
+      'cd ~/.ssh && pushd ../project && popd && rm -rf *',
+      'cd / && pushd tmp && pushd +1 && rm -rf *',
+      'cd / && pushd tmp && rm -rf *',
+    ]) {
+      const result = await run(command);
+      expect(
+        result.code,
+        `${command} — base (58f9635) blocks this; head must too, exits ${result.code}`,
+      ).toBe(2);
+    }
+  });
+
+  // RP-309 post-cap, round 2: `MAX_CATASTROPHIC_PART_LENGTH` is DERIVED from
+  // the longest single segment among the literal `CATASTROPHIC` members —
+  // `Applications` (12 characters) is that longest segment today, so it sits
+  // EXACTLY on the boundary `classifyPosition` uses to answer "not
+  // catastrophic" without ever joining `parts`. A segment AT the boundary
+  // (not merely under it) must still be classified for real, not waved
+  // through by the length shortcut.
+  it('blocks a wildcard rm after cd into /Applications — the exact MAX_CATASTROPHIC_PART_LENGTH boundary (RP-309 post-cap, round 2)', async () => {
+    const result = await run('cd /Applications && rm -rf *');
+    expect(result.code, `should BLOCK: /Applications is catastrophic (got ${result.code})`).toBe(2);
+  });
+
   it('a malformed payload or a non-Bash tool is none of its business', async () => {
     expect((await runHookFull('guard-bash.mjs', { tool_name: 'Write' }, noKillSwitch)).code).toBe(
       0,
