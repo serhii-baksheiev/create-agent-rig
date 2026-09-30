@@ -967,7 +967,13 @@ const gitCheckoutRootOrNull = (startDir) => {
  * its checkout root to the child's own HOME". */
 const isHomeDirectory = (checkoutRoot) => {
   try {
-    return realpathSync(checkoutRoot) === realpathSync(homedir());
+    // `.native`: on Windows the JS realpath keeps an 8.3 short name
+    // (`RUNNER~1`) while git reports the long one, so the two spellings of
+    // the same home would never compare equal. Windows paths also compare
+    // case-insensitively.
+    const a = realpathSync.native(checkoutRoot);
+    const b = realpathSync.native(homedir());
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
   } catch {
     return true;
   }
