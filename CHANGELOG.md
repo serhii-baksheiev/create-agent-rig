@@ -24,7 +24,8 @@ corners of the workflow layer's own scripts (`continuation.mjs`,
 `pr-ship` skills, `implementation-agent`), and tightens two CLI/hook edges — `init`'s
 AGENTS.md write, and a hook's git-lookup timeout — found while running the
 1.1.0 release loop itself. **The 1.1 contract is unchanged:** no new CLI flag,
-command, `doctor` check id, manifest key, or JSON key. `token-report.mjs`
+command, `doctor` check id, manifest key, or JSON key the command contract
+covers. `token-report.mjs`
 gains two additive report fields, `usageEvidence` and `orphanEnds` — these are
 workflow-layer script output, not part of the CLI contract.
 
@@ -36,8 +37,8 @@ workflow-layer script output, not part of the CLI contract.
   event — never from wiring alone, and never from an orphan end (see
   RP-294 below) — otherwise the state is `configured-no-witness`,
   `not-configured`, or `unknown`, each with a reason and a bounded tally of
-  the `usageUnavailable` codes seen. A fixed `controller` line states that
-  parent-session usage is never journalled, only subagent dispatches. This is
+  the `usageUnavailable` codes seen. A fixed `controller` entry in
+  `usageEvidence` states that parent-session usage is never journalled, only subagent dispatches. This is
   an additive report field, not a CLI contract change (RP-292).
 
 ### Fixed
@@ -47,9 +48,7 @@ workflow-layer script output, not part of the CLI contract.
   past the catastrophic-path check because the raw, unfolded target was
   compared instead of where it actually resolves; the fold is a single
   bounded pass with no recursion and no unbounded array growth, and a plain
-  relative `..` in an ordinary project command is unaffected. The fallback
-  reason wording for `/usr`, `/etc` and `/System` noted in the same ticket
-  stays a separate, open gap (RP-262).
+  relative `..` in an ordinary project command is unaffected (RP-262).
 
 - **`guard-bash` now also tracks a bare `cd`, a relative `cd` after an
   anchored one, the `./`/`..`/`../*` operands, and `pushd`, so a home wipe
@@ -70,22 +69,20 @@ workflow-layer script output, not part of the CLI contract.
   location and every literal spelling it was given — and refuses if any one
   of them names a non-allowed rulebook path; a resolved, allow-listed path no
   longer authorizes a literal spelling that actually names something else.**
-  This closes both gaps recorded as open at 1.0.1: a symlink or junction
-  under an allowed prefix that resolves into `.claude/hooks`, and — the case
-  1.0.1's own entry named as not caught — a Windows admin-share UNC
-  repository root (`\\host\C$\...`), where a write spelled through the
-  local-drive form of the same file (`C:\...`) is now recognised as the
-  rulebook too, via a new pure `adminShareDriveSpelling` helper (RP-246).
+  This closes the case 1.0.1's own entry named as not caught: a Windows
+  admin-share UNC repository root (`\\host\C$\...`), where a write spelled
+  through the local-drive form of the same file (`C:\...`) is now recognised
+  as the rulebook too, via a new pure `adminShareDriveSpelling` helper. The
+  same every-spelling rule also covers a symlink or junction under an allowed
+  prefix that resolves into `.claude/hooks` (RP-246).
 
 - **Two fail-open guards now refuse instead of doing unbounded work on a
   pathological path, rather than risking the hook timeout that resolves to
   allow.** A relative path past 512 components is refused — naming the limit
   and a split-and-retry remedy — before it is filesystem-normalized, and
   `guard-rulebook`'s realpath walk checks the component count first and no
-  longer builds its result with an input-sized array spread. Measured before
-  the fix: roughly 200 KB of relative `../` took 4-10 s, and a
-  64,000-component path took roughly 5 s; both now refuse immediately
-  (RP-247).
+  longer builds its result with an input-sized array spread. A generated rig
+  now also installs `.claude/hooks/lib/canonical-path.mjs` (RP-247).
 
 - **The generated Windows Codex guard wrapper no longer has an unbounded
   wait, and its four guard hooks declare a Codex-side timeout.** The git
@@ -137,10 +134,10 @@ workflow-layer script output, not part of the CLI contract.
   (RP-291).
 
 - **`check-run` and `continuation` close review-flagged gaps in redaction and
-  failure reporting.** A PEM block's arm/disarm state now comes from one
-  whole-line scan (or, on an over-limit line, an incremental last-marker
-  state), so a header split across the read boundary or carrying colour codes
-  still gets redacted; interrupt handlers stay installed through capture
+  failure reporting.** A PEM block's arm/disarm state now follows the
+  END and BEGIN markers in their order on a line, and is tracked across an
+  over-limit line by an incremental last-marker state, so a header split
+  across the read boundary or carrying colour codes still gets redacted; interrupt handlers stay installed through capture
   read-back so a signal can't leak a temp file; and a failing-test identity is
   cut cleanly at an embedded carriage return. A continuation note now reports
   a failed check as `timed out` or `killed by <SIGNAL>` instead of an
