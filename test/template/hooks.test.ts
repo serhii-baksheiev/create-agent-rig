@@ -1378,16 +1378,30 @@ describe('guard-bash hook (the Never tier, made mechanical)', () => {
     ).toBe(2);
   });
 
-  // RP-309 post-cap 3 (code-reviewer's own repro): a CATASTROPHIC tracked
-  // position followed by many relative pushds that never themselves become
-  // catastrophic — the never-downgrade branch of the fix, exercised at scale.
-  // `60,000` relative `pushd x`s off `~/aaa...` (not catastrophic — too deep
-  // to match `CATASTROPHIC`) must each decide "stays not-catastrophic,
-  // downgrade forgiven" in bounded time, never by copying the tracked stack.
-  // Reported directly against the pre-fix copy: killed at this probe's own
-  // 60s ceiling, nowhere near returning — this test's own 5s bound is what it
-  // must clear instead.
-  it('resolves a long chain of catastrophic-then-relative pushds in bounded time, not quadratically (RP-309 post-cap 3)', async () => {
+  // RP-309 post-cap 3 (code-reviewer's own repro): `60,000` relative
+  // `pushd x`s off a 60,000-segment `~/a/...` cwd. That cwd is NOT
+  // catastrophic (deeper than MAX_CATASTROPHIC_DEPTH), so this exercises the
+  // ordinary fold-in-place branch at scale, which the removed per-pushd copy
+  // made quadratic. The catastrophic-then-relative branch at scale is the
+  // `~/.ssh` test above. Reported against the pre-fix copy: killed at the
+  // probe's own 60s ceiling; this test's own bound is 5s.
+  // RP-309 post-cap 4 (code-reviewer and security-scanner, 5bbf147): a
+  // `pushd ~user` step cannot be resolved, and a failed one leaves bash where
+  // it was, so it must never clear a catastrophic position that pushd alone
+  // reached (the base cd-only floor cannot rescue these).
+  it('keeps a pushd-reached catastrophic tracking across a pushd to another account home (RP-309 post-cap 4)', async () => {
+    for (const command of [
+      'pushd / ; pushd ~nobody_rp309 ; rm -rf *',
+      'pushd / && pushd ~bob && rm -rf *',
+      'pushd ~/.ssh ; pushd ~nosuchuser ; rm -rf *',
+    ]) {
+      expect((await run(command)).code, command).toBe(2);
+    }
+    // nothing tracked before it: unresolvable, allowed as before (a stated limit)
+    expect((await run('pushd ~bob && rm -rf *')).code).toBe(0);
+  });
+
+  it('resolves a long chain of relative pushds off a very deep cwd in bounded time, not quadratically (RP-309 post-cap 3)', async () => {
     const chain =
       'cd ~/' + 'a/'.repeat(60_000) + ' && ' + 'pushd x;'.repeat(60_000) + ' cd / ; rm -rf *';
     const result = await runNodeTimed(path.join(hooksDir, 'guard-bash.mjs'), {

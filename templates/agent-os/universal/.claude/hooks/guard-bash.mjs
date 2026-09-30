@@ -1119,16 +1119,17 @@ function classifyPosition(anchor, parts) {
  * below, decided IN HERE rather than by `advanceCwd` after the fact, RP-309
  * post-cap 3).
  * `null` means "cannot be resolved" (a `~user` operand, or a relative operand
- * with no tracked anchor to fold against), exactly as before.
+ * with no tracked anchor to fold against). One exception: a `pushd ~user`
+ * from a catastrophic tracked position keeps that position instead, since a
+ * failed pushd leaves the shell where it was (RP-309 post-cap 4).
  *
  * Never copies the tracked stack (RP-309 post-cap 3). The previous version
  * copied `cwd.parts` (`[...cwd.parts]`) before folding a relative `pushd`, to
  * keep the pre-fold value available for a never-downgrade comparison
- * `advanceCwd` used to make afterward — and that copy made a long,
- * catastrophic-then-relative-`pushd` chain quadratic: pinned in the
- * generator's
+ * `advanceCwd` used to make afterward — and that copy made a long
+ * relative-`pushd` chain quadratic: pinned in the generator's
  * test/template/hooks.test.ts (absent in a generated rig) ›
- * "resolves a long chain of catastrophic-then-relative pushds in bounded
+ * "resolves a long chain of relative pushds off a very deep cwd in bounded
  * time, not quadratically (RP-309 post-cap 3)". The fix never builds that
  * copy at all — it decides `wasCatastrophic` from the TRACKED position up
  * front (one `classifyPosition` call, already O(1) per call — see its own
@@ -1170,10 +1171,12 @@ function classifyPosition(anchor, parts) {
  * rescue a regression here.
  */
 function computeCdTarget(cwd, raw, name) {
-  if (/^~[^/]/.test(raw)) return null; // `~user`: another account's home
   const isPushd = name === 'pushd';
   const wasCatastrophic =
     isPushd && cwd ? classifyPosition(cwd.anchor, cwd.parts).catastrophic : false;
+  // `~user`: another account's home, never resolved; a pushd never lowers a
+  // catastrophic tracking through it (never downgrade).
+  if (/^~[^/]/.test(raw)) return wasCatastrophic ? cwd : null;
 
   if (/^(\/|~|\$HOME)/.test(raw)) {
     const resolved = resolveTarget(raw);
