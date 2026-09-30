@@ -178,6 +178,90 @@
  * (absent in a generated rig) › "refuses --pricing as an unrecognised
  * argument — the optional estimate is deferred, not in this PR".
  *
+ * USAGE EVIDENCE (RP-292) — a dispatch group's own `usage.claude`/`usage.codex`
+ * answers "was usage measured", never "was the dispatch/hook path even
+ * available to measure it" — left implicit, a reader has to infer hook
+ * wiring and dispatch-witness availability from the ABSENCE of a usage
+ * object, which conflates "the hook never ran" with "the hook ran but the
+ * harness did not report usage". `report.usageEvidence = { claude, codex,
+ * controller }` makes that explicit instead — test/template/token-report.test.ts
+ * (absent in a generated rig) › "reports configured-no-witness, with a
+ * reason that configuration is not execution, when the hook is wired but no
+ * dispatch was ever observed", › "reports not-configured — a different
+ * state and reason than configured-no-witness — when the hook is not wired
+ * and no dispatch was observed", › "reports witnessed from a dispatch-start
+ * alone, even when the hook is not wired in configuration — witness comes
+ * only from events", and › "never reports witnessed from configuration
+ * alone, for either harness, when the run journals no dispatch event at
+ * all".
+ *
+ * Per harness (`claude`/`codex`), `usageEvidence.<harness>` is `{ wiring,
+ * state, reason, unavailableReasons }`. `state` is derived from JOURNALLED
+ * EVENTS ONLY: `'witnessed'` iff at least one `dispatch-start`/`dispatch-end`
+ * for that harness exists anywhere in the filtered set read, independent of
+ * `wiring` — configuration can never by itself produce `'witnessed'`.
+ * Otherwise `state` follows the caller-supplied `wiring` — `tokenReportOf`'s
+ * new optional input `wiring: { claude, codex }`, each
+ * `'configured'`/`'not-configured'`/`'unknown'`, defaulting to `'unknown'`
+ * for both when omitted: `'configured'` becomes `'configured-no-witness'`,
+ * and `'not-configured'`/`'unknown'` pass through unchanged. `'trusted'` is
+ * never a reported state — Codex does not run project-level hooks for an
+ * untrusted project, so an absence of Codex dispatch evidence is explained
+ * in `reason`, never claimed as a trust verdict this script cannot observe
+ * — test/template/token-report.test.ts (absent in a generated rig) › "reports
+ * configured-no-witness with a reason naming that project-hook trust is not
+ * observed and untrusted hooks are skipped silently, and never reports the
+ * state "trusted"".
+ *
+ * `unavailableReasons` tallies, per harness, the same `usageUnavailable`
+ * status code `record-dispatch.mjs` itself journals on a `dispatch-end`, of
+ * every `dispatch-end` that harness journalled with one — restricted to a
+ * safe identifier set (`recordUnavailableReason` below) rather than merely
+ * the C0/DEL/C1 control range the text render strips elsewhere, and bounded:
+ * at most `UNAVAILABLE_REASON_DISTINCT_CODES_MAX` (20) distinct codes per
+ * harness per report, each truncated to `UNAVAILABLE_REASON_CODE_MAX_LENGTH`
+ * (200) characters — never grown without bound — test/template/token-report.test.ts
+ * (absent in a generated rig) › "tallies usageUnavailable reason codes per
+ * harness in usageEvidence and in the rendered evidence line, while the
+ * money line keeps its exact existing sentence", › "a dispatch-end carrying
+ * usageUnavailable rollout-identity-mismatch tallies the same way a Claude
+ * code does", › "a hostile usageUnavailable code carrying a control
+ * character reaches neither the text nor the --json output raw", › "a code
+ * carrying a literal newline plus a forged "usage evidence:" line does not
+ * produce a second such line in the text render", and › "a code carrying a
+ * bidi override control (U+202E) reaches neither the text nor the --json
+ * output raw".
+ *
+ * `controller` is a FIXED statement, never a computation:
+ * `record-dispatch.mjs` only journals `SubagentStart`/`SubagentStop`, never
+ * the controller's (parent session's) own turn, so there is no journalled
+ * evidence for it to report — test/template/token-report.test.ts (absent in
+ * a generated rig) › "states that controller (parent session) usage is
+ * unavailable, and why — only subagent dispatches are journalled".
+ *
+ * WIRING — the CLI's own `wiring` input to `tokenReportOf` (pure itself, and
+ * tested directly above) is computed only by the CLI, from the `--runs`
+ * directory's OWN git checkout — never the CLI's `cwd` — reading only that
+ * checkout's `.claude/settings.json` and `.codex/hooks.json` for a
+ * `record-dispatch.mjs` command declared under
+ * `SubagentStart`/`SubagentStop`; this script never reads a personal/global
+ * config (`~/.codex`, `~/.claude`). A `--runs` directory that is not itself
+ * inside a git checkout reads as `'unknown'` for both harnesses — there is
+ * nothing to read, not "read and found absent" — test/template/token-report.test.ts
+ * (absent in a generated rig) › "the CLI reports wiring as unknown, never
+ * not-configured, for a --runs directory that is not itself part of a git
+ * checkout". Each config file read is bounded to `WIRING_FILE_MAX_BYTES`
+ * (256 KiB — both files are a few KB to tens of KB in this repo today); a
+ * file over that cap, unparseable, or unreadable for any reason other than
+ * "does not exist" reads as `'unknown'` rather than guessed at; a config
+ * file that genuinely does not exist reads as `'not-configured'` — a
+ * successful read finding nothing declared, not a failure. render()'s text
+ * output carries one `usage evidence: ...` line, immediately before the
+ * money line, which stays exactly `{ line, estimate }` and last —
+ * test/template/token-report.test.ts (absent in a generated rig) › "renders
+ * the usage evidence line before the money line, which stays last, and
+ * leaves money as exactly {line, estimate}".
+ *
  * SAFETY — `reviewerOutcomes` and its per-gate `outcome` are keyed by a
  * journal-supplied `gate` name, so both are built on `Object.create(null)`
  * rather than an object literal: a gate literally named `__proto__` or
@@ -188,7 +272,9 @@
  * fan-out, does not pollute Object.prototype for a later run in the same
  * report", and test/template/token-report.test.ts (absent in a generated
  * rig) › "a decision whose gate is literally 'constructor' is tallied under
- * its own key, not routed to the Function constructor".
+ * its own key, not routed to the Function constructor". `unavailableReasons`
+ * is built the same way, for the same reason: its keys are a
+ * journal-supplied `usageUnavailable` string.
  *
  * LIMITS:
  *   - Grouping and attribution are exact-match only — no fuzzy ticket-id or
@@ -235,11 +321,46 @@
  *     in a generated rig) › "--json output contains no raw DEL/C1 byte either
  *     — JSON.stringify does not escape \u007f-\u009f on its own — and still
  *     parses as JSON".
+ *   - `usageEvidence.<harness>.unavailableReasons` caps at
+ *     `UNAVAILABLE_REASON_DISTINCT_CODES_MAX` (20) distinct codes per harness
+ *     per report, each truncated to `UNAVAILABLE_REASON_CODE_MAX_LENGTH`
+ *     (200) characters — a dispatch-end journalling many, or one arbitrarily
+ *     long, `usageUnavailable` code cannot grow the report without bound —
+ *     test/template/token-report.test.ts (absent in a generated rig) › "keeps
+ *     exactly %s distinct codes when more than that many are journalled" and
+ *     › "truncates a usageUnavailable code longer than %s characters to
+ *     exactly that length".
+ *   - The CLI's wiring resolution reads at most `WIRING_FILE_MAX_BYTES` (256
+ *     KiB) from each of `.claude/settings.json`/`.codex/hooks.json`, bounded
+ *     on bytes actually READ rather than on `stat().size` (which a virtual
+ *     file can misreport) — test/template/token-report.test.ts (absent in a
+ *     generated rig) › "finishes within a bound and reports claude wiring as
+ *     unknown when .claude/settings.json is a symlink to /proc/self/pagemap,
+ *     instead of reading it without bound" (codex: › "… .codex/hooks.json is
+ *     a symlink to /proc/self/pagemap …").
+ *   - It runs one bounded (5s timeout) `git rev-parse --show-toplevel` per
+ *     invocation to find the `--runs` directory's own checkout root, correct
+ *     for a linked worktree and a `--separate-git-dir` checkout alike (never
+ *     the main checkout, and never wherever a detached git directory
+ *     happens to live) — test/template/token-report.test.ts (absent in a
+ *     generated rig) › "reads the worktree's own .claude/settings.json, not
+ *     the main checkout's, when --runs lives inside a linked worktree" and ›
+ *     "reads the checkout's own .claude/settings.json when the git directory
+ *     lives outside the working tree (git init --separate-git-dir)".
+ *   - It reads no other file, and never a personal/global config: a resolved
+ *     checkout root that IS the caller's own home directory reads as
+ *     `'unknown'` for both harnesses rather than being read —
+ *     test/template/token-report.test.ts (absent in a generated rig) ›
+ *     "reports wiring as unknown, never configured, when --runs resolves its
+ *     checkout root to the child's own HOME".
  */
 
-import { realpathSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { closeSync, constants, fstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withoutGitLocation } from './git-env.mjs';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRuns } from './revalidation-report.mjs';
 
@@ -306,14 +427,124 @@ const codexUsageOf = (rawList) => {
   };
 };
 
+// --- usageEvidence (RP-292) — see the header's USAGE EVIDENCE section. ---
+
+/** Bounds on `usageEvidence.<harness>.unavailableReasons` — an adversarial
+ * run could otherwise journal unboundedly many distinct `usageUnavailable`
+ * codes, or one arbitrarily long one; both are capped rather than grown
+ * without bound, the same posture the rest of this script already takes
+ * toward untrusted journal content. */
+const UNAVAILABLE_REASON_DISTINCT_CODES_MAX = 20;
+const UNAVAILABLE_REASON_CODE_MAX_LENGTH = 200;
+
+/** `usageUnavailable` is a machine-written status code, never prose, so it is
+ * restricted to a safe identifier set rather than merely stripped of the C0/
+ * DEL/C1 control range `stripControlChars` targets — that range does not
+ * cover the wider Unicode bidi-control block (e.g. U+202E RIGHT-TO-LEFT
+ * OVERRIDE), and a literal newline in an otherwise-clean code could forge a
+ * second `usage evidence: ...` line in the text render. Every character
+ * outside `[A-Za-z0-9._:-]` is replaced with `?` before truncation —
+ * test/template/token-report.test.ts (absent in a generated rig) › "a code
+ * carrying a literal newline plus a forged "usage evidence:" line does not
+ * produce a second such line in the text render" and › "a code carrying a
+ * bidi override control (U+202E) reaches neither the text nor the --json
+ * output raw". */
+const UNAVAILABLE_REASON_UNSAFE_CHAR_RE = /[^A-Za-z0-9._:-]/g;
+
+/** Tallies one `usageUnavailable` code into `bucket` (an `Object.create(null)`
+ * map — see SAFETY in the header: a code literally named `__proto__` or
+ * `constructor` is tallied under its own key, not routed to
+ * `Object.prototype`/`Object` itself). `rawCode` is restricted to the safe
+ * identifier set above, then truncated to `UNAVAILABLE_REASON_CODE_MAX_LENGTH`.
+ * Once `bucket` already holds `UNAVAILABLE_REASON_DISTINCT_CODES_MAX`
+ * distinct codes, a NEW code is dropped rather than added; a repeat of an
+ * already-known code still tallies. */
+const recordUnavailableReason = (bucket, rawCode) => {
+  const sanitized = rawCode
+    .replace(UNAVAILABLE_REASON_UNSAFE_CHAR_RE, '?')
+    .slice(0, UNAVAILABLE_REASON_CODE_MAX_LENGTH);
+  if (sanitized === '') return;
+  if (
+    !(sanitized in bucket) &&
+    Object.keys(bucket).length >= UNAVAILABLE_REASON_DISTINCT_CODES_MAX
+  ) {
+    return;
+  }
+  bucket[sanitized] = (bucket[sanitized] ?? 0) + 1;
+};
+
+/** Fixed, never computed: `record-dispatch.mjs` only journals
+ * `SubagentStart`/`SubagentStop`, never the controller's (parent session's)
+ * own turn, so there is no journalled evidence for it to report. */
+const CONTROLLER_UNAVAILABLE_REASON =
+  "controller (parent session) usage is never measured: record-dispatch.mjs only journals SubagentStart/SubagentStop for a dispatched subagent, never the controller's (parent session's) own turn.";
+
+/** Per-harness reason text for each `usageEvidence.<harness>.state` — see
+ * the header's USAGE EVIDENCE section. Codex's `configured-no-witness`
+ * reason names untrusted-hook handling in prose; neither reason ever uses
+ * the word "trusted" as a claimed state. */
+const USAGE_EVIDENCE_REASONS = {
+  claude: {
+    witnessed:
+      'a dispatch-start or dispatch-end event for claude was journalled in the runs read; hook configuration is informational only, never the evidence itself.',
+    'configured-no-witness':
+      'the SubagentStart/SubagentStop record-dispatch.mjs hook is configured for claude, but configuration is not execution: no dispatch-start or dispatch-end event for claude was journalled in the runs read.',
+    'not-configured':
+      'no record-dispatch.mjs hook is declared under SubagentStart/SubagentStop for claude in this checkout, and no dispatch-start or dispatch-end event for claude was journalled in the runs read.',
+    unknown:
+      'claude hook wiring could not be determined for this --runs directory (it is not inside a git checkout, its .claude/settings.json could not be read, or wiring was not supplied), and no dispatch-start or dispatch-end event for claude was journalled in the runs read.',
+  },
+  codex: {
+    witnessed:
+      'a dispatch-start or dispatch-end event for codex was journalled in the runs read; hook configuration is informational only, never the evidence itself.',
+    'configured-no-witness':
+      'the SubagentStart/SubagentStop record-dispatch.mjs hook is configured for codex, but Codex does not run project-level hooks until trust is explicitly granted for that project, and untrusted hooks are skipped silently — so configuration is not execution: no dispatch-start or dispatch-end event for codex was journalled in the runs read.',
+    'not-configured':
+      'no record-dispatch.mjs hook is declared under SubagentStart/SubagentStop for codex in this checkout, and no dispatch-start or dispatch-end event for codex was journalled in the runs read.',
+    unknown:
+      'codex hook wiring could not be determined for this --runs directory (it is not inside a git checkout, its .codex/hooks.json could not be read, or wiring was not supplied), and no dispatch-start or dispatch-end event for codex was journalled in the runs read.',
+  },
+};
+
+/** One harness's `usageEvidence` entry. `state` comes from journalled events
+ * ONLY (`witnessed`); otherwise it follows the caller-supplied `wiring` —
+ * `'configured'` becomes `'configured-no-witness'`, `'not-configured'`/
+ * `'unknown'` pass through unchanged. A `wiringState` this script does not
+ * recognise is treated as `'unknown'`, never guessed into `'configured'`. */
+const harnessUsageEvidence = (harness, wiringState, witnessed, unavailableReasonsBucket) => {
+  const normalizedWiring =
+    wiringState === 'configured' || wiringState === 'not-configured' ? wiringState : 'unknown';
+  const state = witnessed
+    ? 'witnessed'
+    : normalizedWiring === 'configured'
+      ? 'configured-no-witness'
+      : normalizedWiring;
+  return {
+    wiring: normalizedWiring,
+    state,
+    reason: USAGE_EVIDENCE_REASONS[harness][state],
+    // Spread — not a mutating assignment — into a fresh object literal: safe
+    // even for a bucket key literally named "__proto__", because object
+    // literal spread copies own enumerable properties as data properties
+    // (CopyDataProperties) rather than going through property assignment's
+    // "__proto__" setter trap.
+    unavailableReasons: { ...unavailableReasonsBucket },
+  };
+};
+
 /** The report over already-read runs — pure, so the grouping is testable alone. */
-export const tokenReportOf = ({ runs, since }) => {
+export const tokenReportOf = ({ runs, since, wiring }) => {
   const sinceMs = Date.parse(since);
   const read = [];
   const skipped = [];
   const dispatchGroups = new Map();
   const groupUsageRaw = new Map();
   const ticketMap = new Map();
+  const wiringInput = wiring ?? {};
+  // Witnessed and unavailableReasons are accumulated across EVERY run read,
+  // never scoped to one run — see the header's USAGE EVIDENCE section.
+  const witnessed = { claude: false, codex: false };
+  const unavailableReasonsRaw = { claude: Object.create(null), codex: Object.create(null) };
   let orphanEnds = 0;
 
   const ensureTicket = (ticket) => {
@@ -362,6 +593,25 @@ export const tokenReportOf = ({ runs, since }) => {
       .filter((event) => event.kind === 'dispatch-start' || event.kind === 'dispatch-end')
       .sort((a, b) => a.seq - b.seq);
     const hasDispatchEvidence = dispatchEvents.length > 0;
+
+    // usageEvidence witness/unavailableReasons — from journalled events ONLY,
+    // independent of dispatch grouping/pairing above (a group's `harness` is
+    // coerced through `stringOrUnknown`; witness is an exact 'claude'/'codex'
+    // match on the raw event so it is never inferred through that coercion).
+    for (const event of dispatchEvents) {
+      // An orphan end (RP-294) is not a dispatch, so it is neither a witness
+      // nor a usage record.
+      if (event.kind === 'dispatch-end' && event.data?.orphan === true) continue;
+      const harnessRaw = event.data?.harness;
+      if (harnessRaw === 'claude') witnessed.claude = true;
+      else if (harnessRaw === 'codex') witnessed.codex = true;
+      else continue;
+      if (event.kind !== 'dispatch-end') continue;
+      const code = event.data?.usageUnavailable;
+      if (typeof code === 'string' && code.trim() !== '') {
+        recordUnavailableReason(unavailableReasonsRaw[harnessRaw], code);
+      }
+    }
 
     const pairs = [];
     const queueByRef = new Map();
@@ -556,11 +806,28 @@ export const tokenReportOf = ({ runs, since }) => {
     estimate: null,
   };
 
+  const usageEvidence = {
+    claude: harnessUsageEvidence(
+      'claude',
+      wiringInput.claude,
+      witnessed.claude,
+      unavailableReasonsRaw.claude,
+    ),
+    codex: harnessUsageEvidence(
+      'codex',
+      wiringInput.codex,
+      witnessed.codex,
+      unavailableReasonsRaw.codex,
+    ),
+    controller: { available: false, reason: CONTROLLER_UNAVAILABLE_REASON },
+  };
+
   return {
     since,
     runs: { read: read.length, skipped },
     dispatchGroups: [...dispatchGroups.values()],
     tickets: [...ticketMap.values()],
+    usageEvidence,
     orphanEnds,
     money,
   };
@@ -574,6 +841,23 @@ export const tokenReportOf = ({ runs, since }) => {
  * would miss. */
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
 const stripControlChars = (text) => text.replace(/[\x00-\x08\x0B-\x1F\x7F-\x9F]/g, '');
+
+/** `{code=count, ...}`, or `{}` when `reasons` is empty — the compact form
+ * `renderUsageEvidenceLine` uses for `unavailableReasons`. */
+const formatUnavailableReasons = (reasons) => {
+  const entries = Object.entries(reasons);
+  if (entries.length === 0) return '{}';
+  return `{${entries.map(([code, count]) => `${code}=${count}`).join(', ')}}`;
+};
+
+/** The single `usage evidence: ...` line — see the header's USAGE EVIDENCE
+ * section. Rendered as one line so it sits immediately before the money
+ * line without splitting the "last line is the money line" contract. */
+const renderUsageEvidenceLine = ({ claude, codex, controller }) =>
+  `usage evidence: claude=${claude.state}(wiring=${claude.wiring}) ` +
+  `codex=${codex.state}(wiring=${codex.wiring}) controller=unavailable ` +
+  `unavailableReasons: claude=${formatUnavailableReasons(claude.unavailableReasons)} ` +
+  `codex=${formatUnavailableReasons(codex.unavailableReasons)} (${controller.reason})`;
 
 /** The short human text render — ends with the money line, always. */
 export const render = (report) => {
@@ -612,6 +896,7 @@ export const render = (report) => {
     }
   }
 
+  lines.push(renderUsageEvidenceLine(report.usageEvidence));
   lines.push(report.money.line);
   return stripControlChars(`${lines.join('\n')}\n`);
 };
@@ -623,6 +908,164 @@ export const render = (report) => {
  * high-control byte reaching the operator's terminal. */
 const escapeHighControlChars = (jsonText) =>
   jsonText.replace(/[\x7F-\x9F]/g, (ch) => `\\u${ch.codePointAt(0).toString(16).padStart(4, '0')}`);
+
+// --- CLI wiring resolution (RP-292) — see the header's WIRING section. ---
+
+/** Bytes read from each of `.claude/settings.json`/`.codex/hooks.json` when
+ * resolving CLI wiring. Both files are a few KB to tens of KB in this repo
+ * today; a file over this cap reads as `'unknown'` rather than being read
+ * (partially) and guessed at. */
+const WIRING_FILE_MAX_BYTES = 256 * 1024;
+
+/**
+ * The checkout root that CONTAINS `startDir`, or `null` when `startDir` is
+ * not itself inside a git checkout (or git cannot be run).
+ *
+ * `--show-toplevel`, not `dirname(--git-common-dir)`: the latter answers
+ * "where does the git DIRECTORY live", which is the MAIN checkout for a
+ * linked worktree (`git worktree add`) and the parent of wherever
+ * `--separate-git-dir` put the git directory for that shape — neither is
+ * `startDir`'s own working-tree root. `--show-toplevel` answers "which
+ * working tree contains `startDir`" directly, so a linked worktree and a
+ * `--separate-git-dir` checkout both report their own root — test/template/token-report.test.ts
+ * (absent in a generated rig) › "reads the worktree's own .claude/settings.json,
+ * not the main checkout's, when --runs lives inside a linked worktree" and ›
+ * "reads the checkout's own .claude/settings.json when the git directory
+ * lives outside the working tree (git init --separate-git-dir)".
+ *
+ * Deliberately NOT `mainCheckoutRoot` from `queue/checkout.mjs`: that
+ * function's fallback-to-`startDir` on exactly those same two failures makes
+ * its return value indistinguishable from "startDir really is the checkout
+ * root". Wiring needs that distinction — a `--runs` directory outside any
+ * checkout must read as `'unknown'`, never as "read this directory's own
+ * non-existent config" — test/template/token-report.test.ts (absent in a
+ * generated rig) › "the CLI reports wiring as unknown, never not-configured,
+ * for a --runs directory that is not itself part of a git checkout".
+ */
+const gitCheckoutRootOrNull = (startDir) => {
+  try {
+    const toplevel = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      cwd: startDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...withoutGitLocation(), LC_ALL: 'C', LANGUAGE: '' },
+      timeout: 5_000,
+    }).trim();
+    return toplevel ? resolve(toplevel) : null;
+  } catch {
+    return null;
+  }
+};
+
+/** Whether `checkoutRoot` IS the caller's own home directory — compared by
+ * realpath, since either side can be reached through a symlink. A failure
+ * to resolve either realpath is treated the same as a match (the safe
+ * direction here: this script never reads personal/global config, so an
+ * inability to tell must not let a home-rooted checkout through as an
+ * ordinary one) — test/template/token-report.test.ts (absent in a generated
+ * rig) › "reports wiring as unknown, never configured, when --runs resolves
+ * its checkout root to the child's own HOME". */
+const isHomeDirectory = (checkoutRoot) => {
+  try {
+    // `.native`: on Windows the JS realpath keeps an 8.3 short name
+    // (`RUNNER~1`) while git reports the long one, so the two spellings of
+    // the same home would never compare equal. Windows paths also compare
+    // case-insensitively.
+    const a = realpathSync.native(checkoutRoot);
+    const b = realpathSync.native(homedir());
+    return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+  } catch {
+    return true;
+  }
+};
+
+/** Whether `filePath` declares a `record-dispatch.mjs` command under
+ * `SubagentStart`/`SubagentStop` — `'configured'`/`'not-configured'`/
+ * `'unknown'`. Bounded on bytes actually READ (at most
+ * `WIRING_FILE_MAX_BYTES + 1`, into a fixed buffer), never on `stat().size`:
+ * a virtual file (e.g. `/proc/self/pagemap`) can report a size unrelated to
+ * how much a read would actually pull from it, so a size-only guard lets an
+ * effectively unbounded read through — test/template/token-report.test.ts
+ * (absent in a generated rig) › "finishes within a bound and reports claude
+ * wiring as unknown when .claude/settings.json is a symlink to
+ * /proc/self/pagemap, instead of reading it without bound" (codex: › "…
+ * .codex/hooks.json is a symlink to /proc/self/pagemap …"). Reading through
+ * the already-open descriptor also closes the stat-then-read race: nothing
+ * can replace the file between checking it and reading it. Any failure other
+ * than "the file does not exist" — too large, unparseable, unreadable — reads
+ * as `'unknown'` rather than guessed at. */
+const recordDispatchConfiguredIn = (filePath) => {
+  let fd;
+  try {
+    // O_NONBLOCK: opening a FIFO with no writer would otherwise block before
+    // the isFile check below can reject it. It changes nothing for a regular
+    // file, and it is undefined (so 0) on Windows.
+    fd = openSync(filePath, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+  } catch (error) {
+    return error?.code === 'ENOENT' ? 'not-configured' : 'unknown';
+  }
+  try {
+    let stat;
+    try {
+      stat = fstatSync(fd);
+    } catch {
+      return 'unknown';
+    }
+    if (!stat.isFile()) return 'unknown';
+    const buffer = Buffer.alloc(WIRING_FILE_MAX_BYTES + 1);
+    let total = 0;
+    while (total < buffer.length) {
+      let bytesRead;
+      try {
+        bytesRead = readSync(fd, buffer, total, buffer.length - total, null);
+      } catch {
+        return 'unknown';
+      }
+      if (bytesRead <= 0) break;
+      total += bytesRead;
+    }
+    if (total > WIRING_FILE_MAX_BYTES) return 'unknown';
+    let config;
+    try {
+      config = JSON.parse(buffer.toString('utf8', 0, total));
+    } catch {
+      return 'unknown';
+    }
+    for (const eventName of ['SubagentStart', 'SubagentStop']) {
+      const matchers = config?.hooks?.[eventName];
+      if (!Array.isArray(matchers)) continue;
+      for (const matcher of matchers) {
+        const hooks = matcher?.hooks;
+        if (!Array.isArray(hooks)) continue;
+        for (const hook of hooks) {
+          if (typeof hook?.command === 'string' && hook.command.includes('record-dispatch.mjs')) {
+            return 'configured';
+          }
+        }
+      }
+    }
+    return 'not-configured';
+  } finally {
+    closeSync(fd);
+  }
+};
+
+/** The CLI's own `wiring: { claude, codex }`, from the `--runs` directory's
+ * OWN checkout — never the CLI's `cwd`, and never a personal/global config
+ * (`~/.codex`, `~/.claude`). A checkout root that IS the caller's own home
+ * directory is personal config by definition, so it reads as `'unknown'` for
+ * both harnesses rather than being read — test/template/token-report.test.ts
+ * (absent in a generated rig) › "reports wiring as unknown, never configured,
+ * when --runs resolves its checkout root to the child's own HOME". */
+const resolveWiring = (runsDir) => {
+  const checkoutRoot = gitCheckoutRootOrNull(runsDir);
+  if (checkoutRoot === null) return { claude: 'unknown', codex: 'unknown' };
+  if (isHomeDirectory(checkoutRoot)) return { claude: 'unknown', codex: 'unknown' };
+  return {
+    claude: recordDispatchConfiguredIn(join(checkoutRoot, '.claude', 'settings.json')),
+    codex: recordDispatchConfiguredIn(join(checkoutRoot, '.codex', 'hooks.json')),
+  };
+};
 
 const parseArgs = (argv) => {
   const args = { since: null, runs: null, json: false, bad: null };
@@ -663,13 +1106,14 @@ if (invokedDirectly()) {
   const scriptsDir = dirname(fileURLToPath(import.meta.url));
   const runsDir =
     args.runs ?? join(mainCheckoutRoot(join(scriptsDir, '..', '..')), '.claude', 'runs');
+  const wiring = resolveWiring(runsDir);
   let runs;
   try {
     runs = readRuns(runsDir);
   } catch (error) {
     refuse(error.message);
   }
-  const report = tokenReportOf({ runs, since: new Date(args.since).toISOString() });
+  const report = tokenReportOf({ runs, since: new Date(args.since).toISOString(), wiring });
   process.stdout.write(
     args.json ? `${escapeHighControlChars(JSON.stringify(report, null, 2))}\n` : render(report),
   );
