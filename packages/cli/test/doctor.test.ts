@@ -34,7 +34,7 @@ async function newerThanCli(): Promise<string> {
 /**
  * A version strictly lower than the real CLI version. `0.0.0` is lower than
  * every version this project has ever released or will release while its own
- * major stays above zero — true today (`package.json` reports `1.1.0`) — so
+ * major stays above zero — true today (`package.json` reports `1.1.1`) — so
  * this is deliberately not derived by decrementing the real version, which
  * would need to special-case `0.0.0`/`x.0.0` itself.
  */
