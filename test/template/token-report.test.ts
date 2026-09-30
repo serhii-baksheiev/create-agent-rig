@@ -1245,7 +1245,13 @@ describe('token-report.mjs CLI wiring resolution: HOME itself a git checkout is 
     const runsDir = path.join(tempHome, '.claude', 'runs');
     await mkdir(runsDir, { recursive: true });
 
-    const childEnv = withoutGitLocation({ ...process.env, HOME: tempHome });
+    // os.homedir() reads HOME on POSIX and USERPROFILE on Windows; set both
+    // so the child's home is the fixture on every platform CI runs.
+    const childEnv = withoutGitLocation({
+      ...process.env,
+      HOME: tempHome,
+      USERPROFILE: tempHome,
+    });
     const result = await run(
       process.execPath,
       [reportScript, '--runs', runsDir, '--since', SINCE, '--json'],
