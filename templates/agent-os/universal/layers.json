@@ -80,6 +80,7 @@
     ".claude/scripts/run-state.mjs",
     ".claude/scripts/revalidate.mjs",
     ".claude/scripts/revalidation-report.mjs",
+    ".claude/scripts/tdd-evidence.mjs",
     ".claude/scripts/lib/claim-records.mjs",
     ".claude/scripts/lib/revalidation-evidence.mjs",
     ".claude/scripts/lib/revalidation-points.mjs",

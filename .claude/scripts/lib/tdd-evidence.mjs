@@ -493,3 +493,66 @@ export const validatePortableEvidence = (record) => {
   if (problems.length === 0) scanPortableStrings(record, '', problems);
   return problems.length ? { ok: false, problems } : { ok: true };
 };
+
+export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvidence, history }) => {
+  const problems = [];
+  if (history === undefined) return { ok: true };
+  if (!Array.isArray(history) || history.length === 0 || history.length > 8) {
+    return { ok: false, problems: ['tddEvidenceHistory must contain 1..8 entries'] };
+  }
+  let replacement = activeEvidence;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const entry = history[index];
+    if (!isObject(entry) || !allowed(entry, new Set(['evidence', 'transition']), `tddEvidenceHistory[${index}]`, problems)) {
+      continue;
+    }
+    const evidence = entry.evidence;
+    const validation = validatePortableEvidence(evidence);
+    if (!validation.ok) problems.push(`tddEvidenceHistory[${index}].evidence is invalid`);
+    if (
+      !['TDD-1', 'TDD-2', 'TDD-3'].includes(evidence?.applicability?.level) ||
+      evidence?.ticket !== ticket ||
+      evidence?.baseline?.headSha !== baselineHeadSha
+    ) {
+      problems.push(`tddEvidenceHistory[${index}].evidence does not bind the active ticket and baseline`);
+    }
+    const transition = entry.transition;
+    const label = `tddEvidenceHistory[${index}].transition`;
+    allowed(transition, new Set(['priorRedFingerprint', 'replacementRedFingerprint', 'fingerprint']), label, problems);
+    validateFingerprintShape(transition?.priorRedFingerprint, `${label}.priorRedFingerprint`, problems);
+    validateFingerprintShape(transition?.replacementRedFingerprint, `${label}.replacementRedFingerprint`, problems);
+    validateFingerprintShape(transition?.fingerprint, `${label}.fingerprint`, problems);
+    if (!fingerprintsEqual(transition?.priorRedFingerprint, evidence?.red?.fingerprint)) {
+      problems.push(`${label}.priorRedFingerprint must match history RED`);
+    }
+    if (!fingerprintsEqual(transition?.replacementRedFingerprint, replacement?.red?.fingerprint)) {
+      problems.push(`${label}.replacementRedFingerprint must match replacement RED`);
+    }
+    const priorTest = evidence?.red?.test;
+    const replacementTest = replacement?.red?.test;
+    if (
+      !priorTest ||
+      !replacementTest ||
+      priorTest.file !== replacementTest.file ||
+      priorTest.fullName !== replacementTest.fullName ||
+      priorTest.fileSha256 === replacementTest.fileSha256
+    ) {
+      problems.push(`${label} must replace one test identity with a different test-file hash`);
+    }
+    validateFingerprint(
+      transition?.fingerprint,
+      {
+        ticket,
+        baselineHeadSha,
+        stage: 'stale-red-replacement',
+        priorRedFingerprint: transition?.priorRedFingerprint,
+        replacementRedFingerprint: transition?.replacementRedFingerprint,
+      },
+      `${label}.fingerprint`,
+      problems,
+    );
+    replacement = evidence;
+  }
+  if (problems.length === 0) scanPortableStrings(history, 'tddEvidenceHistory', problems);
+  return problems.length ? { ok: false, problems } : { ok: true };
+};

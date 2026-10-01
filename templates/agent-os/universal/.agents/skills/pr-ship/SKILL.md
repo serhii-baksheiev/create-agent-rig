@@ -172,6 +172,34 @@ blockers.
    "continues when only updatedAt moved and still reports the marker evidence"
    and `test/template/content-blind-revalidation.test.ts` › "refuses a deleted
    tracked claim in a fresh run without take-up markers".
+   **Mechanical TDD evidence.** Before a ticketed branch can emit `SHIP`, run:
+
+   ```sh
+   node .claude/scripts/tdd-evidence.mjs verify-ship --ticket <item-id> --base origin/<default>
+   ```
+
+   - **0** — the final Git diff determines whether portable TDD-2 evidence is
+     required and, when required, it matches the selected baseline and final
+     production diff. Continue. This verifier does not yet assert a higher
+     tracker-mandated TDD level.
+   - **exit 2** — `HOLD`: portable TDD evidence is missing, stale or does not match
+     the final production diff. Restore the required evidence and re-enter the
+     gate; prose cannot waive it.
+   - **1** — the verifier could not complete its bounded verification. Treat it
+     as `HOLD` and repair the named prerequisite.
+
+   For a TDD-2 PASS, copy the exact RED, implementation-boundary and
+   GREEN SHA-256 fingerprints printed by the verifier into the compact
+   `evidence` entries of this gate's verdict and the PR description. Put the
+   same compact verdict in the tracker at close. A local run-journal record
+   alone is not the durable PR/tracker audit verdict. Never copy raw test logs.
+   The output binding is pinned in `test/template/tdd-durable-verdict.test.ts`
+   (absent in a generated rig) › "prints the exact portable RED,
+   implementation-boundary, and GREEN fingerprints on a TDD-2 PASS".
+
+   Owner-directed work has no item claim, so this ticket-bound verification does
+   not apply; state that condition in the verdict rather than inventing an id.
+
 2. **Route the diff before you spend on it.** This gate always ran its most
    expensive path, so a typo fix in a README bought the same fan-out as a
    rewrite of the storage layer. The dispatcher decides which lane the change
