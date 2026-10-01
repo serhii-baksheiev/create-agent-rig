@@ -24,6 +24,8 @@ it('preserves frozen and later markers through parsePlan to truthful deferred se
   expect(frozen.labels).toEqual(['frozen']);
   expect(later.labels).toEqual(['later']);
   expect(parked.labels).toEqual(['parked']);
+  expect(frozen.title).toBe('Freeze it');
+  expect(later.title).toBe('Do it later');
 
   for (const item of [frozen, later]) {
     const selection = selectionOf(item);
