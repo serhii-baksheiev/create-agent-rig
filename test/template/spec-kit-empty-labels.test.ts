@@ -63,6 +63,7 @@ it('imports into a repository whose GitHub label list is empty', async () => {
      const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
      const valueAfter = (flag) => { const index = args.indexOf(flag); return index === -1 ? null : args[index + 1]; };
      const save = () => fs.writeFileSync(statePath, JSON.stringify(state));
+     // The empty-label seam returns a literal empty string.
      if (args[0] === 'label' && args[1] === 'list') {
        return { stdout: state.labels.length === 0 ? '' : JSON.stringify(state.labels.map((name) => ({ name }))) + '\\n' };
      }
