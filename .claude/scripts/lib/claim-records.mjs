@@ -1016,6 +1016,8 @@ export const targetShaOf = (projectRoot, ref = null) => {
             return null;
           }
         })(),
+        'origin/master',
+        'origin/main',
         'master',
         'main',
       ].filter(Boolean);

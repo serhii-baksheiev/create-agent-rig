@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-332",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "936fc9ddc4959919b3a50493c437a51054b66369d9402e9f87fd442e016afbb6",
+      "targetSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/revalidate.test.ts",
+      "fullName": "the git fixture itself uses an advanced origin/master when origin/HEAD is absent and local master is stale"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "936fc9ddc4959919b3a50493c437a51054b66369d9402e9f87fd442e016afbb6",
+      "targetSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "5ff7bf6a272cf5221c72b7cbc5f9934dc5e874f083e8e0472a446d2d9cb23528"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-332",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-332-green-origin-master"
+      }
+    },
+    "baseline": {
+      "headSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/revalidate.test.ts",
+        "fullName": "the git fixture itself uses an advanced origin/master when origin/HEAD is absent and local master is stale",
+        "fileSha256": "353ca9f35e6ca07d771c05b74bb68f97b442dc7a8cea0183abb753cd5bdd7b1e"
+      },
+      "source": {
+        "runId": "20261001-2205-rel-1-2-0-rp332",
+        "seq": 10
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "dce41241e1a2975e832c395d739469a80500c5bb1738a2cb692a3c7540e3d4d7"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "c8f997f0cd54144b126e6acb4567e02d7372b859ccf4fde8fbdcefd5abd97384"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-2205-rel-1-2-0-rp332",
+        "seq": 11
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "ade1b3100f12392f9d83a7ce614a9633279ee0738f19fd088cbafee9a0f78320"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "c8f997f0cd54144b126e6acb4567e02d7372b859ccf4fde8fbdcefd5abd97384"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "a7bbf8e9f215b6d20cd409246cca2260426393b29cfe78230e88dfef489d8012"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/revalidate.test.ts",
+        "fullName": "the git fixture itself uses an advanced origin/master when origin/HEAD is absent and local master is stale",
+        "fileSha256": "353ca9f35e6ca07d771c05b74bb68f97b442dc7a8cea0183abb753cd5bdd7b1e"
+      },
+      "source": {
+        "runId": "20261001-2205-rel-1-2-0-rp332",
+        "seq": 12
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "d21dd7c6d06fe33b4483f34d109c9a6f65e7fe291a338593ae37428efd09d8da"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "a7bbf8e9f215b6d20cd409246cca2260426393b29cfe78230e88dfef489d8012"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "5b314f75d329b3cf149c380e7d0e050bd6a747ae6ffc5e5edfe4ebb7ad6dfadc"
+      }
+    }
+  }
+}
