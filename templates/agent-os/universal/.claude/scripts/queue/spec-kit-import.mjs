@@ -227,9 +227,8 @@ const creationOrder = (tasks) => {
 
 const ensureLabel = (projectRoot) => {
   const listed = gh(projectRoot, ['label', 'list', '--limit', String(MAX_TASKS), '--json', 'name']);
-  // A successful empty label list is represented as zero bytes in this
-  // projection. Whitespace and malformed JSON still fail closed through
-  // JSON.parse below.
+  // Treat only literal empty output as an empty label list. Whitespace and
+  // malformed JSON still fail closed through JSON.parse below.
   const labels = JSON.parse(listed === '' ? '[]' : listed);
   if (!Array.isArray(labels)) throw new Error('GitHub returned an invalid label list for Spec Kit import.');
   if (labels.length === MAX_TASKS) throw new Error(`GitHub label list reached the ${MAX_TASKS}-label safety limit; refusing incomplete projection.`);
