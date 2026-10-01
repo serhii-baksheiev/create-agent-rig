@@ -158,8 +158,7 @@ export const parsePlan = (plan) => {
           : null,
       owner: MARKERS.owner.exec(raw)?.[1] ?? null,
       // The markers present, handed to the one precedence rule (`core.mjs` ›
-      // lifecycleOf) rather than re-deriving it here. Hygiene cannot report a
-      // contradiction on this adapter: a flat list carries no labels for it to read.
+      // lifecycleOf) rather than re-deriving it here.
       ...lifecycleOf(labels),
     });
   }
