@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-329",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "d877170a104f62b1ae56e0533a0f4ca5af49d130ee926e539dd70b939906060a",
+      "targetSha": "c3bf157125b64346757b06e87a75f36a7812b0fc"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/spec-kit.test.ts",
+      "fullName": "fresh Spec Kit import prepares GitHub queue lifecycle labels"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "d877170a104f62b1ae56e0533a0f4ca5af49d130ee926e539dd70b939906060a",
+      "targetSha": "c3bf157125b64346757b06e87a75f36a7812b0fc"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "52e7424324f50aa756eec1e1a53bf1543eec3c0e886c7a6fc82839161a32ca08"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-329",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "rp329-green-spec-kit-evidence"
+      }
+    },
+    "baseline": {
+      "headSha": "c3bf157125b64346757b06e87a75f36a7812b0fc"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/spec-kit.test.ts",
+        "fullName": "fresh Spec Kit import prepares GitHub queue lifecycle labels",
+        "fileSha256": "322f0c071109f93a54b6eddd3214fc6b8a5875b4cc0d0e1f5da6e898baa7e018"
+      },
+      "source": {
+        "runId": "20261001-1630-rel-1-2-0-rp329",
+        "seq": 9
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "89de69d4ddeb74c65b5fc34249cf33ecd3402994c6272b9989a76a7129960540"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "38c91ad19e340237228df07c89ae1de45a0fef92f40e8ad8a940d7e9e84f63bc"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-1630-rel-1-2-0-rp329",
+        "seq": 20
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "7375c7af6d1f2185cc6d18bb21387eb41053e7e888ee7581a9fee0eca61a7354"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "38c91ad19e340237228df07c89ae1de45a0fef92f40e8ad8a940d7e9e84f63bc"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "2d53437ec0d34df20c9c7b591f53d643d1c8e44c15df0a72d636b37940900f14"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/spec-kit.test.ts",
+        "fullName": "fresh Spec Kit import prepares GitHub queue lifecycle labels",
+        "fileSha256": "322f0c071109f93a54b6eddd3214fc6b8a5875b4cc0d0e1f5da6e898baa7e018"
+      },
+      "source": {
+        "runId": "20261001-1630-rel-1-2-0-rp329",
+        "seq": 21
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "69c7f2c21fb3bdc13d566f9d4cadcd935b9cfd6565e025fcd05576b932e7a279"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "2d53437ec0d34df20c9c7b591f53d643d1c8e44c15df0a72d636b37940900f14"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "4ba3d90555626f9c25eec84b18c42a6615b140b68fc741a862c7d45ac861a822"
+      }
+    }
+  }
+}
