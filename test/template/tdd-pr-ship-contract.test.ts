@@ -60,14 +60,13 @@ const revalidationContract = {
 const docsOnlyProject = async () => {
   const root = await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-contract-'));
   await mkdir(path.join(root, '.rig'), { recursive: true });
-  await mkdir(path.join(root, 'docs'), { recursive: true });
   await writeFile(
     path.join(root, '.rig', 'revalidation.json'),
     `${JSON.stringify(revalidationContract)}\n`,
   );
-  await writeFile(path.join(root, 'docs', 'workflow.md'), 'baseline docs\n');
+  await writeFile(path.join(root, 'README.md'), 'baseline readme\n');
   await git(['init', '-q', '-b', 'master'], root);
-  await git(['add', '.rig/revalidation.json', 'docs/workflow.md'], root);
+  await git(['add', '.rig/revalidation.json', 'README.md'], root);
   await git(['commit', '-q', '-m', 'baseline'], root);
   const baselineHeadSha = await git(['rev-parse', 'HEAD'], root);
   await git(['checkout', '-q', '-b', 'docs/RP-306'], root);
@@ -95,10 +94,10 @@ const docsOnlyProject = async () => {
     }).result,
   ).toBe('BASELINE_CREATED');
   await writeFile(
-    path.join(root, 'docs', 'workflow.md'),
+    path.join(root, 'README.md'),
     'controller prose: this release is a refactor, but Git decides applicability.\n',
   );
-  await git(['add', 'docs/workflow.md', '.rig/claims/RP-306.json'], root);
+  await git(['add', 'README.md', '.rig/claims/RP-306.json'], root);
   await git(['commit', '-q', '-m', 'document workflow'], root);
   return root;
 };
@@ -125,5 +124,47 @@ describe('RP-306 pr-ship enforcement contract', () => {
 
     expect(result.code, result.out).toBe(0);
     expect(result.out).toMatch(/TDD-0|not applicable/i);
+  });
+
+  it('requires TDD-2 when the final diff adds production beside a root README.md', async () => {
+    const root = await docsOnlyProject();
+    await mkdir(path.join(root, 'packages', 'cli', 'src'), { recursive: true });
+    await writeFile(
+      path.join(root, 'packages', 'cli', 'src', 'runtime.mjs'),
+      'export const ready = true;\n',
+    );
+    await git(['add', 'packages/cli/src/runtime.mjs'], root);
+    await git(['commit', '-q', '-m', 'add runtime behavior'], root);
+
+    const result = await run(
+      process.execPath,
+      [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
+      root,
+      { ...process.env, RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-mixed-run-')) },
+    );
+
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/TDD-2/i);
+  });
+
+  it('does not classify Markdown under scripts as root README documentation', async () => {
+    const root = await docsOnlyProject();
+    await mkdir(path.join(root, 'scripts'), { recursive: true });
+    await writeFile(path.join(root, 'scripts', 'release.md'), 'runtime release instructions\n');
+    await git(['add', 'scripts/release.md'], root);
+    await git(['commit', '-q', '-m', 'add runtime release instructions'], root);
+
+    const result = await run(
+      process.execPath,
+      [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
+      root,
+      {
+        ...process.env,
+        RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-script-markdown-run-')),
+      },
+    );
+
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/TDD-2/i);
   });
 });
