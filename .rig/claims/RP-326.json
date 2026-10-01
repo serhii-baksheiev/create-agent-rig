@@ -15,5 +15,56 @@
   },
   "workflowClaim": {
     "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/plan-deferral-identity.test.ts",
+      "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "a0c4541e011a227796dc33ff86e0cbc8d8e570072b5faad0ea861b516c3a7360",
+      "targetSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "091ff0f4ab4c5df9696e26d3522d9a62f887cc3c6a5473fa08c7148628fe1d91"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-326",
+    "applicability": {
+      "level": "TDD-1",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-326-red"
+      }
+    },
+    "baseline": {
+      "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/plan-deferral-identity.test.ts",
+        "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+        "fileSha256": "0ee1195ac5bffdd0a1edf50da51ddf4b2557fe42346d95bc2a4be118bc4b6402"
+      },
+      "source": {
+        "runId": "20261001-1505-rel-1-2-0-rp326",
+        "seq": 8
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "5d9ffc43ec5f973140fc00e45d51897ece2a057034d7187fca398cb73b72fbe0"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "63336ebeef0cedd8eceae149138459ee6339da299e364d24a62a11cae651c756"
+      }
+    }
   }
 }

@@ -81,6 +81,15 @@ const MARKERS = {
   later: /\[later\]/i,
 };
 
+const LIFECYCLE_MARKERS = [
+  ['keep-core', MARKERS.keepCore],
+  ['re-scope', MARKERS.reScope],
+  ['obsolete', MARKERS.obsolete],
+  ['parked', MARKERS.parked],
+  ['frozen', MARKERS.frozen],
+  ['later', MARKERS.later],
+];
+
 /**
  * Parse the Agent queue into neutral tickets. Order in the file IS the priority.
  *
@@ -109,6 +118,7 @@ export const parsePlan = (plan) => {
     const match = /^\s*[-*]\s+(.*\S)\s*$/.exec(line);
     if (!match) continue;
     const raw = match[1];
+    const labels = LIFECYCLE_MARKERS.filter(([, marker]) => marker.test(raw)).map(([label]) => label);
     const title = raw
       .replace(
         /\[(elevated|triage|trigger-auto|trigger-human|keep-core|re-scope|obsolete|parked|frozen|later|owner:[^\]\s]+)\]/gi,
@@ -129,7 +139,7 @@ export const parsePlan = (plan) => {
       // for writes — it is not a body and core does not read it as one.
       body: null,
       state: 'open',
-      labels: [],
+      labels,
       tier: MARKERS.elevated.test(raw) ? 'elevated' : 'normal',
       // No links are expressible in a flat list — see the limit at the top.
       blockedBy: [],
@@ -150,18 +160,7 @@ export const parsePlan = (plan) => {
       // The markers present, handed to the one precedence rule (`core.mjs` ›
       // lifecycleOf) rather than re-deriving it here. Hygiene cannot report a
       // contradiction on this adapter: a flat list carries no labels for it to read.
-      ...lifecycleOf(
-        [
-          ['keep-core', MARKERS.keepCore],
-          ['re-scope', MARKERS.reScope],
-          ['obsolete', MARKERS.obsolete],
-          ['parked', MARKERS.parked],
-          ['frozen', MARKERS.frozen],
-          ['later', MARKERS.later],
-        ]
-          .filter(([, marker]) => marker.test(raw))
-          .map(([label]) => label),
-      ),
+      ...lifecycleOf(labels),
     });
   }
   return items;
