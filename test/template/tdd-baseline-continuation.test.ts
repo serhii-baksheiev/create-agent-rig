@@ -102,7 +102,7 @@ const contract = {
 };
 
 describe('RP-306 portable baseline continuation', () => {
-  it('verifies prior TDD-2 after a disjoint master advance while revalidation remains a separate HOLD', async () => {
+  it('refreshes TDD-2 GREEN after a verified merged master advance without attributing its production delta', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-continuation-'));
     const runDir = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-continuation-run-'));
     await mkdir(path.join(root, '.rig'), { recursive: true });
@@ -190,6 +190,17 @@ describe('RP-306 portable baseline continuation', () => {
       targetSha: masterAdvance,
     });
     expect(revalidated).toMatchObject({ result: 'CHANGED', action: 'hold' });
+
+    // The selected baseline remains B0, but a new GREEN after the verified
+    // master merge must bind only F1. M1 is already in the shipping base.
+    const refreshedGreen = await runVitest({ root, runDir, name: 'unit-green', trackerEnv });
+    expect(refreshedGreen.code, refreshedGreen.out).toBe(0);
+    expect(
+      (await record({ root, runDir, action: 'record-green', check: 'unit-green', trackerEnv }))
+        .code,
+    ).toBe(0);
+    await git(['add', '.rig/claims/RP-306.json'], root);
+    await git(['commit', '-q', '-m', 'refresh GREEN after merged master advance'], root);
 
     const ship = await run(
       process.execPath,

@@ -124,8 +124,7 @@ The relevant-spec and runner checks are pinned in
 check-run test only when SELECT carried its tracker-derived relevant spec"
 and › "refuses a Vitest-shaped report written by an arbitrary node runner".
 The portable handoff is pinned in `test/template/tdd-baseline-continuation.test.ts` (absent in a generated rig)
-› "verifies prior TDD-2 after a disjoint master advance while revalidation
-remains a separate HOLD";
+› "refreshes TDD-2 GREEN after a verified merged master advance without attributing its production delta";
 the compact shipping output is pinned in `test/template/tdd-durable-verdict.test.ts` (absent in a generated rig)
 › "prints the exact portable RED, implementation-boundary, and GREEN
 fingerprints on a TDD-2 PASS".
