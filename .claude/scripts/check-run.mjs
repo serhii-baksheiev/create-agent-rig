@@ -1179,7 +1179,7 @@ const workingTreeDiffFingerprint = (cwd, gitHead) => {
   try {
     const diff = execFileSync(
       'git',
-      ['-C', cwd, 'diff', '--binary', '--no-ext-diff', '--no-textconv', gitHead, '--'],
+      ['-C', cwd, 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', gitHead, '--'],
       { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: WORKTREE_DIFF_MAX_BYTES },
     );
     return { algorithm: 'sha256', value: createHash('sha256').update(diff).digest('hex') };
