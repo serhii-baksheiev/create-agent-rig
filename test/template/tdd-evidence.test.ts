@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -51,6 +52,7 @@ const portableDraft = () => ({
   implementationBoundary: {
     source: { runId: '20261001-085300-rp-305', seq: 18 },
     implementationDeltaFingerprint: { algorithm: 'sha256', value: sha('c') },
+    predecessorFingerprint: { algorithm: 'sha256', value: sha('0') },
     fingerprint: { algorithm: 'sha256', value: sha('c') },
   },
   green: {
@@ -60,6 +62,7 @@ const portableDraft = () => ({
       outcome: 'pass',
       checkFingerprint: { algorithm: 'sha256', value: sha('9') },
     },
+    predecessorFingerprint: { algorithm: 'sha256', value: sha('0') },
     fingerprint: { algorithm: 'sha256', value: sha('d') },
   },
 });
@@ -70,35 +73,49 @@ const portableDraft = () => ({
  * This exercises correspondence in the independent validator, rather than
  * treating a fingerprint-shaped string as sufficient evidence.
  */
-const portableTdd2 = async () => {
+const linkPortableTdd2 = async (record: ReturnType<typeof portableDraft>) => {
   const { fingerprintEvidence } = (await load()) as {
     fingerprintEvidence: (record: unknown) => { algorithm: string; value: string };
   };
-  const record = portableDraft();
   record.red.fingerprint = fingerprintEvidence({
+    ticket: record.ticket,
+    baselineHeadSha: record.baseline.headSha,
     stage: 'red',
     test: record.red.test,
     source: record.red.source,
     observation: record.red.observation,
   });
+  record.implementationBoundary.predecessorFingerprint = { ...record.red.fingerprint };
   record.implementationBoundary.fingerprint = fingerprintEvidence({
+    ticket: record.ticket,
+    baselineHeadSha: record.baseline.headSha,
     stage: 'implementation-boundary',
     source: record.implementationBoundary.source,
     implementationDeltaFingerprint: record.implementationBoundary.implementationDeltaFingerprint,
+    predecessorFingerprint: record.implementationBoundary.predecessorFingerprint,
   });
+  record.green.predecessorFingerprint = { ...record.implementationBoundary.fingerprint };
   record.green.fingerprint = fingerprintEvidence({
+    ticket: record.ticket,
+    baselineHeadSha: record.baseline.headSha,
     stage: 'green',
     test: record.green.test,
     source: record.green.source,
     observation: record.green.observation,
+    predecessorFingerprint: record.green.predecessorFingerprint,
   });
   return record;
 };
 
+const portableTdd2 = () => linkPortableTdd2(portableDraft());
+
 describe('RP-305 authoritative applicability', () => {
   it('uses deterministic paths and attributable metadata: docs/test-only TDD-0, behavior TDD-2, declared release-critical TDD-3', async () => {
     const { resolveApplicability } = (await load()) as {
-      resolveApplicability: (input: Record<string, unknown>) => {
+      resolveApplicability: (
+        input: Record<string, unknown>,
+        trusted?: Record<string, unknown>,
+      ) => {
         level: string;
         authority: string;
       };
@@ -131,22 +148,31 @@ describe('RP-305 authoritative applicability', () => {
       level: 'TDD-2',
       authority: 'default-production',
     });
+    const safetyWork = { ticket: 'RP-305', changedPaths: ['.claude/hooks/guard-bash.mjs'] };
     expect(
-      resolveApplicability({
-        changedPaths: ['.claude/hooks/guard-bash.mjs'],
-        authoritative: { level: 'TDD-3', id: 'RP-305' },
+      resolveApplicability({ ...safetyWork, authoritative: { level: 'TDD-3', id: 'RP-305' } }),
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
+    expect(
+      resolveApplicability(safetyWork, {
+        trackerDecision: {
+          level: 'TDD-3',
+          source: { system: 'jira', issue: 'RP-305', commentId: '21523', actor: 'owner' },
+        },
       }),
     ).toMatchObject({ level: 'TDD-3', authority: 'tracker' });
   });
 
-  it('rejects controller prose and self-asserted waiver metadata, but honors a separate trusted tracker decision', async () => {
+  it('rejects self-asserted waiver metadata and accepts only an attributable second-argument tracker decision', async () => {
     const { resolveApplicability } = (await load()) as {
-      resolveApplicability: (input: Record<string, unknown>) => {
+      resolveApplicability: (
+        input: Record<string, unknown>,
+        trusted?: Record<string, unknown>,
+      ) => {
         level: string;
         authority: string;
       };
     };
-    const behavior = { changedPaths: ['packages/cli/src/commands/init.ts'] };
+    const behavior = { ticket: 'RP-305', changedPaths: ['packages/cli/src/commands/init.ts'] };
 
     expect(
       resolveApplicability({
@@ -185,17 +211,55 @@ describe('RP-305 authoritative applicability', () => {
           source: { system: 'jira', issue: 'RP-305', commentId: '21523', actor: 'owner' },
         },
       }),
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
+    expect(
+      resolveApplicability(behavior, { trackerDecision: { level: 'TDD-0', source: {} } }),
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
+    expect(
+      resolveApplicability(behavior, {
+        trackerDecision: {
+          level: 'TDD-0',
+          source: { system: 'jira', issue: 'RP-999', commentId: '21523', actor: 'owner' },
+        },
+      }),
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
+    expect(
+      resolveApplicability(behavior, {
+        trackerDecision: {
+          level: 'TDD-0',
+          source: { system: 'jira', issue: 'RP-305', commentId: '21523', actor: 'owner' },
+        },
+      }),
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
+    expect(
+      resolveApplicability(behavior, {
+        trackerDecision: {
+          level: 'TDD-0',
+          source: {
+            system: 'jira',
+            issue: 'RP-305',
+            commentId: '21523',
+            actor: 'owner',
+            decisionContentFingerprint: { algorithm: 'sha256', value: sha('7') },
+          },
+        },
+      }),
     ).toMatchObject({ level: 'TDD-0', authority: 'owner-waiver' });
   });
 
-  it('permits a pure-refactor TDD-0 exemption only for the same structured GREEN identities and hashes before and after', async () => {
-    const { validateRefactorEvidence, resolveApplicability } = (await load()) as {
-      validateRefactorEvidence: (input: Record<string, unknown>) => { ok: boolean };
-      resolveApplicability: (input: Record<string, unknown>) => {
-        level: string;
-        authority: string;
+  it('requires tracker-produced complete evidence for a pure-refactor TDD-0 exemption', async () => {
+    const { fingerprintEvidence, validateRefactorEvidence, resolveApplicability } =
+      (await load()) as {
+        fingerprintEvidence: (record: unknown) => { algorithm: string; value: string };
+        validateRefactorEvidence: (input: Record<string, unknown>) => { ok: boolean };
+        resolveApplicability: (
+          input: Record<string, unknown>,
+          trusted?: Record<string, unknown>,
+        ) => {
+          level: string;
+          authority: string;
+        };
       };
-    };
     const unchangedGreen = {
       before: [{ ...testIdentity, outcome: 'pass' }],
       after: [{ ...testIdentity, outcome: 'pass' }],
@@ -207,14 +271,72 @@ describe('RP-305 authoritative applicability', () => {
         changedPaths: ['packages/cli/src/commands/init.ts'],
         pureRefactor: unchangedGreen,
       }),
-    ).toMatchObject({ level: 'TDD-0', authority: 'pure-refactor-proof' });
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
 
+    const ticket = 'RP-305';
+    const baselineHeadSha = baselineSha;
+    const testSet = { count: 2, fingerprint: { algorithm: 'sha256', value: sha('6') } };
+    const before = {
+      source: { runId: 'controller-a', seq: 17 },
+      outcome: 'pass',
+      checkFingerprint: { algorithm: 'sha256', value: sha('5') },
+      testSetFingerprint: { ...testSet.fingerprint },
+    };
+    const after = {
+      source: { runId: 'controller-a', seq: 18 },
+      outcome: 'pass',
+      checkFingerprint: { algorithm: 'sha256', value: sha('4') },
+      testSetFingerprint: { ...testSet.fingerprint },
+    };
+    const trustedRefactorEvidence = {
+      ticket,
+      baselineHeadSha,
+      testSet,
+      before,
+      after,
+      fingerprint: fingerprintEvidence({ ticket, baselineHeadSha, testSet, before, after }),
+    };
     expect(
       resolveApplicability({
+        ticket,
+        baselineHeadSha,
         changedPaths: ['packages/cli/src/commands/init.ts'],
-        pureRefactor: unchangedGreen,
-        finalBehaviorPaths: ['packages/cli/src/commands/init.ts'],
+        trustedRefactorEvidence,
       }),
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
+    expect(
+      resolveApplicability(
+        { ticket, baselineHeadSha, changedPaths: ['packages/cli/src/commands/init.ts'] },
+        { refactorEvidence: trustedRefactorEvidence },
+      ),
+    ).toMatchObject({ level: 'TDD-0', authority: 'trusted-refactor-evidence' });
+    const trustedMaterial = { ticket, baselineHeadSha, testSet, before, after };
+    const failedTrustedRefactorEvidence = {
+      ...trustedMaterial,
+      after: { ...after, outcome: 'fail' },
+    };
+    const failedTrustedWithFingerprint = {
+      ...failedTrustedRefactorEvidence,
+      fingerprint: fingerprintEvidence(failedTrustedRefactorEvidence),
+    };
+    expect(
+      resolveApplicability(
+        { ticket, baselineHeadSha, changedPaths: ['packages/cli/src/commands/init.ts'] },
+        { refactorEvidence: failedTrustedWithFingerprint },
+      ),
+    ).toMatchObject({ level: 'TDD-2', authority: 'default-production' });
+
+    expect(
+      resolveApplicability(
+        {
+          changedPaths: ['packages/cli/src/commands/init.ts'],
+          ticket,
+          baselineHeadSha,
+          trustedRefactorEvidence,
+          finalBehaviorPaths: ['packages/cli/src/commands/init.ts'],
+        },
+        { refactorEvidence: trustedRefactorEvidence },
+      ),
     ).toMatchObject({ level: 'TDD-2', authority: 'final-diff' });
 
     const changedHash = {
@@ -236,6 +358,11 @@ describe('RP-305 authoritative applicability', () => {
       ],
     };
     expect(validateRefactorEvidence(changedIdentity)).toEqual({ ok: false });
+    const oversized = {
+      before: Array.from({ length: 513 }, () => ({ ...testIdentity, outcome: 'pass' })),
+      after: Array.from({ length: 513 }, () => ({ ...testIdentity, outcome: 'pass' })),
+    };
+    expect(validateRefactorEvidence(oversized)).toEqual({ ok: false });
   });
 });
 
@@ -273,10 +400,19 @@ describe('RP-305 portable evidence contract', () => {
     const tdd0 = {
       schemaVersion: tdd2.schemaVersion,
       ticket: tdd2.ticket,
-      applicability: { level: 'TDD-0', authority: { kind: 'tracker', id: 'RP-305' } },
+      applicability: { level: 'TDD-0', authority: { kind: 'path-contract', id: 'RP-305' } },
       baseline: tdd2.baseline,
     };
     expect(validatePortableEvidence(tdd0)).toEqual({ ok: true });
+    for (const kind of ['controller', 'tracker', 'unrecognised']) {
+      expect(
+        validatePortableEvidence({
+          ...tdd0,
+          applicability: { level: 'TDD-0', authority: { kind, id: 'RP-305' } },
+        }),
+        kind,
+      ).toMatchObject({ ok: false });
+    }
     const tdd0ExecutionStages: ReadonlyArray<readonly [string, unknown]> = [
       ['red', tdd2.red],
       ['implementationBoundary', tdd2.implementationBoundary],
@@ -290,11 +426,318 @@ describe('RP-305 portable evidence contract', () => {
     }
   });
 
+  it('binds portable TDD-0 owner and refactor exemptions to the item, baseline, and compact fingerprints', async () => {
+    const { fingerprintEvidence, validatePortableEvidence } = (await load()) as {
+      fingerprintEvidence: (record: unknown) => { algorithm: string; value: string };
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    const ticket = 'RP-305';
+    const base = {
+      schemaVersion: 1,
+      ticket,
+      baseline: { headSha: baselineSha },
+    };
+    const ownerSource = {
+      system: 'jira',
+      issue: ticket,
+      commentId: '21523',
+      actor: 'owner',
+      decisionContentFingerprint: { algorithm: 'sha256', value: sha('7') },
+    };
+    const ownerAuthority = {
+      kind: 'owner-waiver',
+      id: 'owner-comment-21523',
+      source: ownerSource,
+      decisionFingerprint: fingerprintEvidence({ level: 'TDD-0', ticket, source: ownerSource }),
+    };
+    const ownerWaiver = {
+      ...base,
+      applicability: { level: 'TDD-0', authority: ownerAuthority },
+    };
+    expect(validatePortableEvidence(ownerWaiver)).toEqual({ ok: true });
+    expect(
+      validatePortableEvidence({
+        ...ownerWaiver,
+        applicability: {
+          level: 'TDD-0',
+          authority: { kind: 'owner-waiver', id: 'owner-comment-21523' },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      validatePortableEvidence({
+        ...ownerWaiver,
+        applicability: {
+          level: 'TDD-0',
+          authority: {
+            ...ownerAuthority,
+            source: { system: 'jira', issue: ticket, commentId: '21523', actor: 'owner' },
+          },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      validatePortableEvidence({
+        ...ownerWaiver,
+        applicability: {
+          level: 'TDD-0',
+          authority: { ...ownerAuthority, source: { ...ownerSource, issue: 'RP-999' } },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      validatePortableEvidence({
+        ...ownerWaiver,
+        applicability: {
+          level: 'TDD-0',
+          authority: {
+            ...ownerAuthority,
+            source: {
+              ...ownerSource,
+              decisionContentFingerprint: { algorithm: 'sha256', value: sha('8') },
+            },
+          },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      validatePortableEvidence({
+        ...ownerWaiver,
+        applicability: {
+          level: 'TDD-0',
+          authority: { ...ownerAuthority, source: { ...ownerSource, commentId: 'changed' } },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+
+    const testSet = { count: 2, fingerprint: { algorithm: 'sha256', value: sha('5') } };
+    const before = {
+      source: { runId: 'controller-a', seq: 17 },
+      outcome: 'pass',
+      checkFingerprint: { algorithm: 'sha256', value: sha('4') },
+      testSetFingerprint: { ...testSet.fingerprint },
+    };
+    const after = {
+      source: { runId: 'controller-a', seq: 18 },
+      outcome: 'pass',
+      checkFingerprint: { algorithm: 'sha256', value: sha('3') },
+      testSetFingerprint: { ...testSet.fingerprint },
+    };
+    const proof = {
+      ticket,
+      baselineHeadSha: baselineSha,
+      testSet,
+      before,
+      after,
+      fingerprint: fingerprintEvidence({
+        ticket,
+        baselineHeadSha: baselineSha,
+        testSet,
+        before,
+        after,
+      }),
+    };
+    const proofMaterial = { ticket, baselineHeadSha: baselineSha, testSet, before, after };
+    const withProofFingerprint = (candidate: Record<string, unknown>) => ({
+      ...candidate,
+      fingerprint: fingerprintEvidence(candidate),
+    });
+    const refactorRecord = {
+      ...base,
+      applicability: {
+        level: 'TDD-0',
+        authority: { kind: 'trusted-refactor-evidence', id: 'RP-305-refactor', proof },
+      },
+    };
+    expect(validatePortableEvidence(refactorRecord)).toEqual({ ok: true });
+    const beforeWithoutOutcome = {
+      source: before.source,
+      checkFingerprint: before.checkFingerprint,
+      testSetFingerprint: before.testSetFingerprint,
+    };
+    const missingOutcomeProof = withProofFingerprint({
+      ...proofMaterial,
+      before: beforeWithoutOutcome,
+    });
+    expect(
+      validatePortableEvidence({
+        ...refactorRecord,
+        applicability: {
+          level: 'TDD-0',
+          authority: { ...refactorRecord.applicability.authority, proof: missingOutcomeProof },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    const failedOutcomeProof = withProofFingerprint({
+      ...proofMaterial,
+      after: { ...after, outcome: 'fail' },
+    });
+    expect(
+      validatePortableEvidence({
+        ...refactorRecord,
+        applicability: {
+          level: 'TDD-0',
+          authority: { ...refactorRecord.applicability.authority, proof: failedOutcomeProof },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    const nestedUnexpectedField = ['raw', 'Secret'].join('');
+    const rawNestedFingerprintProof = withProofFingerprint({
+      ...proofMaterial,
+      before: {
+        ...before,
+        checkFingerprint: { ...before.checkFingerprint, [nestedUnexpectedField]: 'x' },
+      },
+    });
+    expect(
+      validatePortableEvidence({
+        ...refactorRecord,
+        applicability: {
+          level: 'TDD-0',
+          authority: {
+            ...refactorRecord.applicability.authority,
+            proof: rawNestedFingerprintProof,
+          },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      validatePortableEvidence({
+        ...refactorRecord,
+        applicability: {
+          level: 'TDD-0',
+          authority: { kind: 'trusted-refactor-evidence', id: 'RP-305-refactor' },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      validatePortableEvidence({
+        ...refactorRecord,
+        applicability: {
+          level: 'TDD-0',
+          authority: {
+            ...refactorRecord.applicability.authority,
+            proof: { ...proof, before: { ...before, source: { ...before.source, seq: 19 } } },
+          },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      validatePortableEvidence({
+        ...refactorRecord,
+        applicability: {
+          level: 'TDD-0',
+          authority: {
+            ...refactorRecord.applicability.authority,
+            proof: {
+              ...proof,
+              after: { ...after, testSetFingerprint: { algorithm: 'sha256', value: sha('2') } },
+            },
+          },
+        },
+      }),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('rejects local Windows test paths in portable test identity', async () => {
+    const { validatePortableEvidence } = (await load()) as {
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    for (const file of ['C:\\agent\\test.test.ts', '\\\\server\\share\\test.test.ts']) {
+      const record = await portableTdd2();
+      record.red.test.file = file;
+      await linkPortableTdd2(record);
+      expect(validatePortableEvidence(record), file).toMatchObject({
+        ok: false,
+        problems: expect.arrayContaining(['red.test.file must be a safe repository-relative path']),
+      });
+    }
+  });
+
+  it('rejects extra material in a bounded implementation delta fingerprint', async () => {
+    const { validatePortableEvidence } = (await load()) as {
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    const rawDelta = await portableTdd2();
+    const unboundedField = ['raw', 'Secret'].join('');
+    (rawDelta.implementationBoundary.implementationDeltaFingerprint as Record<string, string>)[
+      unboundedField
+    ] = 'must-not-enter-portable-evidence';
+    await linkPortableTdd2(rawDelta);
+    expect(validatePortableEvidence(rawDelta)).toMatchObject({
+      ok: false,
+      problems: expect.arrayContaining([
+        `implementationBoundary.implementationDeltaFingerprint.${unboundedField} is not permitted in portable evidence`,
+      ]),
+    });
+  });
+
+  it('requires a predecessor fingerprint chain across runs and rejects time reversal even through a handoff', async () => {
+    const { validatePortableEvidence } = (await load()) as {
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    const linkedCrossRun = await portableTdd2();
+    linkedCrossRun.implementationBoundary.source = { runId: 'controller-b', seq: 1 };
+    linkedCrossRun.green.source = { runId: 'controller-c', seq: 1 };
+    await linkPortableTdd2(linkedCrossRun);
+    expect(validatePortableEvidence(linkedCrossRun)).toEqual({ ok: true });
+
+    const unlinkedCrossRun = await portableTdd2();
+    unlinkedCrossRun.implementationBoundary.source = { runId: 'controller-b', seq: 1 };
+    unlinkedCrossRun.green.source = { runId: 'controller-c', seq: 1 };
+    await linkPortableTdd2(unlinkedCrossRun);
+    delete (
+      unlinkedCrossRun.implementationBoundary as Partial<
+        typeof unlinkedCrossRun.implementationBoundary
+      >
+    ).predecessorFingerprint;
+    expect(validatePortableEvidence(unlinkedCrossRun)).toMatchObject({ ok: false });
+
+    const reversed = await portableTdd2();
+    reversed.red.source = { runId: 'controller-a', seq: 9 };
+    reversed.implementationBoundary.source = { runId: 'controller-b', seq: 1 };
+    reversed.green.source = { runId: 'controller-a', seq: 1 };
+    await linkPortableTdd2(reversed);
+    expect(validatePortableEvidence(reversed)).toMatchObject({ ok: false });
+  });
+
   it('accepts a bounded portable TDD-2 chain rooted at BASELINE_CREATED with same-spec RED and GREEN evidence', async () => {
     const { validatePortableEvidence } = (await load()) as {
       validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
     };
     expect(validatePortableEvidence(await portableTdd2())).toEqual({ ok: true });
+  });
+
+  it('returns fail-closed diagnostics instead of throwing for incomplete TDD-2 and TDD-3 records', async () => {
+    const { validatePortableEvidence } = (await load()) as {
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    for (const level of ['TDD-2', 'TDD-3']) {
+      const malformed = {
+        schemaVersion: 1,
+        ticket: 'RP-305',
+        applicability: { level, authority: { kind: 'tracker', id: 'RP-305' } },
+        baseline: { headSha: baselineSha },
+      };
+      expect(() => validatePortableEvidence(malformed), level).not.toThrow();
+      expect(validatePortableEvidence(malformed), level).toMatchObject({
+        ok: false,
+        problems: expect.any(Array),
+      });
+    }
+  });
+
+  it('binds every portable stage fingerprint to its ticket and BASELINE_CREATED head', async () => {
+    const { validatePortableEvidence } = (await load()) as {
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    const wrongTicket = await portableTdd2();
+    wrongTicket.ticket = 'RP-999';
+    expect(validatePortableEvidence(wrongTicket)).toMatchObject({ ok: false });
+
+    const wrongBaseline = await portableTdd2();
+    wrongBaseline.baseline.headSha = 'f'.repeat(40);
+    expect(validatePortableEvidence(wrongBaseline)).toMatchObject({ ok: false });
   });
 
   it('invalidates a RED when GREEN changes its test-file hash or material evidence, and requires non-vacuity evidence for TDD-3', async () => {
@@ -305,9 +748,13 @@ describe('RP-305 portable evidence contract', () => {
     const changedTest = await portableTdd2();
     changedTest.green.test = { ...testIdentity, fileSha256: sha('e') };
     changedTest.green.fingerprint = fingerprintEvidence({
+      ticket: changedTest.ticket,
+      baselineHeadSha: changedTest.baseline.headSha,
       stage: 'green',
       test: changedTest.green.test,
       source: changedTest.green.source,
+      observation: changedTest.green.observation,
+      predecessorFingerprint: changedTest.green.predecessorFingerprint,
     });
     expect(validatePortableEvidence(changedTest)).toMatchObject({
       ok: false,
@@ -368,23 +815,30 @@ describe('RP-305 portable evidence contract', () => {
         outcome: 'fail',
         checkFingerprint: { algorithm: 'sha256', value: sha('8') },
       },
+      predecessorFingerprint: { ...tdd3.green.fingerprint },
       fingerprint: { algorithm: 'sha256', value: sha('0') },
     };
     nonVacuity.fingerprint = fingerprintEvidence({
+      ticket: tdd3.ticket,
+      baselineHeadSha: tdd3.baseline.headSha,
       stage: 'non-vacuity',
       test: nonVacuity.test,
       source: nonVacuity.source,
       observation: nonVacuity.observation,
+      predecessorFingerprint: nonVacuity.predecessorFingerprint,
     });
     (tdd3 as Record<string, unknown>).nonVacuity = nonVacuity;
     expect(validatePortableEvidence(tdd3)).toEqual({ ok: true });
 
     nonVacuity.observation.outcome = 'pass';
     nonVacuity.fingerprint = fingerprintEvidence({
+      ticket: tdd3.ticket,
+      baselineHeadSha: tdd3.baseline.headSha,
       stage: 'non-vacuity',
       test: nonVacuity.test,
       source: nonVacuity.source,
       observation: nonVacuity.observation,
+      predecessorFingerprint: nonVacuity.predecessorFingerprint,
     });
     expect(validatePortableEvidence(tdd3)).toMatchObject({
       ok: false,
@@ -416,5 +870,31 @@ describe('RP-305 portable evidence contract', () => {
     });
     expect(reordered).toEqual(first);
     expect(fingerprintEvidence(changed)).not.toEqual(first);
+  });
+
+  it('bounds diagnostics for an oversized unknown portable-evidence key', async () => {
+    const { validatePortableEvidence } = (await load()) as {
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    const evidence = await portableTdd2();
+    (evidence as Record<string, unknown>)['x'.repeat(1024 * 1024)] = true;
+
+    const result = validatePortableEvidence(evidence);
+    expect(result).toMatchObject({ ok: false });
+    expect(result.problems?.every((problem) => problem.length <= 512)).toBe(true);
+  });
+
+  it('uses code-unit key ordering for SHA-256 fingerprints on every machine', async () => {
+    const { fingerprintEvidence } = (await load()) as {
+      fingerprintEvidence: (record: unknown) => { algorithm: string; value: string };
+    };
+    const expected = createHash('sha256')
+      .update(JSON.stringify({ z: 2, ä: 1 }))
+      .digest('hex');
+
+    expect(fingerprintEvidence({ z: 2, ä: 1 })).toEqual({
+      algorithm: 'sha256',
+      value: expected,
+    });
   });
 });

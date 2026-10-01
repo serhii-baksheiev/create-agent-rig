@@ -13,6 +13,7 @@ const MAX_CANONICAL_STRING_BYTES = 4096;
 const MAX_CANONICAL_BYTES = 64 * 1024;
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const compareCodeUnits = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
 
 const canonical = (value, state = { depth: 0, nodes: 0 }) => {
   if (state.depth > MAX_CANONICAL_DEPTH || ++state.nodes > MAX_CANONICAL_NODES) {
@@ -33,7 +34,7 @@ const canonical = (value, state = { depth: 0, nodes: 0 }) => {
   if (isObject(value)) {
     state.depth += 1;
     const entries = Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
+      .sort(([left], [right]) => compareCodeUnits(left, right))
       .map(([key, entry]) => [key, canonical(entry, state)]);
     state.depth -= 1;
     return Object.fromEntries(
@@ -55,6 +56,7 @@ const safeRelativePath = (value) =>
   value.length <= 512 &&
   !value.startsWith('/') &&
   !value.startsWith('\\') &&
+  !/^[A-Za-z]:/.test(value) &&
   !value.split(/[\\/]/).some((part) => part === '' || part === '.' || part === '..');
 
 const sameTest = (left, right) =>
@@ -76,7 +78,14 @@ export const validateRefactorEvidence = (evidence) => {
     entry.fullName.length <= 1024 &&
     SHA256.test(entry.fileSha256) &&
     entry.outcome === 'pass';
-  if (!evidence.before.length || evidence.before.length !== evidence.after.length) return { ok: false };
+  if (
+    !evidence.before.length ||
+    evidence.before.length > 512 ||
+    evidence.after.length > 512 ||
+    evidence.before.length !== evidence.after.length
+  ) {
+    return { ok: false };
+  }
   if (![...evidence.before, ...evidence.after].every(valid)) return { ok: false };
   const identity = (entry) => `${entry.file}\u0000${entry.fullName}`;
   const before = new Map(evidence.before.map((entry) => [identity(entry), entry]));
@@ -86,28 +95,24 @@ export const validateRefactorEvidence = (evidence) => {
 };
 
 /**
- * `trustedTrackerDecision` is deliberately a separate input. The caller may
- * supply it only after authenticating and attributing tracker data; this pure
- * helper never promotes a controller-written waiver (including `verified`)
- * into authority.
+ * The second argument is reserved for a verified consumer such as RP-306.
+ * This pure helper checks structure and binding, not who invoked it. The first
+ * argument is controller-provided work state and cannot claim tracker authority.
  */
-export const resolveApplicability = (input) => {
+export const resolveApplicability = (input, trusted = {}) => {
   const changedPaths = Array.isArray(input?.changedPaths) ? input.changedPaths : [];
-  const trusted = input?.trustedTrackerDecision;
-  if (isObject(trusted) && LEVELS.has(trusted.level) && isObject(trusted.source)) {
+  const trackerDecision = trusted?.trackerDecision;
+  if (validTrustedTrackerDecision(trackerDecision, input?.ticket)) {
     return {
-      level: trusted.level,
-      authority: trusted.level === 'TDD-0' ? 'owner-waiver' : 'tracker',
+      level: trackerDecision.level,
+      authority: trackerDecision.level === 'TDD-0' ? 'owner-waiver' : 'tracker',
     };
-  }
-  if (isObject(input?.authoritative) && ['TDD-2', 'TDD-3'].includes(input.authoritative.level)) {
-    return { level: input.authoritative.level, authority: 'tracker' };
   }
   if (Array.isArray(input?.finalBehaviorPaths) && input.finalBehaviorPaths.length > 0) {
     return { level: 'TDD-2', authority: 'final-diff' };
   }
-  if (validateRefactorEvidence(input?.pureRefactor).ok) {
-    return { level: 'TDD-0', authority: 'pure-refactor-proof' };
+  if (validateTrustedRefactorEvidence(trusted?.refactorEvidence, input)) {
+    return { level: 'TDD-0', authority: 'trusted-refactor-evidence' };
   }
   const nonProductionPath = (path) =>
     typeof path === 'string' &&
@@ -124,7 +129,11 @@ const allowed = (value, keys, label, problems) => {
     return false;
   }
   for (const key of Object.keys(value)) {
-    if (!keys.has(key)) problems.push(`${label ? `${label}.` : ''}${key} is not permitted in portable evidence`);
+    if (!keys.has(key)) {
+      const rendered = /^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(key) ? key : '[invalid-key]';
+      const message = `${label ? `${label}.` : ''}${rendered} is not permitted in portable evidence`;
+      problems.push(message.slice(0, 512));
+    }
   }
   return true;
 };
@@ -144,12 +153,26 @@ const validateTest = (test, label, problems) => {
   if (!SHA256.test(test?.fileSha256 ?? '')) problems.push(`${label}.fileSha256 must be a SHA-256 digest`);
 };
 
-const validateFingerprint = (value, expected, label, problems) => {
+const isFingerprint = (value) =>
+  isObject(value) && value.algorithm === 'sha256' && SHA256.test(value.value ?? '');
+
+const hasFingerprintShape = (value) =>
+  isFingerprint(value) && Object.keys(value).every((key) => key === 'algorithm' || key === 'value');
+
+const validateFingerprintShape = (value, label, problems) => {
   allowed(value, new Set(['algorithm', 'value']), label, problems);
-  if (value?.algorithm !== 'sha256' || !SHA256.test(value?.value ?? '')) {
+  if (!hasFingerprintShape(value)) {
     problems.push(`${label} must be a SHA-256 fingerprint`);
-    return;
+    return false;
   }
+  return true;
+};
+
+const fingerprintsEqual = (left, right) =>
+  isFingerprint(left) && isFingerprint(right) && left.algorithm === right.algorithm && left.value === right.value;
+
+const validateFingerprint = (value, expected, label, problems) => {
+  if (!validateFingerprintShape(value, label, problems)) return;
   try {
     if (value.value !== fingerprintEvidence(expected).value) problems.push(`${label} must match canonical evidence`);
   } catch {
@@ -160,35 +183,173 @@ const validateFingerprint = (value, expected, label, problems) => {
 const validateObservation = (observation, label, outcome, problems) => {
   const object = allowed(observation, new Set(['outcome', 'checkFingerprint']), label, problems);
   const fingerprint = observation?.checkFingerprint;
-  const validFingerprint =
-    isObject(fingerprint) &&
-    Object.keys(fingerprint).every((key) => key === 'algorithm' || key === 'value') &&
-    fingerprint.algorithm === 'sha256' &&
-    SHA256.test(fingerprint.value ?? '');
+  const validFingerprint = isFingerprint(fingerprint);
+  if (isObject(observation)) validateFingerprintShape(fingerprint, `${label}.checkFingerprint`, problems);
   if (!object || observation?.outcome !== outcome || !validFingerprint) {
     problems.push(`${label} must bind a check-result outcome and fingerprint`);
   }
   if (object && observation?.outcome !== outcome) problems.push(`${label}.outcome must be ${outcome}`);
 };
 
-const validateStage = (stage, name, { test = false } = {}, problems) => {
+const validJiraSource = (source, ticket, { decisionContent = false } = {}) =>
+  isObject(source) &&
+  Object.keys(source).every((key) =>
+    ['system', 'issue', 'commentId', 'actor', ...(decisionContent ? ['decisionContentFingerprint'] : [])].includes(key),
+  ) &&
+  source.system === 'jira' &&
+  source.issue === ticket &&
+  TICKET.test(source.issue ?? '') &&
+  typeof source.commentId === 'string' &&
+  source.commentId.length > 0 &&
+  source.commentId.length <= 128 &&
+  typeof source.actor === 'string' &&
+  source.actor.length > 0 &&
+  source.actor.length <= 256 &&
+  (!decisionContent || hasFingerprintShape(source.decisionContentFingerprint));
+
+const validTrustedTrackerDecision = (decision, ticket) => {
+  const source = decision?.source;
+  return (
+    isObject(decision) &&
+    LEVELS.has(decision.level) &&
+    TICKET.test(ticket ?? '') &&
+    validJiraSource(source, ticket, { decisionContent: decision.level === 'TDD-0' })
+  );
+};
+
+const validProofCheckpoint = (checkpoint) =>
+  isObject(checkpoint) &&
+  Object.keys(checkpoint).every((key) => ['source', 'outcome', 'checkFingerprint', 'testSetFingerprint'].includes(key)) &&
+  isObject(checkpoint.source) &&
+  Object.keys(checkpoint.source).every((key) => ['runId', 'seq'].includes(key)) &&
+  RUN_ID.test(checkpoint.source.runId ?? '') &&
+  Number.isSafeInteger(checkpoint.source.seq) &&
+  checkpoint.source.seq >= 0 &&
+  checkpoint.outcome === 'pass' &&
+  hasFingerprintShape(checkpoint.checkFingerprint) &&
+  hasFingerprintShape(checkpoint.testSetFingerprint);
+
+const validateTrustedRefactorEvidence = (evidence, input) => {
+  if (
+    !isObject(evidence) ||
+    !Object.keys(evidence).every((key) => ['ticket', 'baselineHeadSha', 'testSet', 'before', 'after', 'fingerprint'].includes(key)) ||
+    !TICKET.test(input?.ticket ?? '') ||
+    !GIT_SHA.test(input?.baselineHeadSha ?? '')
+  ) {
+    return false;
+  }
+  if (
+    evidence.ticket !== input.ticket ||
+    evidence.baselineHeadSha !== input.baselineHeadSha ||
+    !isObject(evidence.testSet) ||
+    !Object.keys(evidence.testSet).every((key) => ['count', 'fingerprint'].includes(key)) ||
+    !Number.isSafeInteger(evidence.testSet.count) ||
+    evidence.testSet.count <= 0 ||
+    !hasFingerprintShape(evidence.testSet.fingerprint) ||
+    !validProofCheckpoint(evidence.before) ||
+    !validProofCheckpoint(evidence.after) ||
+    !hasFingerprintShape(evidence.fingerprint) ||
+    !fingerprintsEqual(evidence.before.testSetFingerprint, evidence.testSet.fingerprint) ||
+    !fingerprintsEqual(evidence.after.testSetFingerprint, evidence.testSet.fingerprint)
+  ) {
+    return false;
+  }
+  if (
+    evidence.before.source.runId === evidence.after.source.runId &&
+    evidence.before.source.seq >= evidence.after.source.seq
+  ) {
+    return false;
+  }
+  try {
+    return fingerprintsEqual(
+      evidence.fingerprint,
+      fingerprintEvidence({
+        ticket: evidence.ticket,
+        baselineHeadSha: evidence.baselineHeadSha,
+        testSet: evidence.testSet,
+        before: evidence.before,
+        after: evidence.after,
+      }),
+    );
+  } catch {
+    return false;
+  }
+};
+
+const validateTdd0Authority = (authority, record, problems) => {
+  const kind = authority?.kind;
+  if (kind === 'path-contract') {
+    allowed(authority, new Set(['kind', 'id']), 'applicability.authority', problems);
+    return;
+  }
+  if (kind === 'owner-waiver') {
+    allowed(authority, new Set(['kind', 'id', 'source', 'decisionFingerprint']), 'applicability.authority', problems);
+    allowed(
+      authority?.source,
+      new Set(['system', 'issue', 'commentId', 'actor', 'decisionContentFingerprint']),
+      'applicability.authority.source',
+      problems,
+    );
+    if (!validJiraSource(authority?.source, record?.ticket, { decisionContent: true })) {
+      problems.push('applicability.authority.source must identify this Jira item');
+    }
+    validateFingerprintShape(
+      authority?.source?.decisionContentFingerprint,
+      'applicability.authority.source.decisionContentFingerprint',
+      problems,
+    );
+    const label = 'applicability.authority.decisionFingerprint';
+    validateFingerprintShape(authority?.decisionFingerprint, label, problems);
+    try {
+      if (
+        isFingerprint(authority?.decisionFingerprint) &&
+        !fingerprintsEqual(
+          authority.decisionFingerprint,
+          fingerprintEvidence({ level: 'TDD-0', ticket: record?.ticket, source: authority.source }),
+        )
+      ) {
+        problems.push(`${label} must match canonical owner-waiver evidence`);
+      }
+    } catch {
+      problems.push(`${label} must match canonical owner-waiver evidence`);
+    }
+    return;
+  }
+  if (kind === 'trusted-refactor-evidence') {
+    allowed(authority, new Set(['kind', 'id', 'proof']), 'applicability.authority', problems);
+    if (
+      !validateTrustedRefactorEvidence(authority?.proof, {
+        ticket: record?.ticket,
+        baselineHeadSha: record?.baseline?.headSha,
+      })
+    ) {
+      problems.push('applicability.authority.proof must be a bound compact refactor proof');
+    }
+    return;
+  }
+  allowed(authority, new Set(['kind', 'id']), 'applicability.authority', problems);
+  problems.push('applicability.authority.kind is not permitted for TDD-0');
+};
+
+const validateStage = (stage, name, { test = false, predecessor = false } = {}, problems, binding) => {
   const implementation = name === 'implementationBoundary';
   const permitted = new Set(['source', 'fingerprint']);
   if (test) permitted.add('test');
   if (implementation) permitted.add('implementationDeltaFingerprint');
   else permitted.add('observation');
+  if (predecessor) permitted.add('predecessorFingerprint');
   allowed(stage, permitted, name, problems);
   if (test) validateTest(stage?.test, `${name}.test`, problems);
   validateSource(stage?.source, `${name}.source`, problems);
   if (implementation) {
     const delta = stage?.implementationDeltaFingerprint;
-    if (delta?.algorithm !== 'sha256' || !SHA256.test(delta?.value ?? '')) {
-      problems.push('implementationBoundary.implementationDeltaFingerprint must be a SHA-256 fingerprint');
-    }
+    validateFingerprintShape(delta, 'implementationBoundary.implementationDeltaFingerprint', problems);
   } else {
     validateObservation(stage?.observation, `${name}.observation`, name === 'green' ? 'pass' : 'fail', problems);
   }
   const canonicalStage = {
+    ticket: binding?.ticket,
+    baselineHeadSha: binding?.baseline?.headSha,
     stage:
       name === 'implementationBoundary'
         ? 'implementation-boundary'
@@ -198,12 +359,34 @@ const validateStage = (stage, name, { test = false } = {}, problems) => {
   canonicalStage.source = stage?.source;
   if (implementation) canonicalStage.implementationDeltaFingerprint = stage?.implementationDeltaFingerprint;
   else canonicalStage.observation = stage?.observation;
+  if (predecessor) canonicalStage.predecessorFingerprint = stage?.predecessorFingerprint;
   validateFingerprint(stage?.fingerprint, canonicalStage, `${name}.fingerprint`, problems);
 };
 
-const stageOrder = (left, right, leftName, rightName, problems) => {
-  if (left?.source?.runId === right?.source?.runId && left?.source?.seq >= right?.source?.seq) {
-    problems.push(`${rightName}.source.seq must follow ${leftName}.source.seq in the same run`);
+const validatePredecessor = (stage, previous, name, problems) => {
+  const label = `${name}.predecessorFingerprint`;
+  if (!validateFingerprintShape(stage?.predecessorFingerprint, label, problems)) return;
+  if (!fingerprintsEqual(stage.predecessorFingerprint, previous?.fingerprint)) {
+    problems.push(`${label} must equal the previous stage fingerprint`);
+  }
+};
+
+const validateStageOrder = (stages, problems) => {
+  for (let left = 0; left < stages.length; left += 1) {
+    for (let right = left + 1; right < stages.length; right += 1) {
+      const earlier = stages[left];
+      const later = stages[right];
+      const earlierSource = earlier.value?.source;
+      const laterSource = later.value?.source;
+      if (
+        earlierSource?.runId !== undefined &&
+        laterSource?.runId !== undefined &&
+        earlierSource.runId === laterSource.runId &&
+        earlierSource.seq >= laterSource.seq
+      ) {
+        problems.push(`${later.name}.source.seq must follow ${earlier.name}.source.seq in the same run`);
+      }
+    }
   }
 };
 
@@ -217,7 +400,9 @@ export const validatePortableEvidence = (record) => {
   if (!['TDD-0', 'TDD-1', 'TDD-2', 'TDD-3'].includes(record?.applicability?.level)) {
     problems.push('applicability.level is unsupported');
   }
-  allowed(record?.applicability?.authority, new Set(['kind', 'id']), 'applicability.authority', problems);
+  if (!isObject(record?.applicability?.authority)) {
+    problems.push('applicability.authority must be an object');
+  }
   if (typeof record?.applicability?.authority?.kind !== 'string' || record.applicability.authority.kind.length > 64) {
     problems.push('applicability.authority.kind must be bounded');
   }
@@ -234,14 +419,19 @@ export const validatePortableEvidence = (record) => {
     }
   };
   if (level === 'TDD-0') {
+    validateTdd0Authority(record?.applicability?.authority, record, problems);
     forbid(['red', 'implementationBoundary', 'green', 'nonVacuity']);
   } else if (level === 'TDD-1') {
-    validateStage(record?.red, 'red', { test: true }, problems);
+    allowed(record?.applicability?.authority, new Set(['kind', 'id']), 'applicability.authority', problems);
+    validateStage(record?.red, 'red', { test: true }, problems, record);
     forbid(['implementationBoundary', 'green', 'nonVacuity']);
   } else if (level === 'TDD-2' || level === 'TDD-3') {
-    validateStage(record?.red, 'red', { test: true }, problems);
-    validateStage(record?.implementationBoundary, 'implementationBoundary', {}, problems);
-    validateStage(record?.green, 'green', { test: true }, problems);
+    allowed(record?.applicability?.authority, new Set(['kind', 'id']), 'applicability.authority', problems);
+    validateStage(record?.red, 'red', { test: true }, problems, record);
+    validateStage(record?.implementationBoundary, 'implementationBoundary', { predecessor: true }, problems, record);
+    validateStage(record?.green, 'green', { test: true, predecessor: true }, problems, record);
+    validatePredecessor(record?.implementationBoundary, record?.red, 'implementationBoundary', problems);
+    validatePredecessor(record?.green, record?.implementationBoundary, 'green', problems);
     if (record?.red?.test && record?.green?.test) {
       if (record.green.test.file !== record.red.test.file) problems.push('green.test.file must equal red.test.file');
       if (record.green.test.fullName !== record.red.test.fullName) problems.push('green.test.fullName must equal red.test.fullName');
@@ -249,18 +439,33 @@ export const validatePortableEvidence = (record) => {
         problems.push('green.test.fileSha256 must equal red.test.fileSha256');
       }
     }
-    stageOrder(record?.red, record?.implementationBoundary, 'red', 'implementationBoundary', problems);
-    stageOrder(record?.implementationBoundary, record?.green, 'implementationBoundary', 'green', problems);
+    validateStageOrder(
+      [
+        { name: 'red', value: record?.red },
+        { name: 'implementationBoundary', value: record?.implementationBoundary },
+        { name: 'green', value: record?.green },
+      ],
+      problems,
+    );
   }
   if (level === 'TDD-3') {
     if (!record?.nonVacuity) {
       problems.push('nonVacuity is required for TDD-3');
     } else {
-      validateStage(record.nonVacuity, 'nonVacuity', { test: true }, problems);
+      validateStage(record.nonVacuity, 'nonVacuity', { test: true, predecessor: true }, problems, record);
+      validatePredecessor(record.nonVacuity, record?.green, 'nonVacuity', problems);
       if (record?.green?.test && record.nonVacuity?.test && !sameTest(record.green.test, record.nonVacuity.test)) {
         problems.push('nonVacuity.test must equal green.test');
       }
-      stageOrder(record?.green, record?.nonVacuity, 'green', 'nonVacuity', problems);
+      validateStageOrder(
+        [
+          { name: 'red', value: record?.red },
+          { name: 'implementationBoundary', value: record?.implementationBoundary },
+          { name: 'green', value: record?.green },
+          { name: 'nonVacuity', value: record?.nonVacuity },
+        ],
+        problems,
+      );
     }
   } else if ((level === 'TDD-2' || level === 'TDD-1') && record?.nonVacuity !== undefined) {
     problems.push('nonVacuity is permitted only for TDD-3');
