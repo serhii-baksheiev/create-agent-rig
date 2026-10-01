@@ -35,10 +35,10 @@
     "schemaVersion": 1,
     "ticket": "RP-326",
     "applicability": {
-      "level": "TDD-1",
+      "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "RP-326-red"
+        "id": "RP-326-green-fixed"
       }
     },
     "baseline": {
@@ -64,6 +64,50 @@
       "fingerprint": {
         "algorithm": "sha256",
         "value": "63336ebeef0cedd8eceae149138459ee6339da299e364d24a62a11cae651c756"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-1505-rel-1-2-0-rp326",
+        "seq": 11
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "322fc3835f97f320a2953a196a4eac5afbd6bb6759fa6bfa36cc2ef6c73b2dba"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "63336ebeef0cedd8eceae149138459ee6339da299e364d24a62a11cae651c756"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "2c40be368c1511189bd5e8ddad35995eedea410b93adc12f73fc11dc531d57b6"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/plan-deferral-identity.test.ts",
+        "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+        "fileSha256": "0ee1195ac5bffdd0a1edf50da51ddf4b2557fe42346d95bc2a4be118bc4b6402"
+      },
+      "source": {
+        "runId": "20261001-1505-rel-1-2-0-rp326",
+        "seq": 12
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "7daa63378bd1232b09c56801130a0eedb210d6a74d6b29a18166accb7d7a33fc"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "2c40be368c1511189bd5e8ddad35995eedea410b93adc12f73fc11dc531d57b6"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "cef49bc35232ca5cf7795807f1cee61de947cc33467aaad3c7d9482867aeac9e"
       }
     }
   }
