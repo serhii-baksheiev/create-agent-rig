@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { findSecretValues } from './secrets.mjs';
 
 export const TDD_EVIDENCE_SCHEMA_VERSION = 1;
 
@@ -11,6 +12,8 @@ const MAX_CANONICAL_DEPTH = 16;
 const MAX_CANONICAL_NODES = 512;
 const MAX_CANONICAL_STRING_BYTES = 4096;
 const MAX_CANONICAL_BYTES = 64 * 1024;
+const MAX_SECRET_SCAN_DEPTH = 16;
+const MAX_SECRET_SCAN_NODES = 512;
 
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const compareCodeUnits = (left, right) => (left < right ? -1 : left > right ? 1 : 0);
@@ -130,12 +133,29 @@ const allowed = (value, keys, label, problems) => {
   }
   for (const key of Object.keys(value)) {
     if (!keys.has(key)) {
-      const rendered = /^[A-Za-z][A-Za-z0-9._-]{0,127}$/.test(key) ? key : '[invalid-key]';
-      const message = `${label ? `${label}.` : ''}${rendered} is not permitted in portable evidence`;
+      const message = `${label ? `${label}.` : ''}[unknown-key] is not permitted in portable evidence`;
       problems.push(message.slice(0, 512));
     }
   }
   return true;
+};
+
+const scanPortableStrings = (value, label, problems, state = { depth: 0, nodes: 0, exhausted: false }) => {
+  if (state.depth > MAX_SECRET_SCAN_DEPTH || ++state.nodes > MAX_SECRET_SCAN_NODES) {
+    if (!state.exhausted) problems.push('portable evidence credential scan exceeded bounds');
+    state.exhausted = true;
+    return;
+  }
+  if (typeof value === 'string') {
+    if (findSecretValues(value).length > 0) problems.push(`${label} contains credential-shaped content`);
+    return;
+  }
+  if (!isObject(value)) return;
+  for (const [key, entry] of Object.entries(value)) {
+    state.depth += 1;
+    scanPortableStrings(entry, label ? `${label}.${key}` : key, problems, state);
+    state.depth -= 1;
+  }
 };
 
 const validateSource = (source, label, problems) => {
@@ -470,5 +490,6 @@ export const validatePortableEvidence = (record) => {
   } else if ((level === 'TDD-2' || level === 'TDD-1') && record?.nonVacuity !== undefined) {
     problems.push('nonVacuity is permitted only for TDD-3');
   }
+  if (problems.length === 0) scanPortableStrings(record, '', problems);
   return problems.length ? { ok: false, problems } : { ok: true };
 };

@@ -667,7 +667,7 @@ describe('RP-305 portable evidence contract', () => {
     expect(validatePortableEvidence(rawDelta)).toMatchObject({
       ok: false,
       problems: expect.arrayContaining([
-        `implementationBoundary.implementationDeltaFingerprint.${unboundedField} is not permitted in portable evidence`,
+        'implementationBoundary.implementationDeltaFingerprint.[unknown-key] is not permitted in portable evidence',
       ]),
     });
   });
@@ -855,7 +855,7 @@ describe('RP-305 portable evidence contract', () => {
     (evidence as Record<string, unknown>).rawTerminalOutput = 'unbounded raw log';
     expect(validatePortableEvidence(evidence)).toMatchObject({
       ok: false,
-      problems: expect.arrayContaining(['rawTerminalOutput is not permitted in portable evidence']),
+      problems: expect.arrayContaining(['[unknown-key] is not permitted in portable evidence']),
     });
 
     const first = fingerprintEvidence(await portableTdd2());
@@ -882,6 +882,107 @@ describe('RP-305 portable evidence contract', () => {
     const result = validatePortableEvidence(evidence);
     expect(result).toMatchObject({ ok: false });
     expect(result.problems?.every((problem) => problem.length <= 512)).toBe(true);
+  });
+
+  it('rejects credential-shaped portable strings without disclosing their values', async () => {
+    const { fingerprintEvidence, validatePortableEvidence } = (await load()) as {
+      fingerprintEvidence: (record: unknown) => { algorithm: string; value: string };
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    const secretsPath = path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'scripts',
+      'lib',
+      'secrets.mjs',
+    );
+    const { findSecretValues } = (await import(pathToFileURL(secretsPath).href)) as {
+      findSecretValues: (text: string) => Array<{ id: string }>;
+    };
+    const credentialShape = ['token', '=', 'a1'.repeat(8)].join('');
+    expect(findSecretValues(credentialShape)).not.toEqual([]);
+
+    const stageRecord = await portableTdd2();
+    stageRecord.red.test.fullName = credentialShape;
+    stageRecord.green.test.fullName = credentialShape;
+    await linkPortableTdd2(stageRecord);
+    const stageResult = validatePortableEvidence(stageRecord);
+    expect(stageResult).toMatchObject({ ok: false });
+    expect(stageResult.problems).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^red\.test\.fullName.*credential/i)]),
+    );
+    expect(stageResult.problems?.join('\n')).not.toContain(credentialShape);
+
+    const ticket = 'RP-305';
+    const source = {
+      system: 'jira',
+      issue: ticket,
+      commentId: '21523',
+      actor: credentialShape,
+      decisionContentFingerprint: { algorithm: 'sha256', value: sha('7') },
+    };
+    const ownerRecord = {
+      schemaVersion: 1,
+      ticket,
+      baseline: { headSha: baselineSha },
+      applicability: {
+        level: 'TDD-0',
+        authority: {
+          kind: 'owner-waiver',
+          id: 'owner-comment-21523',
+          source,
+          decisionFingerprint: fingerprintEvidence({ level: 'TDD-0', ticket, source }),
+        },
+      },
+    };
+    const ownerResult = validatePortableEvidence(ownerRecord);
+    expect(ownerResult).toMatchObject({ ok: false });
+    expect(ownerResult.problems).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^applicability\.authority\.source\.actor.*credential/i),
+      ]),
+    );
+    expect(ownerResult.problems?.join('\n')).not.toContain(credentialShape);
+  });
+
+  it('redacts credential-shaped unknown portable-evidence keys at every depth', async () => {
+    const { validatePortableEvidence } = (await load()) as {
+      validatePortableEvidence: (record: unknown) => { ok: boolean; problems?: string[] };
+    };
+    const secretsPath = path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'scripts',
+      'lib',
+      'secrets.mjs',
+    );
+    const { findSecretValues } = (await import(pathToFileURL(secretsPath).href)) as {
+      findSecretValues: (text: string) => Array<{ id: string }>;
+    };
+    const credentialKey = ['token', '=', 'a1'.repeat(8)].join('');
+    expect(findSecretValues(credentialKey)).not.toEqual([]);
+
+    const rootUnknown = await portableTdd2();
+    (rootUnknown as Record<string, unknown>)[credentialKey] = true;
+    const nestedUnknown = await portableTdd2();
+    (nestedUnknown.red.test as Record<string, unknown>)[credentialKey] = true;
+    await linkPortableTdd2(nestedUnknown);
+
+    for (const evidence of [rootUnknown, nestedUnknown]) {
+      const result = validatePortableEvidence(evidence);
+      const serializedProblems = JSON.stringify(result.problems);
+      expect(result).toMatchObject({ ok: false });
+      expect(serializedProblems.includes(credentialKey)).toBe(false);
+      expect(result.problems).toEqual(
+        expect.arrayContaining([expect.stringMatching(/\[unknown-key\] is not permitted/i)]),
+      );
+    }
   });
 
   it('uses code-unit key ordering for SHA-256 fingerprints on every machine', async () => {

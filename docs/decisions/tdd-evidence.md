@@ -63,6 +63,14 @@ missing portable history at `pr-ship`, authenticate and persist Jira and
 cross-run chronology, and put compact fingerprints in PR and tracker verdicts
 rather than copying journal records.
 
+Portable validation also scans bounded, structurally valid string leaves with
+the shared `findSecretValues` vocabulary and reports only a redacted
+credential-shaped-content verdict. That scanner detects its documented shapes,
+not every possible credential; schema validation cannot certify unknown
+credential patterns. RP-306 must apply its existing redaction and field
+selection at the producer before persistence for values the shared scanner
+cannot recognize.
+
 RP-305 supplies the deterministic contract only. RP-306 derives it from
 `check-run` and the journal, writes claim evidence, and enforces TDD-2 at
 `pr-ship`. This decision adds no production-write lock.
