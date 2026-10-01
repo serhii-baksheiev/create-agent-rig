@@ -1093,9 +1093,10 @@ const ownerNote = (held) =>
 
 /**
  * The lifecycle remedies (AR-144), each present only when its tag is in the pile.
- * Both are human acts on the item itself — neither time nor interleaving frees
- * them, and the loop must not perform either: rewriting a `re-scope` item is
- * authoring its own work, and un-parking is a scheduling decision.
+ * The remedy is determined by the item's own marker — neither time nor
+ * interleaving frees it. The loop must not perform a human remedy: rewriting a
+ * `re-scope` item authors its own work, and un-parking a parked item is a
+ * scheduling decision.
  */
 const lifecycleNote = (held) =>
   (held.includes('re-scope')
@@ -1104,8 +1105,9 @@ const lifecycleNote = (held) =>
       'loop never invents the new scope.'
     : '') +
   (held.includes('deferred')
-    ? ' An item held as deferred carries the parked label — valid work deliberately ' +
-      'not active now: a human un-parks it; nothing this run does frees it.'
+    ? ' An item held as deferred is valid work deliberately not active now. A parked ' +
+      'item needs human un-parking; frozen and later items are deferred for their own ' +
+      'item-level reason. Nothing this run does frees it.'
     : '');
 
 /**
