@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -121,6 +121,7 @@ const bash = (command: string) => ({
 let home: string;
 let claudeSettings: HookWiring;
 let codexHooks: HookWiring;
+let isolatedCheckouts: string[] = [];
 
 beforeEach(async () => {
   home = await mkdtemp(path.join(tmpdir(), 'guard-acceptance-home-'));
@@ -129,6 +130,8 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await removeFixture(home);
+  await Promise.all(isolatedCheckouts.map((checkout) => removeFixture(checkout)));
+  isolatedCheckouts = [];
 });
 
 /** The patch Codex sends for an edit: its editing tool is `apply_patch`, not `Write`. */
@@ -269,6 +272,33 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
   const codexDenied = applyPatch(`*** Update File: ${deniedPath}`, '# tampered');
   const reason = /outside its item's allow-list/;
 
+  /**
+   * Run the actual shipped hook in a disposable Git checkout, not this
+   * controller's checkout. Its scoped flag name differs from the active
+   * controller's; the fixture writes only its temporary HOME, never the
+   * password-database home of the user running the test.
+   */
+  async function isolatedRulebookCheckout(): Promise<string> {
+    const root = await mkdtemp(path.join(tmpdir(), 'guard-acceptance-root-'));
+    isolatedCheckouts.push(root);
+    await mkdir(path.join(root, '.claude'), { recursive: true });
+    await Promise.all([
+      cp(path.join(repoRoot, '.claude', 'hooks'), path.join(root, '.claude', 'hooks'), {
+        recursive: true,
+      }),
+      cp(path.join(repoRoot, '.claude', 'scripts'), path.join(root, '.claude', 'scripts'), {
+        recursive: true,
+      }),
+    ]);
+    await new Promise<void>((resolve, reject) => {
+      execFile('git', ['init', '--quiet'], { cwd: root }, (error) => {
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+    return root;
+  }
+
   it('picks one path outside the rulebook and one inside it, by the module that decides', async () => {
     const { isRulebookPath } = (await import(
       pathToFileURL(path.join(repoRoot, '.claude', 'scripts', 'unattended-flag.mjs')).href
@@ -285,7 +315,7 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
     // running hook computes it, so this loads the installed copy of
     // `unattended-flag.mjs` too, rather than the unsubstituted template one.
     const { unattendedFlags } = (await import(
-      pathToFileURL(path.join(repoRoot, '.claude', 'scripts', 'unattended-flag.mjs')).href
+      pathToFileURL(path.join(root, '.claude', 'scripts', 'unattended-flag.mjs')).href
     )) as { unattendedFlags: (env: NodeJS.ProcessEnv) => string[] };
     const flag = unattendedFlags({ HOME: home, CLAUDE_PROJECT_DIR: root })[0]!;
     await mkdir(path.dirname(flag), { recursive: true });
@@ -302,12 +332,13 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
   it('Claude Code wiring: allows README.md and blocks a rule file while unattended', async (ctx) => {
     const posix = posixShellAvailable();
     skipUnless(ctx, posix.ok, posix.reason);
-    await arm(repoRoot);
+    const root = await isolatedRulebookCheckout();
+    await arm(root);
     const entry = commandFor(claudeSettings, 'PreToolUse', 'guard-rulebook.mjs');
-    const env = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: repoRoot };
-    const allow = await runWired(entry.command, allowed, env, repoRoot);
+    const env = { ...process.env, HOME: home, CLAUDE_PROJECT_DIR: root };
+    const allow = await runWired(entry.command, allowed, env, root);
     expect(allow.code, allow.stderr).toBe(0);
-    const deny = await runWired(entry.command, denied, env, repoRoot);
+    const deny = await runWired(entry.command, denied, env, root);
     expect(deny.code, deny.stderr).toBe(2);
     expect(deny.stderr).toMatch(reason);
   });
@@ -317,11 +348,12 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
     expect((entry.commandWindows ?? '').length).toBeGreaterThan(0);
     const posix = posixShellAvailable();
     skipUnless(ctx, posix.ok, posix.reason);
-    await arm(repoRoot);
+    const root = await isolatedRulebookCheckout();
+    await arm(root);
     const env = { ...process.env, HOME: home };
-    const allow = await runWired(entry.command, codexAllowed, env, repoRoot);
+    const allow = await runWired(entry.command, codexAllowed, env, root);
     expect(allow.code, allow.stderr).toBe(0);
-    const deny = await runWired(entry.command, codexDenied, env, repoRoot);
+    const deny = await runWired(entry.command, codexDenied, env, root);
     expect(deny.code, deny.stderr).toBe(2);
     expect(deny.stderr).toMatch(reason);
   });

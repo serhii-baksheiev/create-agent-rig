@@ -51,7 +51,7 @@ export const resolveAdapter = async (adapterName) => {
   return import(new URL(modulePath, import.meta.url).href);
 };
 
-export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round', 'board'];
+export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round', 'board', 'import'];
 
 /**
  * A missing config is the normal state of a fresh project. A config that exists
@@ -311,11 +311,19 @@ export const loadState = (statePath) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { command: argv[0] ?? 'next', json: false, config: null, branch: null, name: null };
+  const args = {
+    command: argv[0] ?? 'next', json: false, config: null, branch: null, name: null,
+    source: null, target: null, tasksPath: null, dryRun: false, unknownOptions: [],
+  };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--config') args.config = argv[++i];
     else if (argv[i] === '--branch') args.branch = argv[++i];
+    else if (argv[i] === '--to') args.target = argv[++i];
+    else if (argv[i] === '--tasks') args.tasksPath = argv[++i];
+    else if (argv[i] === '--dry-run') args.dryRun = true;
+    else if (argv[i].startsWith('--')) args.unknownOptions.push(argv[i]);
+    else if (!argv[i].startsWith('--') && args.source === null && args.command === 'import') args.source = argv[i];
     else if (!argv[i].startsWith('--') && args.name === null) args.name = argv[i];
   }
   return args;
@@ -380,6 +388,31 @@ if (invokedDirectly()) {
         "the adapter's own API — import the adapter module rather than this CLI.\n",
     );
     process.exit(1);
+  }
+
+  // This narrow projection bypasses queue configuration: it writes GitHub
+  // Issues, after which the ordinary GitHub queue reads the dependency bodies.
+  if (args.command === 'import') {
+    if (
+      args.source !== 'spec-kit' ||
+      args.target !== 'github-issues' ||
+      args.unknownOptions.length > 0 ||
+      args.name !== null ||
+      args.config !== null ||
+      args.branch !== null
+    ) {
+      process.stderr.write('usage: queue import spec-kit --to github-issues [--tasks specs/<feature>/tasks.md] [--dry-run] [--json]\n');
+      process.exit(1);
+    }
+    try {
+      const { importSpecKit } = await import('./spec-kit-import.mjs');
+      const report = importSpecKit({ projectRoot, tasksPath: args.tasksPath, dryRun: args.dryRun });
+      process.stdout.write(args.json ? `${JSON.stringify(report)}\n` : `${JSON.stringify(report, null, 2)}\n`);
+      process.exit(0);
+    } catch (error) {
+      process.stderr.write(`spec-kit import: ${error.message}\n`);
+      process.exit(1);
+    }
   }
 
   // `board` is local too: it reads the config and writes the selector beside it,
