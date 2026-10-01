@@ -5,7 +5,7 @@
 // make an implementation-order claim (RP-305 and RP-307 own those contracts).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -405,6 +405,76 @@ const productionPaths = ({ projectRoot, baselineHeadSha, ticket = null }) => {
   return paths.filter((file) => resolveApplicability({ changedPaths: [file] }).level !== 'TDD-0');
 };
 
+const gitPathList = ({ projectRoot, args, label }) => {
+  let names;
+  try {
+    names = execFileSync('git', ['-C', projectRoot, ...args], {
+      encoding: 'buffer',
+      env: withoutGitLocation(),
+      maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES,
+    });
+  } catch {
+    throw new Error(`${label} could not be read`);
+  }
+  return names
+    .toString('utf8')
+    .split('\0')
+    .filter((file) => safeRelativePath(file));
+};
+
+const isTestInfrastructurePath = (file) => /^vitest\.config\.(?:[cm]?[jt]s|json)$/.test(file);
+
+const isPreRedRuntimePath = (file) => file === '.claude/queue.json' || file.startsWith('node_modules/');
+
+const preRedProductionPaths = ({ projectRoot, baselineHeadSha, ticket = null }) => {
+  const tracked = changedPaths({ projectRoot, baselineHeadSha });
+  const untracked = gitPathList({
+    projectRoot,
+    args: ['ls-files', '--others', '--exclude-standard', '-z'],
+    label: 'untracked Git paths',
+  });
+  const candidates = [...new Set([...tracked, ...untracked])].sort();
+  return tddApplicabilityPaths(candidates, ticket).filter(
+    (file) =>
+      !isPreRedRuntimePath(file) &&
+      !isTestInfrastructurePath(file) &&
+      resolveApplicability({ changedPaths: [file] }).level !== 'TDD-0',
+  );
+};
+
+const pathStateFingerprint = ({ projectRoot, paths }) => {
+  if (paths.length > 256) throw new Error('pre-RED production state exceeds 256 paths');
+  const entries = paths.map((file) => {
+    const pathFingerprint = createHash('sha256').update(file).digest('hex');
+    try {
+      const stat = lstatSync(join(projectRoot, file));
+      if (stat.isSymbolicLink()) {
+        const target = readlinkSync(join(projectRoot, file), { encoding: 'buffer' });
+        const finished = lstatSync(join(projectRoot, file));
+        if (!finished.isSymbolicLink() || finished.dev !== stat.dev || finished.ino !== stat.ino) {
+          throw new Error('pre-RED production symlink changed during validation');
+        }
+        return {
+          pathFingerprint,
+          state: 'symlink',
+          targetFingerprint: createHash('sha256').update(target).digest('hex'),
+        };
+      }
+      if (!stat.isFile()) throw new Error('pre-RED production path is not a regular file');
+      const bytes = repositoryTestFile({ projectRoot, testFile: file, label: 'pre-RED production file' });
+      return {
+        pathFingerprint,
+        state: 'present',
+        contentFingerprint: createHash('sha256').update(bytes).digest('hex'),
+      };
+    } catch (error) {
+      if (error?.code === 'ENOENT') return { pathFingerprint, state: 'deleted' };
+      throw error;
+    }
+  });
+  return fingerprintEvidence({ stage: 'pre-red-production-state', entries });
+};
+
 const implementationDeltaFingerprint = ({ projectRoot, baselineHeadSha, bindingBaselineHeadSha = baselineHeadSha, ticket = null }) => {
   const paths = productionPaths({ projectRoot, baselineHeadSha, ticket });
   if (paths.length === 0) throw new Error('implementation delta is empty');
@@ -513,7 +583,7 @@ const replaceClaim = ({ projectRoot, file, content }) => {
 };
 
 const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
-  const { event, test } = checkEvent({ projectRoot, runDir, check, outcome: 'fail' });
+  const { run, event, test } = checkEvent({ projectRoot, runDir, check, outcome: 'fail' });
   const { file, claim } = claimRecord(projectRoot, ticket);
   const previousEvidence = claim.tddEvidence;
   if (previousEvidence !== undefined) {
@@ -558,11 +628,64 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
       observation,
     }),
   };
+  const paths = preRedProductionPaths({
+    projectRoot,
+    baselineHeadSha: claim.fingerprints.scope.targetSha,
+    ticket,
+  });
+  const production = {
+    pathCount: paths.length,
+    stateFingerprint: pathStateFingerprint({ projectRoot, paths }),
+  };
+  production.fingerprint = fingerprintEvidence({
+    ticket,
+    baselineHeadSha: claim.fingerprints.scope.targetSha,
+    stage: 'pre-red-production',
+    pathCount: production.pathCount,
+    stateFingerprint: production.stateFingerprint,
+  });
+  const dispatchSources = run.events
+    .filter(
+      (entry) =>
+        entry.kind === 'dispatch-start' &&
+        entry.seq < event.seq &&
+        entry?.data?.agentType === 'implementation-agent',
+    )
+    .map((entry) => ({ runId: basename(runDir), seq: entry.seq }));
+  if (dispatchSources.length > 256) throw new Error('pre-RED implementation-agent dispatches exceed 256 events');
+  const implementationAgentDispatch = {
+    count: dispatchSources.length,
+    sourcesFingerprint: fingerprintEvidence({
+      stage: 'pre-red-implementation-agent-dispatch-sources',
+      sources: dispatchSources,
+    }),
+  };
+  implementationAgentDispatch.fingerprint = fingerprintEvidence({
+    ticket,
+    baselineHeadSha: claim.fingerprints.scope.targetSha,
+    stage: 'pre-red-implementation-agent-dispatch',
+    count: implementationAgentDispatch.count,
+    sourcesFingerprint: implementationAgentDispatch.sourcesFingerprint,
+  });
+  const preRed = {
+    baseline: { headSha: claim.fingerprints.scope.targetSha },
+    red: { check, fingerprint: red.fingerprint },
+    production,
+    implementationAgentDispatch,
+  };
+  preRed.fingerprint = fingerprintEvidence({
+    ticket,
+    baseline: preRed.baseline,
+    red: preRed.red,
+    production: preRed.production,
+    implementationAgentDispatch: preRed.implementationAgentDispatch,
+  });
   const evidence = {
     schemaVersion: 1,
     ticket,
     applicability: { level: 'TDD-1', authority: { kind: 'check-run', id: check } },
     baseline: { headSha: claim.fingerprints.scope.targetSha },
+    preRed,
     red,
   };
   const validation = validatePortableEvidence(evidence);

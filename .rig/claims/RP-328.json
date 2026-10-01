@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-328",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "3df38c4ebe26ca9944d94c02ee6e0e05ed12a54f81df5a2c6dbe6c0dea3ad281",
+      "targetSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-pre-red-producer.test.ts",
+      "fullName": "records portable pre-RED implementation state"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "3df38c4ebe26ca9944d94c02ee6e0e05ed12a54f81df5a2c6dbe6c0dea3ad281",
+      "targetSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "b70f42bc3a57da8c25f42e758d354c1941a7cbf7ebc4f142187ae187111a9ae7"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-328",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-328-green"
+      }
+    },
+    "baseline": {
+      "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-pre-red-producer.test.ts",
+        "fullName": "records portable pre-RED implementation state",
+        "fileSha256": "4e4d15a0f99797d593697d5e99bbdeb9cc2714409b0bfe19b091e6edb5d19c17"
+      },
+      "source": {
+        "runId": "20261001-1510-rel-1-2-0-rp328",
+        "seq": 7
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "8446e637bdada325b8bad5c4716fabc2fd72e5c56e41589647c4bc2f3d1d5359"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-1510-rel-1-2-0-rp328",
+        "seq": 8
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "b5345d2df8e2cd3bb7717293cfc7920001558ee2f664d1c1288312fbd7240657"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "546910c70003af5feadb839d1c7d8cec10da39356305b374a244f0a15dabfa74"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-pre-red-producer.test.ts",
+        "fullName": "records portable pre-RED implementation state",
+        "fileSha256": "4e4d15a0f99797d593697d5e99bbdeb9cc2714409b0bfe19b091e6edb5d19c17"
+      },
+      "source": {
+        "runId": "20261001-1510-rel-1-2-0-rp328",
+        "seq": 9
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "2f55f2c6e7755b4181e1046588b6a899c3745998cb8233e29061079721c00639"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "546910c70003af5feadb839d1c7d8cec10da39356305b374a244f0a15dabfa74"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "037c39162de12db04ece9588f6307779d0c5ad02840eff0776c488b4a87685b7"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-328",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-328-red"
+          }
+        },
+        "baseline": {
+          "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-pre-red-producer.test.ts",
+            "fullName": "records portable pre-RED implementation state",
+            "fileSha256": "77ac4693583dd4b6866b18456574247c395900d3538f6decb622af59970f763b"
+          },
+          "source": {
+            "runId": "20261001-1510-rel-1-2-0-rp328",
+            "seq": 5
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "f89580d069def10d063def736fce2cd175cd8ce1f4bda1b7a56d5ea9a056a377"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "bc5b28bb7099993f39a9a2c819a71115950c55fc51ea2086d2365be31beb9923"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "bc5b28bb7099993f39a9a2c819a71115950c55fc51ea2086d2365be31beb9923"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "78b0dda55795b29e2d2b20a0fc4f747a031c1fef4d811f797680ad2f207974de"
+        }
+      }
+    }
+  ]
+}

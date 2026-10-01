@@ -410,9 +410,99 @@ const validateStageOrder = (stages, problems) => {
   }
 };
 
+const validatePreRed = (preRed, record, problems) => {
+  allowed(
+    preRed,
+    new Set(['baseline', 'red', 'production', 'implementationAgentDispatch', 'fingerprint']),
+    'preRed',
+    problems,
+  );
+  allowed(preRed?.baseline, new Set(['headSha']), 'preRed.baseline', problems);
+  if (preRed?.baseline?.headSha !== record?.baseline?.headSha) {
+    problems.push('preRed.baseline.headSha must equal baseline.headSha');
+  }
+  allowed(preRed?.red, new Set(['check', 'fingerprint']), 'preRed.red', problems);
+  if (typeof preRed?.red?.check !== 'string' || preRed.red.check.length === 0 || preRed.red.check.length > 128) {
+    problems.push('preRed.red.check must be bounded');
+  }
+  validateFingerprintShape(preRed?.red?.fingerprint, 'preRed.red.fingerprint', problems);
+  if (!fingerprintsEqual(preRed?.red?.fingerprint, record?.red?.fingerprint)) {
+    problems.push('preRed.red.fingerprint must equal red.fingerprint');
+  }
+  allowed(preRed?.production, new Set(['pathCount', 'stateFingerprint', 'fingerprint']), 'preRed.production', problems);
+  if (!Number.isSafeInteger(preRed?.production?.pathCount) || preRed.production.pathCount < 0 || preRed.production.pathCount > 256) {
+    problems.push('preRed.production.pathCount must be a bounded count');
+  }
+  validateFingerprintShape(preRed?.production?.stateFingerprint, 'preRed.production.stateFingerprint', problems);
+  validateFingerprint(
+    preRed?.production?.fingerprint,
+    {
+      ticket: record?.ticket,
+      baselineHeadSha: record?.baseline?.headSha,
+      stage: 'pre-red-production',
+      pathCount: preRed?.production?.pathCount,
+      stateFingerprint: preRed?.production?.stateFingerprint,
+    },
+    'preRed.production.fingerprint',
+    problems,
+  );
+  allowed(
+    preRed?.implementationAgentDispatch,
+    new Set(['count', 'sourcesFingerprint', 'fingerprint']),
+    'preRed.implementationAgentDispatch',
+    problems,
+  );
+  if (
+    !Number.isSafeInteger(preRed?.implementationAgentDispatch?.count) ||
+    preRed.implementationAgentDispatch.count < 0 ||
+    preRed.implementationAgentDispatch.count > 256
+  ) {
+    problems.push('preRed.implementationAgentDispatch.count must be a bounded count');
+  }
+  validateFingerprintShape(
+    preRed?.implementationAgentDispatch?.sourcesFingerprint,
+    'preRed.implementationAgentDispatch.sourcesFingerprint',
+    problems,
+  );
+  validateFingerprint(
+    preRed?.implementationAgentDispatch?.fingerprint,
+    {
+      ticket: record?.ticket,
+      baselineHeadSha: record?.baseline?.headSha,
+      stage: 'pre-red-implementation-agent-dispatch',
+      count: preRed?.implementationAgentDispatch?.count,
+      sourcesFingerprint: preRed?.implementationAgentDispatch?.sourcesFingerprint,
+    },
+    'preRed.implementationAgentDispatch.fingerprint',
+    problems,
+  );
+  validateFingerprint(
+    preRed?.fingerprint,
+    {
+      ticket: record?.ticket,
+      baseline: preRed?.baseline,
+      red: preRed?.red,
+      production: preRed?.production,
+      implementationAgentDispatch: preRed?.implementationAgentDispatch,
+    },
+    'preRed.fingerprint',
+    problems,
+  );
+};
+
 export const validatePortableEvidence = (record) => {
   const problems = [];
-  const rootAllowed = new Set(['schemaVersion', 'ticket', 'applicability', 'baseline', 'red', 'implementationBoundary', 'green', 'nonVacuity']);
+  const rootAllowed = new Set([
+    'schemaVersion',
+    'ticket',
+    'applicability',
+    'baseline',
+    'preRed',
+    'red',
+    'implementationBoundary',
+    'green',
+    'nonVacuity',
+  ]);
   allowed(record, rootAllowed, '', problems);
   if (record?.schemaVersion !== TDD_EVIDENCE_SCHEMA_VERSION) problems.push('schemaVersion is unsupported');
   if (!TICKET.test(record?.ticket ?? '')) problems.push('ticket must be a bounded item identity');
@@ -440,14 +530,16 @@ export const validatePortableEvidence = (record) => {
   };
   if (level === 'TDD-0') {
     validateTdd0Authority(record?.applicability?.authority, record, problems);
-    forbid(['red', 'implementationBoundary', 'green', 'nonVacuity']);
+    forbid(['preRed', 'red', 'implementationBoundary', 'green', 'nonVacuity']);
   } else if (level === 'TDD-1') {
     allowed(record?.applicability?.authority, new Set(['kind', 'id']), 'applicability.authority', problems);
     validateStage(record?.red, 'red', { test: true }, problems, record);
+    if (record?.preRed !== undefined) validatePreRed(record.preRed, record, problems);
     forbid(['implementationBoundary', 'green', 'nonVacuity']);
   } else if (level === 'TDD-2' || level === 'TDD-3') {
     allowed(record?.applicability?.authority, new Set(['kind', 'id']), 'applicability.authority', problems);
     validateStage(record?.red, 'red', { test: true }, problems, record);
+    if (record?.preRed !== undefined) validatePreRed(record.preRed, record, problems);
     validateStage(record?.implementationBoundary, 'implementationBoundary', { predecessor: true }, problems, record);
     validateStage(record?.green, 'green', { test: true, predecessor: true }, problems, record);
     validatePredecessor(record?.implementationBoundary, record?.red, 'implementationBoundary', problems);
