@@ -131,6 +131,11 @@ An **experimental** workflow layer adds a queue-driven autonomous loop, a
 pre-merge gate skill and PR-lifecycle helpers. It is opt-in:
 `init --layer workflow`.
 
+For a Spec Kit plan shared by several controllers, Rig can project
+`specs/<feature>/tasks.md` into GitHub Issues and use the existing queue to
+read dependencies and claims. See [Parallel Workflows](docs/parallel-workflows.md)
+for the import command, re-import behavior and current concurrency limits.
+
 ## How ownership works
 
 Rig remembers exactly which bytes it installed. That lets every lifecycle
@@ -313,13 +318,14 @@ attempted pre-commit bypass.
 
 ## Documentation
 
-| Document                                               | Covers                                                                |
-| ------------------------------------------------------ | --------------------------------------------------------------------- |
-| [`docs/command-contract.md`](docs/command-contract.md) | Every command's options, output, exit codes and ownership rules       |
-| [`CHANGELOG.md`](CHANGELOG.md)                         | What changed in each release, and the release checklist               |
-| [`docs/decisions/`](docs/decisions/)                   | Design decisions: ownership, `AGENTS.md`, Codex adapter, integrations |
-| [`docs/compatibility.md`](docs/compatibility.md)       | What each capability does per harness and platform                    |
-| [`docs/releasing.md`](docs/releasing.md)               | How a release is prepared and accepted                                |
+| Document                                                   | Covers                                                                |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- |
+| [`docs/command-contract.md`](docs/command-contract.md)     | Every command's options, output, exit codes and ownership rules       |
+| [`CHANGELOG.md`](CHANGELOG.md)                             | What changed in each release, and the release checklist               |
+| [`docs/decisions/`](docs/decisions/)                       | Design decisions: ownership, `AGENTS.md`, Codex adapter, integrations |
+| [`docs/compatibility.md`](docs/compatibility.md)           | What each capability does per harness and platform                    |
+| [`docs/releasing.md`](docs/releasing.md)                   | How a release is prepared and accepted                                |
+| [`docs/parallel-workflows.md`](docs/parallel-workflows.md) | Spec Kit task import, tracker dependencies and controller boundaries  |
 
 ## Development
 
