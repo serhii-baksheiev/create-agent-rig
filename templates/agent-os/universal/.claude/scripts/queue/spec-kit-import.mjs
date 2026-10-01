@@ -240,10 +240,12 @@ const ensureLabels = (projectRoot) => {
   // malformed JSON still fail closed through JSON.parse below.
   const labels = JSON.parse(listed === '' ? '[]' : listed);
   if (!Array.isArray(labels)) throw new Error('GitHub returned an invalid label list for Spec Kit import.');
-  if (labels.length === MAX_TASKS) throw new Error(`GitHub label list reached the ${MAX_TASKS}-label safety limit; refusing incomplete projection.`);
   const existing = new Set(labels.map((label) => label?.name).filter((name) => typeof name === 'string'));
-  for (const label of REQUIRED_LABELS) {
-    if (existing.has(label.name)) continue;
+  const missing = REQUIRED_LABELS.filter((label) => !existing.has(label.name));
+  if (labels.length + missing.length > MAX_TASKS) {
+    throw new Error(`GitHub label list reached the ${MAX_TASKS}-label safety limit; refusing incomplete projection.`);
+  }
+  for (const label of missing) {
     gh(projectRoot, ['label', 'create', label.name, '--color', label.color, '--description', label.description]);
   }
 };

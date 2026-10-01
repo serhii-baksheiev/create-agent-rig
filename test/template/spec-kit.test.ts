@@ -46,7 +46,17 @@ it('fresh Spec Kit import prepares GitHub queue lifecycle labels', async () => {
   const bin = await mkdtemp(path.join(tmpdir(), 'stub-gh-spec-kit-lifecycle-labels-'));
   temporaryPaths.add(bin);
   const statePath = path.join(bin, 'state.json');
-  await writeFile(statePath, JSON.stringify({ labels: [], issues: [], nextNumber: 1 }));
+  await writeFile(
+    statePath,
+    JSON.stringify({
+      labels: Array.from(
+        { length: 996 },
+        (_, index) => `existing-${String(index).padStart(4, '0')}`,
+      ),
+      issues: [],
+      nextNumber: 1,
+    }),
+  );
   const github: StubHandle = await stubCommand(
     'gh',
     `const fs = require('node:fs');
@@ -65,8 +75,10 @@ it('fresh Spec Kit import prepares GitHub queue lifecycle labels', async () => {
      if (args[0] === 'issue' && args[1] === 'list') return { stdout: JSON.stringify(state.issues) + '\\n' };
      if (args[0] === 'issue' && args[1] === 'create') {
        const label = valueAfter('--label');
-       if (!label || !state.labels.includes(label)) return { exitCode: 1 };
-       state.issues.push({ number: state.nextNumber++, labels: [label] });
+       const title = valueAfter('--title');
+       const body = valueAfter('--body');
+       if (!label || !title || !body || !state.labels.includes(label)) return { exitCode: 1 };
+       state.issues.push({ number: state.nextNumber++, title, body, labels: [label] });
        save();
        return { stdout: 'https://github.test/owner/repo/issues/' + (state.nextNumber - 1) + '\\n' };
      }
@@ -74,21 +86,63 @@ it('fresh Spec Kit import prepares GitHub queue lifecycle labels', async () => {
   );
 
   try {
-    const result = await runQueue(
-      path.join(project, '.claude', 'scripts', 'queue', 'index.mjs'),
+    const script = path.join(project, '.claude', 'scripts', 'queue', 'index.mjs');
+    const first = await runQueue(
+      script,
       ['import', 'spec-kit', '--to', 'github-issues', '--json'],
       project,
     );
 
-    expect(result.code, result.out).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ counts: { create: 1 } });
-    const state = JSON.parse(await readFile(statePath, 'utf8')) as { labels: string[] };
-    expect([...state.labels].sort()).toEqual([
+    expect(first.code, first.out).toBe(0);
+    expect(JSON.parse(first.stdout)).toMatchObject({ counts: { create: 1 } });
+    const afterFirst = JSON.parse(await readFile(statePath, 'utf8')) as { labels: string[] };
+    expect(afterFirst.labels).toHaveLength(1000);
+    expect(afterFirst.labels.filter((label) => !label.startsWith('existing-')).sort()).toEqual([
       'escalated',
       'in-progress',
       'rig-spec-kit',
       'triage',
     ]);
+
+    const second = await runQueue(
+      script,
+      ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+      project,
+    );
+
+    expect(second.code, second.out).toBe(0);
+    expect(JSON.parse(second.stdout)).toMatchObject({ counts: { unchanged: 1 } });
+    const afterSecond = JSON.parse(await readFile(statePath, 'utf8')) as {
+      labels: string[];
+      issues: unknown[];
+    };
+    expect(afterSecond.labels).toHaveLength(1000);
+    expect(afterSecond.issues).toHaveLength(1);
+
+    await writeFile(
+      statePath,
+      JSON.stringify({
+        labels: Array.from(
+          { length: 997 },
+          (_, index) => `existing-${String(index).padStart(4, '0')}`,
+        ),
+        issues: [],
+        nextNumber: 1,
+      }),
+    );
+    const overflow = await runQueue(
+      script,
+      ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+      project,
+    );
+
+    expect(overflow.code, overflow.out).not.toBe(0);
+    const afterOverflow = JSON.parse(await readFile(statePath, 'utf8')) as {
+      labels: string[];
+      issues: unknown[];
+    };
+    expect(afterOverflow.labels).toHaveLength(997);
+    expect(afterOverflow.issues).toHaveLength(0);
   } finally {
     github.restore();
   }
