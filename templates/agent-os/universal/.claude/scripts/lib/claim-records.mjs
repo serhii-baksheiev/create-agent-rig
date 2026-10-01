@@ -548,7 +548,8 @@ const objectOf = (projectRoot, raw, relativePath) =>
  * `--merge-commit`, not an adversary who controls the run. `HEAD` is this
  * run's own checkout — a hostile run can move it (`git checkout`,
  * `git reset`) to whatever it likes before calling this, and `targetShaOf`
- * (below) reads a local ref (`origin/HEAD`/`master`/`main`) a hostile run has
+ * (below) reads local or remote-tracking refs (`origin/HEAD`, `origin/master`,
+ * `origin/main`, `master`, `main`) a hostile run has
  * already had every opportunity to rewrite. Every input here is something the
  * SAME process that calls this function could have fabricated; the binding
  * only raises the cost of an honest mistake, it does not authenticate the
@@ -1006,27 +1007,31 @@ const gitText = (projectRoot, args) =>
   }).trim();
 
 export const targetShaOf = (projectRoot, ref = null) => {
-  const candidates = ref
-    ? [ref]
-    : [
-        (() => {
-          try {
-            return gitText(projectRoot, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
-          } catch {
-            return null;
-          }
-        })(),
-        'origin/master',
-        'origin/main',
-        'master',
-        'main',
-      ].filter(Boolean);
-  for (const candidate of candidates) {
+  const resolve = (candidate) => {
     try {
       return gitText(projectRoot, ['rev-parse', '--verify', candidate]);
     } catch {
-      // Try the next conventional target name.
+      return null;
     }
+  };
+  if (ref) return resolve(ref);
+
+  let defaultRef = null;
+  try {
+    defaultRef = gitText(projectRoot, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
+  } catch {
+    // A clone may not have a remote symbolic default ref.
+  }
+  if (defaultRef) return resolve(defaultRef);
+
+  const remoteTargets = ['origin/master', 'origin/main'].map(resolve).filter(Boolean);
+  const remoteShas = [...new Set(remoteTargets)];
+  if (remoteShas.length === 1) return remoteShas[0];
+  if (remoteShas.length > 1) return null;
+
+  for (const candidate of ['master', 'main']) {
+    const sha = resolve(candidate);
+    if (sha) return sha;
   }
   return null;
 };

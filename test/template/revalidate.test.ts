@@ -326,6 +326,17 @@ describe('the git fixture itself', () => {
     };
 
     expect(claims.targetShaOf(clone)).toBe(remoteMaster);
+
+    // A remote can expose more than one plausible branch after its symbolic
+    // default ref is unavailable. The local checkout must not invent
+    // `origin/master` as that default merely because it exists.
+    await git(['branch', 'main', localMaster], clone);
+    await git(['push', '-q', 'origin', 'main:main'], clone);
+    await git(['fetch', '-q', 'origin'], clone);
+    const remoteMain = await git(['rev-parse', 'origin/main'], clone);
+    expect(remoteMain).not.toBe(remoteMaster);
+
+    expect(claims.targetShaOf(clone)).toBeNull();
   });
 });
 
