@@ -5,7 +5,7 @@
 // make an implementation-order claim (RP-305 and RP-307 own those contracts).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, readSync, realpathSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readdirSync, readlinkSync, readSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -25,6 +25,7 @@ import {
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 const MAX_IMPLEMENTATION_DELTA_BYTES = 5 * 1024 * 1024;
 const MAX_TRACKER_BODY_BYTES = 64 * 1024;
+const MAX_CONTINUATION_RUNS = 32;
 const SHA256 = /^[a-f0-9]{64}$/;
 const TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TDD_SPEC_PREFIX = 'rig:tdd-spec/v1 ';
@@ -462,6 +463,72 @@ const preRedProductionPaths = ({ projectRoot, baselineHeadSha, ticket = null }) 
   );
 };
 
+const ticketAt = ({ run, seq }) => {
+  let ticket = null;
+  for (const decision of run.decisions) {
+    if (decision.seq >= seq || decision.gate !== 'item-selection') continue;
+    const match = /^taken ([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(decision.verdict ?? '');
+    if (match) ticket = match[1];
+  }
+  return ticket;
+};
+
+const priorRunDirectories = ({ projectRoot, runDir }) => {
+  const runsRoot = join(projectRoot, '.claude', 'runs');
+  let root;
+  let current;
+  try {
+    root = realpathSync(runsRoot);
+    current = realpathSync(runDir);
+  } catch {
+    return [];
+  }
+  if (dirname(current) !== root) return [];
+  const currentName = basename(current);
+  let entries;
+  try {
+    entries = readdirSync(root, { withFileTypes: true });
+  } catch {
+    throw new Error('continuation run journals could not be listed');
+  }
+  const names = entries
+    .filter((entry) => entry.isDirectory() && !entry.isSymbolicLink() && entry.name < currentName)
+    .map((entry) => entry.name)
+    .sort();
+  if (names.length > MAX_CONTINUATION_RUNS) {
+    throw new Error('continuation run journal search exceeds 32 prior runs');
+  }
+  return names.map((name) => join(root, name));
+};
+
+const implementationDispatchSources = ({ projectRoot, runDir, run, beforeSeq, ticket }) => {
+  const sources = [];
+  const collect = (candidate, candidateRun, limit) => {
+    for (const entry of candidateRun.events) {
+      if (
+        entry.seq < limit &&
+        entry.kind === 'dispatch-start' &&
+        entry?.data?.agentType === 'implementation-agent' &&
+        ticketAt({ run: candidateRun, seq: entry.seq }) === ticket
+      ) {
+        sources.push({ runId: basename(candidate), seq: entry.seq });
+      }
+    }
+  };
+  for (const priorRunDir of priorRunDirectories({ projectRoot, runDir })) {
+    let prior;
+    try {
+      prior = readRun({ runDir: priorRunDir });
+    } catch {
+      throw new Error('continuation run journal is unavailable or invalid');
+    }
+    collect(priorRunDir, prior, Infinity);
+  }
+  collect(runDir, run, beforeSeq);
+  if (sources.length > 256) throw new Error('pre-RED implementation-agent dispatches exceed 256 events');
+  return sources;
+};
+
 const pathStateFingerprint = ({ projectRoot, paths }) => {
   if (paths.length > 256) throw new Error('pre-RED production state exceeds 256 paths');
   const entries = paths.map((file) => {
@@ -697,7 +764,10 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
   };
   const paths = preRedProductionPaths({
     projectRoot,
-    baselineHeadSha: claim.fingerprints.scope.targetSha,
+    baselineHeadSha: effectiveImplementationBase({
+      projectRoot,
+      selectedBaselineHeadSha: claim.fingerprints.scope.targetSha,
+    }),
     ticket,
   });
   const production = {
@@ -711,15 +781,13 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
     pathCount: production.pathCount,
     stateFingerprint: production.stateFingerprint,
   });
-  const dispatchSources = run.events
-    .filter(
-      (entry) =>
-        entry.kind === 'dispatch-start' &&
-        entry.seq < event.seq &&
-        entry?.data?.agentType === 'implementation-agent',
-    )
-    .map((entry) => ({ runId: basename(runDir), seq: entry.seq }));
-  if (dispatchSources.length > 256) throw new Error('pre-RED implementation-agent dispatches exceed 256 events');
+  const dispatchSources = implementationDispatchSources({
+    projectRoot,
+    runDir,
+    run,
+    beforeSeq: event.seq,
+    ticket,
+  });
   const implementationAgentDispatch = {
     count: dispatchSources.length,
     sourcesFingerprint: fingerprintEvidence({

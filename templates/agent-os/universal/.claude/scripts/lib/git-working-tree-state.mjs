@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { closeSync, constants, lstatSync, openSync, readFileSync, readlinkSync } from 'node:fs';
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, readlinkSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
 
 import { withoutGitLocation } from '../git-env.mjs';
@@ -60,13 +60,29 @@ const untrackedBytes = ({ projectRoot, file, remainingBytes }) => {
   if (stat.size > remainingBytes) throw new Error('working-tree state exceeds its byte bound');
   const fd = openSync(fullPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
   try {
-    const bytes = readFileSync(fd);
+    const opened = fstatSync(fd);
+    if (!opened.isFile() || opened.dev !== stat.dev || opened.ino !== stat.ino) {
+      throw new Error('untracked Git path changed during validation');
+    }
+    if (opened.size > remainingBytes) throw new Error('working-tree state exceeds its byte bound');
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const remaining = remainingBytes + 1 - total;
+      if (remaining <= 0) throw new Error('working-tree state exceeds its byte bound');
+      const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, remaining));
+      const read = readSync(fd, chunk, 0, chunk.length, null);
+      if (read === 0) break;
+      total += read;
+      if (total > remainingBytes) throw new Error('working-tree state exceeds its byte bound');
+      chunks.push(chunk.subarray(0, read));
+    }
     const finished = lstatSync(fullPath);
     if (!finished.isFile() || finished.isSymbolicLink() || finished.dev !== stat.dev || finished.ino !== stat.ino) {
       throw new Error('untracked Git path changed during validation');
     }
-    if (bytes.length > remainingBytes) throw new Error('working-tree state exceeds its byte bound');
-    return { kind: 'file', bytes };
+    if (finished.size > remainingBytes) throw new Error('working-tree state exceeds its byte bound');
+    return { kind: 'file', bytes: Buffer.concat(chunks, total) };
   } finally {
     closeSync(fd);
   }

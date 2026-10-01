@@ -37,9 +37,23 @@ const git = async (args: string[], cwd: string) => {
 
 const fingerprint = { algorithm: 'sha256', value: expect.stringMatching(/^[a-f0-9]{64}$/) };
 
-const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: boolean }) => {
+const makeFixture = async ({
+  dirty,
+  dispatched,
+  mergeDefaultBeforeRed = false,
+  priorDispatch = false,
+  foreignCurrentDispatch = false,
+}: {
+  dirty: boolean;
+  dispatched: boolean;
+  mergeDefaultBeforeRed?: boolean;
+  priorDispatch?: boolean;
+  foreignCurrentDispatch?: boolean;
+}) => {
   const projectRoot = await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-producer-'));
-  const runDir = await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-producer-run-'));
+  const runDir = priorDispatch
+    ? path.join(projectRoot, '.claude', 'runs', '20261001-130000')
+    : await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-producer-run-'));
   await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
   await mkdir(path.join(projectRoot, '.claude'), { recursive: true });
   await mkdir(path.join(projectRoot, 'src'), { recursive: true });
@@ -64,11 +78,30 @@ const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: 
     path.join(projectRoot, '.claude', 'queue.json'),
     '{"adapter":"jira","options":{"project":"RP"}}\n',
   );
+  await writeFile(path.join(projectRoot, '.gitignore'), '.claude/runs/\n');
   await git(['init', '-q', '-b', 'master'], projectRoot);
-  await git(['add', '.rig/revalidation.json', '.claude/queue.json', 'src/feature.ts'], projectRoot);
+  await git(
+    ['add', '.gitignore', '.rig/revalidation.json', '.claude/queue.json', 'src/feature.ts'],
+    projectRoot,
+  );
   await git(['commit', '-q', '-m', 'baseline'], projectRoot);
   const baselineHeadSha = await git(['rev-parse', 'HEAD'], projectRoot);
   await git(['checkout', '-q', '-b', 'feat/RP-328'], projectRoot);
+
+  if (mergeDefaultBeforeRed) {
+    await git(['checkout', '-q', 'master'], projectRoot);
+    await writeFile(
+      path.join(projectRoot, 'src', 'unrelated-master.ts'),
+      'export const unrelatedMaster = true;\n',
+    );
+    await git(['add', 'src/unrelated-master.ts'], projectRoot);
+    await git(['commit', '-q', '-m', 'unrelated master advance'], projectRoot);
+    await git(['checkout', '-q', 'feat/RP-328'], projectRoot);
+    await git(
+      ['merge', '--no-ff', '-m', 'merge unrelated master advance before RED', 'master'],
+      projectRoot,
+    );
+  }
 
   const claims = (await import(
     pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href
@@ -129,7 +162,14 @@ const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: 
       pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href
     )) as {
       recordEvent: (input: Record<string, unknown>) => unknown;
+      recordDecision: (input: Record<string, unknown>) => unknown;
     };
+    journal.recordDecision({
+      runDir,
+      gate: 'item-selection',
+      verdict: 'taken RP-328',
+      now: '2026-10-01T00:00:00.000Z',
+    });
     journal.recordEvent({
       runDir,
       kind: 'dispatch-start',
@@ -137,6 +177,62 @@ const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: 
         schema: 1,
         agentType: 'implementation-agent',
         agentRef: 'implementation-agent-before-red',
+        ticket: 'RP-328',
+      },
+      now: '2026-10-01T00:00:00.000Z',
+    });
+  }
+
+  if (foreignCurrentDispatch) {
+    const journal = (await import(
+      pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href
+    )) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+      recordDecision: (input: Record<string, unknown>) => unknown;
+    };
+    journal.recordDecision({
+      runDir,
+      gate: 'item-selection',
+      verdict: 'taken RP-OTHER',
+      now: '2026-10-01T00:00:01.000Z',
+    });
+    journal.recordEvent({
+      runDir,
+      kind: 'dispatch-start',
+      data: {
+        schema: 1,
+        agentType: 'implementation-agent',
+        agentRef: 'implementation-agent-for-RP-OTHER',
+        ticket: 'RP-OTHER',
+      },
+      now: '2026-10-01T00:00:01.000Z',
+    });
+  }
+
+  if (priorDispatch) {
+    const priorRunDir = path.join(projectRoot, '.claude', 'runs', '20261001-120000');
+    await mkdir(runDir, { recursive: true });
+    await mkdir(priorRunDir, { recursive: true });
+    const journal = (await import(
+      pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href
+    )) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+      recordDecision: (input: Record<string, unknown>) => unknown;
+    };
+    journal.recordDecision({
+      runDir: priorRunDir,
+      gate: 'item-selection',
+      verdict: 'taken RP-328',
+      now: '2026-10-01T00:00:00.000Z',
+    });
+    journal.recordEvent({
+      runDir: priorRunDir,
+      kind: 'dispatch-start',
+      data: {
+        schema: 1,
+        agentType: 'implementation-agent',
+        agentRef: 'implementation-agent-before-red-in-prior-run',
+        ticket: 'RP-328',
       },
       now: '2026-10-01T00:00:00.000Z',
     });
@@ -291,4 +387,84 @@ it('records portable pre-RED implementation state', async () => {
     },
   );
   expect(ship.code, ship.out).toBe(0);
+
+  // An unrelated default-branch advance merged before RED is baseline context,
+  // not pre-RED implementation for this item.
+  const mergedBeforeRed = await makeFixture({
+    dirty: false,
+    dispatched: false,
+    mergeDefaultBeforeRed: true,
+  });
+  expect.soft(mergedBeforeRed.claim.tddEvidence.preRed.production.pathCount).toBe(0);
+
+  // A resumed controller must preserve a same-ticket implementation dispatch
+  // from its immediately preceding journal, but reject a foreign-ticket
+  // dispatch from the current journal.
+  const foreignCurrent = await makeFixture({
+    dirty: false,
+    dispatched: false,
+    foreignCurrentDispatch: true,
+  });
+  expect.soft(foreignCurrent.claim.tddEvidence.preRed.implementationAgentDispatch.count).toBe(0);
+  const resumed = await makeFixture({ dirty: false, dispatched: false, priorDispatch: true });
+  expect.soft(resumed.claim.tddEvidence.preRed.implementationAgentDispatch.count).toBe(1);
+
+  // The file can grow after lstatSync. The reader must reject at the bound
+  // without calling an unbounded read API for that mutable path.
+  const stateFixture = await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-state-bound-'));
+  await git(['init', '-q', '-b', 'master'], stateFixture);
+  await writeFile(path.join(stateFixture, 'tracked.ts'), 'export const tracked = true;\n');
+  await git(['add', 'tracked.ts'], stateFixture);
+  await git(['commit', '-q', '-m', 'baseline'], stateFixture);
+  await writeFile(path.join(stateFixture, 'untracked.ts'), 'small\n');
+  const stateProbe = path.join(
+    await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-state-probe-')),
+    'probe.mjs',
+  );
+  await writeFile(
+    stateProbe,
+    `import { createRequire, syncBuiltinESMExports } from 'node:module';
+const require = createRequire(import.meta.url);
+const fs = require('node:fs');
+const targetPath = process.argv[2] + '/untracked.ts';
+const originalOpen = fs.openSync;
+const original = fs.readFileSync;
+const originalWrite = fs.writeFileSync;
+let targetFd = null;
+let unbounded = false;
+fs.openSync = (target, ...args) => {
+  const fd = originalOpen(target, ...args);
+  if (target === targetPath) {
+    targetFd = fd;
+    originalWrite(targetPath, 'x'.repeat(2048));
+  }
+  return fd;
+};
+fs.readFileSync = (target, options) => {
+  if (target === targetFd) {
+    unbounded = true;
+    throw new Error('unbounded read attempted');
+  }
+  return original(target, options);
+};
+syncBuiltinESMExports();
+const { workingTreeStateFingerprint } = await import(${JSON.stringify(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'git-working-tree-state.mjs')).href,
+    )});
+try {
+  workingTreeStateFingerprint({ projectRoot: process.argv[2], gitHead: process.argv[3], maxBytes: 1024 });
+} catch (error) {
+  if (unbounded) throw error;
+  if (!/byte bound/.test(String(error.message))) throw error;
+  process.exit(0);
+}
+throw new Error('working-tree state unexpectedly accepted an over-bound file');
+`,
+  );
+  const stateProbeResult = await run(
+    process.execPath,
+    [stateProbe, stateFixture, await git(['rev-parse', 'HEAD'], stateFixture)],
+    stateFixture,
+  );
+  expect.soft(stateProbeResult.code, stateProbeResult.out).toBe(0);
 });
