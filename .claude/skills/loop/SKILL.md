@@ -312,8 +312,8 @@ an item reassigned to someone else between selection and claim() refuses as
 tracker's assignee".
 
 🔴 **An item's lifecycle is a label a human wrote, and the loop infers none of
-it**. Four words, read by `lifecycleOf` in `core.mjs` so every adapter
-means the same thing — three of lifecycle, one of scheduling:
+it**. `lifecycleOf` in `core.mjs` reads three lifecycle labels and three
+scheduling labels so every adapter means the same thing:
 
 - `keep-core` — the problem and the responsibility are valid and the item is
   executable as written. A statement about the item, never a condition on taking
@@ -342,7 +342,7 @@ means the same thing — three of lifecycle, one of scheduling:
   deferred" for the label, and "are parked" for the pile; `obsolete` lands in
   the pile, the `parked` label never does.
 
-The rule under all four: **nothing infers `obsolete`** — not age, not a key
+The rule under these labels: **nothing infers `obsolete`** — not age, not a key
 range, old terminology, `parked`, absence from a roadmap, or a migration marker.
 `legacy-backlog` is that marker, retired: `hygiene` reports an open item still
 carrying it (`stale-legacy-backlog-label`), and two lifecycle labels on one item
@@ -359,9 +359,11 @@ Pinned in the
 generator's `test/template/queue-scope.test.ts` — absent in a generated rig —
 › "reads frozen and later as parked, without setting a lifecycle".
 
-**An adapter-neutral `scope` option narrows selection to a release or a
+**A tracker-backed `scope` option narrows selection to a release or a
 lane** — `"scope": {"labels": [...]}` in `.claude/queue.json`'s `options`, or
-the same key on a `boards.<name>` entry. An item missing any one of the listed
+the same key on a `boards.<name>` entry. `plan-md` refuses a label scope because
+PLAN.md items have no release labels. A board's `"scope": null` overrides a
+shared `options.scope` and selects without a scope. An item missing any one of the listed
 labels is out of play as `out-of-scope`, never held: a scope with no eligible
 item ends the run as `queue-empty`, never `nothing-selectable`. A malformed
 scope refuses selection outright rather than running unscoped. Pinned in the
@@ -624,7 +626,9 @@ Four of them deserve their reasons repeated:
   sprees, no polish, no pre-emptive optimisation. An empty filtered queue is a
   legitimate, successful end of session; refilling it is the owner's job.
   **Expect this to be the most common ending** — the queue is finite and the loop
-  drains it. That is the system working. The stop line also names the **parked**
+  drains it. That is the system working. When only out-of-scope items remain,
+  change the declared scope to select them; they do not wait for a human unblock.
+  The stop line also names the **parked**
   pile if there is one, by cause and count: items out of play, waiting on a
   human. They are reported next to the verdict, never swept into it. 🔴 Under
   `plan-md` an escalation leaves no mark on the queue at all — `escalate`

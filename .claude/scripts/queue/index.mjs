@@ -620,6 +620,16 @@ if (invokedDirectly()) {
         : join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json'),
     );
     adapter = await resolveAdapter(config.adapter ?? 'plan-md');
+    if (
+      config.options?.scope !== undefined &&
+      config.options.scope !== null &&
+      adapter.supportsScope === false
+    ) {
+      throw new Error(
+        `${adapter.name} does not support options.scope: PLAN.md items carry no labels, so ` +
+          'a label scope cannot select a narrower queue. Use a tracker adapter with labels instead.',
+      );
+    }
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exit(1);

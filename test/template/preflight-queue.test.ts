@@ -220,6 +220,20 @@ describe('preflight — the configured queue must be readable before an unattend
     }
   });
 
+  it('stops when plan-md is configured with a label scope it cannot represent', async () => {
+    const p = await fixture({ adapter: 'plan-md', options: { scope: { labels: ['rel-1.2.0'] } } });
+    await writeFile(p.planPath, '# Plan\n\n## Agent queue\n\n- ordinary item\n');
+    try {
+      const result = await preflight(p);
+
+      expect(result.checks.queue).toMatchObject({ ok: false });
+      expect(result.checks.queue?.detail).toMatch(/plan-md.*scope|scope.*plan-md/i);
+      expect(result.verdict).toBe('STOP');
+    } finally {
+      await removeFixture(p.root);
+    }
+  });
+
   it('stops when queue.json is a dangling link even though the default plan queue is readable', async () => {
     const p = await fixture();
     await writeFile(p.planPath, '## Agent queue\n\n');

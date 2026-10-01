@@ -18,6 +18,10 @@ import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
 export const claimedState = 'open';
+// A PLAN.md list has no labels, so a label scope cannot express a narrower
+// queue here. The CLI refuses a configured scope rather than silently treating
+// every item as out of scope.
+export const supportsScope = false;
 
 const AGENT_QUEUE = /^##\s+Agent queue\s*$/i;
 const OPERATOR_QUEUE = /^##\s+Operator queue\s*$/i;
@@ -73,6 +77,8 @@ const MARKERS = {
   reScope: /\[re-scope\]/i,
   obsolete: /\[obsolete\]/i,
   parked: /\[parked\]/i,
+  frozen: /\[frozen\]/i,
+  later: /\[later\]/i,
 };
 
 /**
@@ -105,7 +111,7 @@ export const parsePlan = (plan) => {
     const raw = match[1];
     const title = raw
       .replace(
-        /\[(elevated|triage|trigger-auto|trigger-human|keep-core|re-scope|obsolete|parked|owner:[^\]\s]+)\]/gi,
+        /\[(elevated|triage|trigger-auto|trigger-human|keep-core|re-scope|obsolete|parked|frozen|later|owner:[^\]\s]+)\]/gi,
         '',
       )
       .replace(/\s+/g, ' ')
@@ -150,6 +156,8 @@ export const parsePlan = (plan) => {
           ['re-scope', MARKERS.reScope],
           ['obsolete', MARKERS.obsolete],
           ['parked', MARKERS.parked],
+          ['frozen', MARKERS.frozen],
+          ['later', MARKERS.later],
         ]
           .filter(([, marker]) => marker.test(raw))
           .map(([label]) => label),
