@@ -106,7 +106,7 @@ it('imports into a repository whose GitHub label list is empty', async () => {
       labels: string[];
       issues: Array<{ number: number; body: string; labels: string[] }>;
     };
-    expect(afterFirst.labels).toEqual(['rig-spec-kit']);
+    expect(afterFirst.labels).toEqual(['in-progress', 'escalated', 'triage', 'rig-spec-kit']);
     expect(afterFirst.issues).toHaveLength(5);
     expect(afterFirst.issues.map((issue) => issue.labels)).toEqual([
       ['rig-spec-kit'],

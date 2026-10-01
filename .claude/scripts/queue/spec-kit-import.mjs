@@ -9,6 +9,15 @@ const MAX_TASKS_BYTES = 1024 * 1024;
 const MAX_TASKS = 1000;
 const MAX_TASK_DESCRIPTION_BYTES = 64 * 1024;
 const PROJECTED_LABEL = 'rig-spec-kit';
+// The GitHub queue adapter writes these labels during normal lifecycle
+// transitions. A fresh Spec Kit projection must provision them before it
+// creates work that a controller can claim, escalate, or route to triage.
+const REQUIRED_LABELS = Object.freeze([
+  { name: 'in-progress', color: '0E8A16', description: 'Claimed by a Rig controller' },
+  { name: 'escalated', color: 'D93F0B', description: 'Needs a recorded diagnosis before continuation' },
+  { name: 'triage', color: 'FBCA04', description: 'Proposal awaiting operator disposition' },
+  { name: PROJECTED_LABEL, color: '0E8A16', description: 'Managed by Rig Spec Kit import' },
+]);
 const TASK_LINE = /^\s*-\s*\[[ xX]\]\s+(T\d{3,})\s+(.+?)\s*$/;
 const TASK_LIKE_LINE = /^\s*-\s*\[[ xX]\]\s+(T\S*)\b/;
 const DEPENDENCY_CLAUSE = /\s+\(depends on ([^)]+)\)\s*$/i;
@@ -225,15 +234,19 @@ const creationOrder = (tasks) => {
   return ordered;
 };
 
-const ensureLabel = (projectRoot) => {
+const ensureLabels = (projectRoot) => {
   const listed = gh(projectRoot, ['label', 'list', '--limit', String(MAX_TASKS), '--json', 'name']);
   // Treat only literal empty output as an empty label list. Whitespace and
   // malformed JSON still fail closed through JSON.parse below.
   const labels = JSON.parse(listed === '' ? '[]' : listed);
   if (!Array.isArray(labels)) throw new Error('GitHub returned an invalid label list for Spec Kit import.');
-  if (labels.length === MAX_TASKS) throw new Error(`GitHub label list reached the ${MAX_TASKS}-label safety limit; refusing incomplete projection.`);
-  if (!labels.some((label) => label?.name === PROJECTED_LABEL)) {
-    gh(projectRoot, ['label', 'create', PROJECTED_LABEL, '--color', '0E8A16', '--description', 'Managed by Rig Spec Kit import']);
+  const existing = new Set(labels.map((label) => label?.name).filter((name) => typeof name === 'string'));
+  const missing = REQUIRED_LABELS.filter((label) => !existing.has(label.name));
+  if (labels.length + missing.length > MAX_TASKS) {
+    throw new Error(`GitHub label list reached the ${MAX_TASKS}-label safety limit; refusing incomplete projection.`);
+  }
+  for (const label of missing) {
+    gh(projectRoot, ['label', 'create', label.name, '--color', label.color, '--description', label.description]);
   }
 };
 
@@ -266,7 +279,7 @@ export const importSpecKit = ({ projectRoot = process.cwd(), tasksPath = null, d
     return reportFor(true, tasks, planned);
   }
 
-  ensureLabel(root);
+  ensureLabels(root);
   const created = new Set();
   for (const task of ordered) {
     if (numbers[task.identity]) continue;

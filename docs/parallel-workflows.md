@@ -41,6 +41,8 @@ The feature slug and task ID form a stable identity. Each projected issue has
 the `rig-spec-kit` label and an identity marker in its body. Explicit
 dependencies become `Blocked by #<issue>` lines that the GitHub Issues queue
 already understands. File order and task prose do not create dependencies.
+The importer also provisions `in-progress`, `escalated` and `triage` when
+absent, so normal GitHub queue lifecycle transitions remain available.
 Malformed IDs, duplicate or unknown dependencies, cycles and ambiguous
 existing projections are refused before issue writes.
 
