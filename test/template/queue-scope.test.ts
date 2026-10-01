@@ -281,10 +281,11 @@ describe('scoped selection', () => {
     ['a non-string entry', { labels: [3] }],
     ['a bare string instead of an object', 'rel-1.1.0'],
   ] as const)(
-    'a malformed scope (%s) makes selectNext throw, naming scope',
+    'a malformed scope (%s) makes direct tracker-style selectNext throw, naming scope',
     async (_name, scope) => {
       const { selectNext } = await load('core.mjs');
-      expect(() => selectNext([ticket()], { scope })).toThrow(/scope/);
+      const trackerTicket = ticket({ id: 'RP-286', labels: ['rel-1.2.0'] });
+      expect(() => selectNext([trackerTicket], { scope })).toThrow(/scope/);
     },
   );
 });
@@ -347,13 +348,15 @@ describe('the CLI wires config.options.scope into `next`', () => {
     expect(loadConfig(cfg).options.scope).toBeNull();
   });
 
-  it('a malformed `options.scope` exits non-zero, selects nothing, and names scope on stderr', async () => {
+  it('the plan-md scope guard exits in one line without a stack trace', async () => {
     const cfg = await rig({ adapter: 'plan-md', options: { scope: {} } });
     const next = await run(['next', '--config', cfg, '--json']);
     expect(next.code).not.toBe(0);
     expect(next.stdout).not.toMatch(/"id"/);
+    expect(next.stderr).toMatch(/plan-md.*options\.scope|options\.scope.*plan-md/i);
     expect(next.stderr).toMatch(/scope/);
     expect(next.stderr).not.toMatch(/(?:^|\n)\s*at\s+/);
+    expect(next.stderr.trim().split('\n')).toHaveLength(1);
   });
 });
 
