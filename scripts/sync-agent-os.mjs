@@ -232,11 +232,6 @@ function compose() {
         boards: {
           AR: { project: 'AR', owner: 'create-agent-rig' },
           RP: { project: 'RP', owner: 'rig' },
-          // The RP board narrowed to one release (RP-273), for a release-scoped
-          // run such as the 1.1.0 two-controller pilot (RP-231): `board
-          // RP-1.1.0` selects it, and an item without the release label is
-          // skipped as out-of-scope. Remove it once 1.1.0 ships.
-          'RP-1.1.0': { project: 'RP', owner: 'rig', scope: { labels: ['rel-1.1.0'] } },
         },
         options: { maxGateRounds: 3 },
       },

@@ -312,23 +312,30 @@ const assigneeMismatchOf = (ticket, currentActor) => {
  * Validate an adapter-neutral `scope: { labels: string[] }` option (RP-273).
  *
  * `null`/`undefined` means unscoped — read exactly as the key being absent.
- * Anything else must be `{ labels: [...] }`, a non-empty array of non-empty
- * strings; a malformed scope throws, naming `scope`, rather than silently
- * running unscoped — a scope typo that ran wide is worse than a run that
- * refuses to start.
+ * Anything else must be `{ labels: [...] }`, a non-empty array of non-blank
+ * strings without control characters. A malformed declared scope throws,
+ * naming `scope`, rather than silently running unscoped. This validates the
+ * value; it does not detect unknown option keys.
  */
 export const validateScope = (scope) => {
   if (scope === null || scope === undefined) return null;
   const malformed = () =>
     new Error(
       `options.scope must be null/undefined (unscoped) or { labels: string[] } with at ` +
-        `least one non-empty label — got ${JSON.stringify(scope)}. Selection refuses ` +
+        `least one non-blank label without control characters — got ${JSON.stringify(scope)}. Selection refuses ` +
         'rather than running unscoped on a scope it cannot read.',
     );
   if (typeof scope !== 'object' || Array.isArray(scope)) throw malformed();
   const labels = scope.labels;
   if (!Array.isArray(labels) || labels.length === 0) throw malformed();
-  if (!labels.every((label) => typeof label === 'string' && label.length > 0)) throw malformed();
+  if (
+    !labels.every(
+      (label) =>
+        typeof label === 'string' && label.trim().length > 0 && !/\p{Cc}/u.test(label),
+    )
+  ) {
+    throw malformed();
+  }
   return { labels };
 };
 
@@ -439,7 +446,11 @@ export const selectionOf = (
     );
   }
   if (ticket.parked === true) {
-    reject('deferred', 'parked (deferred): valid work deliberately not active now — a human un-parks it');
+    const deferral = DEFERRAL_LABELS.find((label) => labels.includes(label)) ?? 'parked';
+    reject(
+      'deferred',
+      `${deferral} (deferred): valid work deliberately not active now — a human un-parks it`,
+    );
   }
   if (ticket.lifecycle === 'obsolete') {
     reject(
@@ -1005,17 +1016,27 @@ const heldBreakdown = (held) => breakdownOf(held, (count, tag) => `${count} held
  * `HOLDING_CAUSES` above), so a line claiming one mechanism would be false on
  * another, and the stop line is not where that belongs.
  */
-const parkedNote = (parked) =>
-  parked.length === 0
+const parkedNote = (parked) => {
+  const nonScope = parked.filter((cause) => cause !== 'out-of-scope');
+  return nonScope.length === 0
     ? ''
-    : ` A further ${parked.length} item(s) are parked — ${breakdownOf(parked)}. ` +
+    : ` A further ${nonScope.length} item(s) are parked — ${breakdownOf(nonScope)}. ` +
       'Those are not work this run can take and they wait on a human, never on ' +
       'time' +
-      (parked.includes('obsolete')
+      (nonScope.includes('obsolete')
         ? '; an obsolete item waits on a human close with a comment naming the ' +
           'evidence or the replacement, which the loop never writes'
         : '') +
       '.';
+};
+
+const scopeNote = (parked) => {
+  const excluded = parked.filter((cause) => cause === 'out-of-scope').length;
+  return excluded === 0
+    ? ''
+    : ` ${excluded} item(s) fall outside the configured scope; change the scope to select ` +
+      'work from another release or board.';
+};
 
 /**
  * The trigger remedies, composed from the tags actually present.
@@ -1184,7 +1205,7 @@ export const stopConditionOf = ({
         success: true,
         why:
           `${held.length} item(s) are takeable work held back right now — ` +
-          `${heldBreakdown(held)}.${parkedNote(parked)} This is NOT an empty queue, ` +
+          `${heldBreakdown(held)}.${parkedNote(parked)}${scopeNote(parked)} This is NOT an empty queue, ` +
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
@@ -1197,7 +1218,7 @@ export const stopConditionOf = ({
       success: true,
       why:
         'no item survives the filters and nothing is merely held back — the queue ' +
-        `is genuinely out of work.${parkedNote(parked)} This is a legitimate end of ` +
+        `is genuinely out of work.${parkedNote(parked)}${scopeNote(parked)} This is a legitimate end of ` +
         'session, not an invitation to refactor: **do not invent work**. Refilling ' +
         "the queue is the owner's job.",
     };

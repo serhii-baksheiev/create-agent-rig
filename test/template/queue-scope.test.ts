@@ -104,6 +104,17 @@ describe('frozen and later join the deferral vocabulary', () => {
     expect(toTicket(issue(['frozen']))).toMatchObject({ lifecycle: null, parked: true });
     expect(toTicket(issue(['later']))).toMatchObject({ lifecycle: null, parked: true });
   });
+
+  it.each(['frozen', 'later'])(
+    'plan-md reads [%s] as deferred and removes the marker from the title',
+    async (marker) => {
+      const { parsePlan } = await load('plan-md.mjs');
+      const [item] = parsePlan(
+        `## Agent queue\n\n- deferred work [${marker}]\n\n## Operator queue`,
+      );
+      expect(item).toMatchObject({ title: 'deferred work', lifecycle: null, parked: true });
+    },
+  );
 });
 
 describe('scoped selection', () => {
@@ -137,24 +148,21 @@ describe('scoped selection', () => {
     expect(skip?.reason).toMatch(/rel-1\.1\.0/);
   });
 
-  it('holds an in-scope frozen item as deferred, not out-of-scope', async () => {
-    const { selectionOf } = await load('core.mjs');
-    const frozen = selectionOf(ticket({ labels: ['rel-1.1.0'], parked: true }), {
-      scope: { labels: ['rel-1.1.0'] },
-    });
-    expect(frozen.eligible).toBe(false);
-    expect(frozen.causes).toEqual(['deferred']);
-  });
-
-  it('holds an in-scope later item as deferred, not out-of-scope', async () => {
-    const { selectionOf, lifecycleOf } = await load('core.mjs');
-    const later = selectionOf(
-      ticket({ labels: ['rel-1.1.0', 'later'], ...lifecycleOf(['rel-1.1.0', 'later']) }),
-      { scope: { labels: ['rel-1.1.0'] } },
-    );
-    expect(later.eligible).toBe(false);
-    expect(later.causes).toEqual(['deferred']);
-  });
+  it.each(['frozen', 'later'])(
+    'holds an in-scope %s item as deferred and names its deferral',
+    async (label) => {
+      const { selectionOf, lifecycleOf } = await load('core.mjs');
+      const deferred = selectionOf(
+        ticket({ labels: ['rel-1.1.0', label], ...lifecycleOf(['rel-1.1.0', label]) }),
+        { scope: { labels: ['rel-1.1.0'] } },
+      );
+      expect(deferred.eligible).toBe(false);
+      expect(deferred.causes).toEqual(['deferred']);
+      expect(deferred.reasons.join(' ')).toMatch(
+        new RegExp(`${label}.*deferred|deferred.*${label}`, 'i'),
+      );
+    },
+  );
 
   it('rejects the exact RP-96 label set as both out-of-scope and deferred when scoped to rel-1.1.0', async () => {
     const { selectionOf, lifecycleOf } = await load('core.mjs');
@@ -246,6 +254,8 @@ describe('scoped selection', () => {
     expect(result.candidates).toBe(0);
     const stop = stopConditionOf({ candidates: 0, skipped: result.skipped });
     expect(stop.kind).toBe('queue-empty');
+    expect(stop.why).toMatch(/scope.*change|change.*scope/i);
+    expect(stop.why).not.toMatch(/human.*unblock|unblock.*human/i);
     expect(SKIP_CAUSES).toContain('out-of-scope');
     expect(HOLDING_CAUSES).not.toContain('out-of-scope');
   });
@@ -265,6 +275,7 @@ describe('scoped selection', () => {
     ['empty labels', { labels: [] }],
     ['labels not an array', { labels: 'rel' }],
     ['an empty-string entry', { labels: [''] }],
+    ['a control-character entry', { labels: ['rel-1.2.0\n'] }],
     ['a non-string entry', { labels: [3] }],
     ['a bare string instead of an object', 'rel-1.1.0'],
   ] as const)(
@@ -301,33 +312,26 @@ describe('the CLI wires config.options.scope into `next`', () => {
     return path.join(dir, '.claude', 'queue.json');
   };
 
-  it('an `options.scope` with no matching label ends `next --json` as queue-empty, every skip out-of-scope', async () => {
+  it('a configured scope refuses plan-md instead of treating its label-less items as out-of-scope', async () => {
     const cfg = await rig({ adapter: 'plan-md', options: { scope: { labels: ['rel-x'] } } });
     const next = await run(['next', '--config', cfg, '--json']);
-    expect(next.code, next.stderr).toBe(0);
-    const parsed = JSON.parse(next.stdout);
-    expect(parsed.ticket).toBeNull();
-    expect(parsed.stop.kind).toBe('queue-empty');
-    expect(parsed.skipped.length).toBeGreaterThan(0);
-    for (const skip of parsed.skipped as Array<{ causes: string[] }>) {
-      expect(skip.causes).toContain('out-of-scope');
-    }
+    expect(next.code).not.toBe(0);
+    expect(next.stdout).not.toMatch(/"id"/);
+    expect(next.stderr).toMatch(/plan-md/i);
+    expect(next.stderr).toMatch(/scope/i);
   });
 
-  it('a `boards.<name>.scope` entry, selected via `board`, applies the same as options.scope', async () => {
+  it('a `boards.<name>.scope` entry refuses plan-md too', async () => {
     const cfg = await rig({
       adapter: 'plan-md',
       board: 'X',
       boards: { X: { scope: { labels: ['rel-x'] } } },
     });
     const next = await run(['next', '--config', cfg, '--json']);
-    expect(next.code, next.stderr).toBe(0);
-    const parsed = JSON.parse(next.stdout);
-    expect(parsed.ticket).toBeNull();
-    expect(parsed.stop.kind).toBe('queue-empty');
-    for (const skip of parsed.skipped as Array<{ causes: string[] }>) {
-      expect(skip.causes).toContain('out-of-scope');
-    }
+    expect(next.code).not.toBe(0);
+    expect(next.stdout).not.toMatch(/"id"/);
+    expect(next.stderr).toMatch(/plan-md/i);
+    expect(next.stderr).toMatch(/scope/i);
   });
 
   it('a malformed `options.scope` exits non-zero, selects nothing, and names scope on stderr', async () => {
@@ -336,6 +340,7 @@ describe('the CLI wires config.options.scope into `next`', () => {
     expect(next.code).not.toBe(0);
     expect(next.stdout).not.toMatch(/"id"/);
     expect(next.stderr).toMatch(/scope/);
+    expect(next.stderr).not.toMatch(/(?:^|\n)\s*at\s+/);
   });
 });
 
