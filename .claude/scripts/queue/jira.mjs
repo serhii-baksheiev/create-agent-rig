@@ -425,6 +425,29 @@ const FIELDS = [
 // --- the adapter contract ------------------------------------------------------
 
 /**
+ * An empty search result is ambiguous: it can mean there is no ready work, or
+ * that Jira authenticated the account but did not let it browse this project.
+ * Resolve that ambiguity only for a genuinely empty live search. The project
+ * key comes through the same validation as the search query. Pinned in
+ * test/template/queue-jira-visibility.test.ts (absent in a generated rig) ›
+ * "fails closed before treating an empty search as an empty queue when Jira %s"
+ * and "accepts a genuinely empty queue after the configured project is confirmed visible".
+ */
+const assertProjectVisible = async ({ project, jql, env }) => {
+  const projectKey = projectKeyOf({ project, jql });
+  const permission = await request(
+    `/rest/api/3/mypermissions?projectKey=${encodeURIComponent(projectKey)}&permissions=BROWSE_PROJECTS`,
+    { env },
+  );
+  if (permission?.permissions?.BROWSE_PROJECTS?.havePermission !== true) {
+    throw new Error(
+      `configured Jira project ${projectKey} is not visible: ` +
+        'Jira did not confirm BROWSE_PROJECTS permission',
+    );
+  }
+};
+
+/**
  * Query fresh every time — the queue changes as the loop closes items and
  * unblocks their dependents, so a list read at the start of a run is wrong by the
  * second task. `issues` is the offline seam the tests use. Since AR-54 `limit`
@@ -442,6 +465,9 @@ export const listEligible = async ({
   // `issues` is the offline seam: the mapping is pure, so every shape it has to
   // handle is testable without a network or a credential.
   const response = issues ? { issues } : await search({ project, jql, limit, env });
+  if (!issues && response.issues.length === 0) {
+    await assertProjectVisible({ project, jql, env });
+  }
   return (
     response.issues
       .map(toTicket)
