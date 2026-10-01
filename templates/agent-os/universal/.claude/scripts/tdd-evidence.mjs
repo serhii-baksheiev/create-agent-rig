@@ -9,7 +9,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readlinkSync, rea
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { claimPathFor } from './lib/claim-records.mjs';
+import { claimPathFor, targetShaOf } from './lib/claim-records.mjs';
 import { findSecretValues } from './lib/secrets.mjs';
 import { withoutGitLocation } from './git-env.mjs';
 import { workingTreeStateFingerprint } from './lib/git-working-tree-state.mjs';
@@ -515,6 +515,39 @@ const implementationDeltaFingerprint = ({ projectRoot, baselineHeadSha, bindingB
   });
 };
 
+const isAncestor = ({ projectRoot, ancestor, descendant }) => {
+  try {
+    execFileSync('git', ['-C', projectRoot, 'merge-base', '--is-ancestor', ancestor, descendant], {
+      env: withoutGitLocation(),
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// RED always remains bound to the selected-work baseline. Once the current
+// default branch has been merged, however, its production changes must not be
+// attributed to this item. Resolve that exact merged base now, so GREEN and
+// the later shipping comparison hash the same item-only delta. A moved default
+// branch that is not yet merged is ambiguous: requiring a rebase/merge before
+// GREEN is safer than guessing which unrelated changes to exclude.
+const effectiveImplementationBase = ({ projectRoot, selectedBaselineHeadSha }) => {
+  const defaultBranchHeadSha = targetShaOf(projectRoot);
+  if (!/^[a-f0-9]{40}$/.test(defaultBranchHeadSha ?? '')) {
+    throw new Error('default-branch base could not be resolved for the implementation boundary');
+  }
+  if (!isAncestor({ projectRoot, ancestor: selectedBaselineHeadSha, descendant: defaultBranchHeadSha })) {
+    throw new Error('default branch does not descend from the selected-work baseline');
+  }
+  if (defaultBranchHeadSha === selectedBaselineHeadSha) return selectedBaselineHeadSha;
+  if (!isAncestor({ projectRoot, ancestor: defaultBranchHeadSha, descendant: 'HEAD' })) {
+    throw new Error('default branch advanced after selection but is not merged into HEAD');
+  }
+  return defaultBranchHeadSha;
+};
+
 const workingTreeDiffFingerprint = ({ projectRoot, gitHead }) => {
   try {
     return workingTreeStateFingerprint({ projectRoot, gitHead, maxBytes: MAX_IMPLEMENTATION_DELTA_BYTES });
@@ -793,9 +826,14 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
       sameFingerprint(entry?.data?.workingTreeDiff, observedWorkingTreeDiff),
   );
   if (!boundaryEvent) throw new Error('GREEN check has no preceding implementation boundary provenance');
+  const implementationBaseHeadSha = effectiveImplementationBase({
+    projectRoot,
+    selectedBaselineHeadSha: red.baseline.headSha,
+  });
   const delta = implementationDeltaFingerprint({
     projectRoot,
-    baselineHeadSha: red.baseline.headSha,
+    baselineHeadSha: implementationBaseHeadSha,
+    bindingBaselineHeadSha: red.baseline.headSha,
     ticket,
   });
   const runId = basename(runDir);

@@ -176,6 +176,9 @@ const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: 
   expect(recorded.code, recorded.out).toBe(0);
 
   return {
+    projectRoot,
+    runDir,
+    trackerEnv,
     baselineHeadSha,
     claim: JSON.parse(
       await readFile(path.join(projectRoot, '.rig', 'claims', 'RP-328.json'), 'utf8'),
@@ -215,4 +218,77 @@ it('records portable pre-RED implementation state', async () => {
     implementationAgentDispatch: { count: 0, fingerprint },
     fingerprint,
   });
+
+  // The selected-work baseline remains the RED lineage even when an unrelated
+  // master commit is merged before GREEN. Shipping must fingerprint only this
+  // item's production delta relative to the shipping base.
+  const mergedBeforeGreen = await makeFixture({ dirty: false, dispatched: false });
+  await writeFile(
+    path.join(mergedBeforeGreen.projectRoot, 'src', 'feature.ts'),
+    'export const feature = () => "new";\n',
+  );
+  await git(['add', 'src/feature.ts'], mergedBeforeGreen.projectRoot);
+  await git(['commit', '-q', '-m', 'RP-328 implementation'], mergedBeforeGreen.projectRoot);
+
+  await git(['checkout', '-q', 'master'], mergedBeforeGreen.projectRoot);
+  await writeFile(
+    path.join(mergedBeforeGreen.projectRoot, 'src', 'unrelated-master.ts'),
+    'export const unrelatedMaster = true;\n',
+  );
+  await git(['add', 'src/unrelated-master.ts'], mergedBeforeGreen.projectRoot);
+  await git(['commit', '-q', '-m', 'unrelated master advance'], mergedBeforeGreen.projectRoot);
+  await git(['checkout', '-q', 'feat/RP-328'], mergedBeforeGreen.projectRoot);
+  await git(
+    ['merge', '--no-ff', '-m', 'merge unrelated master advance', 'master'],
+    mergedBeforeGreen.projectRoot,
+  );
+
+  const greenJson = path.join(mergedBeforeGreen.runDir, 'green.json');
+  const green = await run(
+    process.execPath,
+    [
+      checkRun,
+      '--name',
+      'unit-green',
+      '--vitest-json',
+      'green.json',
+      '--',
+      process.execPath,
+      vitestCli,
+      'run',
+      '--root',
+      mergedBeforeGreen.projectRoot,
+      '--config',
+      path.join(mergedBeforeGreen.projectRoot, 'vitest.config.mjs'),
+      '--reporter=json',
+      '--outputFile',
+      greenJson,
+    ],
+    mergedBeforeGreen.projectRoot,
+    { ...mergedBeforeGreen.trackerEnv, RIG_RUN_DIR: mergedBeforeGreen.runDir },
+  );
+  expect(green.code, green.out).toBe(0);
+  const recordedGreen = await run(
+    process.execPath,
+    [tddEvidence, 'record-green', '--ticket', 'RP-328', '--check', 'unit-green'],
+    mergedBeforeGreen.projectRoot,
+    { ...mergedBeforeGreen.trackerEnv, RIG_RUN_DIR: mergedBeforeGreen.runDir },
+  );
+  expect(recordedGreen.code, recordedGreen.out).toBe(0);
+  await git(['add', '.rig/claims/RP-328.json'], mergedBeforeGreen.projectRoot);
+  await git(
+    ['commit', '-q', '-m', 'record portable GREEN evidence'],
+    mergedBeforeGreen.projectRoot,
+  );
+
+  const ship = await run(
+    process.execPath,
+    [tddEvidence, 'verify-ship', '--ticket', 'RP-328', '--base', 'master'],
+    mergedBeforeGreen.projectRoot,
+    {
+      ...mergedBeforeGreen.trackerEnv,
+      RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-producer-ship-')),
+    },
+  );
+  expect(ship.code, ship.out).toBe(0);
 });
