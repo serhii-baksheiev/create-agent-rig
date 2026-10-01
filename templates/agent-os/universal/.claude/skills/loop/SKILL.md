@@ -1203,7 +1203,11 @@ three poisons the only channel by which this project learns.
   the pre-read shows it now assigned to another actor" and › "refuses as
   claim-stale, with zero label-edit calls, when the pre-read shows it now
   assigned to another login".
-- **Closing:** first ask whether the item is still the item you took up — a
+- **Closing:** for a `github-issues` item, make the PR body or description and
+  its squash title or commit use the non-closing reference `Refs #<id>`. Avoid
+  `Closes #<id>` and `Fixes #<id>`: the issue must remain open through
+  `BEFORE_CLOSE`, after which the adapter performs the verified close below.
+  First ask whether the item is still the item you took up — a
   late comment or a status somebody else moved is not published as `Done`
   underneath it:
 
