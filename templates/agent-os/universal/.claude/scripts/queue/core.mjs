@@ -449,7 +449,9 @@ export const selectionOf = (
     const deferral = DEFERRAL_LABELS.find((label) => labels.includes(label)) ?? 'parked';
     reject(
       'deferred',
-      `${deferral} (deferred): valid work deliberately not active now — a human un-parks it`,
+      deferral === 'parked'
+        ? 'parked (deferred): valid work deliberately not active now — a human un-parks it'
+        : `${deferral} (deferred): valid work deliberately not active now — this run does not take it`,
     );
   }
   if (ticket.lifecycle === 'obsolete') {
@@ -1211,6 +1213,16 @@ export const stopConditionOf = ({
           'lands, a blocker when its item closes, in-progress when the other ' +
           `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held) + assignedNote(held)} Otherwise the action is to ` +
           'interleave or to wait, never to refill and never to invent work.',
+      };
+    }
+    if (parked.includes('out-of-scope')) {
+      return {
+        kind: 'queue-empty',
+        success: true,
+        why:
+          `no item is selectable within the configured scope.${scopeNote(parked)}` +
+          `${parkedNote(parked)} This is a legitimate end of session for this scope; ` +
+          'do not invent work.',
       };
     }
     return {

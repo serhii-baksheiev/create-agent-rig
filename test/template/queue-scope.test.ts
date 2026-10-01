@@ -161,6 +161,7 @@ describe('scoped selection', () => {
       expect(deferred.reasons.join(' ')).toMatch(
         new RegExp(`${label}.*deferred|deferred.*${label}`, 'i'),
       );
+      expect(deferred.reasons.join(' ')).not.toMatch(/human un-parks/i);
     },
   );
 
@@ -256,6 +257,7 @@ describe('scoped selection', () => {
     expect(stop.kind).toBe('queue-empty');
     expect(stop.why).toMatch(/scope.*change|change.*scope/i);
     expect(stop.why).not.toMatch(/human.*unblock|unblock.*human/i);
+    expect(stop.why).not.toMatch(/genuinely out of work|refilling the queue|owner's job/i);
     expect(SKIP_CAUSES).toContain('out-of-scope');
     expect(HOLDING_CAUSES).not.toContain('out-of-scope');
   });
@@ -334,6 +336,17 @@ describe('the CLI wires config.options.scope into `next`', () => {
     expect(next.stderr).toMatch(/scope/i);
   });
 
+  it('a board scope:null overrides an options.scope and leaves plan-md unscoped', async () => {
+    const { loadConfig } = await load('index.mjs');
+    const cfg = await rig({
+      adapter: 'plan-md',
+      board: 'X',
+      options: { scope: { labels: ['rel-x'] } },
+      boards: { X: { scope: null } },
+    });
+    expect(loadConfig(cfg).options.scope).toBeNull();
+  });
+
   it('a malformed `options.scope` exits non-zero, selects nothing, and names scope on stderr', async () => {
     const cfg = await rig({ adapter: 'plan-md', options: { scope: {} } });
     const next = await run(['next', '--config', cfg, '--json']);
@@ -363,5 +376,6 @@ describe('the loop skill documents frozen, later and the scope option', () => {
     for (const word of ['frozen', 'later', 'scope']) {
       expect(section, word).toContain(word);
     }
+    expect(section).toContain('a configured scope refuses plan-md');
   });
 });

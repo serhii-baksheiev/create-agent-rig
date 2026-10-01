@@ -361,7 +361,7 @@ generator's `test/template/queue-scope.test.ts` — absent in a generated rig �
 
 **A tracker-backed `scope` option narrows selection to a release or a
 lane** — `"scope": {"labels": [...]}` in `.claude/queue.json`'s `options`, or
-the same key on a `boards.<name>` entry. `plan-md` refuses a label scope because
+the same key on a `boards.<name>` entry. A configured scope refuses plan-md because
 PLAN.md items have no release labels. A board's `"scope": null` overrides a
 shared `options.scope` and selects without a scope. An item missing any one of the listed
 labels is out of play as `out-of-scope`, never held: a scope with no eligible
@@ -370,8 +370,10 @@ scope refuses selection outright rather than running unscoped. Pinned in the
 generator's `test/template/queue-scope.test.ts` — absent in a generated rig —
 › "rejects a more attractive off-scope candidate and selects the in-scope one
 instead", › "ends a queue where only off-scope items are eligible as
-queue-empty, never nothing-selectable", and › "a malformed `options.scope`
-exits non-zero, selects nothing, and names scope on stderr".
+queue-empty, never nothing-selectable", › "a configured scope refuses plan-md
+instead of treating its label-less items as out-of-scope", › "a board scope:null
+overrides an options.scope and leaves plan-md unscoped", and › "a malformed
+`options.scope` exits non-zero, selects nothing, and names scope on stderr".
 
 **For a `trigger-auto` item, record the declaration** — it has to outlive the
 turn it was made in, or the next selection holds the item back again:
