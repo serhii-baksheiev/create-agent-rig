@@ -24,6 +24,7 @@ import {
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 const MAX_IMPLEMENTATION_DELTA_BYTES = 5 * 1024 * 1024;
 const MAX_TRACKER_BODY_BYTES = 64 * 1024;
+const MAX_GIT_PATH_BYTES = 4096;
 const SHA256 = /^[a-f0-9]{64}$/;
 const TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TDD_SPEC_PREFIX = 'rig:tdd-spec/v1 ';
@@ -47,10 +48,10 @@ const safeName = (value) =>
   value !== '.' &&
   value !== '..';
 
-const safeRelativePath = (value) =>
+const safeRelativePath = (value, maxLength = 512) =>
   typeof value === 'string' &&
   value.length > 0 &&
-  value.length <= 512 &&
+  value.length <= maxLength &&
   !isAbsolute(value) &&
   !value.split(/[\\/]/).some((part) => part === '' || part === '.' || part === '..');
 
@@ -384,10 +385,28 @@ const changedPaths = ({ projectRoot, baselineHeadSha }) => {
   } catch {
     throw new Error('final Git diff could not be read from the selected-work baseline');
   }
-  return names
-    .toString('utf8')
-    .split('\0')
-    .filter((file) => safeRelativePath(file));
+  const paths = [];
+  let start = 0;
+  for (let index = 0; index < names.length; index += 1) {
+    if (names[index] !== 0) continue;
+    const bytes = names.subarray(start, index);
+    start = index + 1;
+    if (bytes.length === 0 || bytes.length > MAX_GIT_PATH_BYTES) {
+      throw new Error('final Git diff contains an unsafe path');
+    }
+    let file;
+    try {
+      file = new TextDecoder('utf8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    } catch {
+      throw new Error('final Git diff contains an unsafe path');
+    }
+    if (!safeRelativePath(file, MAX_GIT_PATH_BYTES)) {
+      throw new Error('final Git diff contains an unsafe path');
+    }
+    paths.push(file);
+  }
+  if (start !== names.length) throw new Error('final Git diff contains an unsafe path');
+  return paths;
 };
 
 const tddApplicabilityPaths = (paths, ticket = null) =>

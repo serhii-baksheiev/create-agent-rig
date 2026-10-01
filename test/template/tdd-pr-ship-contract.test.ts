@@ -124,6 +124,32 @@ describe('RP-306 pr-ship enforcement contract', () => {
 
     expect(result.code, result.out).toBe(0);
     expect(result.out).toMatch(/TDD-0|not applicable/i);
+
+    const longProductionDirectory = path.join(
+      root,
+      'packages',
+      'cli',
+      'src',
+      ...Array.from({ length: 5 }, (_, index) => `segment-${index}-${'x'.repeat(110)}`),
+    );
+    const longProductionPath = path.join(longProductionDirectory, 'runtime.mjs');
+    await mkdir(longProductionDirectory, { recursive: true });
+    await writeFile(longProductionPath, 'export const ready = true;\n');
+    await git(['add', path.relative(root, longProductionPath)], root);
+    await git(['commit', '-q', '-m', 'add long-path runtime behavior'], root);
+
+    const longPathResult = await run(
+      process.execPath,
+      [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
+      root,
+      {
+        ...process.env,
+        RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-long-production-path-run-')),
+      },
+    );
+
+    expect(longPathResult.code, longPathResult.out).toBe(2);
+    expect(longPathResult.out).toMatch(/unsafe|TDD-2|HOLD/i);
   });
 
   it('requires TDD-2 when the final diff adds production beside a root README.md', async () => {

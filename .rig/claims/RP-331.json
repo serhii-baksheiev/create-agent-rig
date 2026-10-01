@@ -38,7 +38,7 @@
       "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "RP-331-green-readme-single"
+        "id": "RP-331-green-security-long-path"
       }
     },
     "baseline": {
@@ -48,67 +48,165 @@
       "test": {
         "file": "test/template/tdd-pr-ship-contract.test.ts",
         "fullName": "RP-306 pr-ship enforcement contract derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise",
-        "fileSha256": "866f228baded4ceb0a7a1e61e05428644c469d238cd9d153cb574d8b732c15e0"
+        "fileSha256": "6bfe77a59624b84ab67638ebb15245fa5ed119a929ab5ac7b1fe24b608634911"
       },
       "source": {
         "runId": "20261001-2135-rel-1-2-0-rp331",
-        "seq": 9
+        "seq": 30
       },
       "observation": {
         "outcome": "fail",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "87ea1c7324f0dbfec944425e7d62306f67a2b287066c21134e7bfcdd982f1a09"
+          "value": "5c87c3bc6dd3b4ed0e914f368bbf2cd46bfcace93f691e1fcf9c622cda87e688"
         }
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "68502b1afc96c79b032630439ccf70cb7427aabc303289a84087728bbc68740b"
+        "value": "6c19cc60fad3d84317418c2dba4e2fd58afdecf32797ce7ea94c7256fdd405f8"
       }
     },
     "implementationBoundary": {
       "source": {
         "runId": "20261001-2135-rel-1-2-0-rp331",
-        "seq": 12
+        "seq": 31
       },
       "implementationDeltaFingerprint": {
         "algorithm": "sha256",
-        "value": "558bc689da3e16062bc336af26386271e6d64ae0eaf0921fc0abc0325a5b452b"
+        "value": "3e7fa767aa63d3194c528c628363b9d6349030bc182f83876c2c8433f035b51b"
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "68502b1afc96c79b032630439ccf70cb7427aabc303289a84087728bbc68740b"
+        "value": "6c19cc60fad3d84317418c2dba4e2fd58afdecf32797ce7ea94c7256fdd405f8"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "7aa69cbf8271a9c5bfec19849372225d3e5a551437afc49003ab7ad99ebe8dcd"
+        "value": "208209115d58a5224be743dd6b60d115a21b662eb75473fe35592266ca7a09cb"
       }
     },
     "green": {
       "test": {
         "file": "test/template/tdd-pr-ship-contract.test.ts",
         "fullName": "RP-306 pr-ship enforcement contract derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise",
-        "fileSha256": "866f228baded4ceb0a7a1e61e05428644c469d238cd9d153cb574d8b732c15e0"
+        "fileSha256": "6bfe77a59624b84ab67638ebb15245fa5ed119a929ab5ac7b1fe24b608634911"
       },
       "source": {
         "runId": "20261001-2135-rel-1-2-0-rp331",
-        "seq": 13
+        "seq": 32
       },
       "observation": {
         "outcome": "pass",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "526d53d1894016a56982e240bff22390a1fa1fc5d49ff9f5b1c8e56a704a6069"
+          "value": "253aa2a43484478eaa7b4d7cc7b3728aafadabcea7fc1411a3b619184cee5fc4"
         }
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "7aa69cbf8271a9c5bfec19849372225d3e5a551437afc49003ab7ad99ebe8dcd"
+        "value": "208209115d58a5224be743dd6b60d115a21b662eb75473fe35592266ca7a09cb"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "5fb744a73eb59bffcbed0e9c673c53ddef882c5df9d7e0c0bef3f84d00f42255"
+        "value": "c7c2a7c8a638aa8fdbff683bc50a878b8620dff563e9256b72e84634d4a30d39"
       }
     }
-  }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-331",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-331-green-readme-single"
+          }
+        },
+        "baseline": {
+          "headSha": "2b42fcf0843dc676c080d0fdfe14e29876b7dfd5"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-pr-ship-contract.test.ts",
+            "fullName": "RP-306 pr-ship enforcement contract derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise",
+            "fileSha256": "866f228baded4ceb0a7a1e61e05428644c469d238cd9d153cb574d8b732c15e0"
+          },
+          "source": {
+            "runId": "20261001-2135-rel-1-2-0-rp331",
+            "seq": 9
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "87ea1c7324f0dbfec944425e7d62306f67a2b287066c21134e7bfcdd982f1a09"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "68502b1afc96c79b032630439ccf70cb7427aabc303289a84087728bbc68740b"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261001-2135-rel-1-2-0-rp331",
+            "seq": 12
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "558bc689da3e16062bc336af26386271e6d64ae0eaf0921fc0abc0325a5b452b"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "68502b1afc96c79b032630439ccf70cb7427aabc303289a84087728bbc68740b"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "7aa69cbf8271a9c5bfec19849372225d3e5a551437afc49003ab7ad99ebe8dcd"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/tdd-pr-ship-contract.test.ts",
+            "fullName": "RP-306 pr-ship enforcement contract derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise",
+            "fileSha256": "866f228baded4ceb0a7a1e61e05428644c469d238cd9d153cb574d8b732c15e0"
+          },
+          "source": {
+            "runId": "20261001-2135-rel-1-2-0-rp331",
+            "seq": 13
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "526d53d1894016a56982e240bff22390a1fa1fc5d49ff9f5b1c8e56a704a6069"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "7aa69cbf8271a9c5bfec19849372225d3e5a551437afc49003ab7ad99ebe8dcd"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "5fb744a73eb59bffcbed0e9c673c53ddef882c5df9d7e0c0bef3f84d00f42255"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "68502b1afc96c79b032630439ccf70cb7427aabc303289a84087728bbc68740b"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "6c19cc60fad3d84317418c2dba4e2fd58afdecf32797ce7ea94c7256fdd405f8"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "2d9ac2bd54097eff47adbd5f6f968f1e9d271b42911f2984c1c7a4966c6deb9f"
+        }
+      }
+    }
+  ]
 }
