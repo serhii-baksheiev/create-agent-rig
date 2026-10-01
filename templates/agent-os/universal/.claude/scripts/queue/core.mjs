@@ -145,9 +145,9 @@ export const SKIP_CAUSES = Object.freeze([
  * Under `plan-md` only `triage` is reachable of the three, and it matters that it
  * is: `parsePlan` reads the marker out of the bullet text, which is exactly the
  * case of a proposal that ended up under the wrong heading. `escalated` and
- * `closed` cannot appear there at all — a flat list carries no per-item state, so
- * `parsePlan` hands back `labels: []` and `state: 'open'` for every line. That is
- * an absence of state, NOT an adapter that filed the escalation somewhere safe.
+ * `closed` cannot appear there at all — a flat list carries no per-item workflow
+ * state, so `parsePlan` always hands back `state: 'open'`. Its inline markers are
+ * selection metadata, not evidence that an escalation was filed somewhere safe.
  * `plan-md`'s own `escalate` says so: it writes nothing, returns `ok: false`, and
  * hands back the instruction to move the item to the Operator queue in the same
  * edit — because if that move is not made, the next run picks the item straight
@@ -312,23 +312,30 @@ const assigneeMismatchOf = (ticket, currentActor) => {
  * Validate an adapter-neutral `scope: { labels: string[] }` option (RP-273).
  *
  * `null`/`undefined` means unscoped — read exactly as the key being absent.
- * Anything else must be `{ labels: [...] }`, a non-empty array of non-empty
- * strings; a malformed scope throws, naming `scope`, rather than silently
- * running unscoped — a scope typo that ran wide is worse than a run that
- * refuses to start.
+ * Anything else must be `{ labels: [...] }`, a non-empty array of non-blank
+ * strings without control characters. A malformed declared scope throws,
+ * naming `scope`, rather than silently running unscoped. This validates the
+ * value; it does not detect unknown option keys.
  */
 export const validateScope = (scope) => {
   if (scope === null || scope === undefined) return null;
   const malformed = () =>
     new Error(
       `options.scope must be null/undefined (unscoped) or { labels: string[] } with at ` +
-        `least one non-empty label — got ${JSON.stringify(scope)}. Selection refuses ` +
+        `least one non-blank label without control characters — got ${JSON.stringify(scope)}. Selection refuses ` +
         'rather than running unscoped on a scope it cannot read.',
     );
   if (typeof scope !== 'object' || Array.isArray(scope)) throw malformed();
   const labels = scope.labels;
   if (!Array.isArray(labels) || labels.length === 0) throw malformed();
-  if (!labels.every((label) => typeof label === 'string' && label.length > 0)) throw malformed();
+  if (
+    !labels.every(
+      (label) =>
+        typeof label === 'string' && label.trim().length > 0 && !/\p{Cc}/u.test(label),
+    )
+  ) {
+    throw malformed();
+  }
   return { labels };
 };
 
@@ -439,7 +446,13 @@ export const selectionOf = (
     );
   }
   if (ticket.parked === true) {
-    reject('deferred', 'parked (deferred): valid work deliberately not active now — a human un-parks it');
+    const deferral = DEFERRAL_LABELS.find((label) => labels.includes(label)) ?? 'parked';
+    reject(
+      'deferred',
+      deferral === 'parked'
+        ? 'parked (deferred): valid work deliberately not active now — a human un-parks it'
+        : `${deferral} (deferred): valid work deliberately not active now — this run does not take it`,
+    );
   }
   if (ticket.lifecycle === 'obsolete') {
     reject(
@@ -880,6 +893,10 @@ export const selectNext = (
         id: ticket.id,
         reason: selection.reasons.join('; '),
         causes: selection.causes,
+        deferral:
+          selection.causes.includes('deferred')
+            ? DEFERRAL_LABELS.find((label) => (ticket.labels ?? []).includes(label)) ?? 'parked'
+            : null,
       });
       continue;
     }
@@ -1005,17 +1022,27 @@ const heldBreakdown = (held) => breakdownOf(held, (count, tag) => `${count} held
  * `HOLDING_CAUSES` above), so a line claiming one mechanism would be false on
  * another, and the stop line is not where that belongs.
  */
-const parkedNote = (parked) =>
-  parked.length === 0
+const parkedNote = (parked) => {
+  const nonScope = parked.filter((cause) => cause !== 'out-of-scope');
+  return nonScope.length === 0
     ? ''
-    : ` A further ${parked.length} item(s) are parked — ${breakdownOf(parked)}. ` +
+    : ` A further ${nonScope.length} item(s) are parked — ${breakdownOf(nonScope)}. ` +
       'Those are not work this run can take and they wait on a human, never on ' +
       'time' +
-      (parked.includes('obsolete')
+      (nonScope.includes('obsolete')
         ? '; an obsolete item waits on a human close with a comment naming the ' +
           'evidence or the replacement, which the loop never writes'
         : '') +
       '.';
+};
+
+const scopeNote = (parked) => {
+  const excluded = parked.filter((cause) => cause === 'out-of-scope').length;
+  return excluded === 0
+    ? ''
+    : ` ${excluded} item(s) fall outside the configured scope; change the scope to select ` +
+      'work from another release or board.';
+};
 
 /**
  * The trigger remedies, composed from the tags actually present.
@@ -1070,19 +1097,33 @@ const ownerNote = (held) =>
 
 /**
  * The lifecycle remedies (AR-144), each present only when its tag is in the pile.
- * Both are human acts on the item itself — neither time nor interleaving frees
- * them, and the loop must not perform either: rewriting a `re-scope` item is
- * authoring its own work, and un-parking is a scheduling decision.
+ * The remedy is determined by the item's own marker — neither time nor
+ * interleaving frees it. The loop must not perform a human remedy: rewriting a
+ * `re-scope` item authors its own work, and un-parking a parked item is a
+ * scheduling decision.
  */
-const lifecycleNote = (held) =>
+const lifecycleNote = (held, skipped) =>
   (held.includes('re-scope')
     ? ' An item held as re-scope is valid work that is not executable as written: ' +
       'a human rewrites it against the current code and removes the label; the ' +
       'loop never invents the new scope.'
     : '') +
   (held.includes('deferred')
-    ? ' An item held as deferred carries the parked label — valid work deliberately ' +
-      'not active now: a human un-parks it; nothing this run does frees it.'
+    ? (() => {
+        const deferred = skipped
+          .filter((skip) =>
+            Array.isArray(skip?.causes) &&
+            skip.causes.includes('deferred') &&
+            !skip.causes.some((cause) => SKIP_CAUSES.includes(cause) && !HOLDING_CAUSES.includes(cause)),
+          )
+          .map((skip) => skip.deferral ?? 'parked');
+        const onlyFrozenOrLater = deferred.length > 0 && deferred.every((label) => label !== 'parked');
+        return onlyFrozenOrLater
+          ? ` An item held as deferred is valid work deliberately not active now. ${[...new Set(deferred)].join(' and ')} items are deferred for their own item-level reason. Nothing this run does frees it.`
+          : ' An item held as deferred is valid work deliberately not active now. A parked ' +
+              'item needs human un-parking; frozen and later items are deferred for their own ' +
+              'item-level reason. Nothing this run does frees it.';
+      })()
     : '');
 
 /**
@@ -1184,12 +1225,22 @@ export const stopConditionOf = ({
         success: true,
         why:
           `${held.length} item(s) are takeable work held back right now — ` +
-          `${heldBreakdown(held)}.${parkedNote(parked)} This is NOT an empty queue, ` +
+          `${heldBreakdown(held)}.${parkedNote(parked)}${scopeNote(parked)} This is NOT an empty queue, ` +
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
-          `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held) + assignedNote(held)} Otherwise the action is to ` +
+          `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held, skipped) + assignedNote(held)} Otherwise the action is to ` +
           'interleave or to wait, never to refill and never to invent work.',
+      };
+    }
+    if (parked.includes('out-of-scope')) {
+      return {
+        kind: 'queue-empty',
+        success: true,
+        why:
+          `no item is selectable within the configured scope.${scopeNote(parked)}` +
+          `${parkedNote(parked)} This is a legitimate end of session for this scope; ` +
+          'do not invent work.',
       };
     }
     return {
@@ -1197,7 +1248,7 @@ export const stopConditionOf = ({
       success: true,
       why:
         'no item survives the filters and nothing is merely held back — the queue ' +
-        `is genuinely out of work.${parkedNote(parked)} This is a legitimate end of ` +
+        `is genuinely out of work.${parkedNote(parked)}${scopeNote(parked)} This is a legitimate end of ` +
         'session, not an invitation to refactor: **do not invent work**. Refilling ' +
         "the queue is the owner's job.",
     };

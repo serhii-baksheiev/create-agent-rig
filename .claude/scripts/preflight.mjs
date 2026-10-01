@@ -172,6 +172,16 @@ export const checkQueue = async (projectRoot) => {
     const config = loadConfig(configPath, { strictRead: true });
     const adapterName = config.adapter ?? 'plan-md';
     const adapter = await resolveAdapter(adapterName);
+    if (
+      config.options?.scope !== undefined &&
+      config.options.scope !== null &&
+      adapter.supportsScope === false
+    ) {
+      throw new Error(
+        `${adapter.name} does not support options.scope: PLAN.md markers are not tracker labels, so ` +
+          'a label scope cannot select a narrower queue. Use a tracker adapter with labels instead.',
+      );
+    }
     await adapter.listEligible(optionsWithPlanPath(config.options, configPath));
     return { ok: true, detail: `queue readable through ${adapterName}` };
   } catch (error) {
