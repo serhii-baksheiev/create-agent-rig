@@ -165,6 +165,18 @@ describe('scoped selection', () => {
     },
   );
 
+  it.each(['frozen', 'later'])(
+    'does not describe a %s-only held queue as parked work requiring human un-parking',
+    async (label) => {
+      const { selectNext, stopConditionOf, lifecycleOf } = await load('core.mjs');
+      const result = selectNext([ticket({ labels: [label], ...lifecycleOf([label]) })], {});
+      const stop = stopConditionOf({ candidates: result.candidates, skipped: result.skipped });
+      expect(stop.kind).toBe('nothing-selectable');
+      expect(stop.why).toMatch(/deferred/i);
+      expect(stop.why).not.toMatch(/carries the parked label|human un-parks it/i);
+    },
+  );
+
   it('rejects the exact RP-96 label set as both out-of-scope and deferred when scoped to rel-1.1.0', async () => {
     const { selectionOf, lifecycleOf } = await load('core.mjs');
     const rp96 = ticket({ labels: RP96_LABELS, ...lifecycleOf(RP96_LABELS) });
