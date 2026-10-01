@@ -428,8 +428,10 @@ const FIELDS = [
  * An empty search result is ambiguous: it can mean there is no ready work, or
  * that Jira authenticated the account but did not let it browse this project.
  * Resolve that ambiguity only for a genuinely empty live search. The project
- * key comes through the same validation as the search query, and `request`
- * keeps its ordinary timeout, retry and credential-redaction behaviour.
+ * key comes through the same validation as the search query. Pinned in
+ * test/template/queue-jira-visibility.test.ts (absent in a generated rig) ›
+ * "fails closed before treating an empty search as an empty queue when Jira %s"
+ * and "accepts a genuinely empty queue after the configured project is confirmed visible".
  */
 const assertProjectVisible = async ({ project, jql, env }) => {
   const projectKey = projectKeyOf({ project, jql });
