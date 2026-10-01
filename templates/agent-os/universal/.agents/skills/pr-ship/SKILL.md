@@ -188,12 +188,11 @@ blockers.
    - **1** — the verifier could not complete its bounded verification. Treat it
      as `HOLD` and repair the named prerequisite.
 
-   For a TDD-2 or TDD-3 PASS, copy the exact RED, implementation-boundary and
+   For a TDD-2 PASS, copy the exact RED, implementation-boundary and
    GREEN SHA-256 fingerprints printed by the verifier into the compact
    `evidence` entries of this gate's verdict and the PR description. Put the
    same compact verdict in the tracker at close. A local run-journal record
-   alone is not the durable PR/tracker audit verdict. Include the non-vacuity
-   fingerprint when TDD-3 applies; never copy raw test logs.
+   alone is not the durable PR/tracker audit verdict. Never copy raw test logs.
    The output binding is pinned in `test/template/tdd-durable-verdict.test.ts`
    (absent in a generated rig) › "prints the exact portable RED,
    implementation-boundary, and GREEN fingerprints on a TDD-2 PASS".

@@ -114,7 +114,7 @@ and records compact evidence fingerprints in the run journal.
 If the relevant test file changes, run the changed test while failing and call
 `record-red` again before recording GREEN. The new RED must keep the same file
 and full test name with a different file hash. The recorder keeps the prior
-portable chain in bounded `tddEvidenceHistory` and makes the newly observed RED
+portable chain in `tddEvidenceHistory` and makes the newly observed RED
 active, including when the prior chain had reached TDD-2. This transition is
 pinned in `test/template/tdd-evidence-flow.test.ts` (absent in a generated rig)
 › "replaces a stale RED with a newly observed RED for the changed test hash"
