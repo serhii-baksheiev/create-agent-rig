@@ -291,14 +291,21 @@ describe('scoped selection', () => {
 });
 
 describe('the CLI wires config.options.scope into `next`', () => {
-  const run = (args: string[]): Promise<{ code: number; stdout: string; stderr: string }> =>
+  const run = (
+    args: string[],
+    env: NodeJS.ProcessEnv = {},
+  ): Promise<{ code: number; stdout: string; stderr: string }> =>
     new Promise((resolve) => {
-      execFile(process.execPath, [path.join(queueDir, 'index.mjs'), ...args], {}, (e, out, err) =>
-        resolve({
-          code: e && typeof e.code === 'number' ? e.code : 0,
-          stdout: String(out),
-          stderr: String(err),
-        }),
+      execFile(
+        process.execPath,
+        [path.join(queueDir, 'index.mjs'), ...args],
+        { env: { ...process.env, ...env } },
+        (e, out, err) =>
+          resolve({
+            code: e && typeof e.code === 'number' ? e.code : 0,
+            stdout: String(out),
+            stderr: String(err),
+          }),
       );
     });
 
@@ -355,6 +362,34 @@ describe('the CLI wires config.options.scope into `next`', () => {
     expect(next.stdout).not.toMatch(/"id"/);
     expect(next.stderr).toMatch(/plan-md.*options\.scope|options\.scope.*plan-md/i);
     expect(next.stderr).toMatch(/scope/);
+    expect(next.stderr).not.toMatch(/(?:^|\n)\s*at\s+/);
+    expect(next.stderr.trim().split('\n')).toHaveLength(1);
+  });
+
+  it('a malformed Jira scope reaches selectNext and exits in one line without a stack trace', async () => {
+    const cfg = await rig({
+      adapter: 'jira',
+      options: {
+        project: 'RP',
+        issues: [
+          {
+            key: 'RP-286',
+            fields: {
+              summary: 'fixture issue',
+              labels: [],
+              status: { statusCategory: { key: 'new' } },
+              issuelinks: [],
+              comment: { total: 0, comments: [] },
+            },
+          },
+        ],
+        scope: {},
+      },
+    });
+    const next = await run(['next', '--config', cfg, '--json']);
+    expect(next.code).not.toBe(0);
+    expect(next.stdout).not.toMatch(/"id"/);
+    expect(next.stderr).toMatch(/^queue: selection refused — .*scope/im);
     expect(next.stderr).not.toMatch(/(?:^|\n)\s*at\s+/);
     expect(next.stderr.trim().split('\n')).toHaveLength(1);
   });
