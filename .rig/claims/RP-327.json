@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-327",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "caf242a53af47efca3024843478dbbd69baa64d22af08210006cb721f0bea561",
+      "targetSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/spec-kit-empty-labels.test.ts",
+      "fullName": "imports into a repository whose GitHub label list is empty"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "caf242a53af47efca3024843478dbbd69baa64d22af08210006cb721f0bea561",
+      "targetSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "09a276b48e1fe23dd65a245ff63cb4667177c029339e381a46da25af516c40f6"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-327",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-327-empty-labels-green-corrected"
+      }
+    },
+    "baseline": {
+      "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/spec-kit-empty-labels.test.ts",
+        "fullName": "imports into a repository whose GitHub label list is empty",
+        "fileSha256": "e3751f1eea63124618ec3fcc642f823f30ff87463877df3498e517bfde668062"
+      },
+      "source": {
+        "runId": "20261001-142800",
+        "seq": 15
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "8ef337352d9a2e5690ef3654d72c7150f07c7bbcc6608d793bc5838b64920556"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "3dab7cf47ef2798b26a11c5fa253558cd8af33b18a040caf0c8574b3fee1bb61"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-142800",
+        "seq": 16
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "9cb3438f3743d5dee8817d29c12febfc7d7998cda6761156e18eeae894241e45"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "3dab7cf47ef2798b26a11c5fa253558cd8af33b18a040caf0c8574b3fee1bb61"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "9b12ffdbb9e20372a136615c8a0884ccc3f11bb7eb1d10ec6d37cd392ac58506"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/spec-kit-empty-labels.test.ts",
+        "fullName": "imports into a repository whose GitHub label list is empty",
+        "fileSha256": "e3751f1eea63124618ec3fcc642f823f30ff87463877df3498e517bfde668062"
+      },
+      "source": {
+        "runId": "20261001-142800",
+        "seq": 17
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "148fe1091583cf78fd8090a948778a2a2323c0964dcc90911cf51013a91fdf98"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "9b12ffdbb9e20372a136615c8a0884ccc3f11bb7eb1d10ec6d37cd392ac58506"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "4ddc6f7773c81dbde0d8342384755708869887d6e20d2613143c4f26b78d0edb"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-327",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-327-empty-labels-red-attested"
+          }
+        },
+        "baseline": {
+          "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/spec-kit-empty-labels.test.ts",
+            "fullName": "imports into a repository whose GitHub label list is empty",
+            "fileSha256": "db162b3e0ff9a269f7364cc76adab45870c6107424b974ceee1d4c32eda9bc34"
+          },
+          "source": {
+            "runId": "20261001-142800",
+            "seq": 11
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "3369d325205891ce8deb280fcebca6bddb175df9ebda543b39367589d5d676d2"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "1a3f9dbb7771c48a40fca134b588702000f0c4addd1eecaf51bd1fb6a70c4222"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "1a3f9dbb7771c48a40fca134b588702000f0c4addd1eecaf51bd1fb6a70c4222"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "3dab7cf47ef2798b26a11c5fa253558cd8af33b18a040caf0c8574b3fee1bb61"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "9a199e7c85869a1bb5130d6fcaf30fcc51cbb190c381dcb93c477ca0db5df295"
+        }
+      }
+    }
+  ]
+}
