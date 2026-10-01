@@ -1009,25 +1009,32 @@ const gitText = (projectRoot, args) =>
 export const targetShaOf = (projectRoot, ref = null) => {
   const resolve = (candidate) => {
     try {
-      return gitText(projectRoot, ['rev-parse', '--verify', candidate]);
+      return gitText(projectRoot, ['rev-parse', '--verify', `${candidate}^{commit}`]);
     } catch {
       return null;
     }
   };
-  if (ref) return resolve(ref);
+  const remoteRef = (candidate) => `refs/remotes/${candidate}`;
+  const explicitRef =
+    ref === 'origin/HEAD' || ref === 'origin/master' || ref === 'origin/main' ? remoteRef(ref) : ref;
+  if (explicitRef) return resolve(explicitRef);
 
-  let defaultRef = null;
-  try {
-    defaultRef = gitText(projectRoot, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
-  } catch {
-    // A clone may not have a remote symbolic default ref.
-  }
-  if (defaultRef) return resolve(defaultRef);
+  const defaultTarget = resolve(remoteRef('origin/HEAD'));
+  if (defaultTarget) return defaultTarget;
 
-  const remoteTargets = ['origin/master', 'origin/main'].map(resolve).filter(Boolean);
+  const remoteTargets = ['origin/master', 'origin/main'].map(remoteRef).map(resolve).filter(Boolean);
   const remoteShas = [...new Set(remoteTargets)];
   if (remoteShas.length === 1) return remoteShas[0];
   if (remoteShas.length > 1) return null;
+
+  // A configured remote with no trustworthy default ref is ambiguous. Do not
+  // replace that missing remote state with a potentially stale local branch.
+  try {
+    gitText(projectRoot, ['config', '--get', 'remote.origin.url']);
+    return null;
+  } catch {
+    // A local-only repository has no remote authority to prefer.
+  }
 
   for (const candidate of ['master', 'main']) {
     const sha = resolve(candidate);

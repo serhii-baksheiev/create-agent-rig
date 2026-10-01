@@ -337,6 +337,18 @@ describe('the git fixture itself', () => {
     expect(remoteMain).not.toBe(remoteMaster);
 
     expect(claims.targetShaOf(clone)).toBeNull();
+
+    // `origin/master` is only a remote-tracking target if that fully-qualified
+    // ref exists. A local tag with the same short name must neither create a
+    // false ambiguity with the actual remote main nor stand in for a vanished
+    // remote target.
+    await git(['update-ref', '-d', 'refs/remotes/origin/master'], clone);
+    await git(['tag', '-f', 'origin/master', remoteMaster], clone);
+    expect(await git(['rev-parse', 'origin/master'], clone)).toBe(remoteMaster);
+    expect(claims.targetShaOf(clone)).toBe(remoteMain);
+
+    await git(['update-ref', '-d', 'refs/remotes/origin/main'], clone);
+    expect(claims.targetShaOf(clone)).toBeNull();
   });
 });
 
