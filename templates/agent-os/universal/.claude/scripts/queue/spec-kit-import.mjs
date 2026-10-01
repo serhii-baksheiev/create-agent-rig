@@ -146,8 +146,8 @@ export const parseTasks = ({ projectRoot = process.cwd(), tasksPath = null } = {
 
 const dependenciesFor = (task) => task.dependencies.map((id) => `${task.identity.split(':')[0]}:${id}`);
 
-// GitHub's queue recognises a blocker only when its line begins with "Blocked
-// by". Keep task prose literal except for that one collision-safe prefix.
+// GitHub's queue recognises dependency phrases at the start of a line.
+// Prefix matching task prose so it cannot create a false blocker.
 const safeTaskText = (title) => (/^\s*(?:blocked by|depends on|blocker)\b/i.test(title) ? `Task: ${title}` : title);
 
 const bodyFor = (task, numbers) => {
