@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url';
 import { claimPathFor } from './lib/claim-records.mjs';
 import { findSecretValues } from './lib/secrets.mjs';
 import { withoutGitLocation } from './git-env.mjs';
+import { workingTreeStateFingerprint } from './lib/git-working-tree-state.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 import { readRun, recordEvent } from './run-journal.mjs';
 import {
@@ -384,10 +385,7 @@ const changedPaths = ({ projectRoot, baselineHeadSha }) => {
   } catch {
     throw new Error('final Git diff could not be read from the selected-work baseline');
   }
-  return names
-    .toString('utf8')
-    .split('\0')
-    .filter((file) => safeRelativePath(file));
+  return decodeGitPathList(names, 'final Git diff paths');
 };
 
 const tddApplicabilityPaths = (paths, ticket = null) =>
@@ -416,24 +414,46 @@ const gitPathList = ({ projectRoot, args, label }) => {
   } catch {
     throw new Error(`${label} could not be read`);
   }
-  return names
-    .toString('utf8')
-    .split('\0')
-    .filter((file) => safeRelativePath(file));
+  return decodeGitPathList(names, label);
 };
 
 const isTestInfrastructurePath = (file) => /^vitest\.config\.(?:[cm]?[jt]s|json)$/.test(file);
 
-const isPreRedRuntimePath = (file) => file === '.claude/queue.json' || file.startsWith('node_modules/');
+const isPreRedRuntimePath = (file) => file.startsWith('node_modules/');
+
+const decodeGitPathList = (bytes, label) => {
+  if (bytes.length > 0 && bytes.at(-1) !== 0) throw new Error(`${label} is not NUL terminated`);
+  const paths = [];
+  for (const encoded of bytes.toString('binary').split('\0').slice(0, -1)) {
+    let file;
+    try {
+      file = new TextDecoder('utf-8', { fatal: true }).decode(Buffer.from(encoded, 'binary'));
+    } catch {
+      throw new Error(`${label} contains an undecodable Git path`);
+    }
+    if (!safeRelativePath(file)) throw new Error(`${label} contains an unsafe or over-bound Git path`);
+    paths.push(file);
+  }
+  return paths;
+};
 
 const preRedProductionPaths = ({ projectRoot, baselineHeadSha, ticket = null }) => {
-  const tracked = changedPaths({ projectRoot, baselineHeadSha });
+  const workingTree = gitPathList({
+    projectRoot,
+    args: ['diff', '--name-only', '-z', baselineHeadSha, '--'],
+    label: 'working-tree Git paths',
+  });
+  const index = gitPathList({
+    projectRoot,
+    args: ['diff', '--cached', '--name-only', '-z', baselineHeadSha, '--'],
+    label: 'index Git paths',
+  });
   const untracked = gitPathList({
     projectRoot,
     args: ['ls-files', '--others', '--exclude-standard', '-z'],
     label: 'untracked Git paths',
   });
-  const candidates = [...new Set([...tracked, ...untracked])].sort();
+  const candidates = [...new Set([...workingTree, ...index, ...untracked])].sort();
   return tddApplicabilityPaths(candidates, ticket).filter(
     (file) =>
       !isPreRedRuntimePath(file) &&
@@ -496,18 +516,11 @@ const implementationDeltaFingerprint = ({ projectRoot, baselineHeadSha, bindingB
 };
 
 const workingTreeDiffFingerprint = ({ projectRoot, gitHead }) => {
-  if (!/^[a-f0-9]{40}$/.test(gitHead ?? '')) throw new Error('GREEN check has no valid implementation commit boundary');
-  let diff;
   try {
-    diff = execFileSync(
-      'git',
-      ['-C', projectRoot, 'diff', '--binary', '--no-ext-diff', '--no-textconv', gitHead, '--'],
-      { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
-    );
-  } catch {
-    throw new Error('current implementation working-tree delta could not be read');
+    return workingTreeStateFingerprint({ projectRoot, gitHead, maxBytes: MAX_IMPLEMENTATION_DELTA_BYTES });
+  } catch (error) {
+    throw new Error(`current implementation working-tree state could not be read: ${error.message}`, { cause: error });
   }
-  return { algorithm: 'sha256', value: createHash('sha256').update(diff).digest('hex') };
 };
 
 const sameFingerprint = (left, right) =>
@@ -585,6 +598,27 @@ const replaceClaim = ({ projectRoot, file, content }) => {
 const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
   const { run, event, test } = checkEvent({ projectRoot, runDir, check, outcome: 'fail' });
   const { file, claim } = claimRecord(projectRoot, ticket);
+  const observedHead = event.data.gitHead;
+  const observedWorkingTreeDiff = event.data.workingTreeDiff;
+  if (!/^[a-f0-9]{40}$/.test(observedHead ?? '') || !sameFingerprint(observedWorkingTreeDiff, observedWorkingTreeDiff)) {
+    throw new Error('RED check has no valid pre-RED production boundary');
+  }
+  const boundaryEvent = run.events.find(
+    (entry) =>
+      entry.kind === 'check-boundary' &&
+      entry.seq < event.seq &&
+      entry?.data?.name === check &&
+      entry?.data?.gitHead === observedHead &&
+      sameFingerprint(entry?.data?.workingTreeDiff, observedWorkingTreeDiff),
+  );
+  if (!boundaryEvent) throw new Error('RED check has no preceding pre-RED production boundary');
+  if (resolveCommit(projectRoot, 'HEAD') !== observedHead) {
+    throw new Error('pre-RED production boundary changed after the RED check');
+  }
+  const currentWorkingTreeDiff = workingTreeDiffFingerprint({ projectRoot, gitHead: observedHead });
+  if (!sameFingerprint(observedWorkingTreeDiff, currentWorkingTreeDiff)) {
+    throw new Error('pre-RED production boundary changed after the RED check');
+  }
   const previousEvidence = claim.tddEvidence;
   if (previousEvidence !== undefined) {
     const priorValidation = validatePortableEvidence(previousEvidence);

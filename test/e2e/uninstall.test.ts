@@ -468,7 +468,10 @@ describe('create-agent-rig uninstall', () => {
   // seed forces every unverifiable file to be kept rather than risk removing
   // one it needs. The genuinely-traced count (15) is unaffected: check-run.mjs
   // is neither one of the 7 direct hooks, one of the 6 real imports, nor one
-  // of the two non-dependency entries the count is defined to mean.
+  // of the two non-dependency entries the count is defined to mean. RP-328
+  // adds the Core-only `lib/git-working-tree-state.mjs` helper, another
+  // unreferenced-by-hooks path in this scenario, so the precaution-only count
+  // moves from 11 to 12 while the genuinely-traced count remains 16.
   //
   // The precaution-only count was 29 before RP-180: `init` here installs Lean
   // Core only (no `--layer workflow`), and the superset sweep's precaution
@@ -505,7 +508,7 @@ describe('create-agent-rig uninstall', () => {
   // wording, never the "protected because" precaution one. 7 direct hooks +
   // 7 real imports + 2 non-dependency entries (`settings.json`,
   // `guard-secret-file.mjs`) = 16. The precaution-only count is unaffected
-  // at 11: `canonical-path.mjs` did not exist before, so it moves from
+  // at 12 after RP-328's additional Core helper: `canonical-path.mjs` did not exist before, so it moves from
   // "nothing to count" straight to the traced bucket, never through the
   // precaution one.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
@@ -529,7 +532,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(16 genuinely referenced or imported; 11 kept only as a precaution',
+        '(16 genuinely referenced or imported; 12 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',

@@ -41,6 +41,7 @@ const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: 
   const projectRoot = await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-producer-'));
   const runDir = await mkdtemp(path.join(tmpdir(), 'tdd-pre-red-producer-run-'));
   await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
+  await mkdir(path.join(projectRoot, '.claude'), { recursive: true });
   await mkdir(path.join(projectRoot, 'src'), { recursive: true });
   await writeFile(
     path.join(projectRoot, '.rig', 'revalidation.json'),
@@ -59,8 +60,12 @@ const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: 
     path.join(projectRoot, 'src', 'feature.ts'),
     'export const feature = () => "old";\n',
   );
+  await writeFile(
+    path.join(projectRoot, '.claude', 'queue.json'),
+    '{"adapter":"jira","options":{"project":"RP"}}\n',
+  );
   await git(['init', '-q', '-b', 'master'], projectRoot);
-  await git(['add', '.rig/revalidation.json', 'src/feature.ts'], projectRoot);
+  await git(['add', '.rig/revalidation.json', '.claude/queue.json', 'src/feature.ts'], projectRoot);
   await git(['commit', '-q', '-m', 'baseline'], projectRoot);
   const baselineHeadSha = await git(['rev-parse', 'HEAD'], projectRoot);
   await git(['checkout', '-q', '-b', 'feat/RP-328'], projectRoot);
@@ -102,6 +107,10 @@ const makeFixture = async ({ dirty, dispatched }: { dirty: boolean; dispatched: 
     await writeFile(
       path.join(projectRoot, 'src', 'untracked.ts'),
       'export const untracked = true;\n',
+    );
+    await writeFile(
+      path.join(projectRoot, '.claude', 'queue.json'),
+      '{"adapter":"jira","options":{"project":"RP","preRedProducer":true}}\n',
     );
   }
 
@@ -182,7 +191,7 @@ it('records portable pre-RED implementation state', async () => {
     baseline: { headSha: dirty.baselineHeadSha },
     red: { check: 'unit-red', fingerprint },
     production: {
-      pathCount: 3,
+      pathCount: 4,
       fingerprint,
     },
     implementationAgentDispatch: { count: 1, fingerprint },
@@ -195,7 +204,7 @@ it('records portable pre-RED implementation state', async () => {
     validatePortableEvidence: (value: unknown) => { ok: boolean };
   };
   expect(evidence.validatePortableEvidence(dirty.claim.tddEvidence).ok).toBe(true);
-  dirty.claim.tddEvidence.preRed.production.pathCount = 4;
+  dirty.claim.tddEvidence.preRed.production.pathCount = 5;
   expect(evidence.validatePortableEvidence(dirty.claim.tddEvidence).ok).toBe(false);
 
   const clean = await makeFixture({ dirty: false, dispatched: false });

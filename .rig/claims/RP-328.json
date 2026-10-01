@@ -38,76 +38,114 @@
       "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "RP-328-green"
+        "id": "RP-328-green-fixture-producer-final"
       }
     },
     "baseline": {
       "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
     },
+    "preRed": {
+      "baseline": {
+        "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+      },
+      "red": {
+        "check": "RP-328-red-fixture-producer-final",
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "55cea7e1e3ebec936af7e6f83d9a302dc49326ca24214f88352d442f9646a041"
+        }
+      },
+      "production": {
+        "pathCount": 7,
+        "stateFingerprint": {
+          "algorithm": "sha256",
+          "value": "f8865db2e6a05e59035e855dc2dd868c7babf8e7179b6c6611fc5084cab713fa"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "6f6df855c5747d7bc325f8f2e2deac773f32f78d6989f90cb1e0abc5b7024f64"
+        }
+      },
+      "implementationAgentDispatch": {
+        "count": 0,
+        "sourcesFingerprint": {
+          "algorithm": "sha256",
+          "value": "5623cbfcc22385b8ab07e92c135a2350dfd0646648d648eeec8a3fe04706826b"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "da24ae0fc5df6836d667a33a67dccad1c298db2f388bff5e229e7db7390440f3"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "0dc25ebee87e53ba66a7d7907629dae59400c018dcdfec092e7ac471a26b7977"
+      }
+    },
     "red": {
       "test": {
         "file": "test/template/tdd-pre-red-producer.test.ts",
         "fullName": "records portable pre-RED implementation state",
-        "fileSha256": "4e4d15a0f99797d593697d5e99bbdeb9cc2714409b0bfe19b091e6edb5d19c17"
+        "fileSha256": "20868776db47ce9fcfcf6d7bb8f8f29af4182a02b2c6b70f78d572ff5e1054ca"
       },
       "source": {
         "runId": "20261001-1510-rel-1-2-0-rp328",
-        "seq": 7
+        "seq": 38
       },
       "observation": {
         "outcome": "fail",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "8446e637bdada325b8bad5c4716fabc2fd72e5c56e41589647c4bc2f3d1d5359"
+          "value": "7941d014e5d081cbc405f12f4dac718dc769d696fd57f09deaf0348974afdae2"
         }
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+        "value": "55cea7e1e3ebec936af7e6f83d9a302dc49326ca24214f88352d442f9646a041"
       }
     },
     "implementationBoundary": {
       "source": {
         "runId": "20261001-1510-rel-1-2-0-rp328",
-        "seq": 8
+        "seq": 47
       },
       "implementationDeltaFingerprint": {
         "algorithm": "sha256",
-        "value": "b5345d2df8e2cd3bb7717293cfc7920001558ee2f664d1c1288312fbd7240657"
+        "value": "4af9658d73049f8c9121d22825eee8409495978262e5b04e3076f81a6796c881"
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+        "value": "55cea7e1e3ebec936af7e6f83d9a302dc49326ca24214f88352d442f9646a041"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "546910c70003af5feadb839d1c7d8cec10da39356305b374a244f0a15dabfa74"
+        "value": "d9559c77131bfaaa317087e539f064036bd0bfdc9add0903f9507a2c9f720250"
       }
     },
     "green": {
       "test": {
         "file": "test/template/tdd-pre-red-producer.test.ts",
         "fullName": "records portable pre-RED implementation state",
-        "fileSha256": "4e4d15a0f99797d593697d5e99bbdeb9cc2714409b0bfe19b091e6edb5d19c17"
+        "fileSha256": "20868776db47ce9fcfcf6d7bb8f8f29af4182a02b2c6b70f78d572ff5e1054ca"
       },
       "source": {
         "runId": "20261001-1510-rel-1-2-0-rp328",
-        "seq": 9
+        "seq": 48
       },
       "observation": {
         "outcome": "pass",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "2f55f2c6e7755b4181e1046588b6a899c3745998cb8233e29061079721c00639"
+          "value": "e208e7964ac0d8eb813706e7b4ddc6f54e635f56126dce40856297542ce68e3b"
         }
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "546910c70003af5feadb839d1c7d8cec10da39356305b374a244f0a15dabfa74"
+        "value": "d9559c77131bfaaa317087e539f064036bd0bfdc9add0903f9507a2c9f720250"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "037c39162de12db04ece9588f6307779d0c5ad02840eff0776c488b4a87685b7"
+        "value": "50907094eeb20787f3709f5630198d7de57721267ad71c3c13f95bab0c8e422c"
       }
     }
   },
@@ -161,6 +199,192 @@
         "fingerprint": {
           "algorithm": "sha256",
           "value": "78b0dda55795b29e2d2b20a0fc4f747a031c1fef4d811f797680ad2f207974de"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-328",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-328-green"
+          }
+        },
+        "baseline": {
+          "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-pre-red-producer.test.ts",
+            "fullName": "records portable pre-RED implementation state",
+            "fileSha256": "4e4d15a0f99797d593697d5e99bbdeb9cc2714409b0bfe19b091e6edb5d19c17"
+          },
+          "source": {
+            "runId": "20261001-1510-rel-1-2-0-rp328",
+            "seq": 7
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "8446e637bdada325b8bad5c4716fabc2fd72e5c56e41589647c4bc2f3d1d5359"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261001-1510-rel-1-2-0-rp328",
+            "seq": 8
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "b5345d2df8e2cd3bb7717293cfc7920001558ee2f664d1c1288312fbd7240657"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "546910c70003af5feadb839d1c7d8cec10da39356305b374a244f0a15dabfa74"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/tdd-pre-red-producer.test.ts",
+            "fullName": "records portable pre-RED implementation state",
+            "fileSha256": "4e4d15a0f99797d593697d5e99bbdeb9cc2714409b0bfe19b091e6edb5d19c17"
+          },
+          "source": {
+            "runId": "20261001-1510-rel-1-2-0-rp328",
+            "seq": 9
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "2f55f2c6e7755b4181e1046588b6a899c3745998cb8233e29061079721c00639"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "546910c70003af5feadb839d1c7d8cec10da39356305b374a244f0a15dabfa74"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "037c39162de12db04ece9588f6307779d0c5ad02840eff0776c488b4a87685b7"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "934aa27b298669a1d75e86459e4fd47fc93ade6bff0f3f1b62f2e640c2e88e00"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "83db26e9bc1f22491d31c470222cf613359ac13b03c78d79a5e86cc6805ede55"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "c1abd11c0388a80dd079cd9b13cdff10577e06d53700337e9946734b5c335526"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-328",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-328-red-fixture-producer-bound"
+          }
+        },
+        "baseline": {
+          "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+        },
+        "preRed": {
+          "baseline": {
+            "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+          },
+          "red": {
+            "check": "RP-328-red-fixture-producer-bound",
+            "fingerprint": {
+              "algorithm": "sha256",
+              "value": "83db26e9bc1f22491d31c470222cf613359ac13b03c78d79a5e86cc6805ede55"
+            }
+          },
+          "production": {
+            "pathCount": 7,
+            "stateFingerprint": {
+              "algorithm": "sha256",
+              "value": "f8865db2e6a05e59035e855dc2dd868c7babf8e7179b6c6611fc5084cab713fa"
+            },
+            "fingerprint": {
+              "algorithm": "sha256",
+              "value": "6f6df855c5747d7bc325f8f2e2deac773f32f78d6989f90cb1e0abc5b7024f64"
+            }
+          },
+          "implementationAgentDispatch": {
+            "count": 0,
+            "sourcesFingerprint": {
+              "algorithm": "sha256",
+              "value": "5623cbfcc22385b8ab07e92c135a2350dfd0646648d648eeec8a3fe04706826b"
+            },
+            "fingerprint": {
+              "algorithm": "sha256",
+              "value": "da24ae0fc5df6836d667a33a67dccad1c298db2f388bff5e229e7db7390440f3"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "c3a199d38038f08ef73529a1b4ac7e00b9ac89d7acc9fc781d96f566a82a6f6b"
+          }
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-pre-red-producer.test.ts",
+            "fullName": "records portable pre-RED implementation state",
+            "fileSha256": "9d6ab6935159460c88c7c43e81b1c78541f033df85ffc932c3516386f55d729a"
+          },
+          "source": {
+            "runId": "20261001-1510-rel-1-2-0-rp328",
+            "seq": 32
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "60911b0db671c3901e69cf1a83b785312aefc64ec9a208b13a4bf1a0a4a91445"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "83db26e9bc1f22491d31c470222cf613359ac13b03c78d79a5e86cc6805ede55"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "83db26e9bc1f22491d31c470222cf613359ac13b03c78d79a5e86cc6805ede55"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "55cea7e1e3ebec936af7e6f83d9a302dc49326ca24214f88352d442f9646a041"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "dfb01404ff23f68c3fc241bbc3cedb44a5b64a3893dd1bb372c46fee69fd2b83"
         }
       }
     }
