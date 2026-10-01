@@ -75,6 +75,8 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/lib/claim-records.mjs',
   '.claude/scripts/lib/revalidation-evidence.mjs',
   '.claude/scripts/lib/revalidation-points.mjs',
+  // RP-305: pure authoritative applicability and portable-evidence contract.
+  '.claude/scripts/lib/tdd-evidence.mjs',
   '.rig/revalidation.json',
   // the queue seam
   '.claude/scripts/queue/core.mjs',
@@ -100,6 +102,7 @@ const EXPECTED_WORKFLOW = new Set([
   'docs/decisions/gate-coverage.md',
   'docs/decisions/closing-a-task.md',
   'docs/decisions/content-blind-revalidation.md',
+  'docs/decisions/tdd-evidence.md',
   'docs/decisions/run-directory.md',
   'docs/decisions/spacing-rations-mechanisms.md',
   'docs/decisions/stop-conditions-in-a-file.md',
