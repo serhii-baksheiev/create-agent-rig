@@ -386,7 +386,11 @@ describe('the CLI wires config.options.scope into `next`', () => {
         scope: {},
       },
     });
-    const next = await run(['next', '--config', cfg, '--json']);
+    const next = await run(['next', '--config', cfg, '--json'], {
+      JIRA_BASE_URL: '',
+      JIRA_EMAIL: '',
+      JIRA_API_TOKEN: '',
+    });
     expect(next.code).not.toBe(0);
     expect(next.stdout).not.toMatch(/"id"/);
     expect(next.stderr).toMatch(/^queue: selection refused — .*scope/im);
