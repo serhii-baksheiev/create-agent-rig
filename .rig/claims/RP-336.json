@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-336",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "bde6b94d79e646572a68f372455b38d441934acd4e1749cfed0682b9e268b1e1",
+      "targetSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-green-fingerprint-stability.test.ts",
+      "fullName": "RP-336 stable GREEN fingerprint inputs records identical working-tree and implementation deltas across Git abbreviation settings, while content changes differ"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "bde6b94d79e646572a68f372455b38d441934acd4e1749cfed0682b9e268b1e1",
+      "targetSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "ca7f385b4f52dc8caeba77c506fa4b4a4657eee5e502ca4f03b1fee2de4b0b2d"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-336",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-336-green-formatted"
+      }
+    },
+    "baseline": {
+      "headSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-green-fingerprint-stability.test.ts",
+        "fullName": "RP-336 stable GREEN fingerprint inputs records identical working-tree and implementation deltas across Git abbreviation settings, while content changes differ",
+        "fileSha256": "3bd0d76ab5d63edeafb466d5427a258181f3184fd95045946172872f953baac7"
+      },
+      "source": {
+        "runId": "20261001-2240-rel-1-2-0-rp336",
+        "seq": 10
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "61587935cc577b36dec5bde0d31e322a594ed1a12c72061af4e24abe1bd2e588"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "2b9cc06d74f77ac27bd5cd3fc12ef3503f65cbdb00b191af08bfb2e533703abc"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-2240-rel-1-2-0-rp336",
+        "seq": 11
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "a4660bcdd6fe6b298d571f5a7ca45b89063f835e74b8c2dd21084f7aada739f6"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "2b9cc06d74f77ac27bd5cd3fc12ef3503f65cbdb00b191af08bfb2e533703abc"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "2cbb0154a8c60d43e9490c624b79dc27b7bf18cc2a5bd879ec9d280154c0f8e1"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-green-fingerprint-stability.test.ts",
+        "fullName": "RP-336 stable GREEN fingerprint inputs records identical working-tree and implementation deltas across Git abbreviation settings, while content changes differ",
+        "fileSha256": "3bd0d76ab5d63edeafb466d5427a258181f3184fd95045946172872f953baac7"
+      },
+      "source": {
+        "runId": "20261001-2240-rel-1-2-0-rp336",
+        "seq": 12
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "6c09cbf15f374a52e94992e9d8230011e64b8b037375e39d93c1704641b5d738"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "2cbb0154a8c60d43e9490c624b79dc27b7bf18cc2a5bd879ec9d280154c0f8e1"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "61946e0ec149caefdd7c73292da14a2a3e96bd46a8ee944ef2f18435bd9f15aa"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-336",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-336-green-full-index-v2"
+          }
+        },
+        "baseline": {
+          "headSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-green-fingerprint-stability.test.ts",
+            "fullName": "RP-336 stable GREEN fingerprint inputs records identical working-tree and implementation deltas across Git abbreviation settings, while content changes differ",
+            "fileSha256": "41518a364561720e0f34d85b17ccb427b7e2f73c4d2b36c6bdeaa1f9f15cdfbe"
+          },
+          "source": {
+            "runId": "20261001-2240-rel-1-2-0-rp336",
+            "seq": 6
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "2a6dda86735e9a0fdabe02c349720d2dfe82ec88908cac5633c00e26cf962538"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "2f3cd1158cf2e1e295262b00a3fc82327a61546ed2efce3cd857cb69c05a84cc"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261001-2240-rel-1-2-0-rp336",
+            "seq": 7
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "a4660bcdd6fe6b298d571f5a7ca45b89063f835e74b8c2dd21084f7aada739f6"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "2f3cd1158cf2e1e295262b00a3fc82327a61546ed2efce3cd857cb69c05a84cc"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "d19f63888e62b175095ad163b527cd8b4e280a72194c6a7c6c26408c419a1273"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/tdd-green-fingerprint-stability.test.ts",
+            "fullName": "RP-336 stable GREEN fingerprint inputs records identical working-tree and implementation deltas across Git abbreviation settings, while content changes differ",
+            "fileSha256": "41518a364561720e0f34d85b17ccb427b7e2f73c4d2b36c6bdeaa1f9f15cdfbe"
+          },
+          "source": {
+            "runId": "20261001-2240-rel-1-2-0-rp336",
+            "seq": 8
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "4ae744b4a1fa4fb91b89062a55c56bde4b4ea99b2bc7c348d9d749f5ee244671"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "d19f63888e62b175095ad163b527cd8b4e280a72194c6a7c6c26408c419a1273"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "ed9c74474008c6b93c8548096444d43a86a38279ddd8393e5b698ae0bf0b217e"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "2f3cd1158cf2e1e295262b00a3fc82327a61546ed2efce3cd857cb69c05a84cc"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "2b9cc06d74f77ac27bd5cd3fc12ef3503f65cbdb00b191af08bfb2e533703abc"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "cb7571caf9d89962e902ca59c0d88b3531b597578693bf07d8c7de810a9e3129"
+        }
+      }
+    }
+  ]
+}

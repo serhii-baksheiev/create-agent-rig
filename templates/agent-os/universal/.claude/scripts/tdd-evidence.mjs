@@ -412,7 +412,7 @@ const implementationDeltaFingerprint = ({ projectRoot, baselineHeadSha, bindingB
   try {
     delta = execFileSync(
       'git',
-      ['-C', projectRoot, 'diff', '--binary', '--no-ext-diff', '--no-textconv', baselineHeadSha, '--', ...paths],
+      ['-C', projectRoot, 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', baselineHeadSha, '--', ...paths],
       { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
     );
   } catch {
@@ -431,7 +431,7 @@ const workingTreeDiffFingerprint = ({ projectRoot, gitHead }) => {
   try {
     diff = execFileSync(
       'git',
-      ['-C', projectRoot, 'diff', '--binary', '--no-ext-diff', '--no-textconv', gitHead, '--'],
+      ['-C', projectRoot, 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', gitHead, '--'],
       { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
     );
   } catch {
