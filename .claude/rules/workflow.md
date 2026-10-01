@@ -15,6 +15,10 @@ Red → Green → Refactor, in that order, every time:
 No implementation before its failing test exists. A bug fix starts with a test
 that reproduces the bug.
 
+When the opt-in workflow layer is installed, its portable, machine-checkable
+TDD applicability and evidence contract is
+[`docs/decisions/tdd-evidence.md`](../../docs/decisions/tdd-evidence.md).
+
 ## Tests are load-bearing
 
 - Never delete, skip, or weaken a test to make a run green.
