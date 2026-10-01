@@ -626,7 +626,7 @@ if (invokedDirectly()) {
       adapter.supportsScope === false
     ) {
       throw new Error(
-        `${adapter.name} does not support options.scope: PLAN.md items carry no labels, so ` +
+        `${adapter.name} does not support options.scope: PLAN.md markers are not tracker labels, so ` +
           'a label scope cannot select a narrower queue. Use a tracker adapter with labels instead.',
       );
     }

@@ -145,9 +145,9 @@ export const SKIP_CAUSES = Object.freeze([
  * Under `plan-md` only `triage` is reachable of the three, and it matters that it
  * is: `parsePlan` reads the marker out of the bullet text, which is exactly the
  * case of a proposal that ended up under the wrong heading. `escalated` and
- * `closed` cannot appear there at all — a flat list carries no per-item state, so
- * `parsePlan` hands back `labels: []` and `state: 'open'` for every line. That is
- * an absence of state, NOT an adapter that filed the escalation somewhere safe.
+ * `closed` cannot appear there at all — a flat list carries no per-item workflow
+ * state, so `parsePlan` always hands back `state: 'open'`. Its inline markers are
+ * selection metadata, not evidence that an escalation was filed somewhere safe.
  * `plan-md`'s own `escalate` says so: it writes nothing, returns `ok: false`, and
  * hands back the instruction to move the item to the Operator queue in the same
  * edit — because if that move is not made, the next run picks the item straight
@@ -893,6 +893,10 @@ export const selectNext = (
         id: ticket.id,
         reason: selection.reasons.join('; '),
         causes: selection.causes,
+        deferral:
+          selection.causes.includes('deferred')
+            ? DEFERRAL_LABELS.find((label) => (ticket.labels ?? []).includes(label)) ?? 'parked'
+            : null,
       });
       continue;
     }
@@ -1098,16 +1102,28 @@ const ownerNote = (held) =>
  * `re-scope` item authors its own work, and un-parking a parked item is a
  * scheduling decision.
  */
-const lifecycleNote = (held) =>
+const lifecycleNote = (held, skipped) =>
   (held.includes('re-scope')
     ? ' An item held as re-scope is valid work that is not executable as written: ' +
       'a human rewrites it against the current code and removes the label; the ' +
       'loop never invents the new scope.'
     : '') +
   (held.includes('deferred')
-    ? ' An item held as deferred is valid work deliberately not active now. A parked ' +
-      'item needs human un-parking; frozen and later items are deferred for their own ' +
-      'item-level reason. Nothing this run does frees it.'
+    ? (() => {
+        const deferred = skipped
+          .filter((skip) =>
+            Array.isArray(skip?.causes) &&
+            skip.causes.includes('deferred') &&
+            !skip.causes.some((cause) => SKIP_CAUSES.includes(cause) && !HOLDING_CAUSES.includes(cause)),
+          )
+          .map((skip) => skip.deferral ?? 'parked');
+        const onlyFrozenOrLater = deferred.length > 0 && deferred.every((label) => label !== 'parked');
+        return onlyFrozenOrLater
+          ? ` An item held as deferred is valid work deliberately not active now. ${[...new Set(deferred)].join(' and ')} items are deferred for their own item-level reason. Nothing this run does frees it.`
+          : ' An item held as deferred is valid work deliberately not active now. A parked ' +
+              'item needs human un-parking; frozen and later items are deferred for their own ' +
+              'item-level reason. Nothing this run does frees it.';
+      })()
     : '');
 
 /**
@@ -1213,7 +1229,7 @@ export const stopConditionOf = ({
           'and the two ask for opposite things: an empty queue wants refilling, ' +
           'whereas this one still holds work. Spacing clears when a normal item ' +
           'lands, a blocker when its item closes, in-progress when the other ' +
-          `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held) + assignedNote(held)} Otherwise the action is to ` +
+          `session finishes.${triggerNote(held) + ownerNote(held) + lifecycleNote(held, skipped) + assignedNote(held)} Otherwise the action is to ` +
           'interleave or to wait, never to refill and never to invent work.',
       };
     }

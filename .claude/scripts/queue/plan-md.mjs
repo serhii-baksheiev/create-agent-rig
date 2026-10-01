@@ -18,9 +18,9 @@ import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
 export const claimedState = 'open';
-// A PLAN.md list has no labels, so a label scope cannot express a narrower
-// queue here. The CLI refuses a configured scope rather than silently treating
-// every item as out of scope.
+// PLAN.md markers are adapter-local selection metadata, not tracker or release
+// labels, so a label scope cannot express a narrower queue here. The CLI refuses
+// a configured scope rather than silently treating every item as out of scope.
 export const supportsScope = false;
 
 const AGENT_QUEUE = /^##\s+Agent queue\s*$/i;
