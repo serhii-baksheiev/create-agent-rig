@@ -35,10 +35,10 @@
     "schemaVersion": 1,
     "ticket": "RP-328",
     "applicability": {
-      "level": "TDD-1",
+      "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "RP-328-red-round2-formatted"
+        "id": "RP-328-green-round2-merged"
       }
     },
     "baseline": {
@@ -102,6 +102,50 @@
       "fingerprint": {
         "algorithm": "sha256",
         "value": "b96bb1716b187e81b5d9acc54b639c6fbb876bab68d6c906910f0335c17961a2"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-1510-rel-1-2-0-rp328",
+        "seq": 75
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "494f663f387f5f1d4200e6763148da3ec3466645b2f18dac40ca7457013c3de0"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "b96bb1716b187e81b5d9acc54b639c6fbb876bab68d6c906910f0335c17961a2"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "17059bfa9e323cbd8722c427a0313f5b7b4c36e07693fb93c033d434d0e0617f"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-pre-red-producer.test.ts",
+        "fullName": "records portable pre-RED implementation state",
+        "fileSha256": "9f2bff5dde9e41257c8d5ab97359df5d92e3fdd80608a90009cb71b7913d3a61"
+      },
+      "source": {
+        "runId": "20261001-1510-rel-1-2-0-rp328",
+        "seq": 76
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "d577ffe06750155b5c43056155ea5b28e28cb6c7736039669957d4b8e7feab5b"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "17059bfa9e323cbd8722c427a0313f5b7b4c36e07693fb93c033d434d0e0617f"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "1bb3c82b9ef498fcb0fd98e90964604c78d5ab049668bccd235b0969f8f97756"
       }
     }
   },
