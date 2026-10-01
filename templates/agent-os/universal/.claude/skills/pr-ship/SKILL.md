@@ -492,10 +492,13 @@ blockers.
   clean gate is a real result.
 - `HOLD` — name every blocker: the failing check by name, the reviewer finding
   with its file:line, or the DoD item that does not hold. Blocking findings are
-  resolved, not argued with; after fixes, the gate runs again from **step 0** —
-  which counts the new round and is what makes "again" finite. Re-entering at
-  step 1 skips the counter, and the unbounded rounds this gate measured are
-  exactly what that produces.
+  resolved, not argued with. After a reviewer HOLD is fixed, run
+  `check-premises` on the fix's own prose delta before step 0; search the
+  whole-branch diff for a sibling of the same claim, and correct a stale
+  sibling before re-entering the gate. The gate then runs again from
+  **step 0** — which counts the new round and is what makes "again" finite.
+  Re-entering at step 1 skips the counter, and the unbounded rounds this gate
+  measured are exactly what that produces.
 
 Your own answer is a verdict like any other, so it ends the same way: prose for
 the author, then **exactly one** fenced `json` block, and nothing after it.
