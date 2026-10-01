@@ -102,7 +102,31 @@ const record = ({
     { ...trackerEnv, RIG_RUN_DIR: runDir },
   );
 
-const fixture = async () => {
+const verifyShip = ({
+  projectRoot,
+  runDir,
+  base,
+  trackerEnv = process.env,
+}: {
+  projectRoot: string;
+  runDir: string;
+  base: string;
+  trackerEnv?: NodeJS.ProcessEnv;
+}) =>
+  run(
+    process.execPath,
+    [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', base],
+    projectRoot,
+    { ...trackerEnv, RIG_RUN_DIR: runDir },
+  );
+
+const fixture = async ({
+  changeAfterGreen = true,
+  untrackedBeforeGreen = false,
+}: {
+  changeAfterGreen?: boolean;
+  untrackedBeforeGreen?: boolean;
+} = {}) => {
   const projectRoot = await mkdtemp(path.join(tmpdir(), 'tdd-green-order-'));
   const runDir = await mkdtemp(path.join(tmpdir(), 'tdd-green-order-run-'));
   await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
@@ -176,19 +200,73 @@ const fixture = async () => {
     path.join(projectRoot, 'src', 'feature.ts'),
     'export const feature = () => "new";\n',
   );
+  if (untrackedBeforeGreen) {
+    await writeFile(
+      path.join(projectRoot, 'src', 'prefix.ts'),
+      'export const prefix = () => "new";\n',
+    );
+  }
   const green = await runVitest({ projectRoot, runDir, name: 'unit-green', trackerEnv });
   expect(green.code, green.out).toBe(0);
   expect(await git(['rev-parse', 'HEAD'], projectRoot)).toBe(baselineHeadSha);
 
-  await writeFile(
-    path.join(projectRoot, 'src', 'feature.ts'),
-    'export const feature = () => "changed after green";\n',
-  );
+  if (changeAfterGreen) {
+    await writeFile(
+      path.join(projectRoot, 'src', 'feature.ts'),
+      'export const feature = () => "changed after green";\n',
+    );
+  }
   expect(await git(['rev-parse', 'HEAD'], projectRoot)).toBe(baselineHeadSha);
-  return { projectRoot, runDir, trackerEnv };
+  return { projectRoot, runDir, trackerEnv, baselineHeadSha };
 };
 
 describe('RP-306 GREEN working-tree delta', () => {
+  it('keeps a pre-GREEN untracked production file in the implementation delta through shipping', async () => {
+    const { projectRoot, runDir, trackerEnv, baselineHeadSha } = await fixture({
+      changeAfterGreen: false,
+      untrackedBeforeGreen: true,
+    });
+    expect(await git(['status', '--short', '--untracked-files=all'], projectRoot)).toContain(
+      '?? src/prefix.ts',
+    );
+
+    const recordedGreen = await record({
+      projectRoot,
+      runDir,
+      action: 'record-green',
+      check: 'unit-green',
+      trackerEnv,
+    });
+    expect(recordedGreen.code, recordedGreen.out).toBe(0);
+    const claim = JSON.parse(
+      await readFile(path.join(projectRoot, '.rig', 'claims', 'RP-306.json'), 'utf8'),
+    );
+    const implementationDelta =
+      claim.tddEvidence.implementationBoundary.implementationDeltaFingerprint;
+
+    await git(['add', 'src/prefix.ts', '.rig/claims/RP-306.json'], projectRoot);
+    await git(['commit', '-q', '-m', 'track prefix and evidence'], projectRoot);
+    const verified = await verifyShip({
+      projectRoot,
+      runDir,
+      base: baselineHeadSha,
+      trackerEnv,
+    });
+
+    expect(verified.code, verified.out).toBe(0);
+    const verificationEvents: Array<{
+      kind?: string;
+      data?: { implementationDeltaFingerprint?: string };
+    }> = (await readFile(path.join(runDir, 'events.jsonl'), 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line: string) => JSON.parse(line));
+    const verification = [...verificationEvents]
+      .reverse()
+      .find((event) => event.kind === 'tdd-ship-verification');
+    expect(verification?.data?.implementationDeltaFingerprint).toEqual(implementationDelta);
+  });
+
   it('refuses a GREEN when uncommitted production bytes changed after that observation', async () => {
     const { projectRoot, runDir, trackerEnv } = await fixture();
     const result = await record({

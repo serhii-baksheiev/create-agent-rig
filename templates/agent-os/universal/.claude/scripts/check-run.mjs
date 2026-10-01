@@ -285,6 +285,7 @@ import { fileURLToPath } from 'node:url';
 
 import { recordEvent } from './run-journal.mjs';
 import { withoutGitLocation } from './git-env.mjs';
+import { workingTreeState } from './lib/git-working-tree-state.mjs';
 import { findSecretValues, SECRET_VALUE_PATTERNS } from './lib/secrets.mjs';
 
 const REDACTED_LINE = '[redacted]';
@@ -1177,11 +1178,7 @@ const gitHeadOf = (cwd) => {
 const workingTreeDiffFingerprint = (cwd, gitHead) => {
   if (gitHead === null) return null;
   try {
-    const diff = execFileSync(
-      'git',
-      ['-C', cwd, 'diff', '--binary', '--no-ext-diff', '--no-textconv', gitHead, '--'],
-      { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: WORKTREE_DIFF_MAX_BYTES },
-    );
+    const diff = workingTreeState({ projectRoot: cwd, gitRef: gitHead, maxBytes: WORKTREE_DIFF_MAX_BYTES });
     return { algorithm: 'sha256', value: createHash('sha256').update(diff).digest('hex') };
   } catch {
     return null;

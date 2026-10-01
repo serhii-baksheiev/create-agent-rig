@@ -10,6 +10,12 @@ import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { claimPathFor } from './lib/claim-records.mjs';
+import {
+  isEphemeralUntrackedPath,
+  untrackedPaths,
+  workingTreePathState,
+  workingTreeState,
+} from './lib/git-working-tree-state.mjs';
 import { findSecretValues } from './lib/secrets.mjs';
 import { withoutGitLocation } from './git-env.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
@@ -384,10 +390,19 @@ const changedPaths = ({ projectRoot, baselineHeadSha }) => {
   } catch {
     throw new Error('final Git diff could not be read from the selected-work baseline');
   }
-  return names
+  const tracked = names
     .toString('utf8')
     .split('\0')
     .filter((file) => safeRelativePath(file));
+  let untracked;
+  try {
+    untracked = untrackedPaths({ projectRoot, maxBytes: MAX_IMPLEMENTATION_DELTA_BYTES });
+  } catch {
+    throw new Error('final Git untracked paths could not be read from the selected-work baseline');
+  }
+  return [
+    ...new Set([...tracked, ...untracked.filter((file) => safeRelativePath(file) && !isEphemeralUntrackedPath(file))]),
+  ];
 };
 
 const tddApplicabilityPaths = (paths, ticket = null) =>
@@ -408,36 +423,33 @@ const productionPaths = ({ projectRoot, baselineHeadSha, ticket = null }) => {
 const implementationDeltaFingerprint = ({ projectRoot, baselineHeadSha, bindingBaselineHeadSha = baselineHeadSha, ticket = null }) => {
   const paths = productionPaths({ projectRoot, baselineHeadSha, ticket });
   if (paths.length === 0) throw new Error('implementation delta is empty');
-  let delta;
   try {
-    delta = execFileSync(
-      'git',
-      ['-C', projectRoot, 'diff', '--binary', '--no-ext-diff', '--no-textconv', baselineHeadSha, '--', ...paths],
-      { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
-    );
+    const delta = workingTreePathState({
+      projectRoot,
+      paths,
+      maxBytes: MAX_IMPLEMENTATION_DELTA_BYTES,
+    });
+    return fingerprintEvidence({
+      baselineHeadSha: bindingBaselineHeadSha,
+      diffSha256: createHash('sha256').update(delta).digest('hex'),
+    });
   } catch {
     throw new Error('implementation delta could not be read from the selected-work baseline');
   }
-  if (delta.length === 0) throw new Error('implementation delta is empty');
-  return fingerprintEvidence({
-    baselineHeadSha: bindingBaselineHeadSha,
-    diffSha256: createHash('sha256').update(delta).digest('hex'),
-  });
 };
 
 const workingTreeDiffFingerprint = ({ projectRoot, gitHead }) => {
   if (!/^[a-f0-9]{40}$/.test(gitHead ?? '')) throw new Error('GREEN check has no valid implementation commit boundary');
-  let diff;
   try {
-    diff = execFileSync(
-      'git',
-      ['-C', projectRoot, 'diff', '--binary', '--no-ext-diff', '--no-textconv', gitHead, '--'],
-      { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
-    );
+    const diff = workingTreeState({
+      projectRoot,
+      gitRef: gitHead,
+      maxBytes: MAX_IMPLEMENTATION_DELTA_BYTES,
+    });
+    return { algorithm: 'sha256', value: createHash('sha256').update(diff).digest('hex') };
   } catch {
     throw new Error('current implementation working-tree delta could not be read');
   }
-  return { algorithm: 'sha256', value: createHash('sha256').update(diff).digest('hex') };
 };
 
 const sameFingerprint = (left, right) =>

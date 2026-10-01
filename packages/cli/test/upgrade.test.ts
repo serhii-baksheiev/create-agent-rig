@@ -2123,18 +2123,20 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // RP-305 adds its pure helper and decision record there (107→109); the
   // core-only figure remains 63. RP-306 then moves its workflow-only producer
   // there too (109→110), leaving Core at 63.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 110 manifest entries to 63', async () => {
+  // RP-333 adds a working-tree evidence helper used by Core's check-run,
+  // increasing both counts by one (110→111, 63→64).
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 111 manifest entries to 64', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(110);
+    expect(Object.keys(before!.files).length).toBe(111);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(63);
+    expect(Object.keys(after!.files).length).toBe(64);
   });
 });
 

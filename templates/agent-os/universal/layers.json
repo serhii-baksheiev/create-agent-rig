@@ -46,6 +46,7 @@
     ".claude/scripts/doctor.mjs",
     ".claude/scripts/run-journal.mjs",
     ".claude/scripts/check-run.mjs",
+    ".claude/scripts/lib/git-working-tree-state.mjs",
     ".claude/scripts/verdict.mjs",
     ".claude/scripts/lib/gate-coverage.mjs",
     ".claude/scripts/lib/verdict.mjs",

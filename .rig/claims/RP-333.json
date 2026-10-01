@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-333",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "1db8c98d1ce6874d2f9a6a476cd64043dc7083270458a638be571ddc52a20b3e",
+      "targetSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-green-uncommitted-delta.test.ts",
+      "fullName": "RP-306 GREEN working-tree delta keeps a pre-GREEN untracked production file in the implementation delta through shipping"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "1db8c98d1ce6874d2f9a6a476cd64043dc7083270458a638be571ddc52a20b3e",
+      "targetSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "fc2acd2ce5e52af06d15e0a016d56fb0c85bb9886105a9d45ce2eeea467087d3"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-333",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-333-green-type-fixed"
+      }
+    },
+    "baseline": {
+      "headSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-green-uncommitted-delta.test.ts",
+        "fullName": "RP-306 GREEN working-tree delta keeps a pre-GREEN untracked production file in the implementation delta through shipping",
+        "fileSha256": "9030a88028fdafbcba39fbf2b6cb587a4f95fb5ca45f2fff19356ab8c61856b0"
+      },
+      "source": {
+        "runId": "20261001-2230-rel-1-2-0-rp333",
+        "seq": 28
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "a022ac9553db70da330679b60787a8af0c09839b1e8d6f62603d86e90251cb01"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "b9d3207ec9d4967b149bfc755fde8c7069815ea2f9929135751b796c033b2e05"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-2230-rel-1-2-0-rp333",
+        "seq": 29
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "22314a1b705f03c92225e36e0a5cd74ffb95d05d9e19897b80fe938e3465361a"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "b9d3207ec9d4967b149bfc755fde8c7069815ea2f9929135751b796c033b2e05"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "c497e359e2838bba4bd6d8572b6652b65398f6cc79c030b6765b1312674f48db"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-green-uncommitted-delta.test.ts",
+        "fullName": "RP-306 GREEN working-tree delta keeps a pre-GREEN untracked production file in the implementation delta through shipping",
+        "fileSha256": "9030a88028fdafbcba39fbf2b6cb587a4f95fb5ca45f2fff19356ab8c61856b0"
+      },
+      "source": {
+        "runId": "20261001-2230-rel-1-2-0-rp333",
+        "seq": 30
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "ebb8bd36bd334f68d24dcc129b969f18d0894b405b0106e8dd240cc9245cd134"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "c497e359e2838bba4bd6d8572b6652b65398f6cc79c030b6765b1312674f48db"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "71f33853673b513f612540e3e19e1adfb1969f2a8989264fec0deee5ac46ad08"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-333",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-333-green-untracked-v2"
+          }
+        },
+        "baseline": {
+          "headSha": "3b08b420b0c2010292e199f2b03c608edea5d126"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-green-uncommitted-delta.test.ts",
+            "fullName": "RP-306 GREEN working-tree delta keeps a pre-GREEN untracked production file in the implementation delta through shipping",
+            "fileSha256": "e6bc42ec6bc02f997bf4dbe9d3ca2c27883b314c143a6b391ea71e9e14eeffcf"
+          },
+          "source": {
+            "runId": "20261001-2230-rel-1-2-0-rp333",
+            "seq": 14
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "30c17ff444615c597d251310c708ac3f4e9492003bc27290c7c667b7566de00b"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "9479be501157245366b615415f1204a1ddc4f5d4f3d71391d8bd6ceee21f496b"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261001-2230-rel-1-2-0-rp333",
+            "seq": 25
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "22314a1b705f03c92225e36e0a5cd74ffb95d05d9e19897b80fe938e3465361a"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "9479be501157245366b615415f1204a1ddc4f5d4f3d71391d8bd6ceee21f496b"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "012ed9a95284bde9f2dc158290b63b504ec3ee09be6abb9c1ab4f728dfcaba8d"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/tdd-green-uncommitted-delta.test.ts",
+            "fullName": "RP-306 GREEN working-tree delta keeps a pre-GREEN untracked production file in the implementation delta through shipping",
+            "fileSha256": "e6bc42ec6bc02f997bf4dbe9d3ca2c27883b314c143a6b391ea71e9e14eeffcf"
+          },
+          "source": {
+            "runId": "20261001-2230-rel-1-2-0-rp333",
+            "seq": 26
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "935bfdce9442bc1787d77db6220a36ed637c581124a7fbd3c3be6c4a2170bac7"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "012ed9a95284bde9f2dc158290b63b504ec3ee09be6abb9c1ab4f728dfcaba8d"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "90709b8aaeda32f27e1c01464f9be262c6e9d23d304991dd5bddf4ecda2c3a2c"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "9479be501157245366b615415f1204a1ddc4f5d4f3d71391d8bd6ceee21f496b"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "b9d3207ec9d4967b149bfc755fde8c7069815ea2f9929135751b796c033b2e05"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "5746ae3151cac479a7ee7139ec695169b0fc23385ae0cb3330f5a5d12a650ceb"
+        }
+      }
+    }
+  ]
+}
