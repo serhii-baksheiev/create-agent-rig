@@ -75,6 +75,61 @@ RP-305 supplies the deterministic contract only. RP-306 derives it from
 `check-run` and the journal, writes claim evidence, and enforces TDD-2 at
 `pr-ship`. This decision adds no production-write lock.
 
+## Enforcement activation
+
+RP-306 is the trust-root change that first installs structured RED recording
+and the shipping verifier. Its selected-work baseline has neither mechanism,
+so its earlier failing checks cannot truthfully be presented as portable TDD-2
+evidence. Review RP-306 under the `pr-ship` contract present at its baseline,
+with its observed test-first history, full checks and required reviewers. Its
+PR verdict must state that no portable TDD-2 is asserted for RP-306 itself
+and name its reviewed branch HEAD. After merge, record the exact enforcement
+activation merge commit in the tracker and release ledger.
+Every subsequent ticketed behavior change is subject to the new verifier.
+There is no bootstrap exception in the installed verifier.
+
+## Recording a TDD-2 item
+
+Before RED, the selected tracker item's description must contain exactly one
+line of the form `rig:tdd-spec/v1 {"file":"test/example.test.ts","fullName":"the full test name"}`.
+The file is repository-relative. This marker identifies the relevant
+specification; it must match the structured Vitest identity, and the tracker
+item must already carry it when the failed check runs. Keep `RIG_RUN_DIR`
+set to the declared run directory for each command.
+
+The 1.2 recorder attests the direct Node invocation of the installed Vitest
+`vitest.mjs` module with `run`, `--reporter=json` and an `--outputFile` inside
+the declared run directory. A JSON file produced by another command is not
+Vitest evidence. Run the relevant failing test through `check-run.mjs` with
+`--vitest-json red.json`, passing `--reporter=json --outputFile
+"$RIG_RUN_DIR/red.json"` to that Vitest invocation. Then run
+`node .claude/scripts/tdd-evidence.mjs record-red --ticket <item> --check
+<red-check-name>`. The writer verifies the failed structured result and adds
+bounded RED evidence to `.rig/claims/<item>.json`. After the implementation,
+run the same relevant test and test-file content through `check-run.mjs` with
+a new structured output name, then run `record-green` with its passing check
+name. Commit the claim with the work. The `pr-ship` verifier reads the claim
+from branch `HEAD`, compares it with the current tracker and final Git diff,
+and records compact evidence fingerprints in the run journal.
+If the relevant test file changes, run the changed test while failing and call
+`record-red` again before recording GREEN. The new RED must keep the same file
+and full test name with a different file hash. The recorder keeps the prior
+portable chain in bounded `tddEvidenceHistory` and makes the newly observed RED
+active, including when the prior chain had reached TDD-2. This transition is
+pinned in `test/template/tdd-evidence-flow.test.ts` (absent in a generated rig)
+› "replaces a stale RED with a newly observed RED for the changed test hash"
+and › "replaces completed TDD-2 with a newly observed RED when the relevant test changes later".
+The relevant-spec and runner checks are pinned in
+`test/template/tdd-evidence-flow.test.ts` (absent in a generated rig) › "records an existing failing
+check-run test only when SELECT carried its tracker-derived relevant spec"
+and › "refuses a Vitest-shaped report written by an arbitrary node runner".
+The portable handoff is pinned in `test/template/tdd-baseline-continuation.test.ts` (absent in a generated rig)
+› "verifies prior TDD-2 after a disjoint master advance while revalidation
+remains a separate HOLD";
+the compact shipping output is pinned in `test/template/tdd-durable-verdict.test.ts` (absent in a generated rig)
+› "prints the exact portable RED, implementation-boundary, and GREEN
+fingerprints on a TDD-2 PASS".
+
 ## Why
 
 Observable evidence can be checked across controller and machine boundaries.

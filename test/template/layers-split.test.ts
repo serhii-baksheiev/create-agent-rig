@@ -77,6 +77,9 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/lib/revalidation-points.mjs',
   // RP-305: pure authoritative applicability and portable-evidence contract.
   '.claude/scripts/lib/tdd-evidence.mjs',
+  // RP-306: workflow-only producer and shipping verifier for Mechanical TDD
+  // evidence. Core installs have neither the queue/tracker seam nor pr-ship.
+  '.claude/scripts/tdd-evidence.mjs',
   '.rig/revalidation.json',
   // the queue seam
   '.claude/scripts/queue/core.mjs',

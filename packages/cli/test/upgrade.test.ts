@@ -2121,12 +2121,13 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // counted here) that happened to share these two numbers.
   // RP-275 added the Spec Kit importer to the workflow layer (106→107).
   // RP-305 adds its pure helper and decision record there (107→109); the
-  // core-only figure remains 63.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 109 manifest entries to 63', async () => {
+  // core-only figure remains 63. RP-306 then moves its workflow-only producer
+  // there too (109→110), leaving Core at 63.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 110 manifest entries to 63', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(109);
+    expect(Object.keys(before!.files).length).toBe(110);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
