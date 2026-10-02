@@ -113,6 +113,53 @@ const armed = async (allow: string[], raw?: string) => {
   );
 };
 const run = (payload: object | string) => runHookFull(payload, env());
+const plainAdminSharePath = String.raw`\\srv\share\x\.claude\settings.json`;
+const controlledPlainAdminSharePaths = [
+  plainAdminSharePath,
+  String.raw`\\srv\share\x\.claude`,
+  String.raw`\\srv\share\x`,
+  '\\\\srv\\share\\',
+  String.raw`\\srv\share`,
+  String.raw`\\srv`,
+];
+const PLAIN_ADMIN_SHARE_PRELOAD = `
+import { appendFileSync, realpathSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+
+const controlled = new Set(JSON.parse(process.env.RP360_PLAIN_ADMIN_SHARE_PATHS || '[]'));
+const trace = process.env.RP360_PLAIN_ADMIN_SHARE_TRACE;
+const native = realpathSync.native;
+realpathSync.native = (candidate, ...args) => {
+  if (controlled.has(candidate)) {
+    appendFileSync(trace, JSON.stringify({ kind: 'controlled', candidate }) + '\\n');
+    const error = new Error('ENOENT: controlled absent UNC fixture');
+    error.code = 'ENOENT';
+    throw error;
+  }
+  appendFileSync(trace, JSON.stringify({ kind: 'delegated-start', candidate }) + '\\n');
+  return native(candidate, ...args);
+};
+syncBuiltinESMExports();
+`;
+const runPlainAdminShare = async (payload: object) => {
+  const preload = path.join(home, 'controlled-plain-admin-share-preload.mjs');
+  const trace = path.join(home, 'controlled-plain-admin-share-trace.jsonl');
+  await writeFile(preload, PLAIN_ADMIN_SHARE_PRELOAD);
+  const result = await runHookFull(payload, {
+    ...env(),
+    NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`]
+      .filter(Boolean)
+      .join(' '),
+    RP360_PLAIN_ADMIN_SHARE_PATHS: JSON.stringify(controlledPlainAdminSharePaths),
+    RP360_PLAIN_ADMIN_SHARE_TRACE: trace,
+  });
+  const entries = (await readFile(trace, 'utf8'))
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { kind: string; candidate: string });
+  return { ...result, entries };
+};
 const aliasedRoot = async () => {
   const alias = path.join(home, 'checkout-alias');
   await symlink(root, alias, process.platform === 'win32' ? 'junction' : 'dir');
@@ -1446,7 +1493,7 @@ describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-24
  */
 describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, not silently allowed (RP-244 round 2)', () => {
   const unjudgeablePaths: Array<[string, string]> = [
-    ['a plain (non-verbatim) UNC admin share', String.raw`\\srv\share\x\.claude\settings.json`],
+    ['a plain (non-verbatim) UNC admin share', plainAdminSharePath],
     ['a verbatim UNC admin share', String.raw`\\?\UNC\srv\share\x\.claude\settings.json`],
     [
       'a verbatim device path with no drive letter (a volume GUID path)',
@@ -1458,6 +1505,18 @@ describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, n
     'blocks a Write to %s while armed, because it cannot be resolved against the repository root',
     async (_label, filePath) => {
       await armed(['src/']);
+      if (filePath === plainAdminSharePath) {
+        const result = await runPlainAdminShare(write(filePath));
+        expect(result.code, result.stderr).toBe(2);
+        expect(result.stderr).toMatch(/resolved against the repository root/i);
+        expect(result.entries.length).toBeGreaterThan(0);
+        const uncEntries = result.entries.filter(
+          (entry) => entry.candidate.startsWith('\\\\') || entry.candidate.startsWith('//'),
+        );
+        for (const entry of uncEntries)
+          expect(controlledPlainAdminSharePaths).toContain(entry.candidate);
+        return;
+      }
       const result = await run(write(filePath));
       expect(result.code, result.stderr).toBe(2);
       expect(result.stderr).toMatch(/resolved against the repository root/i);
@@ -1507,7 +1566,7 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
   // duplicated here rather than shared: they belong to two different
   // describe blocks and the array above is local to its own callback.
   const unjudgeablePaths: Array<[string, string]> = [
-    ['a plain (non-verbatim) UNC admin share', String.raw`\\srv\share\x\.claude\settings.json`],
+    ['a plain (non-verbatim) UNC admin share', plainAdminSharePath],
     ['a verbatim UNC admin share', String.raw`\\?\UNC\srv\share\x\.claude\settings.json`],
     [
       'a verbatim device path with no drive letter (a volume GUID path)',
@@ -1519,6 +1578,17 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
     'blocks a MultiEdit beyond the fragment cap to %s while armed',
     async (_label, filePath) => {
       await armed(['src/']);
+      if (filePath === plainAdminSharePath) {
+        const result = await runPlainAdminShare(multiEdit257(filePath));
+        expect(result.code, result.stderr).toBe(2);
+        expect(result.entries.length).toBeGreaterThan(0);
+        const uncEntries = result.entries.filter(
+          (entry) => entry.candidate.startsWith('\\\\') || entry.candidate.startsWith('//'),
+        );
+        for (const entry of uncEntries)
+          expect(controlledPlainAdminSharePaths).toContain(entry.candidate);
+        return;
+      }
       const result = await run(multiEdit257(filePath));
       expect(result.code, result.stderr).toBe(2);
     },
@@ -1565,45 +1635,173 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
  * on `realpathSync.native`'s ENOENT — it does not need the root to exist to
  * compare it lexically, the same fallback `canonicalPath` uses for a payload
  * path (see this file's own header comment, "Limits", the UNC/device bullet).
- * So a UNC-spelled root that does not exist on this filesystem still drives
- * the guard through a pure string comparison, and this needs no real UNC
- * filesystem to be meaningful: it runs on every platform, including Linux.
- * Hand-written literal expectations only, per this project's independent-
- * oracle invariant.
+ * The behaviour oracle remains the literal path comparison, but production
+ * deliberately canonicalises every spelling first. This fixture supplies
+ * ENOENT only for the enumerated invented-share names below, preserving that
+ * production canonicalisation while avoiding an SMB lookup; all other paths
+ * still use the native resolver. Hand-written literal expectations only, per
+ * this project's independent-oracle invariant.
  */
 describe('guard-rulebook: a `//`-prefixed path is refused only when it resolves under no repository root (RP-244 round 3)', () => {
   const uncRoot = String.raw`\\server\share\repo`;
+  const uncRulebookPath = String.raw`\\server\share\repo\.claude\settings.json`;
+  const uncOutsidePath = String.raw`\\srv\share\x\.claude\settings.json`;
+  // These are the only invented network locations that the test child may
+  // turn into controlled ENOENT. The resolver still reaches each missing
+  // ancestor while canonicalPath walks upward, so those names are explicit
+  // too; no prefix or general network-path mock is involved.
+  const controlledUncPaths = [
+    uncRoot,
+    String.raw`\\server\share\repo\src\x.ts`,
+    String.raw`\\server\share\repo\src`,
+    uncRulebookPath,
+    String.raw`\\server\share\repo\.claude`,
+    String.raw`\\server\share`,
+    '\\\\server\\share\\',
+    String.raw`\\server`,
+    uncOutsidePath,
+    String.raw`\\srv\share\x\.claude`,
+    String.raw`\\srv\share\x`,
+    String.raw`\\srv\share`,
+    '\\\\srv\\share\\',
+    String.raw`\\srv`,
+  ];
+  const CONTROLLED_UNC_REALPATH_PRELOAD = `
+import { appendFileSync, realpathSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+
+const controlled = new Set(JSON.parse(process.env.RP360_CONTROLLED_UNC_PATHS || '[]'));
+const trace = process.env.RP360_CONTROLLED_UNC_TRACE;
+const localProbe = process.env.RP360_LOCAL_REALPATH_PROBE;
+const native = realpathSync.native;
+const record = (entry) => appendFileSync(trace, JSON.stringify(entry) + '\\n');
+
+realpathSync.native = (candidate, ...args) => {
+  if (controlled.has(candidate)) {
+    record({ kind: 'controlled', candidate });
+    const error = new Error('ENOENT: controlled absent UNC fixture');
+    error.code = 'ENOENT';
+    throw error;
+  }
+  record({ kind: 'delegated-start', candidate });
+  const resolved = native(candidate, ...args);
+  record({ kind: 'delegated', candidate, resolved });
+  return resolved;
+};
+syncBuiltinESMExports();
+
+if (localProbe) realpathSync.native(localProbe);
+`;
   const uncEnv = () => ({ HOME: home, CLAUDE_PROJECT_DIR: uncRoot });
-  const armedUnc = async (allow: string[]) => {
-    const { unattendedFlags } = await import(
-      pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+  const controlledUncFixture = async () => {
+    const preload = path.join(home, 'controlled-unc-realpath-preload.mjs');
+    const flagPathHelper = path.join(home, 'controlled-unc-flag-path.mjs');
+    const traceRoot = process.env.RP360_UNC_TRACE_ROOT
+      ? path.join(process.env.RP360_UNC_TRACE_ROOT, 'rp360-unc-fixture-traces')
+      : home;
+    const trace = path.join(
+      traceRoot,
+      `${path.basename(home)}-controlled-unc-realpath-trace.jsonl`,
     );
-    const flag = unattendedFlags(uncEnv())[0];
+    await mkdir(traceRoot, { recursive: true });
+    await writeFile(preload, CONTROLLED_UNC_REALPATH_PRELOAD);
+    await writeFile(
+      flagPathHelper,
+      `import { unattendedFlags } from ${JSON.stringify(
+        pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href,
+      )};\nprocess.stdout.write(unattendedFlags(process.env)[0]);\n`,
+    );
+    const localTarget = path.join(home, 'canonical-local-target');
+    const localProbe = path.join(home, 'canonical-local-alias');
+    await mkdir(localTarget, { recursive: true });
+    await symlink(localTarget, localProbe, process.platform === 'win32' ? 'junction' : 'dir');
+    const localResolved = await realpath(localTarget);
+    const nodeOptions = [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`]
+      .filter(Boolean)
+      .join(' ');
+    const fixtureEnv = {
+      ...uncEnv(),
+      NODE_OPTIONS: nodeOptions,
+      RP360_CONTROLLED_UNC_PATHS: JSON.stringify(controlledUncPaths),
+      RP360_CONTROLLED_UNC_TRACE: trace,
+      RP360_LOCAL_REALPATH_PROBE: localProbe,
+    };
+    return { fixtureEnv, flagPathHelper, localProbe, localResolved, trace };
+  };
+  const armedUnc = async (
+    allow: string[],
+    { fixtureEnv, flagPathHelper }: Awaited<ReturnType<typeof controlledUncFixture>>,
+  ) => {
+    const flag = execFileSync(process.execPath, [flagPathHelper], {
+      encoding: 'utf8',
+      env: { ...process.env, ...fixtureEnv },
+    }).trim();
     await mkdir(path.dirname(flag), { recursive: true });
     await writeFile(
       flag,
       JSON.stringify({ item: 'RP-244', runDir: path.join(uncRoot, '.rig-run'), allow }),
     );
   };
-  const runUnc = (payload: object) => runHookFull(payload, uncEnv());
+  const runUnc = async (
+    payload: object,
+    {
+      fixtureEnv,
+      localProbe,
+      localResolved,
+      trace,
+    }: Awaited<ReturnType<typeof controlledUncFixture>>,
+  ) => {
+    const result = await runHookFull(payload, fixtureEnv);
+    const entries = (await readFile(trace, 'utf8'))
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { kind: string; candidate: string; resolved?: string });
+    return { ...result, entries, localProbe, localResolved };
+  };
+
+  it('uses only declared absent-share paths and delegates the local canonical probe', async () => {
+    const fixture = await controlledUncFixture();
+    await armedUnc(['src/'], fixture);
+    const result = await runUnc(write(uncRulebookPath), fixture);
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/is part of the rulebook/i);
+    const controlled = result.entries.filter((entry) => entry.kind === 'controlled');
+    expect(controlled.length).toBeGreaterThan(0);
+    for (const entry of controlled) expect(controlledUncPaths).toContain(entry.candidate);
+    const uncEntries = result.entries.filter(
+      (entry) => entry.candidate.startsWith('\\\\') || entry.candidate.startsWith('//'),
+    );
+    for (const entry of uncEntries) expect(controlledUncPaths).toContain(entry.candidate);
+    expect(result.entries).toContainEqual({
+      kind: 'delegated',
+      candidate: result.localProbe,
+      resolved: result.localResolved,
+    });
+    expect(result.localResolved).not.toBe(result.localProbe);
+  });
 
   it('allows a Write under the UNC repository root when the target is outside the rulebook', async () => {
-    await armedUnc(['src/']);
-    const result = await runUnc(write(String.raw`\\server\share\repo\src\x.ts`));
+    const fixture = await controlledUncFixture();
+    await armedUnc(['src/'], fixture);
+    const result = await runUnc(write(String.raw`\\server\share\repo\src\x.ts`), fixture);
     expect(result.code, result.stderr).toBe(0);
   });
 
   it('blocks a Write under the UNC repository root to a rulebook path, with the ordinary rulebook reason', async () => {
-    await armedUnc(['src/']);
-    const result = await runUnc(write(String.raw`\\server\share\repo\.claude\settings.json`));
+    const fixture = await controlledUncFixture();
+    await armedUnc(['src/'], fixture);
+    const result = await runUnc(write(uncRulebookPath), fixture);
     expect(result.code, result.stderr).toBe(2);
     expect(result.stderr).toMatch(/is part of the rulebook/i);
     expect(result.stderr).not.toMatch(/resolved against the repository root/i);
   });
 
   it('blocks a Write to a `//`-prefixed path outside the UNC repository root, with the "could not be resolved" reason', async () => {
-    await armedUnc(['src/']);
-    const result = await runUnc(write(String.raw`\\srv\share\x\.claude\settings.json`));
+    const fixture = await controlledUncFixture();
+    await armedUnc(['src/'], fixture);
+    const result = await runUnc(write(uncOutsidePath), fixture);
     expect(result.code, result.stderr).toBe(2);
     expect(result.stderr).toMatch(/resolved against the repository root/i);
   });
