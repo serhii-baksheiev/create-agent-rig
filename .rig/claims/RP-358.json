@@ -38,7 +38,7 @@
       "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "RP-358-green-formatted-final-fixture"
+        "id": "RP-358-caller-green-final4"
       }
     },
     "baseline": {
@@ -48,66 +48,66 @@
       "test": {
         "file": "test/template/revalidate.test.ts",
         "fullName": "the git fixture itself uses an advanced origin/master when origin/HEAD is absent and local master is stale",
-        "fileSha256": "6b165795d89ab7d2ae0bf8fa09be6e9ce91f8fa6d94a4c3bb6cb7c7068c2f9bc"
+        "fileSha256": "51d424aef014be5cd7df27e8ee73a208f129dfbfb5cda05a4407f1ba6c107602"
       },
       "source": {
-        "runId": "20261002-rp358-linux-check",
-        "seq": 45
+        "runId": "20261003-rp358-caller-red-final3",
+        "seq": 2
       },
       "observation": {
         "outcome": "fail",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "404d92029a06525272665f1f70aeab045bd4f5847c18acec0e6d48fe6a765e01"
+          "value": "c25779a8da9525b6d9aa1f3d5e19067d2c1ff3f3013b4e033e6c4e35516ac7e5"
         }
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "5e87aa53af085bb1c8d403bf00ca4d34b3b541312dd7b1c3e6c420dc99b423f9"
+        "value": "0231bfa699bc378ffbd6e00c595ea789d8c9bf35daf3056229f50e9be6378ba1"
       }
     },
     "implementationBoundary": {
       "source": {
-        "runId": "20261002-rp358-linux-check",
-        "seq": 48
+        "runId": "20261003-rp358-caller-red-final3",
+        "seq": 5
       },
       "implementationDeltaFingerprint": {
         "algorithm": "sha256",
-        "value": "62eb2981d681c57b1ea2d5c8dc2f498c6667b5cf9c20e70fda29f86dccd363a4"
+        "value": "b62fa22376e2b81d83a05ffadd91e8c78a32ff2bffe8440f7bda4274a99016b3"
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "5e87aa53af085bb1c8d403bf00ca4d34b3b541312dd7b1c3e6c420dc99b423f9"
+        "value": "0231bfa699bc378ffbd6e00c595ea789d8c9bf35daf3056229f50e9be6378ba1"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "ef98c4cefcf31890260bd0b86ea744f92d6b8424aebd0bb9a1b027fb49dac6fa"
+        "value": "dc12a5a45d9acdf8275c3996a684a0d40e377c8ce1c848d514fc31e24f47414a"
       }
     },
     "green": {
       "test": {
         "file": "test/template/revalidate.test.ts",
         "fullName": "the git fixture itself uses an advanced origin/master when origin/HEAD is absent and local master is stale",
-        "fileSha256": "6b165795d89ab7d2ae0bf8fa09be6e9ce91f8fa6d94a4c3bb6cb7c7068c2f9bc"
+        "fileSha256": "51d424aef014be5cd7df27e8ee73a208f129dfbfb5cda05a4407f1ba6c107602"
       },
       "source": {
-        "runId": "20261002-rp358-linux-check",
-        "seq": 49
+        "runId": "20261003-rp358-caller-red-final3",
+        "seq": 6
       },
       "observation": {
         "outcome": "pass",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "c5c240b8e9f2acf5a16c01c64fdc593cb0964f3c03365e07b723b48f84f03520"
+          "value": "70e487395bbdb54b9bad5b0bac1d689044c2beb2d96f36457c3b0e4649f2fdf6"
         }
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "ef98c4cefcf31890260bd0b86ea744f92d6b8424aebd0bb9a1b027fb49dac6fa"
+        "value": "dc12a5a45d9acdf8275c3996a684a0d40e377c8ce1c848d514fc31e24f47414a"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "9a60640f64b347c46a3a871fa4249e9528b543bcc4332c669e95a32bf9b636a5"
+        "value": "73b00df74bb02a30b2526e96f5eded7488c4e305fa3d0a33e6450f50b0f41e64"
       }
     }
   },
@@ -545,6 +545,102 @@
         "fingerprint": {
           "algorithm": "sha256",
           "value": "5a01e2a576d09bafef7969064592ce0aa402202a0539885139d7b97aa331ba9f"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-358",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-358-green-formatted-final-fixture"
+          }
+        },
+        "baseline": {
+          "headSha": "23a640284d771014e5a5d7f8cb29b7f2ae15ec4a"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/revalidate.test.ts",
+            "fullName": "the git fixture itself uses an advanced origin/master when origin/HEAD is absent and local master is stale",
+            "fileSha256": "6b165795d89ab7d2ae0bf8fa09be6e9ce91f8fa6d94a4c3bb6cb7c7068c2f9bc"
+          },
+          "source": {
+            "runId": "20261002-rp358-linux-check",
+            "seq": 45
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "404d92029a06525272665f1f70aeab045bd4f5847c18acec0e6d48fe6a765e01"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "5e87aa53af085bb1c8d403bf00ca4d34b3b541312dd7b1c3e6c420dc99b423f9"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261002-rp358-linux-check",
+            "seq": 48
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "62eb2981d681c57b1ea2d5c8dc2f498c6667b5cf9c20e70fda29f86dccd363a4"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "5e87aa53af085bb1c8d403bf00ca4d34b3b541312dd7b1c3e6c420dc99b423f9"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "ef98c4cefcf31890260bd0b86ea744f92d6b8424aebd0bb9a1b027fb49dac6fa"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/revalidate.test.ts",
+            "fullName": "the git fixture itself uses an advanced origin/master when origin/HEAD is absent and local master is stale",
+            "fileSha256": "6b165795d89ab7d2ae0bf8fa09be6e9ce91f8fa6d94a4c3bb6cb7c7068c2f9bc"
+          },
+          "source": {
+            "runId": "20261002-rp358-linux-check",
+            "seq": 49
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "c5c240b8e9f2acf5a16c01c64fdc593cb0964f3c03365e07b723b48f84f03520"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "ef98c4cefcf31890260bd0b86ea744f92d6b8424aebd0bb9a1b027fb49dac6fa"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "9a60640f64b347c46a3a871fa4249e9528b543bcc4332c669e95a32bf9b636a5"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "5e87aa53af085bb1c8d403bf00ca4d34b3b541312dd7b1c3e6c420dc99b423f9"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "0231bfa699bc378ffbd6e00c595ea789d8c9bf35daf3056229f50e9be6378ba1"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "365d7df32bc74928dfcf891891a153a079ab2e165dcceebf8640b93c8769a636"
         }
       }
     }
