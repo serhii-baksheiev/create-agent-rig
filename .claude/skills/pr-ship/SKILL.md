@@ -492,7 +492,10 @@ blockers.
   clean gate is a real result.
 - `HOLD` — name every blocker: the failing check by name, the reviewer finding
   with its file:line, or the DoD item that does not hold. Blocking findings are
-  resolved, not argued with; after fixes, the gate runs again from **step 0** —
+  resolved, not argued with. After a reviewer-fix, run `check-premises` on the
+  fix's own prose delta before returning to **step 0**. Search the whole branch
+  diff for sibling copies of the same claim and correct every stale sibling
+  copy before the gate runs again from **step 0** —
   which counts the new round and is what makes "again" finite. Re-entering at
   step 1 skips the counter, and the unbounded rounds this gate measured are
   exactly what that produces.
