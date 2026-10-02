@@ -703,12 +703,14 @@ const resolveCommit = (projectRoot, ref) => {
 
 const trackedClaimMatchesHead = ({ projectRoot, ticket, raw }) => {
   try {
-    const tracked = execFileSync(
+    const claimPath = `.rig/claims/${ticket}.json`;
+    const workingBlob = execFileSync(
       'git',
-      ['-C', projectRoot, 'show', `HEAD:.rig/claims/${ticket}.json`],
-      { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_JSON_BYTES },
-    );
-    return tracked.equals(raw);
+      ['-C', projectRoot, 'hash-object', '--path', claimPath, '--stdin'],
+      { encoding: 'utf8', env: withoutGitLocation(), input: raw, maxBuffer: 128 },
+    ).trim();
+    const trackedBlob = gitText(projectRoot, ['rev-parse', '--verify', `HEAD:${claimPath}`]);
+    return workingBlob === trackedBlob;
   } catch {
     return false;
   }

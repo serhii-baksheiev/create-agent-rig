@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-338",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "76ff6e7871d82c753d0048cfc8d73081777411ab10d337ae6200696e8606631b",
+      "targetSha": "6816944ab190355a99b8e853bcbe6576e2f48ef0"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-clean-filter-claim.test.ts",
+      "fullName": "RP-338 Git clean-filter claim identity accepts a tracked CRLF checkout and still rejects modified claim bytes"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "76ff6e7871d82c753d0048cfc8d73081777411ab10d337ae6200696e8606631b",
+      "targetSha": "6816944ab190355a99b8e853bcbe6576e2f48ef0"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "ad0ce8171ef03dc382bf5bdae39e76a3e978b1bd362f669de79f1d340ec7b718"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-338",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-338-green-crlf"
+      }
+    },
+    "baseline": {
+      "headSha": "6816944ab190355a99b8e853bcbe6576e2f48ef0"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-clean-filter-claim.test.ts",
+        "fullName": "RP-338 Git clean-filter claim identity accepts a tracked CRLF checkout and still rejects modified claim bytes",
+        "fileSha256": "0d114a719b56155883c63e3158b424a34006c4d517da76b3c4ac2af8cc085145"
+      },
+      "source": {
+        "runId": "multi-release-01a0fc46",
+        "seq": 30
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "70235997e6fe9944606251ca6abe0ba45ecf7281f9e6c378fbb7f78d71455936"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "875de0b57a41f81a3f1133392ddb5e7a9d90e107c78564a726c2ec56e432147b"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "multi-release-01a0fc46",
+        "seq": 32
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "26150e58d8d9967b5607fab02c2baf0323d2345a5f6bb0a14f70ad70cda3f4f0"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "875de0b57a41f81a3f1133392ddb5e7a9d90e107c78564a726c2ec56e432147b"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "3797ee541304319989d578adb5ec265329b6f3a43f78cf9c583e4e874d4e5fa3"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-clean-filter-claim.test.ts",
+        "fullName": "RP-338 Git clean-filter claim identity accepts a tracked CRLF checkout and still rejects modified claim bytes",
+        "fileSha256": "0d114a719b56155883c63e3158b424a34006c4d517da76b3c4ac2af8cc085145"
+      },
+      "source": {
+        "runId": "multi-release-01a0fc46",
+        "seq": 33
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "106a0b4eb4623c2164800b9233fc88e822d9bf1d7e5a884eae9ec1d03c19d841"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "3797ee541304319989d578adb5ec265329b6f3a43f78cf9c583e4e874d4e5fa3"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "ab2f42367145997831415d1bdc8e053256cab075856b90cf2d17bba0e78e9f1e"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-338",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-338-red-crlf"
+          }
+        },
+        "baseline": {
+          "headSha": "6816944ab190355a99b8e853bcbe6576e2f48ef0"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-clean-filter-claim.test.ts",
+            "fullName": "RP-338 Git clean-filter claim identity accepts a tracked CRLF checkout and still rejects modified claim bytes",
+            "fileSha256": "40cb7fdb999ddb76e934d99464fe5b4187ad3d8adff90b421c1ba651baf7c170"
+          },
+          "source": {
+            "runId": "multi-release-01a0fc46",
+            "seq": 28
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "a86af14528af2021ef0b84e5eb00c6d1905430b1a0ed0ec79dad22634ac0627f"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "2c8c0301c9471fd508f96e34ec0cb1e6b45bdf923cdc53c47182d000dac87fd4"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "2c8c0301c9471fd508f96e34ec0cb1e6b45bdf923cdc53c47182d000dac87fd4"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "875de0b57a41f81a3f1133392ddb5e7a9d90e107c78564a726c2ec56e432147b"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "a520bbb15d9224586025ee0c01564ef67f91d96ba97133b87884e7536a8e8601"
+        }
+      }
+    }
+  ]
+}
