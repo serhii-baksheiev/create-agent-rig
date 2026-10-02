@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -55,6 +56,11 @@ const scratchProject = async (
   await mkdir(path.dirname(tasksPath), { recursive: true });
   await writeFile(tasksPath, tasks);
   return { dir, scriptPath: path.join(dir, '.claude', 'scripts', 'queue', 'index.mjs'), tasksPath };
+};
+
+const everyGitHubCommandRunsFromProject = (cwdCalls: string[], projectCwd: string): boolean => {
+  const canonicalProjectCwd = realpathSync(projectCwd);
+  return cwdCalls.every((cwd) => realpathSync(cwd) === canonicalProjectCwd);
 };
 
 type FakeIssue = { number: number; title: string; body: string; labels?: string[]; state?: string };
@@ -593,13 +599,26 @@ describe('queue import spec-kit --to github-issues (RP-275)', () => {
       const cwdCalls = await github.cwdCalls();
       expect(cwdCalls).not.toEqual([]);
       const projectCwd = await realpath(dir);
-      expect(
-        cwdCalls.every((cwd) => cwd === projectCwd),
-        cwdCalls.join('\n'),
-      ).toBe(true);
+      expect(everyGitHubCommandRunsFromProject(cwdCalls, projectCwd), cwdCalls.join('\n')).toBe(
+        true,
+      );
     } finally {
       github.stub.restore();
     }
+  });
+
+  it('accepts a project-root junction alias but rejects an unrelated directory', async () => {
+    const projectRoot = await mkdtemp(path.join(tmpdir(), 'spec-kit-import-cwd-root-'));
+    temporaryPaths.add(projectRoot);
+    const projectAlias = `${projectRoot}-alias`;
+    temporaryPaths.add(projectAlias);
+    await symlink(projectRoot, projectAlias, process.platform === 'win32' ? 'junction' : 'dir');
+    const unrelatedRoot = await mkdtemp(path.join(tmpdir(), 'spec-kit-import-cwd-unrelated-'));
+    temporaryPaths.add(unrelatedRoot);
+    const canonicalProjectRoot = await realpath(projectRoot);
+
+    expect(everyGitHubCommandRunsFromProject([projectAlias], canonicalProjectRoot)).toBe(true);
+    expect(everyGitHubCommandRunsFromProject([unrelatedRoot], canonicalProjectRoot)).toBe(false);
   });
 
   it('refuses a specs feature symlink that points outside the project before contacting GitHub', async () => {
