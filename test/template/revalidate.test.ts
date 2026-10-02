@@ -312,6 +312,22 @@ describe('the git fixture itself', () => {
     expect(after).not.toBe(before);
     expect(await git(['diff', '--name-only', 'origin/master...HEAD'], clone)).toBe('a.txt');
   });
+
+  it('uses an advanced origin/master when origin/HEAD is absent and local master is stale', async () => {
+    const { clone, moveMain } = await gitFixture();
+    const localMaster = await git(['rev-parse', 'master'], clone);
+    await moveMain(['b.txt']);
+    const remoteMaster = await git(['rev-parse', 'origin/master'], clone);
+    expect(remoteMaster).not.toBe(localMaster);
+    await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
+
+    const claims = (await loadScript('lib/claim-records.mjs')) as {
+      targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
+    };
+
+    expect(claims.targetShaOf(clone, 'origin/HEAD')).toBeNull();
+    expect(claims.targetShaOf(clone)).toBe(remoteMaster);
+  });
 });
 
 describe('revalidate.mjs — the CLI contract', () => {

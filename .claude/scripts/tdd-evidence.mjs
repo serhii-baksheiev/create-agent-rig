@@ -9,7 +9,7 @@ import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpat
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { claimPathFor } from './lib/claim-records.mjs';
+import { claimPathFor, targetShaOf } from './lib/claim-records.mjs';
 import { findSecretValues } from './lib/secrets.mjs';
 import { withoutGitLocation } from './git-env.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
@@ -373,10 +373,10 @@ const checkEvent = ({ projectRoot, runDir, check, outcome }) => {
   return { run, event, test: testIdentity({ projectRoot, vitest, outcome: testOutcome }) };
 };
 
-const changedPaths = ({ projectRoot, baselineHeadSha }) => {
+const changedPaths = ({ projectRoot, baselineHeadSha, headSha = null }) => {
   let names;
   try {
-    names = execFileSync('git', ['-C', projectRoot, 'diff', '--name-only', '-z', baselineHeadSha, '--'], {
+    names = execFileSync('git', ['-C', projectRoot, 'diff', '--name-only', '-z', baselineHeadSha, ...(headSha ? [headSha] : []), '--'], {
       encoding: 'buffer',
       env: withoutGitLocation(),
       maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES,
@@ -400,19 +400,25 @@ const finalApplicability = (paths, ticket) => {
   return changed.length === 0 ? { level: 'TDD-0' } : resolveApplicability({ changedPaths: changed });
 };
 
-const productionPaths = ({ projectRoot, baselineHeadSha, ticket = null }) => {
-  const paths = tddApplicabilityPaths(changedPaths({ projectRoot, baselineHeadSha }), ticket);
+const productionPaths = ({ projectRoot, baselineHeadSha, headSha = null, ticket = null }) => {
+  const paths = tddApplicabilityPaths(changedPaths({ projectRoot, baselineHeadSha, headSha }), ticket);
   return paths.filter((file) => resolveApplicability({ changedPaths: [file] }).level !== 'TDD-0');
 };
 
-const implementationDeltaFingerprint = ({ projectRoot, baselineHeadSha, bindingBaselineHeadSha = baselineHeadSha, ticket = null }) => {
-  const paths = productionPaths({ projectRoot, baselineHeadSha, ticket });
+const implementationDeltaFingerprint = ({
+  projectRoot,
+  baselineHeadSha,
+  bindingBaselineHeadSha = baselineHeadSha,
+  headSha = null,
+  ticket = null,
+}) => {
+  const paths = productionPaths({ projectRoot, baselineHeadSha, headSha, ticket });
   if (paths.length === 0) throw new Error('implementation delta is empty');
   let delta;
   try {
     delta = execFileSync(
       'git',
-      ['-C', projectRoot, 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', baselineHeadSha, '--', ...paths],
+      ['-C', projectRoot, 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', baselineHeadSha, ...(headSha ? [headSha] : []), '--', ...paths],
       { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
     );
   } catch {
@@ -596,27 +602,27 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
 const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   const { run, event, test } = checkEvent({ projectRoot, runDir, check, outcome: 'pass' });
   const { file, claim } = claimRecord(projectRoot, ticket);
-  const red = claim.tddEvidence;
+  const priorEvidence = claim.tddEvidence;
   const historyValidation = validateTddEvidenceHistory({
     ticket,
     baselineHeadSha: claim.fingerprints.scope.targetSha,
-    activeEvidence: red,
+    activeEvidence: priorEvidence,
     history: claim.tddEvidenceHistory,
   });
   if (
-    !red ||
-    red.applicability?.level !== 'TDD-1' ||
-    red.ticket !== ticket ||
-    red.baseline?.headSha !== claim.fingerprints.scope.targetSha ||
-    !validatePortableEvidence(red).ok ||
+    !priorEvidence ||
+    !['TDD-1', 'TDD-2'].includes(priorEvidence.applicability?.level) ||
+    priorEvidence.ticket !== ticket ||
+    priorEvidence.baseline?.headSha !== claim.fingerprints.scope.targetSha ||
+    !validatePortableEvidence(priorEvidence).ok ||
     !historyValidation.ok
   ) {
-    throw new Error('claim record does not carry a valid TDD-1 RED for this selected-work baseline');
+    throw new Error('claim record does not carry valid TDD evidence for this selected-work baseline');
   }
-  if (!validTddScope({ claim, scope: claim.tddScope, ticket }) || !sameTestScope(claim.tddScope.test, red.red?.test)) {
+  if (!validTddScope({ claim, scope: claim.tddScope, ticket }) || !sameTestScope(claim.tddScope.test, priorEvidence.red?.test)) {
     throw new Error('claim record does not carry a valid tracker-derived relevant test scope');
   }
-  if (!sameTest(test, red.red?.test)) throw new Error('GREEN test identity or file hash changed after RED');
+  if (!sameTest(test, priorEvidence.red?.test)) throw new Error('GREEN test identity or file hash changed after RED');
   const observedHead = event.data.gitHead;
   const currentHead = resolveCommit(projectRoot, 'HEAD');
   if (!/^[a-f0-9]{40}$/.test(observedHead ?? '') || observedHead !== currentHead) {
@@ -636,9 +642,14 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
       sameFingerprint(entry?.data?.workingTreeDiff, observedWorkingTreeDiff),
   );
   if (!boundaryEvent) throw new Error('GREEN check has no preceding implementation boundary provenance');
+  const refresh =
+    priorEvidence.applicability.level === 'TDD-2'
+      ? mergedDefaultRefresh({ projectRoot, ticket, priorEvidence, currentHead })
+      : null;
   const delta = implementationDeltaFingerprint({
     projectRoot,
-    baselineHeadSha: red.baseline.headSha,
+    baselineHeadSha: refresh?.defaultHead ?? priorEvidence.baseline.headSha,
+    bindingBaselineHeadSha: priorEvidence.baseline.headSha,
     ticket,
   });
   const runId = basename(runDir);
@@ -646,14 +657,14 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   const implementationBoundary = {
     source: boundarySource,
     implementationDeltaFingerprint: delta,
-    predecessorFingerprint: red.red.fingerprint,
+    predecessorFingerprint: priorEvidence.red.fingerprint,
     fingerprint: fingerprintEvidence({
       ticket,
-      baselineHeadSha: red.baseline.headSha,
+      baselineHeadSha: priorEvidence.baseline.headSha,
       stage: 'implementation-boundary',
       source: boundarySource,
       implementationDeltaFingerprint: delta,
-      predecessorFingerprint: red.red.fingerprint,
+      predecessorFingerprint: priorEvidence.red.fingerprint,
     }),
   };
   const source = { runId, seq: event.seq };
@@ -665,7 +676,7 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
     predecessorFingerprint: implementationBoundary.fingerprint,
     fingerprint: fingerprintEvidence({
       ticket,
-      baselineHeadSha: red.baseline.headSha,
+      baselineHeadSha: priorEvidence.baseline.headSha,
       stage: 'green',
       test,
       source,
@@ -674,14 +685,42 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
     }),
   };
   const evidence = {
-    ...red,
+    ...priorEvidence,
     applicability: { level: 'TDD-2', authority: { kind: 'check-run', id: check } },
     implementationBoundary,
     green,
   };
   const validation = validatePortableEvidence(evidence);
   if (!validation.ok) throw new Error(`portable GREEN evidence is invalid: ${validation.problems[0]}`);
-  const next = { ...claim, tddEvidence: evidence };
+  let tddEvidenceHistory = claim.tddEvidenceHistory;
+  if (refresh) {
+    const transition = {
+      priorGreenFingerprint: priorEvidence.green.fingerprint,
+      replacementGreenFingerprint: evidence.green.fingerprint,
+      priorImplementationBoundaryFingerprint: priorEvidence.implementationBoundary.fingerprint,
+      replacementImplementationBoundaryFingerprint: evidence.implementationBoundary.fingerprint,
+      mergedDefaultSha: refresh.defaultHead,
+      fingerprint: fingerprintEvidence({
+        ticket,
+        baselineHeadSha: priorEvidence.baseline.headSha,
+        stage: 'merged-default-green-refresh',
+        priorGreenFingerprint: priorEvidence.green.fingerprint,
+        replacementGreenFingerprint: evidence.green.fingerprint,
+        priorImplementationBoundaryFingerprint: priorEvidence.implementationBoundary.fingerprint,
+        replacementImplementationBoundaryFingerprint: evidence.implementationBoundary.fingerprint,
+        mergedDefaultSha: refresh.defaultHead,
+      }),
+    };
+    tddEvidenceHistory = [...(claim.tddEvidenceHistory ?? []), { evidence: priorEvidence, transition }];
+    const refreshedHistory = validateTddEvidenceHistory({
+      ticket,
+      baselineHeadSha: claim.fingerprints.scope.targetSha,
+      activeEvidence: evidence,
+      history: tddEvidenceHistory,
+    });
+    if (!refreshedHistory.ok) throw new Error(`portable GREEN refresh history is invalid: ${refreshedHistory.problems[0]}`);
+  }
+  const next = { ...claim, tddEvidence: evidence, ...(tddEvidenceHistory ? { tddEvidenceHistory } : {}) };
   replaceClaim({ projectRoot, file, content: `${JSON.stringify(next, null, 2)}\n` });
 };
 
@@ -699,6 +738,59 @@ const resolveCommit = (projectRoot, ref) => {
   } catch {
     throw new Error(`base ref ${ref} is not a resolvable commit`);
   }
+};
+
+const isAncestor = (projectRoot, ancestor, descendant) => {
+  try {
+    execFileSync('git', ['-C', projectRoot, 'merge-base', '--is-ancestor', ancestor, descendant], {
+      env: withoutGitLocation(),
+      stdio: 'ignore',
+    });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const defaultTargetSha = (projectRoot) => {
+  const targetSha = targetShaOf(projectRoot);
+  if (targetSha) return targetSha;
+  throw new Error('merged default branch cannot be resolved');
+};
+
+const mergeParents = (projectRoot, head) => {
+  let fields;
+  try {
+    fields = gitText(projectRoot, ['rev-list', '--parents', '-n', '1', head]).split(/\s+/);
+  } catch {
+    throw new Error('merged default branch cannot be inspected');
+  }
+  if (fields[0] !== head || fields.length !== 3 || !fields.slice(1).every((value) => /^[a-f0-9]{40}$/.test(value))) {
+    throw new Error('GREEN refresh requires one direct merge of the current default branch');
+  }
+  return { priorHead: fields[1], defaultHead: fields[2] };
+};
+
+const mergedDefaultRefresh = ({ projectRoot, ticket, priorEvidence, currentHead }) => {
+  const defaultHead = defaultTargetSha(projectRoot);
+  const { priorHead, defaultHead: mergedParent } = mergeParents(projectRoot, currentHead);
+  if (mergedParent !== defaultHead) {
+    throw new Error('GREEN refresh did not merge the current default branch tip');
+  }
+  if (defaultHead === priorEvidence.baseline.headSha || !isAncestor(projectRoot, priorEvidence.baseline.headSha, defaultHead)) {
+    throw new Error('GREEN refresh requires an advanced default branch descended from the selected baseline');
+  }
+  const priorDelta = implementationDeltaFingerprint({
+    projectRoot,
+    baselineHeadSha: priorEvidence.baseline.headSha,
+    bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+    headSha: priorHead,
+    ticket,
+  });
+  if (!sameFingerprint(priorDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
+    throw new Error('GREEN refresh parent does not reproduce the prior implementation boundary');
+  }
+  return { defaultHead };
 };
 
 const trackedClaimMatchesHead = ({ projectRoot, ticket, raw }) => {

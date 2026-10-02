@@ -59,6 +59,8 @@ const runVitest = ({
       process.execPath,
       vitestCli,
       'run',
+      '--pool=threads',
+      '--maxWorkers=1',
       '--root',
       root,
       '--config',
@@ -102,7 +104,7 @@ const contract = {
 };
 
 describe('RP-306 portable baseline continuation', () => {
-  it('verifies prior TDD-2 after a disjoint master advance while revalidation remains a separate HOLD', async () => {
+  it('refreshes TDD-2 GREEN after a verified merged master advance without attributing its production delta', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-continuation-'));
     const runDir = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-continuation-run-'));
     await mkdir(path.join(root, '.rig'), { recursive: true });
@@ -119,6 +121,7 @@ describe('RP-306 portable baseline continuation', () => {
       "export default { test: { include: ['test/**/*.test.ts'], globals: true } };\n",
     );
     await git(['init', '-q', '-b', 'master'], root);
+    await git(['remote', 'add', 'origin', path.join(root, 'origin.git')], root);
     await git(['add', '.rig/revalidation.json', 'src/feature.ts'], root);
     await git(['commit', '-q', '-m', 'B0 selected work baseline'], root);
     const baseline = await git(['rev-parse', 'HEAD'], root);
@@ -190,6 +193,62 @@ describe('RP-306 portable baseline continuation', () => {
       targetSha: masterAdvance,
     });
     expect(revalidated).toMatchObject({ result: 'CHANGED', action: 'hold' });
+
+    // A configured remote with no trustworthy remote target must fail closed:
+    // the local master advance is not a substitute for origin's default.
+    const missingDefaultGreen = await runVitest({
+      root,
+      runDir,
+      name: 'unit-green-missing-default',
+      trackerEnv,
+    });
+    expect(missingDefaultGreen.code, missingDefaultGreen.out).toBe(0);
+    const missingDefaultRefresh = await record({
+      root,
+      runDir,
+      action: 'record-green',
+      check: 'unit-green-missing-default',
+      trackerEnv,
+    });
+    expect(missingDefaultRefresh.code, missingDefaultRefresh.out).toBe(1);
+    expect(missingDefaultRefresh.out).toMatch(/default|resolve/i);
+
+    // Divergent origin/master and origin/main are equally unsafe when origin/HEAD
+    // is absent; a refresh cannot pick one by a local fallback.
+    await git(['update-ref', 'refs/remotes/origin/master', masterAdvance], root);
+    await git(['update-ref', 'refs/remotes/origin/main', baseline], root);
+    const ambiguousDefaultGreen = await runVitest({
+      root,
+      runDir,
+      name: 'unit-green-ambiguous-default',
+      trackerEnv,
+    });
+    expect(ambiguousDefaultGreen.code, ambiguousDefaultGreen.out).toBe(0);
+    const ambiguousDefaultRefresh = await record({
+      root,
+      runDir,
+      action: 'record-green',
+      check: 'unit-green-ambiguous-default',
+      trackerEnv,
+    });
+    expect(ambiguousDefaultRefresh.code, ambiguousDefaultRefresh.out).toBe(1);
+    expect(ambiguousDefaultRefresh.out).toMatch(/default|resolve|ambiguous/i);
+
+    // A local tag with the same short spelling as the genuine remote ref must
+    // not affect a fully qualified remote target.
+    await git(['update-ref', '-d', 'refs/remotes/origin/main'], root);
+    await git(['tag', '-f', 'origin/master', baseline], root);
+
+    // The selected baseline remains B0, but a new GREEN after the verified
+    // master merge must bind only F1. M1 is already in the shipping base.
+    const refreshedGreen = await runVitest({ root, runDir, name: 'unit-green', trackerEnv });
+    expect(refreshedGreen.code, refreshedGreen.out).toBe(0);
+    expect(
+      (await record({ root, runDir, action: 'record-green', check: 'unit-green', trackerEnv }))
+        .code,
+    ).toBe(0);
+    await git(['add', '.rig/claims/RP-306.json'], root);
+    await git(['commit', '-q', '-m', 'refresh GREEN after merged master advance'], root);
 
     const ship = await run(
       process.execPath,
