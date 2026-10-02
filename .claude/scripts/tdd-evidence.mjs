@@ -701,16 +701,17 @@ const resolveCommit = (projectRoot, ref) => {
   }
 };
 
+const normalizeCrLf = (value) => Buffer.from(value.toString('latin1').replaceAll('\r\n', '\n'), 'latin1');
+
 const trackedClaimMatchesHead = ({ projectRoot, ticket, raw }) => {
   try {
     const claimPath = `.rig/claims/${ticket}.json`;
-    const workingBlob = execFileSync(
+    const tracked = execFileSync(
       'git',
-      ['-C', projectRoot, 'hash-object', '--path', claimPath, '--stdin'],
-      { encoding: 'utf8', env: withoutGitLocation(), input: raw, maxBuffer: 128 },
-    ).trim();
-    const trackedBlob = gitText(projectRoot, ['rev-parse', '--verify', `HEAD:${claimPath}`]);
-    return workingBlob === trackedBlob;
+      ['-C', projectRoot, 'show', `HEAD:${claimPath}`],
+      { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_JSON_BYTES },
+    );
+    return tracked.equals(raw) || tracked.equals(normalizeCrLf(raw));
   } catch {
     return false;
   }
