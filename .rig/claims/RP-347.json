@@ -38,7 +38,7 @@
       "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "RP-347-first-green-after358-attested"
+        "id": "RP-347-merged-default-refresh-attested"
       }
     },
     "baseline": {
@@ -69,11 +69,11 @@
     "implementationBoundary": {
       "source": {
         "runId": "20261002-rp347-linux-check",
-        "seq": 18
+        "seq": 29
       },
       "implementationDeltaFingerprint": {
         "algorithm": "sha256",
-        "value": "705ef3c4701410829356f5e8ddbee1bdc8cfd30668dbcd6712df1164f5c0e580"
+        "value": "e066a16fcdc477ac4191d27bda6834da716b5d797233d0f6aa81676012056281"
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
@@ -81,7 +81,7 @@
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "1a50c2bf96f052fdc4bc57b2751911e323e3fe4a5fbf2532281b2e76dd3cf55d"
+        "value": "9df84549b52ab7fc54c5ecbb46d73e040bac2cb7df580503dd39702b8bb290ff"
       }
     },
     "green": {
@@ -92,22 +92,22 @@
       },
       "source": {
         "runId": "20261002-rp347-linux-check",
-        "seq": 19
+        "seq": 30
       },
       "observation": {
         "outcome": "pass",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "f9d96fa4e90c46df07df07e528c6840a7a67d9ed7e78a3ac04a59df51f6c0d3e"
+          "value": "f53ee26fbb89490987f7be9a5235c10b59d88772786ad6410bfef045f47c1528"
         }
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "1a50c2bf96f052fdc4bc57b2751911e323e3fe4a5fbf2532281b2e76dd3cf55d"
+        "value": "9df84549b52ab7fc54c5ecbb46d73e040bac2cb7df580503dd39702b8bb290ff"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "f3bfd35001bf474341955367e732e478ef96c8c735350fc99f79e7baf03af3d8"
+        "value": "e951cae8dd32600087510a2acd87c2b34c6bc336bfcc016331c361373782e75a"
       }
     }
   },
@@ -205,6 +205,111 @@
         "fingerprint": {
           "algorithm": "sha256",
           "value": "96ed6e4944ef6ebb7479e9753100022399c3495d2cac83a6ccd34547b35d25a7"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-347",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-347-first-green-after358-attested"
+          }
+        },
+        "baseline": {
+          "headSha": "6816944ab190355a99b8e853bcbe6576e2f48ef0"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-baseline-continuation.test.ts",
+            "fullName": "RP-306 portable baseline continuation refreshes TDD-2 GREEN after a verified merged master advance without attributing its production delta",
+            "fileSha256": "6ad29d85f6200fc3a3d14dfe9853e75a7d1a9b474d346ee9a010bba6ea83c4f9"
+          },
+          "source": {
+            "runId": "20261002-rp347-linux-check",
+            "seq": 15
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "11bb4b1065ad1eb846b84e872802827c0d970fbf139daf4d808bc2b857f938ed"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "50a2d2461a3c5b2b089f892ee38ce0b5da48ef3bc2c2222a523d0a1005503959"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261002-rp347-linux-check",
+            "seq": 18
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "705ef3c4701410829356f5e8ddbee1bdc8cfd30668dbcd6712df1164f5c0e580"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "50a2d2461a3c5b2b089f892ee38ce0b5da48ef3bc2c2222a523d0a1005503959"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "1a50c2bf96f052fdc4bc57b2751911e323e3fe4a5fbf2532281b2e76dd3cf55d"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/tdd-baseline-continuation.test.ts",
+            "fullName": "RP-306 portable baseline continuation refreshes TDD-2 GREEN after a verified merged master advance without attributing its production delta",
+            "fileSha256": "6ad29d85f6200fc3a3d14dfe9853e75a7d1a9b474d346ee9a010bba6ea83c4f9"
+          },
+          "source": {
+            "runId": "20261002-rp347-linux-check",
+            "seq": 19
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "f9d96fa4e90c46df07df07e528c6840a7a67d9ed7e78a3ac04a59df51f6c0d3e"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "1a50c2bf96f052fdc4bc57b2751911e323e3fe4a5fbf2532281b2e76dd3cf55d"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "f3bfd35001bf474341955367e732e478ef96c8c735350fc99f79e7baf03af3d8"
+          }
+        }
+      },
+      "transition": {
+        "priorGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "f3bfd35001bf474341955367e732e478ef96c8c735350fc99f79e7baf03af3d8"
+        },
+        "replacementGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "e951cae8dd32600087510a2acd87c2b34c6bc336bfcc016331c361373782e75a"
+        },
+        "priorImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "1a50c2bf96f052fdc4bc57b2751911e323e3fe4a5fbf2532281b2e76dd3cf55d"
+        },
+        "replacementImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "9df84549b52ab7fc54c5ecbb46d73e040bac2cb7df580503dd39702b8bb290ff"
+        },
+        "mergedDefaultSha": "f205bb0bf47fa73f38e3316d064f26fa33a4ba5a",
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "fd044d8b1d5d2a27ab048abc0104c46553a468fbc09af16e409d253a94da4944"
         }
       }
     }
