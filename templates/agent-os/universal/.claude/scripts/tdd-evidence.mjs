@@ -701,6 +701,8 @@ const resolveCommit = (projectRoot, ref) => {
   }
 };
 
+const normalizeCrLf = (value) => Buffer.from(value.toString('latin1').replaceAll('\r\n', '\n'), 'latin1');
+
 const trackedClaimMatchesHead = ({ projectRoot, ticket, raw }) => {
   try {
     const tracked = execFileSync(
@@ -708,7 +710,7 @@ const trackedClaimMatchesHead = ({ projectRoot, ticket, raw }) => {
       ['-C', projectRoot, 'show', `HEAD:.rig/claims/${ticket}.json`],
       { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_JSON_BYTES },
     );
-    return tracked.equals(raw);
+    return tracked.equals(raw) || tracked.equals(normalizeCrLf(raw));
   } catch {
     return false;
   }
