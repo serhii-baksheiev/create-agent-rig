@@ -588,6 +588,14 @@ describe('pr-ship skill (universal)', () => {
     const verdict = content.slice(content.indexOf('## Verdict'));
     expect(verdict, 'the verdict section must still exist').not.toBe('');
 
+    const proseHold = verdict.search(
+      /after[\s\S]{0,160}reviewer[\s-]*fix[\s\S]{0,160}(prose[\s-]*HOLD|HOLD[\s-]*prose)[\s\S]{0,220}check-premises/i,
+    );
+    expect(
+      proseHold,
+      'only a reviewer-fix for a prose HOLD needs the extra check-premises pass',
+    ).toBeGreaterThanOrEqual(0);
+
     const secondPremises = verdict.search(
       /after[\s\S]{0,280}fix[\s\S]{0,280}check-premises[\s\S]{0,280}(fix|own)[\s-]*(delta|prose)[\s\S]{0,280}before[\s\S]{0,120}step\s*0/i,
     );

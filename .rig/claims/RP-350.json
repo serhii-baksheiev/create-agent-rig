@@ -38,7 +38,7 @@
       "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "RP-350-green-reviewer-fix-prose-unanchored-fixed"
+        "id": "RP-350-green-prose-hold-condition"
       }
     },
     "baseline": {
@@ -48,67 +48,165 @@
       "test": {
         "file": "test/template/skills.test.ts",
         "fullName": "pr-ship skill (universal) checks reviewer-fix prose and its sibling claims before it spends another gate round",
-        "fileSha256": "8d66b88b2a23ef062deb2fcec152de8d93826b5cd9cb8494a19e1e93351fa25e"
+        "fileSha256": "68cc9f5a3d1cb75cee992bd2058c64a589d4a91dbfb9a98688566c6e807fd14b"
       },
       "source": {
         "runId": "20261002-rp350-linux-check",
-        "seq": 5
+        "seq": 37
       },
       "observation": {
         "outcome": "fail",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "076e51d0b0735e648ffb6ad1c881d48658d43aec6665478627084cc87e35e8f6"
+          "value": "9c3069c9a6ff2485153af971bc02b21409c1a0b9c0786f3fe52426e81b311db0"
         }
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "687793dd0e63a82903af53150c960a284b0f20956cb7f7a8c1a59a6cdff12416"
+        "value": "a3754b09224c9d52434e8609327cc0897292e87cee0a9eb3bac9e6abc36f1d75"
       }
     },
     "implementationBoundary": {
       "source": {
         "runId": "20261002-rp350-linux-check",
-        "seq": 14
+        "seq": 38
       },
       "implementationDeltaFingerprint": {
         "algorithm": "sha256",
-        "value": "0f1a54028611cb0cfc4a08fc7b9eff75590146db439e5ba1d3e9116f45502743"
+        "value": "e8860facc537da318f63b3d587b87ac9180be93cbaa59be96c3155b0c70397b9"
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "687793dd0e63a82903af53150c960a284b0f20956cb7f7a8c1a59a6cdff12416"
+        "value": "a3754b09224c9d52434e8609327cc0897292e87cee0a9eb3bac9e6abc36f1d75"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "ea4c344c2c05322a6dbd19e6955c3f3934a2be417e402086c73af7cfc569dba7"
+        "value": "85ee04efcec330fa69881596ca506e4a9a5734f6b934b0b172b5012dd808119d"
       }
     },
     "green": {
       "test": {
         "file": "test/template/skills.test.ts",
         "fullName": "pr-ship skill (universal) checks reviewer-fix prose and its sibling claims before it spends another gate round",
-        "fileSha256": "8d66b88b2a23ef062deb2fcec152de8d93826b5cd9cb8494a19e1e93351fa25e"
+        "fileSha256": "68cc9f5a3d1cb75cee992bd2058c64a589d4a91dbfb9a98688566c6e807fd14b"
       },
       "source": {
         "runId": "20261002-rp350-linux-check",
-        "seq": 15
+        "seq": 39
       },
       "observation": {
         "outcome": "pass",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "3e018877b4400ea82cb1c3f39e26ae3ab086dd7c160538851ff9d42b1d849df9"
+          "value": "2395009cba70fbcf7c0b63b51445785dc85946a5f10d1ee546b0275e919fb65a"
         }
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "ea4c344c2c05322a6dbd19e6955c3f3934a2be417e402086c73af7cfc569dba7"
+        "value": "85ee04efcec330fa69881596ca506e4a9a5734f6b934b0b172b5012dd808119d"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "c40ccfa7edec81eb89fa50b9dfee7ae04a285807ba655c406aa62975b5c2bdd9"
+        "value": "c51925d30362637b7f328ec209319029383363bd463c73ced4408950e3c85038"
       }
     }
-  }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-350",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-350-green-reviewer-fix-prose-unanchored-fixed"
+          }
+        },
+        "baseline": {
+          "headSha": "6816944ab190355a99b8e853bcbe6576e2f48ef0"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/skills.test.ts",
+            "fullName": "pr-ship skill (universal) checks reviewer-fix prose and its sibling claims before it spends another gate round",
+            "fileSha256": "8d66b88b2a23ef062deb2fcec152de8d93826b5cd9cb8494a19e1e93351fa25e"
+          },
+          "source": {
+            "runId": "20261002-rp350-linux-check",
+            "seq": 5
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "076e51d0b0735e648ffb6ad1c881d48658d43aec6665478627084cc87e35e8f6"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "687793dd0e63a82903af53150c960a284b0f20956cb7f7a8c1a59a6cdff12416"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261002-rp350-linux-check",
+            "seq": 14
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "0f1a54028611cb0cfc4a08fc7b9eff75590146db439e5ba1d3e9116f45502743"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "687793dd0e63a82903af53150c960a284b0f20956cb7f7a8c1a59a6cdff12416"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "ea4c344c2c05322a6dbd19e6955c3f3934a2be417e402086c73af7cfc569dba7"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/skills.test.ts",
+            "fullName": "pr-ship skill (universal) checks reviewer-fix prose and its sibling claims before it spends another gate round",
+            "fileSha256": "8d66b88b2a23ef062deb2fcec152de8d93826b5cd9cb8494a19e1e93351fa25e"
+          },
+          "source": {
+            "runId": "20261002-rp350-linux-check",
+            "seq": 15
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "3e018877b4400ea82cb1c3f39e26ae3ab086dd7c160538851ff9d42b1d849df9"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "ea4c344c2c05322a6dbd19e6955c3f3934a2be417e402086c73af7cfc569dba7"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "c40ccfa7edec81eb89fa50b9dfee7ae04a285807ba655c406aa62975b5c2bdd9"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "687793dd0e63a82903af53150c960a284b0f20956cb7f7a8c1a59a6cdff12416"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "a3754b09224c9d52434e8609327cc0897292e87cee0a9eb3bac9e6abc36f1d75"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "de069585e473e2690799d23ec13c4780441a822597c07ead844f6a507ad91ad3"
+        }
+      }
+    }
+  ]
 }
