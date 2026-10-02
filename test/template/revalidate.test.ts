@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -311,6 +311,106 @@ describe('the git fixture itself', () => {
     const after = await git(['rev-parse', 'origin/master'], clone);
     expect(after).not.toBe(before);
     expect(await git(['diff', '--name-only', 'origin/master...HEAD'], clone)).toBe('a.txt');
+  });
+
+  it('uses an advanced origin/master when origin/HEAD is absent and local master is stale', async () => {
+    const { clone, moveMain } = await gitFixture();
+    const localMaster = await git(['rev-parse', 'master'], clone);
+    await moveMain(['b.txt']);
+    const remoteMaster = await git(['rev-parse', 'origin/master'], clone);
+    expect(remoteMaster).not.toBe(localMaster);
+    await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
+
+    const claims = (await loadScript('lib/claim-records.mjs')) as {
+      targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
+    };
+
+    expect(claims.targetShaOf(clone, 'origin/HEAD')).toBeNull();
+    expect(claims.targetShaOf(clone)).toBe(remoteMaster);
+
+    await git(['branch', 'main', localMaster], clone);
+    await git(['push', '-q', 'origin', 'main:main'], clone);
+    await git(['fetch', '-q', 'origin'], clone);
+    const remoteMain = await git(['rev-parse', 'origin/main'], clone);
+    expect(remoteMain).not.toBe(remoteMaster);
+    await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
+    const fetchedRemoteHead = await run(
+      'git',
+      ['symbolic-ref', '--quiet', 'refs/remotes/origin/HEAD'],
+      clone,
+      withoutGitLocation(),
+    );
+    expect(fetchedRemoteHead.code, fetchedRemoteHead.out).toBe(1);
+
+    expect(claims.targetShaOf(clone)).toBeNull();
+
+    await git(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], clone);
+    await git(['tag', '-f', 'origin/HEAD', localMaster], clone);
+    expect(claims.targetShaOf(clone)).toBe(remoteMain);
+    expect(claims.targetShaOf(clone, 'origin/HEAD')).toBe(remoteMain);
+    await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
+    expect(await git(['rev-parse', '--verify', 'refs/remotes/origin/main'], clone)).toBe(
+      remoteMain,
+    );
+    expect(await git(['rev-parse', '--verify', 'refs/remotes/origin/master'], clone)).toBe(
+      remoteMaster,
+    );
+    expect(claims.targetShaOf(clone, 'origin/HEAD')).toBeNull();
+    expect(claims.targetShaOf(clone)).toBeNull();
+
+    await git(['update-ref', '-d', 'refs/remotes/origin/master'], clone);
+    await git(['tag', '-f', 'origin/master', remoteMaster], clone);
+    expect(await git(['rev-parse', 'origin/master'], clone)).toBe(remoteMaster);
+    expect(claims.targetShaOf(clone, 'origin/master')).toBeNull();
+    expect(claims.targetShaOf(clone, 'origin/main')).toBe(remoteMain);
+    expect(claims.targetShaOf(clone)).toBe(remoteMain);
+
+    await git(['update-ref', '-d', 'refs/remotes/origin/main'], clone);
+    expect(claims.targetShaOf(clone, 'origin/main')).toBeNull();
+    expect(claims.targetShaOf(clone)).toBeNull();
+
+    await git(['remote', 'remove', 'origin'], clone);
+    expect(claims.targetShaOf(clone)).toBe(localMaster);
+
+    await mkdir(path.join(clone, '.claude'), { recursive: true });
+    await cp(scriptsDir, path.join(clone, '.claude', 'scripts'), { recursive: true });
+    await writeFile(
+      path.join(clone, 'PLAN.md'),
+      '# Queue\n\n## Agent queue\n\n- select this item\n',
+    );
+    await writeFile(
+      path.join(clone, '.claude', 'queue.json'),
+      JSON.stringify({ adapter: 'plan-md' }),
+    );
+    const queueCli = path.join(clone, '.claude', 'scripts', 'queue', 'index.mjs');
+    const queueEnv = { ...withoutGitLocation(), RIG_RUN_DIR: '' };
+    const select = () => run(process.execPath, [queueCli, 'next', '--json'], clone, queueEnv);
+    const claimPath = path.join(clone, '.rig', 'claims', '1.json');
+
+    await git(['remote', 'add', 'origin', path.join(clone, 'origin.git')], clone);
+    const missingRemoteTarget = await select();
+    expect(missingRemoteTarget.code, missingRemoteTarget.out).toBe(2);
+    expect(JSON.parse(missingRemoteTarget.out)).toMatchObject({
+      revalidation: { result: 'UNVERIFIABLE', action: 'unverifiable' },
+    });
+    expect(existsSync(claimPath)).toBe(false);
+
+    await git(['update-ref', 'refs/remotes/origin/master', remoteMaster], clone);
+    await git(['update-ref', 'refs/remotes/origin/main', localMaster], clone);
+    const ambiguousRemoteTarget = await select();
+    expect(ambiguousRemoteTarget.code, ambiguousRemoteTarget.out).toBe(2);
+    expect(JSON.parse(ambiguousRemoteTarget.out)).toMatchObject({
+      revalidation: { result: 'UNVERIFIABLE', action: 'unverifiable' },
+    });
+    expect(existsSync(claimPath)).toBe(false);
+
+    await git(['remote', 'remove', 'origin'], clone);
+    const localOnlyTarget = await select();
+    expect(localOnlyTarget.code, localOnlyTarget.out).toBe(0);
+    expect(JSON.parse(localOnlyTarget.out)).toMatchObject({
+      revalidation: { result: 'BASELINE_CREATED', action: 'continue' },
+    });
+    expect(existsSync(claimPath)).toBe(true);
   });
 });
 

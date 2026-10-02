@@ -1006,25 +1006,36 @@ const gitText = (projectRoot, args) =>
   }).trim();
 
 export const targetShaOf = (projectRoot, ref = null) => {
-  const candidates = ref
-    ? [ref]
-    : [
-        (() => {
-          try {
-            return gitText(projectRoot, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
-          } catch {
-            return null;
-          }
-        })(),
-        'master',
-        'main',
-      ].filter(Boolean);
-  for (const candidate of candidates) {
+  const resolve = (candidate) => {
     try {
-      return gitText(projectRoot, ['rev-parse', '--verify', candidate]);
+      return gitText(projectRoot, ['rev-parse', '--verify', `${candidate}^{commit}`]);
     } catch {
-      // Try the next conventional target name.
+      return null;
     }
+  };
+  const remoteRef = (candidate) => `refs/remotes/${candidate}`;
+  const explicitRef =
+    ref === 'origin/HEAD' || ref === 'origin/master' || ref === 'origin/main' ? remoteRef(ref) : ref;
+  if (explicitRef) return resolve(explicitRef);
+
+  const defaultTarget = resolve(remoteRef('origin/HEAD'));
+  if (defaultTarget) return defaultTarget;
+
+  const remoteTargets = ['origin/master', 'origin/main'].map(remoteRef).map(resolve).filter(Boolean);
+  const remoteShas = [...new Set(remoteTargets)];
+  if (remoteShas.length === 1) return remoteShas[0];
+  if (remoteShas.length > 1) return null;
+
+  try {
+    gitText(projectRoot, ['config', '--get', 'remote.origin.url']);
+    return null;
+  } catch {
+    // See test/template/revalidate.test.ts (absent in a generated rig) › "uses an advanced origin/master when origin/HEAD is absent and local master is stale".
+  }
+
+  for (const candidate of ['master', 'main']) {
+    const sha = resolve(candidate);
+    if (sha) return sha;
   }
   return null;
 };
