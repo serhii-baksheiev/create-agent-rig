@@ -312,6 +312,58 @@ describe('the git fixture itself', () => {
     expect(after).not.toBe(before);
     expect(await git(['diff', '--name-only', 'origin/master...HEAD'], clone)).toBe('a.txt');
   });
+
+  it('uses an advanced origin/master when origin/HEAD is absent and local master is stale', async () => {
+    const { clone, moveMain } = await gitFixture();
+    const localMaster = await git(['rev-parse', 'master'], clone);
+    await moveMain(['b.txt']);
+    const remoteMaster = await git(['rev-parse', 'origin/master'], clone);
+    expect(remoteMaster).not.toBe(localMaster);
+    await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
+
+    const claims = (await loadScript('lib/claim-records.mjs')) as {
+      targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
+    };
+
+    expect(claims.targetShaOf(clone, 'origin/HEAD')).toBeNull();
+    expect(claims.targetShaOf(clone)).toBe(remoteMaster);
+
+    await git(['branch', 'main', localMaster], clone);
+    await git(['push', '-q', 'origin', 'main:main'], clone);
+    await git(['fetch', '-q', 'origin'], clone);
+    const remoteMain = await git(['rev-parse', 'origin/main'], clone);
+    expect(remoteMain).not.toBe(remoteMaster);
+
+    expect(claims.targetShaOf(clone)).toBeNull();
+
+    await git(['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main'], clone);
+    await git(['tag', '-f', 'origin/HEAD', localMaster], clone);
+    expect(claims.targetShaOf(clone)).toBe(remoteMain);
+    expect(claims.targetShaOf(clone, 'origin/HEAD')).toBe(remoteMain);
+    await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
+    expect(await git(['rev-parse', '--verify', 'refs/remotes/origin/main'], clone)).toBe(
+      remoteMain,
+    );
+    expect(await git(['rev-parse', '--verify', 'refs/remotes/origin/master'], clone)).toBe(
+      remoteMaster,
+    );
+    expect(claims.targetShaOf(clone, 'origin/HEAD')).toBeNull();
+    expect(claims.targetShaOf(clone)).toBeNull();
+
+    await git(['update-ref', '-d', 'refs/remotes/origin/master'], clone);
+    await git(['tag', '-f', 'origin/master', remoteMaster], clone);
+    expect(await git(['rev-parse', 'origin/master'], clone)).toBe(remoteMaster);
+    expect(claims.targetShaOf(clone, 'origin/master')).toBeNull();
+    expect(claims.targetShaOf(clone, 'origin/main')).toBe(remoteMain);
+    expect(claims.targetShaOf(clone)).toBe(remoteMain);
+
+    await git(['update-ref', '-d', 'refs/remotes/origin/main'], clone);
+    expect(claims.targetShaOf(clone, 'origin/main')).toBeNull();
+    expect(claims.targetShaOf(clone)).toBeNull();
+
+    await git(['remote', 'remove', 'origin'], clone);
+    expect(claims.targetShaOf(clone)).toBe(localMaster);
+  });
 });
 
 describe('revalidate.mjs — the CLI contract', () => {
