@@ -114,20 +114,34 @@ const armed = async (allow: string[], raw?: string) => {
 };
 const run = (payload: object | string) => runHookFull(payload, env());
 const plainAdminSharePath = String.raw`\\srv\share\x\.claude\settings.json`;
-const controlledPlainAdminSharePaths = [
+const verbatimAdminSharePath = String.raw`\\?\UNC\srv\share\x\.claude\settings.json`;
+const controlledAdminSharePaths = [
   plainAdminSharePath,
+  '//srv/share/x/.claude/settings.json',
   String.raw`\\srv\share\x\.claude`,
+  '//srv/share/x/.claude',
   String.raw`\\srv\share\x`,
+  '//srv/share/x',
   '\\\\srv\\share\\',
+  '//srv/share/',
   String.raw`\\srv\share`,
+  '//srv/share',
   String.raw`\\srv`,
+  '//srv',
+  verbatimAdminSharePath,
+  String.raw`\\?\UNC\srv\share\x\.claude`,
+  String.raw`\\?\UNC\srv\share\x`,
+  '\\\\?\\UNC\\srv\\share\\',
+  String.raw`\\?\UNC\srv\share`,
+  String.raw`\\?\UNC\srv`,
 ];
-const PLAIN_ADMIN_SHARE_PRELOAD = `
+const controlledAdminShareFixturePaths = new Set([plainAdminSharePath, verbatimAdminSharePath]);
+const ADMIN_SHARE_PRELOAD = `
 import { appendFileSync, realpathSync } from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
 
-const controlled = new Set(JSON.parse(process.env.RP360_PLAIN_ADMIN_SHARE_PATHS || '[]'));
-const trace = process.env.RP360_PLAIN_ADMIN_SHARE_TRACE;
+const controlled = new Set(JSON.parse(process.env.RP361_ADMIN_SHARE_PATHS || '[]'));
+const trace = process.env.RP361_ADMIN_SHARE_TRACE;
 const native = realpathSync.native;
 realpathSync.native = (candidate, ...args) => {
   if (controlled.has(candidate)) {
@@ -141,17 +155,17 @@ realpathSync.native = (candidate, ...args) => {
 };
 syncBuiltinESMExports();
 `;
-const runPlainAdminShare = async (payload: object) => {
-  const preload = path.join(home, 'controlled-plain-admin-share-preload.mjs');
-  const trace = path.join(home, 'controlled-plain-admin-share-trace.jsonl');
-  await writeFile(preload, PLAIN_ADMIN_SHARE_PRELOAD);
+const runControlledAdminShare = async (payload: object) => {
+  const preload = path.join(home, 'controlled-admin-share-preload.mjs');
+  const trace = path.join(home, 'controlled-admin-share-trace.jsonl');
+  await writeFile(preload, ADMIN_SHARE_PRELOAD);
   const result = await runHookFull(payload, {
     ...env(),
     NODE_OPTIONS: [process.env.NODE_OPTIONS, `--import=${pathToFileURL(preload).href}`]
       .filter(Boolean)
       .join(' '),
-    RP360_PLAIN_ADMIN_SHARE_PATHS: JSON.stringify(controlledPlainAdminSharePaths),
-    RP360_PLAIN_ADMIN_SHARE_TRACE: trace,
+    RP361_ADMIN_SHARE_PATHS: JSON.stringify(controlledAdminSharePaths),
+    RP361_ADMIN_SHARE_TRACE: trace,
   });
   const entries = (await readFile(trace, 'utf8'))
     .trim()
@@ -160,12 +174,12 @@ const runPlainAdminShare = async (payload: object) => {
     .map((line) => JSON.parse(line) as { kind: string; candidate: string });
   return { ...result, entries };
 };
-const expectPlainAdminShareTrace = (entries: Array<{ kind: string; candidate: string }>) => {
+const expectControlledAdminShareTrace = (entries: Array<{ kind: string; candidate: string }>) => {
   expect(entries.length).toBeGreaterThan(0);
   const uncEntries = entries.filter(
     (entry) => entry.candidate.startsWith('\\\\') || entry.candidate.startsWith('//'),
   );
-  for (const entry of uncEntries) expect(controlledPlainAdminSharePaths).toContain(entry.candidate);
+  for (const entry of uncEntries) expect(controlledAdminSharePaths).toContain(entry.candidate);
 };
 const aliasedRoot = async () => {
   const alias = path.join(home, 'checkout-alias');
@@ -1487,7 +1501,7 @@ describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-24
  * Windows filesystem underneath. The refusal itself is a string-comparison
  * decision, but production canonicalises each spelling before reaching it.
  * The finite absent-share preload below controls that native lookup for the
- * plain UNC fixture; it does not stand in for the real Windows
+ * invented-share fixtures; it does not stand in for the real Windows
  * canonicalisation cases elsewhere in this file.
  *
  * The fix: while armed, a fragment whose normalised path begins with `//`
@@ -1501,7 +1515,7 @@ describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-24
 describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, not silently allowed (RP-244 round 2)', () => {
   const unjudgeablePaths: Array<[string, string]> = [
     ['a plain (non-verbatim) UNC admin share', plainAdminSharePath],
-    ['a verbatim UNC admin share', String.raw`\\?\UNC\srv\share\x\.claude\settings.json`],
+    ['a verbatim UNC admin share', verbatimAdminSharePath],
     [
       'a verbatim device path with no drive letter (a volume GUID path)',
       String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\x\.claude\settings.json`,
@@ -1512,11 +1526,11 @@ describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, n
     'blocks a Write to %s while armed, because it cannot be resolved against the repository root',
     async (_label, filePath) => {
       await armed(['src/']);
-      if (filePath === plainAdminSharePath) {
-        const result = await runPlainAdminShare(write(filePath));
+      if (controlledAdminShareFixturePaths.has(filePath)) {
+        const result = await runControlledAdminShare(write(filePath));
         expect(result.code, result.stderr).toBe(2);
         expect(result.stderr).toMatch(/resolved against the repository root/i);
-        expectPlainAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries);
         return;
       }
       const result = await run(write(filePath));
@@ -1528,12 +1542,12 @@ describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, n
   it.each(unjudgeablePaths)(
     'an attended session (no unattended flag) still allows a Write to %s',
     async (_label, filePath) => {
-      if (filePath === plainAdminSharePath) {
-        const result = await runPlainAdminShare(write(filePath));
+      if (controlledAdminShareFixturePaths.has(filePath)) {
+        const result = await runControlledAdminShare(write(filePath));
         expect(result.code, result.stderr).toBe(0);
         expect(result.stderr).toBe('');
         expect(result.stdout).toBe('');
-        expectPlainAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries);
         return;
       }
       const result = await run(write(filePath));
@@ -1579,7 +1593,7 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
   // describe blocks and the array above is local to its own callback.
   const unjudgeablePaths: Array<[string, string]> = [
     ['a plain (non-verbatim) UNC admin share', plainAdminSharePath],
-    ['a verbatim UNC admin share', String.raw`\\?\UNC\srv\share\x\.claude\settings.json`],
+    ['a verbatim UNC admin share', verbatimAdminSharePath],
     [
       'a verbatim device path with no drive letter (a volume GUID path)',
       String.raw`\\?\Volume{12345678-1234-1234-1234-123456789abc}\x\.claude\settings.json`,
@@ -1590,10 +1604,10 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
     'blocks a MultiEdit beyond the fragment cap to %s while armed',
     async (_label, filePath) => {
       await armed(['src/']);
-      if (filePath === plainAdminSharePath) {
-        const result = await runPlainAdminShare(multiEdit257(filePath));
+      if (controlledAdminShareFixturePaths.has(filePath)) {
+        const result = await runControlledAdminShare(multiEdit257(filePath));
         expect(result.code, result.stderr).toBe(2);
-        expectPlainAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries);
         return;
       }
       const result = await run(multiEdit257(filePath));
@@ -1604,12 +1618,12 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
   it.each(unjudgeablePaths)(
     'an attended session (no unattended flag) still allows a MultiEdit beyond the fragment cap to %s',
     async (_label, filePath) => {
-      if (filePath === plainAdminSharePath) {
-        const result = await runPlainAdminShare(multiEdit257(filePath));
+      if (controlledAdminShareFixturePaths.has(filePath)) {
+        const result = await runControlledAdminShare(multiEdit257(filePath));
         expect(result.code, result.stderr).toBe(0);
         expect(result.stderr).toBe('');
         expect(result.stdout).toBe('');
-        expectPlainAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries);
         return;
       }
       const result = await run(multiEdit257(filePath));
