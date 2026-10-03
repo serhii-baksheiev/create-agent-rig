@@ -34,6 +34,22 @@ const git = async (args: string[], cwd: string) => {
   return result.out.trim();
 };
 
+const fetchOriginMaster = (root: string) =>
+  git(['fetch', '-q', 'origin', '+refs/heads/master:refs/remotes/origin/master'], root);
+
+const publishOriginMaster = async ({
+  root,
+  source = 'master',
+  force = false,
+}: {
+  root: string;
+  source?: string;
+  force?: boolean;
+}) => {
+  await git(['push', '-q', ...(force ? ['--force'] : []), 'origin', `${source}:master`], root);
+  await fetchOriginMaster(root);
+};
+
 const contract = {
   schemaVersion: 1,
   detection: {
@@ -119,9 +135,12 @@ const setupInitialGreen = async () => {
     "export default { test: { include: ['test/**/*.test.ts'], globals: true } };\n",
   );
   await git(['init', '-q', '-b', 'master'], root);
+  await git(['init', '--bare', '-q', path.join(root, 'origin.git')], root);
   await git(['remote', 'add', 'origin', path.join(root, 'origin.git')], root);
   await git(['add', '.rig/revalidation.json', 'src/feature.ts'], root);
   await git(['commit', '-q', '-m', 'B0 selected work baseline'], root);
+  await git(['push', '-q', '--set-upstream', 'origin', 'master'], root);
+  await fetchOriginMaster(root);
   const baseline = await git(['rev-parse', 'HEAD'], root);
   await git(['checkout', '-q', '-b', 'feat/RP-306'], root);
 
@@ -188,7 +207,9 @@ const defaultAdvance = async ({
   await writeFile(path.join(root, 'src', filename), `export const ${value} = true;\n`);
   await git(['add', path.join('src', filename)], root);
   await git(['commit', '-q', '-m', `default advance ${filename}`], root);
-  return git(['rev-parse', 'HEAD'], root);
+  const head = await git(['rev-parse', 'HEAD'], root);
+  await publishOriginMaster({ root });
+  return head;
 };
 
 const claimBytes = (root: string) => readFile(path.join(root, '.rig', 'claims', 'RP-306.json'));
@@ -196,13 +217,12 @@ const claimBytes = (root: string) => readFile(path.join(root, '.rig', 'claims', 
 describe('RP-306 merged-default refresh authority', () => {
   it('refuses a current default that the feature branch has not actually merged', async () => {
     const { root, runDir, trackerEnv } = await setupInitialGreen();
-    const currentDefault = await defaultAdvance({
+    await defaultAdvance({
       root,
       filename: 'unmerged-current-default.ts',
       value: 'unmergedCurrentDefault',
     });
     await git(['checkout', '-q', 'feat/RP-306'], root);
-    await git(['update-ref', 'refs/remotes/origin/master', currentDefault], root);
 
     const green = await runVitest({
       root,
@@ -226,14 +246,13 @@ describe('RP-306 merged-default refresh authority', () => {
 
   it('refuses a second refresh after the terminal merged-default history was tampered', async () => {
     const { baseline, root, runDir, trackerEnv } = await setupInitialGreen();
-    const firstDefault = await defaultAdvance({
+    await defaultAdvance({
       root,
       filename: 'first-tamper-default.ts',
       value: 'firstTamperDefault',
     });
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge first validated default', 'master'], root);
-    await git(['update-ref', 'refs/remotes/origin/master', firstDefault], root);
     const firstGreen = await runVitest({
       root,
       runDir,
@@ -264,14 +283,13 @@ describe('RP-306 merged-default refresh authority', () => {
     await git(['add', '.rig/claims/RP-306.json'], root);
     await git(['commit', '-q', '-m', 'tamper terminal merged-default history'], root);
 
-    const secondDefault = await defaultAdvance({
+    await defaultAdvance({
       root,
       filename: 'second-tamper-default.ts',
       value: 'secondTamperDefault',
     });
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge second current default', 'master'], root);
-    await git(['update-ref', 'refs/remotes/origin/master', secondDefault], root);
     const green = await runVitest({
       root,
       runDir,
@@ -294,7 +312,7 @@ describe('RP-306 merged-default refresh authority', () => {
 
   it('refuses a refresh that adds new production only in the direct merge commit', async () => {
     const { root, runDir, trackerEnv } = await setupInitialGreen();
-    const defaultHead = await defaultAdvance({
+    await defaultAdvance({
       root,
       filename: 'default-advance.ts',
       value: 'defaultAdvance',
@@ -307,7 +325,6 @@ describe('RP-306 merged-default refresh authority', () => {
     );
     await git(['add', 'src/introduced-by-merge.ts'], root);
     await git(['commit', '-q', '-m', 'merge current default with un-evidenced production'], root);
-    await git(['update-ref', 'refs/remotes/origin/master', defaultHead], root);
 
     const green = await runVitest({
       root,
@@ -331,14 +348,13 @@ describe('RP-306 merged-default refresh authority', () => {
 
   it('refuses a refresh when tracked production changes after a clean direct default merge', async () => {
     const { root, runDir, trackerEnv } = await setupInitialGreen();
-    const defaultHead = await defaultAdvance({
+    await defaultAdvance({
       root,
       filename: 'clean-default-advance.ts',
       value: 'cleanDefaultAdvance',
     });
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'clean direct default merge', 'master'], root);
-    await git(['update-ref', 'refs/remotes/origin/master', defaultHead], root);
     await writeFile(
       path.join(root, 'src', 'feature.ts'),
       'export const feature = () => "new";\nexport const dirtyWorkingTreeProduction = true;\n',
@@ -366,14 +382,13 @@ describe('RP-306 merged-default refresh authority', () => {
 
   it('refuses a sibling default that is descended from the selected baseline but not the prior validated default', async () => {
     const { baseline, root, runDir, trackerEnv } = await setupInitialGreen();
-    const firstDefault = await defaultAdvance({
+    await defaultAdvance({
       root,
       filename: 'first-default.ts',
       value: 'firstDefault',
     });
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge first validated default', 'master'], root);
-    await git(['update-ref', 'refs/remotes/origin/master', firstDefault], root);
     const firstGreen = await runVitest({
       root,
       runDir,
@@ -402,10 +417,9 @@ describe('RP-306 merged-default refresh authority', () => {
     );
     await git(['add', 'src/sibling-default.ts'], root);
     await git(['commit', '-q', '-m', 'sibling default advance'], root);
-    const siblingDefault = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge sibling default', 'sibling-default'], root);
-    await git(['update-ref', 'refs/remotes/origin/master', siblingDefault], root);
+    await publishOriginMaster({ root, source: 'sibling-default', force: true });
 
     const green = await runVitest({ root, runDir, name: 'unit-green-sibling-default', trackerEnv });
     expect(green.code, green.out).toBe(0);

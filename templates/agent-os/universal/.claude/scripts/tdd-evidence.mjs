@@ -24,6 +24,8 @@ import {
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 const MAX_IMPLEMENTATION_DELTA_BYTES = 5 * 1024 * 1024;
 const MAX_TRACKER_BODY_BYTES = 64 * 1024;
+const REMOTE_DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_REMOTE_DEFAULT_BYTES = 4096;
 const SHA256 = /^[a-f0-9]{64}$/;
 const TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TDD_SPEC_PREFIX = 'rig:tdd-spec/v1 ';
@@ -601,7 +603,7 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
 
 const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   const { run, event, test } = checkEvent({ projectRoot, runDir, check, outcome: 'pass' });
-  const { file, claim } = claimRecord(projectRoot, ticket);
+  const { file, claim, raw } = claimRecord(projectRoot, ticket);
   const priorEvidence = claim.tddEvidence;
   const historyValidation = validateTddEvidenceHistory({
     ticket,
@@ -623,6 +625,18 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
     throw new Error('claim record does not carry a valid tracker-derived relevant test scope');
   }
   if (!sameTest(test, priorEvidence.red?.test)) throw new Error('GREEN test identity or file hash changed after RED');
+  if (
+    claim.tddEvidenceHistory?.some(
+      (entry) =>
+        entry?.transition?.sameBaselineRefinement === true &&
+        sameFingerprint(
+          entry?.evidence?.implementationBoundary?.implementationDeltaFingerprint,
+          priorEvidence.implementationBoundary?.implementationDeltaFingerprint,
+        ),
+    )
+  ) {
+    throw new Error('GREEN refinement history repeats an implementation boundary');
+  }
   const observedHead = event.data.gitHead;
   const currentHead = resolveCommit(projectRoot, 'HEAD');
   if (!/^[a-f0-9]{40}$/.test(observedHead ?? '') || observedHead !== currentHead) {
@@ -644,7 +658,14 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   if (!boundaryEvent) throw new Error('GREEN check has no preceding implementation boundary provenance');
   const refinement =
     priorEvidence.applicability.level === 'TDD-2'
-      ? sameBaselineRefinement({ projectRoot, priorEvidence, currentHead })
+      ? sameBaselineRefinement({
+          projectRoot,
+          ticket,
+          priorEvidence,
+          history: claim.tddEvidenceHistory,
+          currentHead,
+          claimRaw: raw,
+        })
       : null;
   const refresh =
     priorEvidence.applicability.level === 'TDD-2' && refinement === null
@@ -768,6 +789,49 @@ const defaultTargetSha = (projectRoot) => {
   throw new Error('merged default branch cannot be resolved');
 };
 
+const liveDefaultTargetSha = (projectRoot) => {
+  let output;
+  try {
+    output = execFileSync('git', ['-C', projectRoot, 'ls-remote', '--refs', 'origin', 'refs/heads/master'], {
+      encoding: 'utf8',
+      env: withoutGitLocation(),
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: REMOTE_DEFAULT_TIMEOUT_MS,
+      maxBuffer: MAX_REMOTE_DEFAULT_BYTES,
+    }).trim();
+  } catch {
+    throw new Error('live current default branch cannot be resolved from origin');
+  }
+  const fields = output.split('\n').filter(Boolean).map((line) => line.split(/\s+/));
+  if (
+    fields.length !== 1 ||
+    !/^[a-f0-9]{40}$/.test(fields[0]?.[0] ?? '') ||
+    fields[0]?.[1] !== 'refs/heads/master'
+  ) {
+    throw new Error('live current default branch is missing or ambiguous');
+  }
+  const advertised = fields[0][0];
+  try {
+    execFileSync(
+      'git',
+      ['-C', projectRoot, 'fetch', '--no-tags', '--quiet', 'origin', 'refs/heads/master:refs/remotes/origin/master'],
+      {
+        encoding: 'utf8',
+        env: withoutGitLocation(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: REMOTE_DEFAULT_TIMEOUT_MS,
+        maxBuffer: MAX_REMOTE_DEFAULT_BYTES,
+      },
+    );
+  } catch {
+    throw new Error('live current default branch could not be fetched from origin');
+  }
+  if (resolveCommit(projectRoot, 'refs/remotes/origin/master') !== advertised) {
+    throw new Error('live current default branch changed during verification');
+  }
+  return advertised;
+};
+
 const mergeParents = (projectRoot, head) => {
   let fields;
   try {
@@ -779,6 +843,15 @@ const mergeParents = (projectRoot, head) => {
     throw new Error('GREEN refresh requires one direct merge of the current default branch');
   }
   return { priorHead: fields[1], defaultHead: fields[2] };
+};
+
+const isMergeCommit = (projectRoot, head) => {
+  try {
+    const fields = gitText(projectRoot, ['rev-list', '--parents', '-n', '1', head]).split(/\s+/);
+    return fields[0] === head && fields.length === 3 && fields.slice(1).every((value) => /^[a-f0-9]{40}$/.test(value));
+  } catch {
+    return false;
+  }
 };
 
 const priorRefreshDefault = ({ projectRoot, priorEvidence, history, priorHead }) => {
@@ -798,11 +871,32 @@ const priorRefreshDefault = ({ projectRoot, priorEvidence, history, priorHead })
   return priorEvidence.baseline.headSha;
 };
 
-const sameBaselineRefinement = ({ projectRoot, priorEvidence, currentHead }) => {
-  const defaultHead = defaultTargetSha(projectRoot);
-  if (defaultHead !== priorEvidence.baseline.headSha) return null;
+const sameBaselineRefinement = ({ projectRoot, ticket, priorEvidence, history, currentHead, claimRaw }) => {
+  const defaultHead = liveDefaultTargetSha(projectRoot);
+  const hasMergedDefault = history?.some((entry) => /^[a-f0-9]{40}$/.test(entry?.transition?.mergedDefaultSha ?? ''));
+  if (!isAncestor(projectRoot, priorEvidence.baseline.headSha, defaultHead)) {
+    throw new Error('live current default branch does not descend from the selected-work baseline');
+  }
   if (!isAncestor(projectRoot, priorEvidence.baseline.headSha, currentHead)) {
     throw new Error('GREEN refinement HEAD does not descend from the selected-work baseline');
+  }
+  if (defaultHead === priorEvidence.baseline.headSha && !hasMergedDefault && !isMergeCommit(projectRoot, currentHead)) {
+    return { defaultHead };
+  }
+  if (currentHead === priorEvidence.baseline.headSha) return { defaultHead };
+
+  const priorDefault = priorRefreshDefault({ projectRoot, priorEvidence, history, priorHead: currentHead });
+  if (!isAncestor(projectRoot, priorDefault, currentHead)) return null;
+  if (!trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) return null;
+  const retainedDelta = implementationDeltaFingerprint({
+    projectRoot,
+    baselineHeadSha: priorDefault,
+    bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+    headSha: currentHead,
+    ticket,
+  });
+  if (!sameFingerprint(retainedDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
+    return null;
   }
   return { defaultHead };
 };

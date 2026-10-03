@@ -587,6 +587,15 @@ export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvid
       if (refinement && transition?.mergedDefaultSha !== undefined) {
         problems.push(`${label} must not combine a same-baseline refinement with a merged default`);
       }
+      if (
+        refinement &&
+        fingerprintsEqual(
+          evidence?.implementationBoundary?.implementationDeltaFingerprint,
+          replacement?.implementationBoundary?.implementationDeltaFingerprint,
+        )
+      ) {
+        problems.push(`${label} must replace the prior implementation delta`);
+      }
       if (!refinement && !GIT_SHA.test(transition?.mergedDefaultSha ?? '')) {
         problems.push(`${label}.mergedDefaultSha must be a Git object id`);
       }
