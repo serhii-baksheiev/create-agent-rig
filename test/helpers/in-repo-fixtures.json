@@ -8,5 +8,10 @@
     "file": "test/template/git-env.test.ts",
     "prefix": ".prepare-",
     "reason": "The prepare entrypoint fixture sits below this repository so Node resolves the root TypeScript toolchain without copying or installing dependencies; each test removes its fixture in a finally block."
+  },
+  {
+    "file": "test/template/vitest-worker-concurrency.test.ts",
+    "prefix": "rp371-vitest-worker-probe-",
+    "reason": "The configured template include requires native Vitest worker probes inside this checkout; \"bounds default native Vitest workers across configured projects without changing test deadlines\" removes the fixture with removeFixture in its finally block."
   }
 ]
