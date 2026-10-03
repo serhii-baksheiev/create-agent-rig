@@ -518,39 +518,114 @@ export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvid
     }
     const transition = entry.transition;
     const label = `tddEvidenceHistory[${index}].transition`;
-    allowed(transition, new Set(['priorRedFingerprint', 'replacementRedFingerprint', 'fingerprint']), label, problems);
-    validateFingerprintShape(transition?.priorRedFingerprint, `${label}.priorRedFingerprint`, problems);
-    validateFingerprintShape(transition?.replacementRedFingerprint, `${label}.replacementRedFingerprint`, problems);
-    validateFingerprintShape(transition?.fingerprint, `${label}.fingerprint`, problems);
-    if (!fingerprintsEqual(transition?.priorRedFingerprint, evidence?.red?.fingerprint)) {
-      problems.push(`${label}.priorRedFingerprint must match history RED`);
+    if (transition?.priorRedFingerprint !== undefined || transition?.replacementRedFingerprint !== undefined) {
+      allowed(transition, new Set(['priorRedFingerprint', 'replacementRedFingerprint', 'fingerprint']), label, problems);
+      validateFingerprintShape(transition?.priorRedFingerprint, `${label}.priorRedFingerprint`, problems);
+      validateFingerprintShape(transition?.replacementRedFingerprint, `${label}.replacementRedFingerprint`, problems);
+      validateFingerprintShape(transition?.fingerprint, `${label}.fingerprint`, problems);
+      if (!fingerprintsEqual(transition?.priorRedFingerprint, evidence?.red?.fingerprint)) {
+        problems.push(`${label}.priorRedFingerprint must match history RED`);
+      }
+      if (!fingerprintsEqual(transition?.replacementRedFingerprint, replacement?.red?.fingerprint)) {
+        problems.push(`${label}.replacementRedFingerprint must match replacement RED`);
+      }
+      const priorTest = evidence?.red?.test;
+      const replacementTest = replacement?.red?.test;
+      if (
+        !priorTest ||
+        !replacementTest ||
+        priorTest.file !== replacementTest.file ||
+        priorTest.fullName !== replacementTest.fullName ||
+        priorTest.fileSha256 === replacementTest.fileSha256
+      ) {
+        problems.push(`${label} must replace one test identity with a different test-file hash`);
+      }
+      validateFingerprint(
+        transition?.fingerprint,
+        {
+          ticket,
+          baselineHeadSha,
+          stage: 'stale-red-replacement',
+          priorRedFingerprint: transition?.priorRedFingerprint,
+          replacementRedFingerprint: transition?.replacementRedFingerprint,
+        },
+        `${label}.fingerprint`,
+        problems,
+      );
+    } else {
+      allowed(
+        transition,
+        new Set([
+          'priorGreenFingerprint',
+          'replacementGreenFingerprint',
+          'priorImplementationBoundaryFingerprint',
+          'replacementImplementationBoundaryFingerprint',
+          'mergedDefaultSha',
+          'fingerprint',
+        ]),
+        label,
+        problems,
+      );
+      validateFingerprintShape(transition?.priorGreenFingerprint, `${label}.priorGreenFingerprint`, problems);
+      validateFingerprintShape(transition?.replacementGreenFingerprint, `${label}.replacementGreenFingerprint`, problems);
+      validateFingerprintShape(
+        transition?.priorImplementationBoundaryFingerprint,
+        `${label}.priorImplementationBoundaryFingerprint`,
+        problems,
+      );
+      validateFingerprintShape(
+        transition?.replacementImplementationBoundaryFingerprint,
+        `${label}.replacementImplementationBoundaryFingerprint`,
+        problems,
+      );
+      validateFingerprintShape(transition?.fingerprint, `${label}.fingerprint`, problems);
+      if (!GIT_SHA.test(transition?.mergedDefaultSha ?? '')) problems.push(`${label}.mergedDefaultSha must be a Git object id`);
+      if (!fingerprintsEqual(transition?.priorGreenFingerprint, evidence?.green?.fingerprint)) {
+        problems.push(`${label}.priorGreenFingerprint must match history GREEN`);
+      }
+      if (!fingerprintsEqual(transition?.replacementGreenFingerprint, replacement?.green?.fingerprint)) {
+        problems.push(`${label}.replacementGreenFingerprint must match replacement GREEN`);
+      }
+      if (
+        !fingerprintsEqual(
+          transition?.priorImplementationBoundaryFingerprint,
+          evidence?.implementationBoundary?.fingerprint,
+        )
+      ) {
+        problems.push(`${label}.priorImplementationBoundaryFingerprint must match history implementation boundary`);
+      }
+      if (
+        !fingerprintsEqual(
+          transition?.replacementImplementationBoundaryFingerprint,
+          replacement?.implementationBoundary?.fingerprint,
+        )
+      ) {
+        problems.push(`${label}.replacementImplementationBoundaryFingerprint must match replacement implementation boundary`);
+      }
+      if (
+        evidence?.applicability?.level !== 'TDD-2' ||
+        replacement?.applicability?.level !== 'TDD-2' ||
+        !sameTest(evidence?.red?.test, replacement?.red?.test) ||
+        !fingerprintsEqual(evidence?.red?.fingerprint, replacement?.red?.fingerprint)
+      ) {
+        problems.push(`${label} must preserve one TDD-2 RED and relevant specification`);
+      }
+      validateFingerprint(
+        transition?.fingerprint,
+        {
+          ticket,
+          baselineHeadSha,
+          stage: 'merged-default-green-refresh',
+          priorGreenFingerprint: transition?.priorGreenFingerprint,
+          replacementGreenFingerprint: transition?.replacementGreenFingerprint,
+          priorImplementationBoundaryFingerprint: transition?.priorImplementationBoundaryFingerprint,
+          replacementImplementationBoundaryFingerprint: transition?.replacementImplementationBoundaryFingerprint,
+          mergedDefaultSha: transition?.mergedDefaultSha,
+        },
+        `${label}.fingerprint`,
+        problems,
+      );
     }
-    if (!fingerprintsEqual(transition?.replacementRedFingerprint, replacement?.red?.fingerprint)) {
-      problems.push(`${label}.replacementRedFingerprint must match replacement RED`);
-    }
-    const priorTest = evidence?.red?.test;
-    const replacementTest = replacement?.red?.test;
-    if (
-      !priorTest ||
-      !replacementTest ||
-      priorTest.file !== replacementTest.file ||
-      priorTest.fullName !== replacementTest.fullName ||
-      priorTest.fileSha256 === replacementTest.fileSha256
-    ) {
-      problems.push(`${label} must replace one test identity with a different test-file hash`);
-    }
-    validateFingerprint(
-      transition?.fingerprint,
-      {
-        ticket,
-        baselineHeadSha,
-        stage: 'stale-red-replacement',
-        priorRedFingerprint: transition?.priorRedFingerprint,
-        replacementRedFingerprint: transition?.replacementRedFingerprint,
-      },
-      `${label}.fingerprint`,
-      problems,
-    );
     replacement = evidence;
   }
   if (problems.length === 0) scanPortableStrings(history, 'tddEvidenceHistory', problems);
