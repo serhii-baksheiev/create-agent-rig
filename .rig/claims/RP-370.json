@@ -38,7 +38,7 @@
       "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "rp370-own-prose-removal-green-root-01"
+        "id": "rp370-strict-default-primary-green-root-01"
       }
     },
     "baseline": {
@@ -69,7 +69,7 @@
     "implementationBoundary": {
       "source": {
         "runId": "rp370-20261003",
-        "seq": 161
+        "seq": 168
       },
       "implementationDeltaFingerprint": {
         "algorithm": "sha256",
@@ -81,7 +81,7 @@
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "1f13f0ba4b995ef9eb89aa825597bd20b00567d2fd3f176ff56b55c66535c6ed"
+        "value": "626bee88e8964b91f61ec67a9765bca78f6a818091512c420c2bbcf51145e1a4"
       }
     },
     "green": {
@@ -92,22 +92,22 @@
       },
       "source": {
         "runId": "rp370-20261003",
-        "seq": 162
+        "seq": 169
       },
       "observation": {
         "outcome": "pass",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "c0b5287e4ec5565928d019d2dceb96238c3166164c8987b0ae9e80eacf941bae"
+          "value": "bab0fa245d4158a4779cf844117056b7d03da142724879854b780dd9834b9c5d"
         }
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "1f13f0ba4b995ef9eb89aa825597bd20b00567d2fd3f176ff56b55c66535c6ed"
+        "value": "626bee88e8964b91f61ec67a9765bca78f6a818091512c420c2bbcf51145e1a4"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "dd290b9984dca397c5d2e54d7180be048ea42afdb5201bb9a6e84f95da60e11d"
+        "value": "d19c9a3d115304cabfb8209911c52e12a402e1301b502c77908647d866ead1fb"
       }
     }
   },
@@ -467,6 +467,111 @@
         "fingerprint": {
           "algorithm": "sha256",
           "value": "70930171f452528d5be8db1a7b2d2e77ccadd8c7076ca454f6ce681adf0d7c12"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-370",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp370-own-prose-removal-green-root-01"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-green-same-baseline-refinement.test.ts",
+            "fullName": "records a fresh same-baseline GREEN after an owned source refinement while retaining the prior evidence",
+            "fileSha256": "149ae61f57cff1ef02041c231141b068c0141645e935199a8127d641f63f4111"
+          },
+          "source": {
+            "runId": "rp370-20261003",
+            "seq": 82
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "1f16e9e1529aa75f6fa0502e11cb28f527df2262c5f1a3b3a4a38fbb42d70fe6"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "b6a5c923d4ef0b22a387ad0555e8f2b50bb1cfaf689bebdc9188e6430c2eb779"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "rp370-20261003",
+            "seq": 161
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "e7942f13eb8cf61b81afea51b1e7ee8a7a0188430a5664cdfc8aed354e05ecb8"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "b6a5c923d4ef0b22a387ad0555e8f2b50bb1cfaf689bebdc9188e6430c2eb779"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "1f13f0ba4b995ef9eb89aa825597bd20b00567d2fd3f176ff56b55c66535c6ed"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/tdd-green-same-baseline-refinement.test.ts",
+            "fullName": "records a fresh same-baseline GREEN after an owned source refinement while retaining the prior evidence",
+            "fileSha256": "149ae61f57cff1ef02041c231141b068c0141645e935199a8127d641f63f4111"
+          },
+          "source": {
+            "runId": "rp370-20261003",
+            "seq": 162
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "c0b5287e4ec5565928d019d2dceb96238c3166164c8987b0ae9e80eacf941bae"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "1f13f0ba4b995ef9eb89aa825597bd20b00567d2fd3f176ff56b55c66535c6ed"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "dd290b9984dca397c5d2e54d7180be048ea42afdb5201bb9a6e84f95da60e11d"
+          }
+        }
+      },
+      "transition": {
+        "priorGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "dd290b9984dca397c5d2e54d7180be048ea42afdb5201bb9a6e84f95da60e11d"
+        },
+        "replacementGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "d19c9a3d115304cabfb8209911c52e12a402e1301b502c77908647d866ead1fb"
+        },
+        "priorImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "1f13f0ba4b995ef9eb89aa825597bd20b00567d2fd3f176ff56b55c66535c6ed"
+        },
+        "replacementImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "626bee88e8964b91f61ec67a9765bca78f6a818091512c420c2bbcf51145e1a4"
+        },
+        "mergedDefaultSha": "45ff3e276ecb5dd67293b878888f194008e7270e",
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "8d18f9397e5cc9770ed89a56d4e67f55f313409579766ff5f78fcf24c8557d68"
         }
       }
     }
