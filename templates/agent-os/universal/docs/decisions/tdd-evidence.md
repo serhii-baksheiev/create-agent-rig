@@ -145,7 +145,11 @@ merged-default refresh rules above. Its observed working-tree boundary must
 match at recording time, and its production delta must differ from the retained
 boundary. The recorder preserves the original RED and completed TDD-2 chain in
 `tddEvidenceHistory` with a distinct, fingerprinted same-baseline refinement
-transition. An unchanged boundary is not a fresh GREEN.
+transition. An unchanged boundary is not a fresh GREEN. The refinement,
+retained-history, and live-default-authority path is pinned in
+`test/template/tdd-green-same-baseline-refinement.test.ts` (absent in a
+generated rig) › "records a fresh same-baseline GREEN after an owned source
+refinement while retaining the prior evidence".
 The relevant-spec and runner checks are pinned in
 `test/template/tdd-evidence-flow.test.ts` (absent in a generated rig) › "records an existing failing
 check-run test only when SELECT carried its tracker-derived relevant spec"
