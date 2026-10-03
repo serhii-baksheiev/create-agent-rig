@@ -642,8 +642,12 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
       sameFingerprint(entry?.data?.workingTreeDiff, observedWorkingTreeDiff),
   );
   if (!boundaryEvent) throw new Error('GREEN check has no preceding implementation boundary provenance');
-  const refresh =
+  const refinement =
     priorEvidence.applicability.level === 'TDD-2'
+      ? sameBaselineRefinement({ projectRoot, priorEvidence, currentHead })
+      : null;
+  const refresh =
+    priorEvidence.applicability.level === 'TDD-2' && refinement === null
       ? mergedDefaultRefresh({ projectRoot, ticket, priorEvidence, history: claim.tddEvidenceHistory, currentHead })
       : null;
   const delta = implementationDeltaFingerprint({
@@ -652,6 +656,9 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
     bindingBaselineHeadSha: priorEvidence.baseline.headSha,
     ticket,
   });
+  if (refinement && sameFingerprint(delta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
+    throw new Error('GREEN refinement does not change the prior implementation boundary');
+  }
   if (refresh && !sameFingerprint(delta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
     throw new Error('GREEN refresh working-tree delta does not reproduce the prior implementation boundary');
   }
@@ -696,22 +703,22 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   const validation = validatePortableEvidence(evidence);
   if (!validation.ok) throw new Error(`portable GREEN evidence is invalid: ${validation.problems[0]}`);
   let tddEvidenceHistory = claim.tddEvidenceHistory;
-  if (refresh) {
+  if (refresh || refinement) {
     const transition = {
       priorGreenFingerprint: priorEvidence.green.fingerprint,
       replacementGreenFingerprint: evidence.green.fingerprint,
       priorImplementationBoundaryFingerprint: priorEvidence.implementationBoundary.fingerprint,
       replacementImplementationBoundaryFingerprint: evidence.implementationBoundary.fingerprint,
-      mergedDefaultSha: refresh.defaultHead,
+      ...(refresh ? { mergedDefaultSha: refresh.defaultHead } : { sameBaselineRefinement: true }),
       fingerprint: fingerprintEvidence({
         ticket,
         baselineHeadSha: priorEvidence.baseline.headSha,
-        stage: 'merged-default-green-refresh',
+        stage: refresh ? 'merged-default-green-refresh' : 'same-baseline-green-refinement',
         priorGreenFingerprint: priorEvidence.green.fingerprint,
         replacementGreenFingerprint: evidence.green.fingerprint,
         priorImplementationBoundaryFingerprint: priorEvidence.implementationBoundary.fingerprint,
         replacementImplementationBoundaryFingerprint: evidence.implementationBoundary.fingerprint,
-        mergedDefaultSha: refresh.defaultHead,
+        ...(refresh ? { mergedDefaultSha: refresh.defaultHead } : { sameBaselineRefinement: true }),
       }),
     };
     tddEvidenceHistory = [...(claim.tddEvidenceHistory ?? []), { evidence: priorEvidence, transition }];
@@ -776,15 +783,28 @@ const mergeParents = (projectRoot, head) => {
 
 const priorRefreshDefault = ({ projectRoot, priorEvidence, history, priorHead }) => {
   if (history === undefined) return priorEvidence.baseline.headSha;
-  const terminalTransition = history.at(-1)?.transition;
-  if (terminalTransition?.priorRedFingerprint !== undefined || terminalTransition?.replacementRedFingerprint !== undefined) {
-    return priorEvidence.baseline.headSha;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const transition = history[index]?.transition;
+    if (transition?.sameBaselineRefinement === true) continue;
+    if (transition?.priorRedFingerprint !== undefined || transition?.replacementRedFingerprint !== undefined) {
+      return priorEvidence.baseline.headSha;
+    }
+    const defaultHead = transition?.mergedDefaultSha;
+    if (!/^[a-f0-9]{40}$/.test(defaultHead ?? '') || !isAncestor(projectRoot, defaultHead, priorHead)) {
+      throw new Error('GREEN refresh parent does not descend from the prior validated default transition');
+    }
+    return defaultHead;
   }
-  const defaultHead = terminalTransition?.mergedDefaultSha;
-  if (!/^[a-f0-9]{40}$/.test(defaultHead ?? '') || !isAncestor(projectRoot, defaultHead, priorHead)) {
-    throw new Error('GREEN refresh parent does not descend from the prior validated default transition');
+  return priorEvidence.baseline.headSha;
+};
+
+const sameBaselineRefinement = ({ projectRoot, priorEvidence, currentHead }) => {
+  const defaultHead = defaultTargetSha(projectRoot);
+  if (defaultHead !== priorEvidence.baseline.headSha) return null;
+  if (!isAncestor(projectRoot, priorEvidence.baseline.headSha, currentHead)) {
+    throw new Error('GREEN refinement HEAD does not descend from the selected-work baseline');
   }
-  return defaultHead;
+  return { defaultHead };
 };
 
 const mergedDefaultRefresh = ({ projectRoot, ticket, priorEvidence, history, currentHead }) => {

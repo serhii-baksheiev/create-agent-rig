@@ -130,6 +130,16 @@ active, including when the prior chain had reached TDD-2. This transition is
 pinned in `test/template/tdd-evidence-flow.test.ts` (absent in a generated rig)
 › "replaces a stale RED with a newly observed RED for the changed test hash"
 and › "replaces completed TDD-2 with a newly observed RED when the relevant test changes later".
+When the relevant specification is unchanged and the current default tip still
+equals the selected baseline, an observed new GREEN may instead replace a
+completed TDD-2 after an owned implementation refinement. Its current HEAD
+must descend from that baseline, the observed working-tree boundary must match
+at recording time, and its production delta must differ from the retained
+boundary. The recorder preserves the original RED and completed TDD-2 chain in
+`tddEvidenceHistory` with a distinct, fingerprinted same-baseline refinement
+transition. An unchanged boundary is not a fresh GREEN. This is not a way to
+import default-branch work: once the default tip advances, the direct merged
+default refresh rules above remain required.
 The relevant-spec and runner checks are pinned in
 `test/template/tdd-evidence-flow.test.ts` (absent in a generated rig) › "records an existing failing
 check-run test only when SELECT carried its tracker-derived relevant spec"
