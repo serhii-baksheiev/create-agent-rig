@@ -1,14 +1,14 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { jiraReadback } from './tdd-tracker-fixture.js';
 
-// RP-306 evidence is bound to the selected-work baseline, not to a moving
-// master ref. A controller can merge a disjoint master advance and retain the
-// same item evidence; its separate BEFORE_PR HOLD still requires a typed outcome.
+// A selected-work baseline stays fixed while each verified default merge moves
+// the production-delta base forward. Every retained transition binds that fixed
+// selection to the particular default head it imported.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
 const checkRun = path.join(scriptsDir, 'check-run.mjs');
@@ -59,6 +59,8 @@ const runVitest = ({
       process.execPath,
       vitestCli,
       'run',
+      '--pool=threads',
+      '--maxWorkers=1',
       '--root',
       root,
       '--config',
@@ -102,7 +104,7 @@ const contract = {
 };
 
 describe('RP-306 portable baseline continuation', () => {
-  it('verifies prior TDD-2 after a disjoint master advance while revalidation remains a separate HOLD', async () => {
+  it('refreshes TDD-2 GREEN across two verified merged default advances without attributing either production delta', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-continuation-'));
     const runDir = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-continuation-run-'));
     await mkdir(path.join(root, '.rig'), { recursive: true });
@@ -119,6 +121,7 @@ describe('RP-306 portable baseline continuation', () => {
       "export default { test: { include: ['test/**/*.test.ts'], globals: true } };\n",
     );
     await git(['init', '-q', '-b', 'master'], root);
+    await git(['remote', 'add', 'origin', path.join(root, 'origin.git')], root);
     await git(['add', '.rig/revalidation.json', 'src/feature.ts'], root);
     await git(['commit', '-q', '-m', 'B0 selected work baseline'], root);
     const baseline = await git(['rev-parse', 'HEAD'], root);
@@ -160,6 +163,46 @@ describe('RP-306 portable baseline continuation', () => {
     expect(
       (await record({ root, runDir, action: 'record-red', check: 'unit-red', trackerEnv })).code,
     ).toBe(0);
+    const originalRedClaim = JSON.parse(
+      await readFile(path.join(root, '.rig', 'claims', 'RP-306.json'), 'utf8'),
+    );
+    const originalRed = originalRedClaim.tddEvidence.red;
+    await writeFile(
+      path.join(root, 'test', 'feature.test.ts'),
+      "// retained relevant spec after a comment-only refresh\nimport { feature } from '../src/feature.ts';\n\nit('returns new', () => expect(feature()).toBe('new'));\n",
+    );
+    const replacementRed = await runVitest({
+      root,
+      runDir,
+      name: 'unit-red-after-comment-refresh',
+      trackerEnv,
+    });
+    expect(replacementRed.code, replacementRed.out).toBe(1);
+    const recordReplacementRed = await record({
+      root,
+      runDir,
+      action: 'record-red',
+      check: 'unit-red-after-comment-refresh',
+      trackerEnv,
+    });
+    expect(recordReplacementRed.code, recordReplacementRed.out).toBe(0);
+    const replacementRedClaim = JSON.parse(
+      await readFile(path.join(root, '.rig', 'claims', 'RP-306.json'), 'utf8'),
+    );
+    expect(replacementRedClaim.fingerprints.scope.targetSha).toBe(baseline);
+    expect(replacementRedClaim.tddEvidence.red.test).toMatchObject({
+      file: originalRed.test.file,
+      fullName: originalRed.test.fullName,
+    });
+    expect(replacementRedClaim.tddEvidence.red.test.fileSha256).not.toBe(
+      originalRed.test.fileSha256,
+    );
+    expect(replacementRedClaim.tddEvidenceHistory).toHaveLength(1);
+    expect(replacementRedClaim.tddEvidenceHistory[0].evidence.red).toEqual(originalRed);
+    expect(replacementRedClaim.tddEvidenceHistory[0].transition).toMatchObject({
+      priorRedFingerprint: originalRed.fingerprint,
+      replacementRedFingerprint: replacementRedClaim.tddEvidence.red.fingerprint,
+    });
     await writeFile(path.join(root, 'src', 'feature.ts'), 'export const feature = () => "new";\n');
     await git(['add', 'src/feature.ts'], root);
     await git(['commit', '-q', '-m', 'F1 feature implementation'], root);
@@ -172,6 +215,16 @@ describe('RP-306 portable baseline continuation', () => {
     await git(['add', '.rig/claims/RP-306.json'], root);
     await git(['commit', '-q', '-m', 'track RP-306 portable TDD evidence'], root);
 
+    const initialClaim = JSON.parse(
+      await readFile(path.join(root, '.rig', 'claims', 'RP-306.json'), 'utf8'),
+    );
+    const implementationDelta =
+      initialClaim.tddEvidence.implementationBoundary.implementationDeltaFingerprint;
+    expect(initialClaim.fingerprints.scope.targetSha).toBe(baseline);
+    expect(initialClaim.tddEvidence.baseline.headSha).toBe(baseline);
+    expect(initialClaim.tddEvidence.red).toEqual(replacementRedClaim.tddEvidence.red);
+    expect(initialClaim.tddEvidenceHistory[0].evidence.red).toEqual(originalRed);
+
     await git(['checkout', '-q', 'master'], root);
     await writeFile(
       path.join(root, 'src', 'rp325.ts'),
@@ -179,17 +232,184 @@ describe('RP-306 portable baseline continuation', () => {
     );
     await git(['add', 'src/rp325.ts'], root);
     await git(['commit', '-q', '-m', 'M1 disjoint RP-325 advance'], root);
-    const masterAdvance = await git(['rev-parse', 'HEAD'], root);
+    const firstDefaultAdvance = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge current master', 'master'], root);
+    expect(await git(['rev-parse', 'HEAD^2'], root)).toBe(firstDefaultAdvance);
 
     const revalidated = claims.revalidateClaim({
       projectRoot: root,
       ticket: { ...ticket, state: 'in-progress' },
       point: 'BEFORE_PR',
-      targetSha: masterAdvance,
+      targetSha: firstDefaultAdvance,
     });
     expect(revalidated).toMatchObject({ result: 'CHANGED', action: 'hold' });
+
+    // The fully-qualified remote default is the only acceptable first refresh
+    // target; a same-spelled local tag must not shadow it.
+    await git(['update-ref', 'refs/remotes/origin/master', firstDefaultAdvance], root);
+    await git(['tag', '-f', 'origin/master', baseline], root);
+
+    const firstRefreshedGreen = await runVitest({
+      root,
+      runDir,
+      name: 'unit-green-first-refresh',
+      trackerEnv,
+    });
+    expect(firstRefreshedGreen.code, firstRefreshedGreen.out).toBe(0);
+    const firstRefresh = await record({
+      root,
+      runDir,
+      action: 'record-green',
+      check: 'unit-green-first-refresh',
+      trackerEnv,
+    });
+    expect(firstRefresh.code, firstRefresh.out).toBe(0);
+    await git(['add', '.rig/claims/RP-306.json'], root);
+    await git(['commit', '-q', '-m', 'refresh GREEN after first merged default advance'], root);
+
+    const firstRefreshClaim = JSON.parse(
+      await readFile(path.join(root, '.rig', 'claims', 'RP-306.json'), 'utf8'),
+    );
+    expect(firstRefreshClaim.fingerprints.scope.targetSha).toBe(baseline);
+    expect(firstRefreshClaim.tddEvidence.baseline.headSha).toBe(baseline);
+    expect(firstRefreshClaim.tddEvidence.red.test).toEqual(initialClaim.tddEvidence.red.test);
+    expect(
+      firstRefreshClaim.tddEvidence.implementationBoundary.implementationDeltaFingerprint,
+    ).toEqual(implementationDelta);
+    expect(firstRefreshClaim.tddEvidenceHistory).toHaveLength(2);
+    expect(firstRefreshClaim.tddEvidenceHistory[0].evidence.red).toEqual(originalRed);
+    expect(firstRefreshClaim.tddEvidenceHistory[0].transition).toMatchObject({
+      priorRedFingerprint: originalRed.fingerprint,
+      replacementRedFingerprint: initialClaim.tddEvidence.red.fingerprint,
+    });
+    expect(firstRefreshClaim.tddEvidenceHistory[1].evidence.green.fingerprint).toEqual(
+      initialClaim.tddEvidence.green.fingerprint,
+    );
+    expect(firstRefreshClaim.tddEvidenceHistory[1].transition).toMatchObject({
+      mergedDefaultSha: firstDefaultAdvance,
+      priorGreenFingerprint: initialClaim.tddEvidence.green.fingerprint,
+      replacementGreenFingerprint: firstRefreshClaim.tddEvidence.green.fingerprint,
+      priorImplementationBoundaryFingerprint:
+        initialClaim.tddEvidence.implementationBoundary.fingerprint,
+      replacementImplementationBoundaryFingerprint:
+        firstRefreshClaim.tddEvidence.implementationBoundary.fingerprint,
+    });
+
+    await git(['checkout', '-q', 'master'], root);
+    await writeFile(
+      path.join(root, 'src', 'rp350.ts'),
+      'export const rp350 = () => "another independent default change";\n',
+    );
+    await git(['add', 'src/rp350.ts'], root);
+    await git(['commit', '-q', '-m', 'M2 disjoint RP-350 advance'], root);
+    const secondDefaultAdvance = await git(['rev-parse', 'HEAD'], root);
+    await git(['checkout', '-q', 'feat/RP-306'], root);
+    await git(['merge', '--no-ff', '-m', 'merge next current master', 'master'], root);
+    expect(await git(['rev-parse', 'HEAD^2'], root)).toBe(secondDefaultAdvance);
+
+    // A configured remote with no trustworthy remote target must fail closed:
+    // the local default advance and a local tag are not substitutes for it.
+    await git(['update-ref', '-d', 'refs/remotes/origin/master'], root);
+    const missingDefaultGreen = await runVitest({
+      root,
+      runDir,
+      name: 'unit-green-missing-default',
+      trackerEnv,
+    });
+    expect(missingDefaultGreen.code, missingDefaultGreen.out).toBe(0);
+    const missingDefaultRefresh = await record({
+      root,
+      runDir,
+      action: 'record-green',
+      check: 'unit-green-missing-default',
+      trackerEnv,
+    });
+    expect(missingDefaultRefresh.code, missingDefaultRefresh.out).toBe(1);
+    expect(missingDefaultRefresh.out).toMatch(/default|resolve/i);
+
+    // Divergent remote candidates remain unsafe when origin/HEAD is absent.
+    await git(['update-ref', 'refs/remotes/origin/master', secondDefaultAdvance], root);
+    await git(['update-ref', 'refs/remotes/origin/main', baseline], root);
+    const ambiguousDefaultGreen = await runVitest({
+      root,
+      runDir,
+      name: 'unit-green-ambiguous-default',
+      trackerEnv,
+    });
+    expect(ambiguousDefaultGreen.code, ambiguousDefaultGreen.out).toBe(0);
+    const ambiguousDefaultRefresh = await record({
+      root,
+      runDir,
+      action: 'record-green',
+      check: 'unit-green-ambiguous-default',
+      trackerEnv,
+    });
+    expect(ambiguousDefaultRefresh.code, ambiguousDefaultRefresh.out).toBe(1);
+    expect(ambiguousDefaultRefresh.out).toMatch(/default|resolve|ambiguous/i);
+
+    await git(['update-ref', '-d', 'refs/remotes/origin/main'], root);
+    expect(await git(['rev-parse', 'refs/remotes/origin/master'], root)).toBe(secondDefaultAdvance);
+
+    const secondRefreshedGreen = await runVitest({
+      root,
+      runDir,
+      name: 'unit-green-second-refresh',
+      trackerEnv,
+    });
+    expect(secondRefreshedGreen.code, secondRefreshedGreen.out).toBe(0);
+    expect(
+      (
+        await record({
+          root,
+          runDir,
+          action: 'record-green',
+          check: 'unit-green-second-refresh',
+          trackerEnv,
+        })
+      ).code,
+    ).toBe(0);
+    await git(['add', '.rig/claims/RP-306.json'], root);
+    await git(['commit', '-q', '-m', 'refresh GREEN after second merged default advance'], root);
+
+    const terminalClaim = JSON.parse(
+      await readFile(path.join(root, '.rig', 'claims', 'RP-306.json'), 'utf8'),
+    );
+    expect(terminalClaim.fingerprints.scope.targetSha).toBe(baseline);
+    expect(terminalClaim.tddEvidence.baseline.headSha).toBe(baseline);
+    expect(terminalClaim.tddEvidence.red.test).toEqual(initialClaim.tddEvidence.red.test);
+    // Both M1 and M2 are imported bases. The only implementation delta is F1.
+    expect(terminalClaim.tddEvidence.implementationBoundary.implementationDeltaFingerprint).toEqual(
+      implementationDelta,
+    );
+    expect(terminalClaim.tddEvidenceHistory).toHaveLength(3);
+    expect(terminalClaim.tddEvidenceHistory[0].evidence.red).toEqual(originalRed);
+    expect(terminalClaim.tddEvidenceHistory[0].transition).toMatchObject({
+      priorRedFingerprint: originalRed.fingerprint,
+      replacementRedFingerprint: initialClaim.tddEvidence.red.fingerprint,
+    });
+    expect(terminalClaim.tddEvidenceHistory[1].evidence.green.fingerprint).toEqual(
+      initialClaim.tddEvidence.green.fingerprint,
+    );
+    expect(terminalClaim.tddEvidenceHistory[2].evidence.green.fingerprint).toEqual(
+      firstRefreshClaim.tddEvidence.green.fingerprint,
+    );
+    expect(
+      terminalClaim.tddEvidenceHistory
+        .slice(1)
+        .map(
+          (entry: { transition: { mergedDefaultSha: string } }) =>
+            entry.transition.mergedDefaultSha,
+        ),
+    ).toEqual([firstDefaultAdvance, secondDefaultAdvance]);
+    expect(terminalClaim.tddEvidenceHistory[2].transition).toMatchObject({
+      priorGreenFingerprint: firstRefreshClaim.tddEvidence.green.fingerprint,
+      replacementGreenFingerprint: terminalClaim.tddEvidence.green.fingerprint,
+      priorImplementationBoundaryFingerprint:
+        firstRefreshClaim.tddEvidence.implementationBoundary.fingerprint,
+      replacementImplementationBoundaryFingerprint:
+        terminalClaim.tddEvidence.implementationBoundary.fingerprint,
+    });
 
     const ship = await run(
       process.execPath,

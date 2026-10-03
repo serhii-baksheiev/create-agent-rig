@@ -108,7 +108,17 @@ Vitest evidence. Run the relevant failing test through `check-run.mjs` with
 bounded RED evidence to `.rig/claims/<item>.json`. After the implementation,
 run the same relevant test and test-file content through `check-run.mjs` with
 a new structured output name, then run `record-green` with its passing check
-name. Commit the claim with the work. The `pr-ship` verifier reads the claim
+name. A completed TDD-2 chain may receive a fresh GREEN only when the current
+HEAD is one direct merge of the current default-branch tip, that tip advanced
+from the selected baseline, and the merge first parent reproduces the prior
+implementation boundary. When the terminal history entry is a validated prior
+merged-default refresh, that reconstruction starts from its recorded default
+tip; a validated stale-RED replacement leaves the selected baseline as the
+first refresh's reconstruction base. The refreshed boundary starts at the
+current default tip, so its production delta cannot attribute already-merged
+default-branch work; it preserves the native RED and records the prior TDD-2
+chain with a bounded, fingerprinted refresh transition. Commit the claim with
+the work. The `pr-ship` verifier reads the claim
 from branch `HEAD`, compares it with the current tracker and final Git diff,
 and records compact evidence fingerprints in the run journal.
 If the relevant test file changes, run the changed test while failing and call
@@ -124,8 +134,8 @@ The relevant-spec and runner checks are pinned in
 check-run test only when SELECT carried its tracker-derived relevant spec"
 and › "refuses a Vitest-shaped report written by an arbitrary node runner".
 The portable handoff is pinned in `test/template/tdd-baseline-continuation.test.ts` (absent in a generated rig)
-› "verifies prior TDD-2 after a disjoint master advance while revalidation
-remains a separate HOLD";
+› "refreshes TDD-2 GREEN across two verified merged default advances without
+attributing either production delta";
 the compact shipping output is pinned in `test/template/tdd-durable-verdict.test.ts` (absent in a generated rig)
 › "prints the exact portable RED, implementation-boundary, and GREEN
 fingerprints on a TDD-2 PASS".
