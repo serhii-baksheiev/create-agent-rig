@@ -122,6 +122,17 @@ chain with a bounded, fingerprinted refresh transition. Commit the claim with
 the work. The `pr-ship` verifier reads the claim
 from branch `HEAD`, compares it with the current tracker and final Git diff,
 and records compact evidence fingerprints in the run journal.
+When the relevant specification is unchanged, a fresh GREEN may replace a
+completed TDD-2 chain after an implementation refinement. The recorder resolves
+`origin/master` with a bounded live query and does not trust or alter a
+remote-tracking cache. If the live default has advanced, a pre-import refinement
+is eligible only when it remains uncommitted and the committed boundary still
+matches the retained evidence. The replacement must have a different production
+delta, retain the original RED and relevant test bytes, and append a bounded
+same-baseline transition. The transition is pinned in
+`test/template/tdd-green-same-baseline-refinement.test.ts` (absent in a generated
+rig) › "records an uncommitted same-baseline refinement after a fresh PASS while
+retaining immutable RED and history".
 If the relevant test file changes, run the changed test while failing and call
 `record-red` again before recording GREEN. The new RED must keep the same file
 and full test name with a different file hash. The recorder keeps the prior

@@ -35,6 +35,36 @@ const git = async (args: string[], cwd: string) => {
   return result.out.trim();
 };
 
+const fetchOriginMaster = (root: string) =>
+  git(['fetch', '-q', 'origin', '+refs/heads/master:refs/remotes/origin/master'], root);
+
+const publishOriginMaster = async (root: string) => {
+  await git(['push', '-q', 'origin', 'master:master'], root);
+  await fetchOriginMaster(root);
+};
+
+const deleteOriginMaster = async (root: string) => {
+  await git(['push', '-q', 'origin', '--delete', 'master'], root);
+  await git(['update-ref', '-d', 'refs/remotes/origin/master'], root);
+};
+
+const publishDivergentOriginMain = async ({
+  root,
+  baseline,
+}: {
+  root: string;
+  baseline: string;
+}) => {
+  await git(['push', '-q', 'origin', 'master:master', `${baseline}:refs/heads/main`], root);
+  await fetchOriginMaster(root);
+  await git(['fetch', '-q', 'origin', '+refs/heads/main:refs/remotes/origin/main'], root);
+};
+
+const deleteOriginMain = async (root: string) => {
+  await git(['push', '-q', 'origin', '--delete', 'main'], root);
+  await git(['update-ref', '-d', 'refs/remotes/origin/main'], root);
+};
+
 const runVitest = ({
   root,
   runDir,
@@ -121,9 +151,22 @@ describe('RP-306 portable baseline continuation', () => {
       "export default { test: { include: ['test/**/*.test.ts'], globals: true } };\n",
     );
     await git(['init', '-q', '-b', 'master'], root);
+    await git(['init', '--bare', '-q', path.join(root, 'origin.git')], root);
+    await git(
+      [
+        '--git-dir',
+        path.join(root, 'origin.git'),
+        'symbolic-ref',
+        'HEAD',
+        'refs/heads/fixture-default',
+      ],
+      root,
+    );
     await git(['remote', 'add', 'origin', path.join(root, 'origin.git')], root);
     await git(['add', '.rig/revalidation.json', 'src/feature.ts'], root);
     await git(['commit', '-q', '-m', 'B0 selected work baseline'], root);
+    await git(['push', '-q', '--set-upstream', 'origin', 'master'], root);
+    await fetchOriginMaster(root);
     const baseline = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', '-b', 'feat/RP-306'], root);
 
@@ -232,6 +275,7 @@ describe('RP-306 portable baseline continuation', () => {
     );
     await git(['add', 'src/rp325.ts'], root);
     await git(['commit', '-q', '-m', 'M1 disjoint RP-325 advance'], root);
+    await publishOriginMaster(root);
     const firstDefaultAdvance = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge current master', 'master'], root);
@@ -247,7 +291,6 @@ describe('RP-306 portable baseline continuation', () => {
 
     // The fully-qualified remote default is the only acceptable first refresh
     // target; a same-spelled local tag must not shadow it.
-    await git(['update-ref', 'refs/remotes/origin/master', firstDefaultAdvance], root);
     await git(['tag', '-f', 'origin/master', baseline], root);
 
     const firstRefreshedGreen = await runVitest({
@@ -303,68 +346,59 @@ describe('RP-306 portable baseline continuation', () => {
     );
     await git(['add', 'src/rp350.ts'], root);
     await git(['commit', '-q', '-m', 'M2 disjoint RP-350 advance'], root);
+    await publishOriginMaster(root);
     const secondDefaultAdvance = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge next current master', 'master'], root);
     expect(await git(['rev-parse', 'HEAD^2'], root)).toBe(secondDefaultAdvance);
 
-    // A configured remote with no trustworthy remote target must fail closed:
-    // the local default advance and a local tag are not substitutes for it.
-    await git(['update-ref', '-d', 'refs/remotes/origin/master'], root);
-    const missingDefaultGreen = await runVitest({
+    // This is the one fresh native PASS for the unchanged post-merge source
+    // boundary. The two authority probes below only alter remote refs: they
+    // deliberately reuse this receipt rather than pay three identical Vitest
+    // startups under one 15 s dependent workflow.
+    const secondBoundaryGreen = await runVitest({
       root,
       runDir,
-      name: 'unit-green-missing-default',
+      name: 'unit-green-second-merged-boundary',
       trackerEnv,
     });
-    expect(missingDefaultGreen.code, missingDefaultGreen.out).toBe(0);
+    expect(secondBoundaryGreen.code, secondBoundaryGreen.out).toBe(0);
+
+    // A configured remote with no trustworthy remote target must fail closed:
+    // the local default advance and a local tag are not substitutes for it.
+    await deleteOriginMaster(root);
     const missingDefaultRefresh = await record({
       root,
       runDir,
       action: 'record-green',
-      check: 'unit-green-missing-default',
+      check: 'unit-green-second-merged-boundary',
       trackerEnv,
     });
     expect(missingDefaultRefresh.code, missingDefaultRefresh.out).toBe(1);
     expect(missingDefaultRefresh.out).toMatch(/default|resolve/i);
 
     // Divergent remote candidates remain unsafe when origin/HEAD is absent.
-    await git(['update-ref', 'refs/remotes/origin/master', secondDefaultAdvance], root);
-    await git(['update-ref', 'refs/remotes/origin/main', baseline], root);
-    const ambiguousDefaultGreen = await runVitest({
-      root,
-      runDir,
-      name: 'unit-green-ambiguous-default',
-      trackerEnv,
-    });
-    expect(ambiguousDefaultGreen.code, ambiguousDefaultGreen.out).toBe(0);
+    await publishDivergentOriginMain({ root, baseline });
     const ambiguousDefaultRefresh = await record({
       root,
       runDir,
       action: 'record-green',
-      check: 'unit-green-ambiguous-default',
+      check: 'unit-green-second-merged-boundary',
       trackerEnv,
     });
     expect(ambiguousDefaultRefresh.code, ambiguousDefaultRefresh.out).toBe(1);
     expect(ambiguousDefaultRefresh.out).toMatch(/default|resolve|ambiguous/i);
 
-    await git(['update-ref', '-d', 'refs/remotes/origin/main'], root);
+    await deleteOriginMain(root);
     expect(await git(['rev-parse', 'refs/remotes/origin/master'], root)).toBe(secondDefaultAdvance);
 
-    const secondRefreshedGreen = await runVitest({
-      root,
-      runDir,
-      name: 'unit-green-second-refresh',
-      trackerEnv,
-    });
-    expect(secondRefreshedGreen.code, secondRefreshedGreen.out).toBe(0);
     expect(
       (
         await record({
           root,
           runDir,
           action: 'record-green',
-          check: 'unit-green-second-refresh',
+          check: 'unit-green-second-merged-boundary',
           trackerEnv,
         })
       ).code,

@@ -561,6 +561,7 @@ export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvid
           'priorImplementationBoundaryFingerprint',
           'replacementImplementationBoundaryFingerprint',
           'mergedDefaultSha',
+          'sameBaselineRefinement',
           'fingerprint',
         ]),
         label,
@@ -579,7 +580,25 @@ export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvid
         problems,
       );
       validateFingerprintShape(transition?.fingerprint, `${label}.fingerprint`, problems);
-      if (!GIT_SHA.test(transition?.mergedDefaultSha ?? '')) problems.push(`${label}.mergedDefaultSha must be a Git object id`);
+      const refinement = transition?.sameBaselineRefinement === true;
+      if (transition?.sameBaselineRefinement !== undefined && !refinement) {
+        problems.push(`${label}.sameBaselineRefinement must be true when present`);
+      }
+      if (refinement && transition?.mergedDefaultSha !== undefined) {
+        problems.push(`${label} must not combine a same-baseline refinement with a merged default`);
+      }
+      if (
+        refinement &&
+        fingerprintsEqual(
+          evidence?.implementationBoundary?.implementationDeltaFingerprint,
+          replacement?.implementationBoundary?.implementationDeltaFingerprint,
+        )
+      ) {
+        problems.push(`${label} must replace the prior implementation delta`);
+      }
+      if (!refinement && !GIT_SHA.test(transition?.mergedDefaultSha ?? '')) {
+        problems.push(`${label}.mergedDefaultSha must be a Git object id`);
+      }
       if (!fingerprintsEqual(transition?.priorGreenFingerprint, evidence?.green?.fingerprint)) {
         problems.push(`${label}.priorGreenFingerprint must match history GREEN`);
       }
@@ -615,12 +634,12 @@ export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvid
         {
           ticket,
           baselineHeadSha,
-          stage: 'merged-default-green-refresh',
+          stage: refinement ? 'same-baseline-green-refinement' : 'merged-default-green-refresh',
           priorGreenFingerprint: transition?.priorGreenFingerprint,
           replacementGreenFingerprint: transition?.replacementGreenFingerprint,
           priorImplementationBoundaryFingerprint: transition?.priorImplementationBoundaryFingerprint,
           replacementImplementationBoundaryFingerprint: transition?.replacementImplementationBoundaryFingerprint,
-          mergedDefaultSha: transition?.mergedDefaultSha,
+          ...(refinement ? { sameBaselineRefinement: true } : { mergedDefaultSha: transition?.mergedDefaultSha }),
         },
         `${label}.fingerprint`,
         problems,
