@@ -139,9 +139,7 @@ uncommitted and either HEAD is the selected baseline or HEAD carries the
 retained claim and exactly reproduces the prior implementation boundary from
 the last validated default tip. The recorder treats the live default only as
 fetched remote metadata: it does not attribute that default work to the item.
-Any local production commit that changes the retained boundary, or any head
-without the retained tracked claim, goes through the strict direct
-merged-default refresh rules above. Its observed working-tree boundary must
+Its observed working-tree boundary must
 match at recording time, and its production delta must differ from the retained
 boundary. The recorder preserves the original RED and completed TDD-2 chain in
 `tddEvidenceHistory` with a distinct, fingerprinted same-baseline refinement
