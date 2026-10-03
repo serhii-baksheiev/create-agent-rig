@@ -24,9 +24,14 @@ import {
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 const MAX_IMPLEMENTATION_DELTA_BYTES = 5 * 1024 * 1024;
 const MAX_TRACKER_BODY_BYTES = 64 * 1024;
+const MAX_PRE_RED_PREDECESSORS = 8;
+const MAX_PRE_RED_JOURNAL_RECORDS = 1024;
+const MAX_PRE_RED_JOURNAL_LINE_BYTES = 64 * 1024;
 const SHA256 = /^[a-f0-9]{64}$/;
 const TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TDD_SPEC_PREFIX = 'rig:tdd-spec/v1 ';
+
+class HoldError extends Error {}
 
 const fail = (message) => {
   process.stderr.write(`tdd-evidence: ${message}\n`);
@@ -97,11 +102,14 @@ const readRegularFile = (file, label, maxBytes = MAX_JSON_BYTES) => {
       chunks.push(chunk.subarray(0, read));
     }
     const finished = lstatSync(file);
+    const finishedOpen = fstatSync(fd);
     if (
       finished.isSymbolicLink() ||
       !finished.isFile() ||
       finished.dev !== declared.dev ||
-      finished.ino !== declared.ino
+      finished.ino !== declared.ino ||
+      finished.size !== declared.size ||
+      finishedOpen.size !== declared.size
     ) {
       throw new Error(`${label} changed during validation`);
     }
@@ -179,17 +187,25 @@ const assertStableClaimHierarchy = (hierarchy) => {
 
 const parseArgs = (argv) => {
   if (!['record-red', 'record-green', 'verify-ship'].includes(argv[0])) {
-    return { error: 'usage: tdd-evidence.mjs <record-red|record-green|verify-ship> --ticket <item> [--check <check>|--base <ref>]' };
+    return { error: 'usage: tdd-evidence.mjs <record-red|record-green|verify-ship> --ticket <item> [--check <check>|--base <ref>] [--predecessor-run <run-id>]' };
   }
   const action = argv[0];
   let ticket = null;
   let check = null;
   let base = null;
+  const predecessorRuns = [];
   for (let index = 1; index < argv.length; index += 1) {
     const flag = argv[index];
     if (flag === '--ticket') ticket = argv[(index += 1)] ?? null;
     else if (flag === '--check') check = argv[(index += 1)] ?? null;
     else if (flag === '--base') base = argv[(index += 1)] ?? null;
+    else if (flag === '--predecessor-run') {
+      const runId = argv[(index += 1)] ?? null;
+      if (predecessorRuns.length >= MAX_PRE_RED_PREDECESSORS || !safeName(runId)) {
+        return { error: 'bounded unique --predecessor-run values are permitted only for record-red' };
+      }
+      predecessorRuns.push(runId);
+    }
     else return { error: `unknown flag ${flag}` };
   }
   if (!TICKET.test(ticket ?? '')) return { error: 'a bounded --ticket is required' };
@@ -199,7 +215,15 @@ const parseArgs = (argv) => {
   if (action === 'verify-ship' && (typeof base !== 'string' || base.length === 0 || base.length > 256)) {
     return { error: 'a bounded --base is required' };
   }
-  return { action, ticket, check, base };
+  if (
+    (action !== 'record-red' && predecessorRuns.length > 0) ||
+    predecessorRuns.length > MAX_PRE_RED_PREDECESSORS ||
+    new Set(predecessorRuns).size !== predecessorRuns.length ||
+    predecessorRuns.some((runId) => !safeName(runId))
+  ) {
+    return { error: 'bounded unique --predecessor-run values are permitted only for record-red' };
+  }
+  return { action, ticket, check, base, predecessorRuns };
 };
 
 const checkFingerprint = (data) =>
@@ -405,6 +429,367 @@ const productionPaths = ({ projectRoot, baselineHeadSha, headSha = null, ticket 
   return paths.filter((file) => resolveApplicability({ changedPaths: [file] }).level !== 'TDD-0');
 };
 
+const outputPaths = ({ projectRoot, args, label }) => {
+  let names;
+  try {
+    names = execFileSync('git', ['-C', projectRoot, ...args], {
+      encoding: 'buffer',
+      env: withoutGitLocation(),
+      maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES,
+    });
+  } catch {
+    throw new Error(`${label} could not be read`);
+  }
+  const paths = [];
+  let offset = 0;
+  while (offset < names.length) {
+    const terminator = names.indexOf(0x00, offset);
+    if (terminator === -1 || terminator === offset || terminator - offset > 512) {
+      throw new Error(`${label} is not a bounded NUL-delimited path list`);
+    }
+    if (paths.length >= MAX_PRE_RED_JOURNAL_RECORDS) throw new Error(`${label} path count exceeds bounds`);
+    const file = names.subarray(offset, terminator).toString('utf8');
+    if (!safeRelativePath(file)) throw new Error(`${label} contains an unsafe path`);
+    paths.push(file);
+    offset = terminator + 1;
+  }
+  return paths;
+};
+
+const indexEntries = ({ projectRoot, paths }) => {
+  if (paths.length > MAX_PRE_RED_JOURNAL_RECORDS) throw new Error('staged pre-RED index path count exceeds bounds');
+  let bytes;
+  try {
+    bytes = execFileSync('git', ['-C', projectRoot, '--literal-pathspecs', 'ls-files', '--stage', '-z', '--', ...paths], {
+      encoding: 'buffer',
+      env: withoutGitLocation(),
+      maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES,
+    });
+  } catch {
+    throw new Error('staged pre-RED index could not be read');
+  }
+  const requested = new Set(paths);
+  const entries = new Map();
+  let offset = 0;
+  while (offset < bytes.length) {
+    const terminator = bytes.indexOf(0x00, offset);
+    if (terminator === -1 || terminator === offset || terminator - offset > 1024) {
+      throw new Error('staged pre-RED index is not a bounded NUL-delimited entry list');
+    }
+    if (entries.size >= MAX_PRE_RED_JOURNAL_RECORDS) throw new Error('staged pre-RED index entry count exceeds bounds');
+    const tab = bytes.indexOf(0x09, offset);
+    if (tab === -1 || tab >= terminator) throw new Error('staged pre-RED index entry is invalid');
+    const header = bytes.subarray(offset, tab).toString('ascii');
+    const match = /^([0-7]{6}) ([a-f0-9]{40}|[a-f0-9]{64}) ([0-3])$/.exec(header);
+    const file = bytes.subarray(tab + 1, terminator).toString('utf8');
+    if (!match || match[3] !== '0' || !safeRelativePath(file) || !requested.has(file) || entries.has(file)) {
+      throw new Error('staged pre-RED index entry is unsafe');
+    }
+    entries.set(file, { mode: match[1], blob: match[2] });
+    offset = terminator + 1;
+  }
+  return entries;
+};
+
+const stableDirectories = ({ projectRoot, file, label }) => {
+  if (!safeRelativePath(file)) throw new Error(`${label} path is unsafe`);
+  const root = lstatSync(projectRoot);
+  if (!root.isDirectory() || root.isSymbolicLink()) throw new Error('project root is unsafe');
+  const rootResolved = realpathSync(projectRoot);
+  const directories = [{ path: projectRoot, dev: root.dev, ino: root.ino }];
+  let current = projectRoot;
+  for (const component of file.split('/').slice(0, -1)) {
+    current = join(current, component);
+    const stat = lstatSync(current);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error(`${label} has a symlink ancestor`);
+    directories.push({ path: current, dev: stat.dev, ino: stat.ino });
+  }
+  return { rootResolved, directories };
+};
+
+const assertStableDirectories = ({ rootResolved, directories, label }) => {
+  for (const directory of directories) {
+    const stat = lstatSync(directory.path);
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.dev !== directory.dev || stat.ino !== directory.ino) {
+      throw new Error(`${label} ancestor changed during validation`);
+    }
+  }
+  const resolvedRoot = realpathSync(directories[0].path);
+  if (resolvedRoot !== rootResolved) throw new Error(`${label} project root changed during validation`);
+};
+
+const productionState = ({ projectRoot, file, index }) => {
+  const label = 'pre-RED production file';
+  const containment = stableDirectories({ projectRoot, file, label });
+  const target = join(projectRoot, file);
+  let stat;
+  try {
+    stat = lstatSync(target);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw new Error('pre-RED production state could not be read', { cause: error });
+    assertStableDirectories({ ...containment, label });
+    return fingerprintEvidence({ path: file, state: 'missing', ...(index ? { index } : {}) });
+  }
+  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('pre-RED production state is unsafe');
+  const content = readRegularFile(target, label);
+  const resolved = realpathSync(target);
+  const fromRoot = relative(containment.rootResolved, resolved);
+  if (fromRoot === '..' || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+    throw new Error('pre-RED production file escapes the project root');
+  }
+  const after = lstatSync(target);
+  if (
+    !after.isFile() ||
+    after.isSymbolicLink() ||
+    after.dev !== stat.dev ||
+    after.ino !== stat.ino ||
+    after.mode !== stat.mode
+  ) {
+    throw new Error('pre-RED production state changed during read');
+  }
+  assertStableDirectories({ ...containment, label });
+  return fingerprintEvidence({
+    path: file,
+    contentSha256: createHash('sha256').update(content).digest('hex'),
+    mode: after.mode & 0o777,
+    ...(index ? { index } : {}),
+  });
+};
+
+const preRedProduction = ({ projectRoot, baselineHeadSha, ticket }) => {
+  const committed = outputPaths({
+    projectRoot,
+    args: ['diff', '--name-only', '-z', baselineHeadSha, 'HEAD', '--'],
+    label: 'committed pre-RED production paths',
+  });
+  const staged = outputPaths({
+    projectRoot,
+    args: ['diff', '--cached', '--name-only', '-z', '--'],
+    label: 'staged pre-RED production paths',
+  });
+  const unstaged = outputPaths({
+    projectRoot,
+    args: ['diff', '--name-only', '-z', '--'],
+    label: 'unstaged pre-RED production paths',
+  });
+  const untracked = outputPaths({
+    projectRoot,
+    args: ['ls-files', '--others', '--exclude-standard', '-z', '--'],
+    label: 'untracked pre-RED production paths',
+  });
+  const paths = [];
+  for (const group of [committed, staged, unstaged, untracked]) {
+    for (const file of group) {
+      if (!paths.includes(file)) {
+        if (paths.length >= MAX_PRE_RED_JOURNAL_RECORDS) throw new Error('pre-RED production path count exceeds bounds');
+        paths.push(file);
+      }
+    }
+  }
+  const stagedIndex = indexEntries({ projectRoot, paths: staged });
+  const stagedPaths = new Set(staged);
+  const productionPaths = paths
+    .filter((file) => tddApplicabilityPaths([file], ticket).length === 1)
+    .filter(
+      (file) =>
+        !file.startsWith('.claude/runs/') &&
+        !file.startsWith('.rig/claims/') &&
+        !file.startsWith('node_modules/'),
+    )
+    .filter((file) => resolveApplicability({ changedPaths: [file] }).level !== 'TDD-0')
+    .sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+  const states = productionPaths.map((file) =>
+    productionState({
+      projectRoot,
+      file,
+      index: stagedPaths.has(file) ? (stagedIndex.get(file) ?? { state: 'missing' }) : undefined,
+    }),
+  );
+  return {
+    pathCount: productionPaths.length,
+    fingerprint: fingerprintEvidence({ baselineHeadSha, states }),
+  };
+};
+
+const stablePredecessorRun = ({ projectRoot, runId }) => {
+  if (!safeName(runId)) throw new Error('pre-RED predecessor run id is unsafe');
+  const project = realpathSync(projectRoot);
+  const runs = join(projectRoot, '.claude', 'runs');
+  const runsStat = lstatSync(runs);
+  if (!runsStat.isDirectory() || runsStat.isSymbolicLink()) throw new Error('pre-RED journal root is unsafe');
+  const resolvedRuns = realpathSync(runs);
+  const fromProject = relative(project, resolvedRuns);
+  if (fromProject === '..' || fromProject.startsWith(`..${sep}`) || isAbsolute(fromProject)) {
+    throw new Error('pre-RED journal root escapes the project');
+  }
+  const runDir = join(runs, runId);
+  const runStat = lstatSync(runDir);
+  if (!runStat.isDirectory() || runStat.isSymbolicLink()) throw new Error('pre-RED predecessor run is unsafe');
+  return {
+    project,
+    runs,
+    runsIdentity: { dev: runsStat.dev, ino: runsStat.ino },
+    resolvedRuns,
+    runDir,
+    runIdentity: { dev: runStat.dev, ino: runStat.ino },
+  };
+};
+
+const assertStablePredecessorRun = (run) => {
+  const runsStat = lstatSync(run.runs);
+  if (
+    !runsStat.isDirectory() ||
+    runsStat.isSymbolicLink() ||
+    runsStat.dev !== run.runsIdentity.dev ||
+    runsStat.ino !== run.runsIdentity.ino ||
+    realpathSync(run.runs) !== run.resolvedRuns
+  ) {
+    throw new Error('pre-RED journal root changed during validation');
+  }
+  const runStat = lstatSync(run.runDir);
+  if (
+    !runStat.isDirectory() ||
+    runStat.isSymbolicLink() ||
+    runStat.dev !== run.runIdentity.dev ||
+    runStat.ino !== run.runIdentity.ino
+  ) {
+    throw new Error('pre-RED predecessor run changed during validation');
+  }
+  const resolvedRun = realpathSync(run.runDir);
+  const fromRuns = relative(run.resolvedRuns, resolvedRun);
+  if (fromRuns === '..' || fromRuns.startsWith(`..${sep}`) || isAbsolute(fromRuns)) {
+    throw new Error('pre-RED predecessor run escapes the journal root');
+  }
+  const fromProject = relative(run.project, resolvedRun);
+  if (fromProject === '..' || fromProject.startsWith(`..${sep}`) || isAbsolute(fromProject)) {
+    throw new Error('pre-RED predecessor run escapes the project');
+  }
+};
+
+const preRedJournalRecords = ({ projectRoot, runId }) => {
+  const run = stablePredecessorRun({ projectRoot, runId });
+  const records = [];
+  const hasOwn = (record, field) => Object.prototype.hasOwnProperty.call(record, field);
+  const nonBlankString = (value) => typeof value === 'string' && value.trim() !== '';
+  const validEnvelope = (record) =>
+    Number.isSafeInteger(record.seq) && record.seq > 0 && nonBlankString(record.at);
+  const validDecision = (record) => {
+    const allowed = new Set(['seq', 'at', 'gate', 'verdict', 'why', 'headSha', 'reviewers', 'blockers']);
+    return (
+      validEnvelope(record) &&
+      nonBlankString(record.gate) &&
+      nonBlankString(record.verdict) &&
+      (record.why === null || typeof record.why === 'string') &&
+      (!hasOwn(record, 'headSha') || nonBlankString(record.headSha)) &&
+      (!hasOwn(record, 'reviewers') || (Array.isArray(record.reviewers) && record.reviewers.every((reviewer) => typeof reviewer === 'string'))) &&
+      (!hasOwn(record, 'blockers') || Array.isArray(record.blockers)) &&
+      Object.keys(record).every((field) => allowed.has(field))
+    );
+  };
+  const validEvent = (record) => {
+    const allowed = record.kind === 'run-end' ? new Set(['seq', 'at', 'kind', 'stop']) : new Set(['seq', 'at', 'kind', 'data']);
+    return (
+      validEnvelope(record) &&
+      nonBlankString(record.kind) &&
+      (record.kind === 'run-end' ? nonBlankString(record.stop) : hasOwn(record, 'data')) &&
+      Object.keys(record).every((field) => allowed.has(field))
+    );
+  };
+  for (const [file, source] of [
+    ['decisions.jsonl', 'decisions'],
+    ['events.jsonl', 'events'],
+  ]) {
+    assertStablePredecessorRun(run);
+    const journal = join(run.runDir, file);
+    const bytes = readRegularFile(journal, `pre-RED predecessor ${file}`);
+    assertStablePredecessorRun(run);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const newline = bytes.indexOf(0x0a, offset);
+      const end = newline === -1 ? bytes.length : newline;
+      if (end - offset > MAX_PRE_RED_JOURNAL_LINE_BYTES) throw new Error('pre-RED journal line exceeds bounds');
+      if (end === offset) throw new Error('pre-RED journal record is empty');
+      if (records.length >= MAX_PRE_RED_JOURNAL_RECORDS) throw new Error('pre-RED journal record count exceeds bounds');
+      let record;
+      try {
+        record = JSON.parse(bytes.subarray(offset, end).toString('utf8'));
+      } catch {
+        throw new Error('pre-RED journal record is not valid JSON');
+      }
+      if (
+        !record ||
+        typeof record !== 'object' ||
+        Array.isArray(record) ||
+        (source === 'decisions' ? !validDecision(record) : !validEvent(record))
+      ) {
+        throw new Error('pre-RED journal record is invalid');
+      }
+      records.push({ source, record });
+      offset = newline === -1 ? bytes.length : newline + 1;
+    }
+  }
+  const sequence = records.map(({ record }) => record.seq).sort((left, right) => left - right);
+  if (!sequence.length || sequence.some((seq, index) => !Number.isSafeInteger(seq) || seq !== index + 1)) {
+    throw new Error('pre-RED predecessor journal sequence is invalid');
+  }
+  return records.sort((left, right) => left.record.seq - right.record.seq);
+};
+
+const preRedDispatch = ({ projectRoot, ticket, predecessors }) => {
+  if (!Array.isArray(predecessors) || predecessors.length === 0 || predecessors.length > MAX_PRE_RED_PREDECESSORS) {
+    throw new Error('pre-RED predecessor references are missing or exceed bounds');
+  }
+  if (new Set(predecessors).size !== predecessors.length) throw new Error('pre-RED predecessor references are duplicated');
+  const dispatches = [];
+  for (const runId of predecessors) {
+    const records = preRedJournalRecords({ projectRoot, runId });
+    let selectedTicket = null;
+    for (const { source, record } of records) {
+      if (source === 'decisions' && record.gate === 'item-selection') {
+        const selected = /^taken ([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(record.verdict);
+        if (!selected) throw new Error('pre-RED predecessor item selection is invalid');
+        selectedTicket = selected[1];
+        continue;
+      }
+      const data = record?.data;
+      if (source === 'events' && record.kind === 'dispatch-start') {
+        if (
+          !data ||
+          typeof data !== 'object' ||
+          Array.isArray(data) ||
+          data.schema !== 1 ||
+          (data.agentType !== undefined &&
+            (typeof data.agentType !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(data.agentType))) ||
+          typeof data.agentRef !== 'string' ||
+          data.agentRef.length === 0 ||
+          data.agentRef.length > 256
+        ) {
+          throw new Error('pre-RED predecessor dispatch is invalid');
+        }
+      }
+      if (
+        selectedTicket === ticket &&
+        source === 'events' &&
+        record.kind === 'dispatch-start' &&
+        data?.schema === 1 &&
+        data.agentType === 'implementation-agent' &&
+        typeof data?.agentRef === 'string' &&
+        data.agentRef.length > 0 &&
+        data.agentRef.length <= 256 &&
+        Number.isSafeInteger(record.seq) &&
+        record.seq > 0
+      ) {
+        if (dispatches.length >= MAX_PRE_RED_JOURNAL_RECORDS) {
+          throw new Error('pre-RED dispatch count exceeds bounds');
+        }
+        dispatches.push({ runId, seq: record.seq });
+      }
+    }
+  }
+  dispatches.sort((left, right) => (left.runId < right.runId ? -1 : left.runId > right.runId ? 1 : left.seq - right.seq));
+  return { count: dispatches.length, fingerprint: fingerprintEvidence({ ticket, dispatches }) };
+};
+
 const implementationDeltaFingerprint = ({
   projectRoot,
   baselineHeadSha,
@@ -418,7 +803,7 @@ const implementationDeltaFingerprint = ({
   try {
     delta = execFileSync(
       'git',
-      ['-C', projectRoot, 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', baselineHeadSha, ...(headSha ? [headSha] : []), '--', ...paths],
+      ['-C', projectRoot, '--literal-pathspecs', 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', baselineHeadSha, ...(headSha ? [headSha] : []), '--', ...paths],
       { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
     );
   } catch {
@@ -518,7 +903,7 @@ const replaceClaim = ({ projectRoot, file, content }) => {
   assertStableClaimHierarchy(hierarchy);
 };
 
-const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
+const recordRed = async ({ projectRoot, runDir, ticket, check, predecessorRuns = [] }) => {
   const { event, test } = checkEvent({ projectRoot, runDir, check, outcome: 'fail' });
   const { file, claim } = claimRecord(projectRoot, ticket);
   const previousEvidence = claim.tddEvidence;
@@ -530,9 +915,10 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
       activeEvidence: previousEvidence,
       history: claim.tddEvidenceHistory,
     });
+    if (!priorValidation.ok || !historyValidation.ok) {
+      throw new HoldError('claim record does not carry valid portable predecessor evidence');
+    }
     if (
-      !priorValidation.ok ||
-      !historyValidation.ok ||
       !['TDD-1', 'TDD-2', 'TDD-3'].includes(previousEvidence.applicability?.level) ||
       !sameTestScope(previousEvidence.red?.test, test) ||
       previousEvidence.red?.test?.fileSha256 === test.fileSha256
@@ -549,6 +935,7 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
   if (!sameTestScope(tddScope.test, test)) {
     throw new Error('tracker relevant-spec marker does not match the structured failed test identity');
   }
+  const baselineHeadSha = claim.fingerprints.scope.targetSha;
   const source = { runId: basename(runDir), seq: event.seq };
   const observation = { outcome: 'fail', checkFingerprint: checkFingerprint(event.data) };
   const red = {
@@ -557,19 +944,46 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
     observation,
     fingerprint: fingerprintEvidence({
       ticket,
-      baselineHeadSha: claim.fingerprints.scope.targetSha,
+      baselineHeadSha,
       stage: 'red',
       test,
       source,
       observation,
     }),
   };
+  let preRed = previousEvidence?.preRed;
+  if (predecessorRuns.length > 0) {
+    try {
+      const production = preRedProduction({ projectRoot, baselineHeadSha, ticket });
+      const implementationAgentDispatch = preRedDispatch({
+        projectRoot,
+        ticket,
+        predecessors: predecessorRuns,
+      });
+      const origin = { ticket, baselineHeadSha, redFingerprint: red.fingerprint };
+      preRed = {
+        baseline: { headSha: baselineHeadSha },
+        origin,
+        production,
+        implementationAgentDispatch,
+        fingerprint: fingerprintEvidence({
+          baseline: { headSha: baselineHeadSha },
+          origin,
+          production,
+          implementationAgentDispatch,
+        }),
+      };
+    } catch (error) {
+      throw new HoldError(error.message);
+    }
+  }
   const evidence = {
     schemaVersion: 1,
     ticket,
     applicability: { level: 'TDD-1', authority: { kind: 'check-run', id: check } },
-    baseline: { headSha: claim.fingerprints.scope.targetSha },
+    baseline: { headSha: baselineHeadSha },
     red,
+    ...(preRed ? { preRed } : {}),
   };
   const validation = validatePortableEvidence(evidence);
   if (!validation.ok) throw new Error(`portable RED evidence is invalid: ${validation.problems[0]}`);
@@ -990,7 +1404,7 @@ if (invokedDirectly()) {
           await record({ projectRoot: process.cwd(), runDir, ...args });
         }
       } catch (error) {
-        process.exitCode = fail(error.message);
+        process.exitCode = error instanceof HoldError ? hold(error.message) : fail(error.message);
       }
     }
   }
