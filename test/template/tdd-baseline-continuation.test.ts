@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,22 @@ const vitestCli = path.join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs');
 
 type Result = { code: number; out: string };
 type Revalidation = { result: string; action: string };
+type Phase = { startedAt: number; completed: number; lastStage: string };
+
+const phases = new AsyncLocalStorage<Phase>();
+
+const measure = async <T>(stage: string, operation: () => Promise<T>) => {
+  const phase = phases.getStore();
+  const result = await operation();
+  if (phase) {
+    phase.completed += 1;
+    phase.lastStage = stage;
+    console.error(
+      `[rp375-baseline-stage] completed=${phase.completed} stage=${stage} elapsedMs=${Math.round(performance.now() - phase.startedAt)}`,
+    );
+  }
+  return result;
+};
 
 const run = (file: string, args: string[], cwd: string, env = process.env): Promise<Result> =>
   new Promise((resolve) => {
@@ -26,10 +43,8 @@ const run = (file: string, args: string[], cwd: string, env = process.env): Prom
   });
 
 const git = async (args: string[], cwd: string) => {
-  const result = await run(
-    'git',
-    ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
-    cwd,
+  const result = await measure(`git:${args[0] ?? 'unknown'}`, () =>
+    run('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], cwd),
   );
   if (result.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.out}`);
   return result.out.trim();
@@ -77,30 +92,32 @@ const runVitest = ({
   trackerEnv?: NodeJS.ProcessEnv;
 }) => {
   const resultName = `${name}.json`;
-  return run(
-    process.execPath,
-    [
-      checkRun,
-      '--name',
-      name,
-      '--vitest-json',
-      resultName,
-      '--',
+  return measure(`check:${name}`, () =>
+    run(
       process.execPath,
-      vitestCli,
-      'run',
-      '--pool=threads',
-      '--maxWorkers=1',
-      '--root',
+      [
+        checkRun,
+        '--name',
+        name,
+        '--vitest-json',
+        resultName,
+        '--',
+        process.execPath,
+        vitestCli,
+        'run',
+        '--pool=threads',
+        '--maxWorkers=1',
+        '--root',
+        root,
+        '--config',
+        path.join(root, 'vitest.config.mjs'),
+        '--reporter=json',
+        '--outputFile',
+        path.join(runDir, resultName),
+      ],
       root,
-      '--config',
-      path.join(root, 'vitest.config.mjs'),
-      '--reporter=json',
-      '--outputFile',
-      path.join(runDir, resultName),
-    ],
-    root,
-    { ...trackerEnv, RIG_RUN_DIR: runDir },
+      { ...trackerEnv, RIG_RUN_DIR: runDir },
+    ),
   );
 };
 
@@ -117,10 +134,12 @@ const record = ({
   check: string;
   trackerEnv?: NodeJS.ProcessEnv;
 }) =>
-  run(process.execPath, [tddEvidence, action, '--ticket', 'RP-306', '--check', check], root, {
-    ...trackerEnv,
-    RIG_RUN_DIR: runDir,
-  });
+  measure(`receipt:${action}:${check}`, () =>
+    run(process.execPath, [tddEvidence, action, '--ticket', 'RP-306', '--check', check], root, {
+      ...trackerEnv,
+      RIG_RUN_DIR: runDir,
+    }),
+  );
 
 const contract = {
   schemaVersion: 1,
@@ -445,14 +464,17 @@ describe('RP-306 portable baseline continuation', () => {
         terminalClaim.tddEvidence.implementationBoundary.fingerprint,
     });
 
-    const ship = await run(
-      process.execPath,
-      [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
-      root,
-      {
-        ...trackerEnv,
-        RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-baseline-resume-run-')),
-      },
+    const verificationRunDir = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-resume-run-'));
+    const ship = await measure('verify-ship', () =>
+      run(
+        process.execPath,
+        [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
+        root,
+        {
+          ...trackerEnv,
+          RIG_RUN_DIR: verificationRunDir,
+        },
+      ),
     );
     expect(ship.code, ship.out).toBe(0);
     expect(ship.out).toMatch(/TDD-2|portable/i);

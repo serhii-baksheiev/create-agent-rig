@@ -872,6 +872,16 @@ const isMergeCommit = (projectRoot, head) => {
   }
 };
 
+const ordinaryCommitParent = (projectRoot, head) => {
+  try {
+    const fields = gitText(projectRoot, ['rev-list', '--parents', '-n', '1', head]).split(/\s+/);
+    if (fields[0] !== head || fields.length !== 2 || !/^[a-f0-9]{40}$/.test(fields[1])) return null;
+    return fields[1];
+  } catch {
+    return null;
+  }
+};
+
 const priorRefreshDefault = ({ projectRoot, priorEvidence, history, priorHead }) => {
   if (history === undefined) return priorEvidence.baseline.headSha;
   for (let index = history.length - 1; index >= 0; index -= 1) {
@@ -899,11 +909,43 @@ const sameBaselineRefinement = ({ projectRoot, ticket, priorEvidence, history, c
   }
   const hasMergedDefault = history?.some((entry) => /^[a-f0-9]{40}$/.test(entry?.transition?.mergedDefaultSha ?? ''));
   if (defaultHead === priorEvidence.baseline.headSha && !hasMergedDefault && !isMergeCommit(projectRoot, currentHead)) {
-    return { defaultHead };
+    if (currentHead === priorEvidence.baseline.headSha) return { defaultHead };
+    if (trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) {
+      try {
+        const retainedDelta = implementationDeltaFingerprint({
+          projectRoot,
+          baselineHeadSha: priorEvidence.baseline.headSha,
+          bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+          headSha: currentHead,
+          ticket,
+        });
+        if (sameFingerprint(retainedDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
+          return { defaultHead };
+        }
+      } catch {
+        return null;
+      }
+    }
+    const priorHead = ordinaryCommitParent(projectRoot, currentHead);
+    if (!priorHead || !trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) return null;
+    let retainedDelta;
+    try {
+      retainedDelta = implementationDeltaFingerprint({
+        projectRoot,
+        baselineHeadSha: priorEvidence.baseline.headSha,
+        bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+        headSha: priorHead,
+        ticket,
+      });
+    } catch {
+      return null;
+    }
+    return sameFingerprint(retainedDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)
+      ? { defaultHead }
+      : null;
   }
-  if (currentHead === priorEvidence.baseline.headSha) return { defaultHead };
-
   const priorDefault = priorRefreshDefault({ projectRoot, priorEvidence, history, priorHead: currentHead });
+  if (currentHead === priorEvidence.baseline.headSha) return { defaultHead };
   if (!isAncestor(projectRoot, priorDefault, currentHead) || !trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) {
     return null;
   }
@@ -926,7 +968,11 @@ const sameBaselineRefinement = ({ projectRoot, ticket, priorEvidence, history, c
 };
 
 const mergedDefaultRefresh = ({ projectRoot, ticket, priorEvidence, history, currentHead }) => {
-  const defaultHead = defaultTargetSha(projectRoot);
+  const cachedDefaultHead = defaultTargetSha(projectRoot);
+  const defaultHead = liveDefaultTargetSha(projectRoot);
+  if (cachedDefaultHead !== defaultHead) {
+    throw new Error('GREEN refresh cached default target does not match the live current default branch');
+  }
   const { priorHead, defaultHead: mergedParent } = mergeParents(projectRoot, currentHead);
   if (mergedParent !== defaultHead) {
     throw new Error('GREEN refresh did not merge the current default branch tip');

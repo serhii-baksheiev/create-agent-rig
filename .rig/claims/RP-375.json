@@ -38,7 +38,7 @@
       "level": "TDD-2",
       "authority": {
         "kind": "check-run",
-        "id": "rp375-own-prose-refinement-primary-green-01"
+        "id": "rp375-authority-remedy-primary-green-01"
       }
     },
     "baseline": {
@@ -69,11 +69,11 @@
     "implementationBoundary": {
       "source": {
         "runId": "rp375-20261003",
-        "seq": 36
+        "seq": 84
       },
       "implementationDeltaFingerprint": {
         "algorithm": "sha256",
-        "value": "1cff9c2645d714ed1e65b074c149be66c3aa439f10c655226dc79fb949e5d903"
+        "value": "160fc9a12e926e4367142ca2f041827c1d18eb2bae0bbdcbe279cfdd1254d993"
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
@@ -81,7 +81,7 @@
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "51594fa13e9e344973fcd4a1dc6e7981b0b9d0113da2d0ce61ab71a31e03afc4"
+        "value": "6850d84d39c5f50cdd26ad770c465af5d78c47f6505a703b821347d5e334dcaf"
       }
     },
     "green": {
@@ -92,22 +92,22 @@
       },
       "source": {
         "runId": "rp375-20261003",
-        "seq": 37
+        "seq": 85
       },
       "observation": {
         "outcome": "pass",
         "checkFingerprint": {
           "algorithm": "sha256",
-          "value": "0337df7c707ddab7da2d060098267e93758facd08f2a51dea5c910909f516643"
+          "value": "7691395f79f42e91d0019d6b8c0e6767ff993b728b21d124c499799a4b8959d8"
         }
       },
       "predecessorFingerprint": {
         "algorithm": "sha256",
-        "value": "51594fa13e9e344973fcd4a1dc6e7981b0b9d0113da2d0ce61ab71a31e03afc4"
+        "value": "6850d84d39c5f50cdd26ad770c465af5d78c47f6505a703b821347d5e334dcaf"
       },
       "fingerprint": {
         "algorithm": "sha256",
-        "value": "521f403d9c2fbddab5985cbf8c5cf48e639231fe97e7a6c5fdf87b8cba1326f8"
+        "value": "3d3a5cc46074982f2ec7078db37b96367f18f1a042e6f9220100632640e15a44"
       }
     }
   },
@@ -266,6 +266,111 @@
         "fingerprint": {
           "algorithm": "sha256",
           "value": "cf286ee2cc68df841bf4d7ea9801f450906a22a412bdc42292dfb261a44e5f26"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-375",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp375-own-prose-refinement-primary-green-01"
+          }
+        },
+        "baseline": {
+          "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/tdd-green-same-baseline-refinement.test.ts",
+            "fullName": "records an uncommitted same-baseline refinement after a fresh PASS while retaining immutable RED and history",
+            "fileSha256": "82b6f1a2d15496e2c61027becb341a5def9f27b6f4c3edc4ab20d84ac8c8e9ad"
+          },
+          "source": {
+            "runId": "rp375-20261003",
+            "seq": 23
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "2e2097138be1d7d119196cc96ff231ba031d1eb153cff93c2d1fedf3928f88dd"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "a8774375a1c518e45de8d9c8b9f27e27f10a8f97dbe1583288821ec1465bdf3b"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "rp375-20261003",
+            "seq": 36
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "1cff9c2645d714ed1e65b074c149be66c3aa439f10c655226dc79fb949e5d903"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "a8774375a1c518e45de8d9c8b9f27e27f10a8f97dbe1583288821ec1465bdf3b"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "51594fa13e9e344973fcd4a1dc6e7981b0b9d0113da2d0ce61ab71a31e03afc4"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/tdd-green-same-baseline-refinement.test.ts",
+            "fullName": "records an uncommitted same-baseline refinement after a fresh PASS while retaining immutable RED and history",
+            "fileSha256": "82b6f1a2d15496e2c61027becb341a5def9f27b6f4c3edc4ab20d84ac8c8e9ad"
+          },
+          "source": {
+            "runId": "rp375-20261003",
+            "seq": 37
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "0337df7c707ddab7da2d060098267e93758facd08f2a51dea5c910909f516643"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "51594fa13e9e344973fcd4a1dc6e7981b0b9d0113da2d0ce61ab71a31e03afc4"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "521f403d9c2fbddab5985cbf8c5cf48e639231fe97e7a6c5fdf87b8cba1326f8"
+          }
+        }
+      },
+      "transition": {
+        "priorGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "521f403d9c2fbddab5985cbf8c5cf48e639231fe97e7a6c5fdf87b8cba1326f8"
+        },
+        "replacementGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "3d3a5cc46074982f2ec7078db37b96367f18f1a042e6f9220100632640e15a44"
+        },
+        "priorImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "51594fa13e9e344973fcd4a1dc6e7981b0b9d0113da2d0ce61ab71a31e03afc4"
+        },
+        "replacementImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "6850d84d39c5f50cdd26ad770c465af5d78c47f6505a703b821347d5e334dcaf"
+        },
+        "sameBaselineRefinement": true,
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "56c9214b12b7f3cb6b27e88f75696cefd5a5afd064f470da28934c8b60ffdd35"
         }
       }
     }
