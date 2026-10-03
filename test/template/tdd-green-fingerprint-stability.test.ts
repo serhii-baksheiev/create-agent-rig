@@ -233,9 +233,11 @@ const greenEvidence = async ({
 describe('RP-336 stable GREEN fingerprint inputs', () => {
   it('records identical working-tree and implementation deltas across Git abbreviation settings, while content changes differ', async () => {
     const baseline = await createBaseline();
-    const abbreviated = await greenEvidence({ baseline, abbrev: 7, marker: 'same' });
-    const longer = await greenEvidence({ baseline, abbrev: 8, marker: 'same' });
-    const mutated = await greenEvidence({ baseline, abbrev: 7, marker: 'different' });
+    const [abbreviated, longer, mutated] = await Promise.all([
+      greenEvidence({ baseline, abbrev: 7, marker: 'same' }),
+      greenEvidence({ baseline, abbrev: 8, marker: 'same' }),
+      greenEvidence({ baseline, abbrev: 7, marker: 'different' }),
+    ]);
 
     expect(abbreviated.workingTreeDiff).toBe(longer.workingTreeDiff);
     expect(abbreviated.implementationDelta).toBe(longer.implementationDelta);
