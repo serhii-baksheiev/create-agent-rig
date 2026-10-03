@@ -460,7 +460,7 @@ const indexEntries = ({ projectRoot, paths }) => {
   if (paths.length > MAX_PRE_RED_JOURNAL_RECORDS) throw new Error('staged pre-RED index path count exceeds bounds');
   let bytes;
   try {
-    bytes = execFileSync('git', ['-C', projectRoot, 'ls-files', '--stage', '-z', '--', ...paths], {
+    bytes = execFileSync('git', ['-C', projectRoot, '--literal-pathspecs', 'ls-files', '--stage', '-z', '--', ...paths], {
       encoding: 'buffer',
       env: withoutGitLocation(),
       maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES,
@@ -669,7 +669,36 @@ const assertStablePredecessorRun = (run) => {
 const preRedJournalRecords = ({ projectRoot, runId }) => {
   const run = stablePredecessorRun({ projectRoot, runId });
   const records = [];
-  for (const file of ['decisions.jsonl', 'events.jsonl']) {
+  const hasOwn = (record, field) => Object.prototype.hasOwnProperty.call(record, field);
+  const nonBlankString = (value) => typeof value === 'string' && value.trim() !== '';
+  const validEnvelope = (record) =>
+    Number.isSafeInteger(record.seq) && record.seq > 0 && nonBlankString(record.at);
+  const validDecision = (record) => {
+    const allowed = new Set(['seq', 'at', 'gate', 'verdict', 'why', 'headSha', 'reviewers', 'blockers']);
+    return (
+      validEnvelope(record) &&
+      nonBlankString(record.gate) &&
+      nonBlankString(record.verdict) &&
+      (record.why === null || typeof record.why === 'string') &&
+      (!hasOwn(record, 'headSha') || nonBlankString(record.headSha)) &&
+      (!hasOwn(record, 'reviewers') || (Array.isArray(record.reviewers) && record.reviewers.every((reviewer) => typeof reviewer === 'string'))) &&
+      (!hasOwn(record, 'blockers') || Array.isArray(record.blockers)) &&
+      Object.keys(record).every((field) => allowed.has(field))
+    );
+  };
+  const validEvent = (record) => {
+    const allowed = record.kind === 'run-end' ? new Set(['seq', 'at', 'kind', 'stop']) : new Set(['seq', 'at', 'kind', 'data']);
+    return (
+      validEnvelope(record) &&
+      nonBlankString(record.kind) &&
+      (record.kind === 'run-end' ? nonBlankString(record.stop) : hasOwn(record, 'data')) &&
+      Object.keys(record).every((field) => allowed.has(field))
+    );
+  };
+  for (const [file, source] of [
+    ['decisions.jsonl', 'decisions'],
+    ['events.jsonl', 'events'],
+  ]) {
     assertStablePredecessorRun(run);
     const journal = join(run.runDir, file);
     const bytes = readRegularFile(journal, `pre-RED predecessor ${file}`);
@@ -687,18 +716,23 @@ const preRedJournalRecords = ({ projectRoot, runId }) => {
       } catch {
         throw new Error('pre-RED journal record is not valid JSON');
       }
-      if (!record || typeof record !== 'object' || Array.isArray(record)) {
+      if (
+        !record ||
+        typeof record !== 'object' ||
+        Array.isArray(record) ||
+        (source === 'decisions' ? !validDecision(record) : !validEvent(record))
+      ) {
         throw new Error('pre-RED journal record is invalid');
       }
-      records.push(record);
+      records.push({ source, record });
       offset = newline === -1 ? bytes.length : newline + 1;
     }
   }
-  const sequence = records.map((record) => record.seq).sort((left, right) => left - right);
+  const sequence = records.map(({ record }) => record.seq).sort((left, right) => left - right);
   if (!sequence.length || sequence.some((seq, index) => !Number.isSafeInteger(seq) || seq !== index + 1)) {
     throw new Error('pre-RED predecessor journal sequence is invalid');
   }
-  return records.sort((left, right) => left.seq - right.seq);
+  return records.sort((left, right) => left.record.seq - right.record.seq);
 };
 
 const preRedDispatch = ({ projectRoot, ticket, predecessors }) => {
@@ -710,23 +744,40 @@ const preRedDispatch = ({ projectRoot, ticket, predecessors }) => {
   for (const runId of predecessors) {
     const records = preRedJournalRecords({ projectRoot, runId });
     let selectedTicket = null;
-    for (const record of records) {
-      if (record?.gate === 'item-selection') {
-        const selected = /^taken ([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(record?.verdict ?? '');
+    for (const { source, record } of records) {
+      if (source === 'decisions' && record.gate === 'item-selection') {
+        const selected = /^taken ([A-Za-z0-9][A-Za-z0-9._-]{0,127})$/.exec(record.verdict);
         if (!selected) throw new Error('pre-RED predecessor item selection is invalid');
         selectedTicket = selected[1];
         continue;
       }
       const data = record?.data;
+      if (source === 'events' && record.kind === 'dispatch-start') {
+        if (
+          !data ||
+          typeof data !== 'object' ||
+          Array.isArray(data) ||
+          data.schema !== 1 ||
+          (data.agentType !== undefined &&
+            (typeof data.agentType !== 'string' || !/^[A-Za-z0-9._:-]{1,64}$/.test(data.agentType))) ||
+          typeof data.agentRef !== 'string' ||
+          data.agentRef.length === 0 ||
+          data.agentRef.length > 256
+        ) {
+          throw new Error('pre-RED predecessor dispatch is invalid');
+        }
+      }
       if (
         selectedTicket === ticket &&
-        record?.kind === 'dispatch-start' &&
-        data?.agentType === 'implementation-agent' &&
+        source === 'events' &&
+        record.kind === 'dispatch-start' &&
+        data?.schema === 1 &&
+        data.agentType === 'implementation-agent' &&
         typeof data?.agentRef === 'string' &&
         data.agentRef.length > 0 &&
         data.agentRef.length <= 256 &&
         Number.isSafeInteger(record.seq) &&
-        record.seq >= 0
+        record.seq > 0
       ) {
         if (dispatches.length >= MAX_PRE_RED_JOURNAL_RECORDS) {
           throw new Error('pre-RED dispatch count exceeds bounds');
@@ -752,7 +803,7 @@ const implementationDeltaFingerprint = ({
   try {
     delta = execFileSync(
       'git',
-      ['-C', projectRoot, 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', baselineHeadSha, ...(headSha ? [headSha] : []), '--', ...paths],
+      ['-C', projectRoot, '--literal-pathspecs', 'diff', '--binary', '--full-index', '--no-ext-diff', '--no-textconv', baselineHeadSha, ...(headSha ? [headSha] : []), '--', ...paths],
       { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES },
     );
   } catch {

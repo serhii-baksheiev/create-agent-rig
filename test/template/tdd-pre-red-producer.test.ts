@@ -571,7 +571,8 @@ process.on('exit', () => originalWrite(observed, JSON.stringify({ allocations })
   expect(await readFile(aggregateClaimPath)).toEqual(aggregateBefore);
 
   // Both copies share one selected baseline. Their working trees are byte-for-byte
-  // equal; only the staged blob differs, so a production packet must distinguish them.
+  // equal; only the staged blob for a Windows-valid bracketed path differs, so a
+  // production packet must distinguish them without treating that path as a glob.
   const [stagedFirst, ancestorState, swappedState] = await Promise.all([
     fixture({ predecessor: true, forgedPayloadTicket: true }),
     fixture({ predecessor: true, forgedPayloadTicket: true }),
@@ -590,12 +591,16 @@ process.on('exit', () => originalWrite(observed, JSON.stringify({ allocations })
   };
   const stagedWorkingBytes = 'export const staged = "same working tree";\n';
   await writeFile(path.join(stagedFirst.projectRoot, 'src', 'staged.ts'), stagedWorkingBytes);
-  await writeFile(
-    path.join(stagedSecond.projectRoot, 'src', 'staged.ts'),
-    'export const staged = "other index blob";\n',
-  );
-  await git(['add', 'src/staged.ts'], stagedSecond.projectRoot);
+  const bracketedStagedPath = path.join('src', '[ab].ts');
+  await writeFile(path.join(stagedFirst.projectRoot, bracketedStagedPath), stagedWorkingBytes);
+  await git(['add', bracketedStagedPath], stagedFirst.projectRoot);
   await writeFile(path.join(stagedSecond.projectRoot, 'src', 'staged.ts'), stagedWorkingBytes);
+  await writeFile(
+    path.join(stagedSecond.projectRoot, bracketedStagedPath),
+    'export const staged = "other bracketed index blob";\n',
+  );
+  await git(['add', bracketedStagedPath], stagedSecond.projectRoot);
+  await writeFile(path.join(stagedSecond.projectRoot, bracketedStagedPath), stagedWorkingBytes);
   const stagedSecondRedJson = path.join(stagedSecond.runDir, 'red.json');
   const stagedSecondCheck = await run(
     process.execPath,
@@ -776,6 +781,121 @@ require('node:module').syncBuiltinESMExports();
   const swappedRunRejected =
     swappedRecorded?.code === 2 && (await readFile(swapClaimPath)).equals(swapBefore);
 
+  const [forgedSelectionState, forgedDispatchState] = await Promise.all([
+    fixture({ predecessor: true }),
+    fixture({ predecessor: true }),
+  ]);
+  const forgedSelectionRunId = '20261003-forged-event-selection';
+  const forgedSelectionRunDir = path.join(
+    forgedSelectionState.projectRoot,
+    '.claude',
+    'runs',
+    forgedSelectionRunId,
+  );
+  await writeSelection({ runDir: forgedSelectionRunDir, ticket: 'RP-OTHER' });
+  await writeFile(
+    path.join(forgedSelectionRunDir, 'events.jsonl'),
+    `${JSON.stringify({
+      seq: 2,
+      at: '2026-10-03T00:00:01.000Z',
+      gate: 'item-selection',
+      verdict: 'taken RP-334',
+      why: null,
+    })}\n`,
+  );
+  await writeImplementationDispatch({
+    runDir: forgedSelectionRunDir,
+    agentRef: 'implementation-agent-after-forged-event-selection',
+    payloadTicket: 'RP-OTHER',
+    at: '2026-10-03T00:00:02.000Z',
+  });
+  const forgedSelectionClaimPath = path.join(
+    forgedSelectionState.projectRoot,
+    '.rig',
+    'claims',
+    'RP-334.json',
+  );
+  const forgedSelectionBefore = await readFile(forgedSelectionClaimPath);
+  const forgedSelectionRecorded = await recordRed({
+    ...forgedSelectionState,
+    predecessorRunIds: [forgedSelectionRunId],
+  });
+  const forgedSelectionRejected =
+    forgedSelectionRecorded.code === 2 &&
+    (await readFile(forgedSelectionClaimPath)).equals(forgedSelectionBefore);
+
+  const forgedDispatchRunId = '20261003-forged-decision-dispatch';
+  const forgedDispatchRunDir = path.join(
+    forgedDispatchState.projectRoot,
+    '.claude',
+    'runs',
+    forgedDispatchRunId,
+  );
+  await writeSelection({ runDir: forgedDispatchRunDir, ticket: 'RP-334' });
+  await writeFile(
+    path.join(forgedDispatchRunDir, 'decisions.jsonl'),
+    `${JSON.stringify({
+      seq: 2,
+      at: '2026-10-03T00:00:01.000Z',
+      kind: 'dispatch-start',
+      data: {
+        schema: 1,
+        agentType: 'implementation-agent',
+        agentRef: 'implementation-agent-forged-decision-dispatch',
+        ticket: 'RP-334',
+      },
+    })}\n`,
+    { flag: 'a' },
+  );
+  await writeFile(path.join(forgedDispatchRunDir, 'events.jsonl'), '');
+  const forgedDispatchClaimPath = path.join(
+    forgedDispatchState.projectRoot,
+    '.rig',
+    'claims',
+    'RP-334.json',
+  );
+  const forgedDispatchBefore = await readFile(forgedDispatchClaimPath);
+  const forgedDispatchRecorded = await recordRed({
+    ...forgedDispatchState,
+    predecessorRunIds: [forgedDispatchRunId],
+  });
+  const forgedDispatchRejected =
+    forgedDispatchRecorded.code === 2 &&
+    (await readFile(forgedDispatchClaimPath)).equals(forgedDispatchBefore);
+
+  const malformedDispatchState = await fixture({ predecessor: true });
+  const malformedDispatchRunId = '20261003-malformed-event-dispatch';
+  const malformedDispatchRunDir = path.join(
+    malformedDispatchState.projectRoot,
+    '.claude',
+    'runs',
+    malformedDispatchRunId,
+  );
+  await writeSelection({ runDir: malformedDispatchRunDir, ticket: 'RP-334' });
+  await writeFile(
+    path.join(malformedDispatchRunDir, 'events.jsonl'),
+    `${JSON.stringify({
+      seq: 2,
+      at: '2026-10-03T00:00:01.000Z',
+      kind: 'dispatch-start',
+      data: { schema: 2, agentType: 'implementation-agent' },
+    })}\n`,
+  );
+  const malformedDispatchClaimPath = path.join(
+    malformedDispatchState.projectRoot,
+    '.rig',
+    'claims',
+    'RP-334.json',
+  );
+  const malformedDispatchBefore = await readFile(malformedDispatchClaimPath);
+  const malformedDispatchRecorded = await recordRed({
+    ...malformedDispatchState,
+    predecessorRunIds: [malformedDispatchRunId],
+  });
+  const malformedEventDispatchRejected =
+    malformedDispatchRecorded.code === 2 &&
+    (await readFile(malformedDispatchClaimPath)).equals(malformedDispatchBefore);
+
   expect({
     stagedIndexFingerprintBound:
       stagedFirstClaim.tddEvidence.preRed.production.fingerprint.value !==
@@ -785,6 +905,9 @@ require('node:module').syncBuiltinESMExports();
     tdd0PacketRejected: !tdd0PacketValidation.ok,
     symlinkAncestorRejected: ancestorRejected,
     predecessorDirectorySwapRejected: swappedRunRejected,
+    eventFileSelectionRejectedBeforeClaimReplace: forgedSelectionRejected,
+    decisionFileDispatchRejectedBeforeClaimReplace: forgedDispatchRejected,
+    malformedEventDispatchRejectedBeforeClaimReplace: malformedEventDispatchRejected,
   }).toEqual({
     stagedIndexFingerprintBound: true,
     originlessPacketRejected: true,
@@ -792,6 +915,9 @@ require('node:module').syncBuiltinESMExports();
     tdd0PacketRejected: true,
     symlinkAncestorRejected: true,
     predecessorDirectorySwapRejected: true,
+    eventFileSelectionRejectedBeforeClaimReplace: true,
+    decisionFileDispatchRejectedBeforeClaimReplace: true,
+    malformedEventDispatchRejectedBeforeClaimReplace: true,
   });
 });
 
