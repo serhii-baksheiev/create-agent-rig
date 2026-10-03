@@ -579,6 +579,40 @@ describe('pr-ship skill (universal)', () => {
       'pr-ship never connects an `incomplete` report to a launched reviewer with no record',
     ).not.toHaveLength(0);
   });
+
+  it('checks reviewer-fix prose and its sibling claims before it spends another gate round', async () => {
+    // A prose HOLD can be fixed in one sentence while the same stale claim
+    // remains elsewhere in the branch.  Returning straight to step 0 burns a
+    // finite round before check-premises gets a second chance to catch it.
+    const content = await readGateSpec('pr-ship');
+    const verdict = content.slice(content.indexOf('## Verdict'));
+    expect(verdict, 'the verdict section must still exist').not.toBe('');
+
+    const proseHold = verdict.search(
+      /after[\s\S]{0,160}reviewer[\s-]*fix[\s\S]{0,160}(prose[\s-]*HOLD|HOLD[\s-]*prose)[\s\S]{0,220}check-premises/i,
+    );
+    expect(
+      proseHold,
+      'only a reviewer-fix for a prose HOLD needs the extra check-premises pass',
+    ).toBeGreaterThanOrEqual(0);
+
+    const secondPremises = verdict.search(
+      /after[\s\S]{0,280}fix[\s\S]{0,280}check-premises[\s\S]{0,280}(fix|own)[\s-]*(delta|prose)[\s\S]{0,280}before[\s\S]{0,120}step\s*0/i,
+    );
+    expect(
+      secondPremises,
+      'a reviewer-fix must receive check-premises on its own prose before step 0',
+    ).toBeGreaterThanOrEqual(0);
+
+    const siblingSearch = verdict.search(
+      /whole[\s-]*(branch[\s-]*)?diff[\s\S]{0,220}sibling[\s\S]{0,220}(same|matching)[\s\S]{0,120}claim/i,
+    );
+    expect(
+      siblingSearch,
+      'the reviewer-fix path must search the full branch diff for sibling claims',
+    ).toBeGreaterThanOrEqual(0);
+    expect(verdict.slice(siblingSearch)).toMatch(/correct[\s\S]{0,160}(stale|sibling)/i);
+  });
 });
 
 // RP-195 slice 5: plan-slices, the workflow-layer decomposition skill for
