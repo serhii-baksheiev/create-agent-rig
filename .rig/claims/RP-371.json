@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-371",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "1685188e3de982de16a6998ac8cbf5019c6b479fb6e5b9fe42c59b603f4ce421",
+      "targetSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/vitest-worker-concurrency.test.ts",
+      "fullName": "bounds default native Vitest workers across configured projects without changing test deadlines"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "1685188e3de982de16a6998ac8cbf5019c6b479fb6e5b9fe42c59b603f4ce421",
+      "targetSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "a3a79eace1007e57e13af73e23228cdc83a8dc2359befb1dca2b2d62dcbe05be"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-371",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "rp371-final-attested-green"
+      }
+    },
+    "baseline": {
+      "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/vitest-worker-concurrency.test.ts",
+        "fullName": "bounds default native Vitest workers across configured projects without changing test deadlines",
+        "fileSha256": "3282dbdcfce38753a0a1084f0bf74d1bd37eb830cfe6eb6a8d3abf791d329cd9"
+      },
+      "source": {
+        "runId": "20261003-rp371-bounded-vitest-workers",
+        "seq": 24
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "aab0378ace45dd03c516dc495215ede82cfbb9af9b24c24ed750d10b0384c9b4"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "289287533ba4176e61d15905aad5616ab49f3919d2b577b1cf1770c407eec9bb"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261003-rp371-bounded-vitest-workers",
+        "seq": 44
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "b079aa8e9d9a00bdcc91ef9acb27ead20114b19f659f710f9962b32b652e7427"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "289287533ba4176e61d15905aad5616ab49f3919d2b577b1cf1770c407eec9bb"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "d4cec0698ec48cd26fb9ec36bbc8efca567c1ffd2f8c38c67fd586c83e9ed03c"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/vitest-worker-concurrency.test.ts",
+        "fullName": "bounds default native Vitest workers across configured projects without changing test deadlines",
+        "fileSha256": "3282dbdcfce38753a0a1084f0bf74d1bd37eb830cfe6eb6a8d3abf791d329cd9"
+      },
+      "source": {
+        "runId": "20261003-rp371-bounded-vitest-workers",
+        "seq": 45
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "fdcb5a43d5c99b4ca767fa947c7b4fbcf4831c701564abd948165cce0b1b4398"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "d4cec0698ec48cd26fb9ec36bbc8efca567c1ffd2f8c38c67fd586c83e9ed03c"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "816f1a9beb2471d946619dec9bb6c218a78a981a0a4b977804767981637cf349"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-371",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp371-default-workers-runtime-red"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/vitest-worker-concurrency.test.ts",
+            "fullName": "bounds default native Vitest workers across configured projects without changing test deadlines",
+            "fileSha256": "4fcca0437711dbb3a61c71863f3186ffab0370f5d335dd3617d225788cbb449b"
+          },
+          "source": {
+            "runId": "20261003-rp371-bounded-vitest-workers",
+            "seq": 11
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "925ce90d5046655a405500ce5e654e415ef0f71a18c28e706053507cc28684cd"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "0b5e427ef0a631c78614f5c3c1dee93b8580a610e3cfabc45584ec0257a9495e"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "0b5e427ef0a631c78614f5c3c1dee93b8580a610e3cfabc45584ec0257a9495e"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "289287533ba4176e61d15905aad5616ab49f3919d2b577b1cf1770c407eec9bb"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "267a57be3a84d2cadabb27000707114dedc92ebfefe5c743106afbda72571ad5"
+        }
+      }
+    }
+  ]
+}
