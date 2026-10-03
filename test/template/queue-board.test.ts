@@ -361,11 +361,29 @@ describe('boards in queue.json', () => {
 });
 
 describe('the generator dogfoods the switch', () => {
-  it('this repo keeps only current AR and RP boards after the 1.1.1 publication', async () => {
+  it('this repo keeps the default boards and three authorized release aliases', async () => {
     const own = JSON.parse(await readFile(path.join(repoRoot, '.claude', 'queue.json'), 'utf8'));
-    expect(Object.keys(own.boards)).toEqual(['AR', 'RP']);
+    expect(Object.keys(own.boards)).toEqual(['AR', 'RP', 'RP-1.2.0', 'RP-1.2.1', 'RP-1.3.0']);
+    expect(own.board).toBe('AR');
+    expect(own.boards.AR).toEqual({ project: 'AR', owner: 'create-agent-rig' });
     expect(own.boards.RP).toEqual({ project: 'RP', owner: 'rig' });
+    expect(own.boards['RP-1.2.0']).toEqual({
+      project: 'RP',
+      owner: 'rig',
+      scope: { labels: ['rel-1.2.0'] },
+    });
+    expect(own.boards['RP-1.2.1']).toEqual({
+      project: 'RP',
+      owner: 'rig',
+      scope: { labels: ['rel-1.2.1'] },
+    });
+    expect(own.boards['RP-1.3.0']).toEqual({
+      project: 'RP',
+      owner: 'rig',
+      scope: { labels: ['rel-1.3.0'] },
+    });
     expect(own.boards).not.toHaveProperty('RP-1.1.0');
+    expect(own.boards).not.toHaveProperty('RP-1.1.1');
     expect(own.options.project).toBeUndefined();
     // RP-186: the gitignore prose lives in AGENTS.md now (the canonical
     // rulebook) — CLAUDE.md is a short shim and carries none of it.
