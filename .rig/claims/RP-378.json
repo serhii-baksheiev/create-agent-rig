@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-378",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "db04f258dacf7f4e7dcf22072ebcfbfd6130ae5d1bc9c3035095835d97811c2f",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-pre-red-producer.test.ts",
+      "fullName": "records a bounded portable pre-RED production and dispatch boundary"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "db04f258dacf7f4e7dcf22072ebcfbfd6130ae5d1bc9c3035095835d97811c2f",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "f2a0445696e84918ad765637298a25c1228eb6944cdabc61662d25672625bb11"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-378",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "rp378-final-attested-green"
+      }
+    },
+    "baseline": {
+      "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-pre-red-producer.test.ts",
+        "fullName": "records a bounded portable pre-RED production and dispatch boundary",
+        "fileSha256": "78c094ec29c110f8e263e2dab087983634a3618209475bff0097237da201f10b"
+      },
+      "source": {
+        "runId": "20261003-rp378-pre-red-first-call",
+        "seq": 10
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "899ec7ba4fdcb7205d86c08a6b1b7313d4ad805648cf72e6509189dd151d1a16"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "9fe99067bbf0c2ae00e4ec39771a41fe577ae39604019140a4ff212fa4261166"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261003-rp378-pre-red-first-call",
+        "seq": 28
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "486a83ff0a16f4f243580c523ed8740d356ade20f341f02fb8d2b22666ee508e"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "9fe99067bbf0c2ae00e4ec39771a41fe577ae39604019140a4ff212fa4261166"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "3e823dc0d8645ef00de3d228127322f23de3b223349759f8565280d9d5c293c8"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-pre-red-producer.test.ts",
+        "fullName": "records a bounded portable pre-RED production and dispatch boundary",
+        "fileSha256": "78c094ec29c110f8e263e2dab087983634a3618209475bff0097237da201f10b"
+      },
+      "source": {
+        "runId": "20261003-rp378-pre-red-first-call",
+        "seq": 29
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "37d8260abcfb390560875388a758f34e177d351043f209e2d6fa3f2935943665"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "3e823dc0d8645ef00de3d228127322f23de3b223349759f8565280d9d5c293c8"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "fddddc9f3d16256d70816c2dd58eba19e6403b63f52c6986bf42eecb33a5add2"
+      }
+    }
+  }
+}
