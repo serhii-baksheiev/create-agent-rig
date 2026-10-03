@@ -383,6 +383,46 @@ const validateStage = (stage, name, { test = false, predecessor = false } = {}, 
   validateFingerprint(stage?.fingerprint, canonicalStage, `${name}.fingerprint`, problems);
 };
 
+const validatePreRed = (preRed, record, problems) => {
+  allowed(preRed, new Set(['baseline', 'origin', 'production', 'implementationAgentDispatch', 'fingerprint']), 'preRed', problems);
+  allowed(preRed?.baseline, new Set(['headSha']), 'preRed.baseline', problems);
+  if (preRed?.baseline?.headSha !== record?.baseline?.headSha) {
+    problems.push('preRed.baseline.headSha must equal baseline.headSha');
+  }
+  const origin = preRed?.origin;
+  if (origin !== undefined) {
+    allowed(origin, new Set(['ticket', 'baselineHeadSha', 'redFingerprint']), 'preRed.origin', problems);
+    if (origin?.ticket !== record?.ticket) problems.push('preRed.origin.ticket must equal ticket');
+    if (origin?.baselineHeadSha !== record?.baseline?.headSha) {
+      problems.push('preRed.origin.baselineHeadSha must equal baseline.headSha');
+    }
+    validateFingerprintShape(origin?.redFingerprint, 'preRed.origin.redFingerprint', problems);
+  }
+  const production = preRed?.production;
+  allowed(production, new Set(['pathCount', 'fingerprint']), 'preRed.production', problems);
+  if (!Number.isSafeInteger(production?.pathCount) || production.pathCount < 0 || production.pathCount > 1024) {
+    problems.push('preRed.production.pathCount must be a bounded non-negative integer');
+  }
+  validateFingerprintShape(production?.fingerprint, 'preRed.production.fingerprint', problems);
+  const dispatch = preRed?.implementationAgentDispatch;
+  allowed(dispatch, new Set(['count', 'fingerprint']), 'preRed.implementationAgentDispatch', problems);
+  if (!Number.isSafeInteger(dispatch?.count) || dispatch.count < 0 || dispatch.count > 1024) {
+    problems.push('preRed.implementationAgentDispatch.count must be a bounded non-negative integer');
+  }
+  validateFingerprintShape(dispatch?.fingerprint, 'preRed.implementationAgentDispatch.fingerprint', problems);
+  validateFingerprint(
+    preRed?.fingerprint,
+    {
+      baseline: preRed?.baseline,
+      origin,
+      production,
+      implementationAgentDispatch: dispatch,
+    },
+    'preRed.fingerprint',
+    problems,
+  );
+};
+
 const validatePredecessor = (stage, previous, name, problems) => {
   const label = `${name}.predecessorFingerprint`;
   if (!validateFingerprintShape(stage?.predecessorFingerprint, label, problems)) return;
@@ -412,7 +452,7 @@ const validateStageOrder = (stages, problems) => {
 
 export const validatePortableEvidence = (record) => {
   const problems = [];
-  const rootAllowed = new Set(['schemaVersion', 'ticket', 'applicability', 'baseline', 'red', 'implementationBoundary', 'green', 'nonVacuity']);
+  const rootAllowed = new Set(['schemaVersion', 'ticket', 'applicability', 'baseline', 'preRed', 'red', 'implementationBoundary', 'green', 'nonVacuity']);
   allowed(record, rootAllowed, '', problems);
   if (record?.schemaVersion !== TDD_EVIDENCE_SCHEMA_VERSION) problems.push('schemaVersion is unsupported');
   if (!TICKET.test(record?.ticket ?? '')) problems.push('ticket must be a bounded item identity');
@@ -431,6 +471,7 @@ export const validatePortableEvidence = (record) => {
   }
   allowed(record?.baseline, new Set(['headSha']), 'baseline', problems);
   if (!GIT_SHA.test(record?.baseline?.headSha ?? '')) problems.push('baseline.headSha must be a Git object id');
+  if (record?.preRed !== undefined) validatePreRed(record.preRed, record, problems);
 
   const level = record?.applicability?.level;
   const forbid = (names) => {
@@ -496,7 +537,18 @@ export const validatePortableEvidence = (record) => {
 
 export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvidence, history }) => {
   const problems = [];
-  if (history === undefined) return { ok: true };
+  const origin = activeEvidence?.preRed?.origin;
+  if (history === undefined) {
+    if (
+      origin !== undefined &&
+      (origin.ticket !== activeEvidence?.ticket ||
+        origin.baselineHeadSha !== activeEvidence?.baseline?.headSha ||
+        !fingerprintsEqual(origin.redFingerprint, activeEvidence?.red?.fingerprint))
+    ) {
+      return { ok: false, problems: ['preRed.origin must match the active RED without history'] };
+    }
+    return { ok: true };
+  }
   if (!Array.isArray(history) || history.length === 0 || history.length > 8) {
     return { ok: false, problems: ['tddEvidenceHistory must contain 1..8 entries'] };
   }
@@ -627,6 +679,19 @@ export const validateTddEvidenceHistory = ({ ticket, baselineHeadSha, activeEvid
       );
     }
     replacement = evidence;
+  }
+  if (origin !== undefined) {
+    const candidates = [activeEvidence, ...history.map((entry) => entry?.evidence)];
+    if (
+      !candidates.some(
+        (evidence) =>
+          evidence?.ticket === origin.ticket &&
+          evidence?.baseline?.headSha === origin.baselineHeadSha &&
+          fingerprintsEqual(evidence?.red?.fingerprint, origin.redFingerprint),
+      )
+    ) {
+      problems.push('preRed.origin must match a bound RED evidence record');
+    }
   }
   if (problems.length === 0) scanPortableStrings(history, 'tddEvidenceHistory', problems);
   return problems.length ? { ok: false, problems } : { ok: true };

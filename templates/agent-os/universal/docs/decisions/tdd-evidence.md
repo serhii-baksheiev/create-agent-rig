@@ -122,6 +122,24 @@ chain with a bounded, fingerprinted refresh transition. Commit the claim with
 the work. The `pr-ship` verifier reads the claim
 from branch `HEAD`, compares it with the current tracker and final Git diff,
 and records compact evidence fingerprints in the run journal.
+
+At `record-red` time, an item may add one to eight explicit
+`--predecessor-run <run-id>` values. Each value names only
+`.claude/runs/<run-id>`; the recorder never discovers sibling runs. It reads
+the named run's bounded journal records before changing the claim and captures
+bounded counts and fingerprints for committed, staged, unstaged tracked, and
+untracked production state, plus implementation-agent dispatches while that
+run's item-selection record names this item. The packet retains no production
+paths or journal content. Its origin binds the item, selected baseline, and
+the RED fingerprint observed when the packet was captured. A later stale-RED
+continuation may retain a validated packet when that origin appears in the
+same item's bounded evidence history, even if the origin journal is gone; a
+missing or invalid explicitly named journal HOLDs without changing the claim.
+This is capture at `record-red` time, not proof that the captured state existed
+before the failed check, enforcement that an agent was dispatched, an ordering
+guarantee, or a TDD-3 assertion. Original legacy evidence may omit this packet.
+The packet behavior is pinned in
+`test/template/tdd-pre-red-producer.test.ts` (absent in a generated rig).
 If the relevant test file changes, run the changed test while failing and call
 `record-red` again before recording GREEN. The new RED must keep the same file
 and full test name with a different file hash. The recorder keeps the prior
