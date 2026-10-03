@@ -140,8 +140,9 @@ before the failed check, enforcement that an agent was dispatched, an ordering
 guarantee, or a TDD-3 assertion. Original legacy evidence may omit this packet.
 The packet behavior is pinned in
 `test/template/tdd-pre-red-producer.test.ts` (absent in a generated rig) ›
-`records a bounded portable pre-RED production and dispatch boundary` and
-`fails closed when the selected item has no readable prior dispatch history`.
+`records a bounded portable pre-RED production and dispatch boundary`,
+`fails closed when the selected item has no readable prior dispatch history`, and
+`HOLDs backwards native predecessor journals before replacing either initial claim`.
 If the relevant test file changes, run the changed test while failing and call
 `record-red` again before recording GREEN. The new RED must keep the same file
 and full test name with a different file hash. The recorder keeps the prior
