@@ -119,7 +119,10 @@ export const resolveApplicability = (input, trusted = {}) => {
   }
   const nonProductionPath = (path) =>
     typeof path === 'string' &&
-    (/^docs\//.test(path) || /(?:^|\/)test\//.test(path) || /(?:^|\/)[^/]+\.test\.[^/]+$/.test(path));
+    (path === 'README.md' ||
+      /^docs\//.test(path) ||
+      /(?:^|\/)test\//.test(path) ||
+      /(?:^|\/)[^/]+\.test\.[^/]+$/.test(path));
   if (changedPaths.length > 0 && changedPaths.every(nonProductionPath)) {
     return { level: 'TDD-0', authority: 'path-contract' };
   }

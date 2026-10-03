@@ -18,8 +18,8 @@ field or any other self-report.
 proof of a Git diff. RP-306 derives both from the selected work's Git evidence
 before calling it; controller-provided path lists do not establish provenance.
 
-`TDD-0` is an authoritative not-applicable verdict. Documentation and test-only
-changes qualify by path. A pure refactor qualifies only when the verified second
+`TDD-0` is an authoritative not-applicable verdict. Documentation, the root
+`README.md`, and test-only changes qualify by path. A pure refactor qualifies only when the verified second
 argument carries a non-empty compact test-set count and fingerprint, matching
 before/after observed passing GREEN checkpoints and the item baseline. RP-306 verifies
 that the compact test-set fingerprint represents the complete structured set of

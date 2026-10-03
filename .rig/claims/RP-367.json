@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-367",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "70a0123eb4754fe4be0de608236e9e7f2502b43672f95ab7a7ea658ecd49a29a",
+      "targetSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-pr-ship-contract.test.ts",
+      "fullName": "RP-306 pr-ship enforcement contract derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "70a0123eb4754fe4be0de608236e9e7f2502b43672f95ab7a7ea658ecd49a29a",
+      "targetSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "c4d087cc8cb0cf87ba9ef651fbf49145f11f89964b5b16ca415833da87031690"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-367",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "rp367-readme-contract-primary-green-05"
+      }
+    },
+    "baseline": {
+      "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-pr-ship-contract.test.ts",
+        "fullName": "RP-306 pr-ship enforcement contract derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise",
+        "fileSha256": "d5fcd07153b215cfc38a7e25d92024ddbe280dc8ff493e9b3db9ed08bb48512d"
+      },
+      "source": {
+        "runId": "rp367-20261003",
+        "seq": 11
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "03e2e7f2168bd4946bc4f55ed3006555bb926f2b64ad459fa8821fbcdcdd1c8e"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "de2b1f2f73a9fe9592a7648440a9b3a15022efd27296d0222118f68e3ec365dd"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "rp367-20261003",
+        "seq": 30
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "30e795a7059e1dca8b7d0c05772b9fd4f59a2796fa6a230cb7a310f0364037fe"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "de2b1f2f73a9fe9592a7648440a9b3a15022efd27296d0222118f68e3ec365dd"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "68452c4e510973054fe00536be1e77757641a09688a57fd99d71d0592980f6c4"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-pr-ship-contract.test.ts",
+        "fullName": "RP-306 pr-ship enforcement contract derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise",
+        "fileSha256": "d5fcd07153b215cfc38a7e25d92024ddbe280dc8ff493e9b3db9ed08bb48512d"
+      },
+      "source": {
+        "runId": "rp367-20261003",
+        "seq": 31
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "fa1124913bfeacaff47a11cbba8af770d5c86f8cc1290938e294cff1aa998951"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "68452c4e510973054fe00536be1e77757641a09688a57fd99d71d0592980f6c4"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "e571d6c9c2a9c7864ffcd856da489b08707272458f6d6d7e7b268ffae5056a41"
+      }
+    }
+  }
+}

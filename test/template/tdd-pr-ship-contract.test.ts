@@ -103,6 +103,80 @@ const docsOnlyProject = async () => {
   return root;
 };
 
+const rootReadmeProject = async ({ mixedProduction = false } = {}) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-root-readme-'));
+  await mkdir(path.join(root, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(root, '.rig', 'revalidation.json'),
+    `${JSON.stringify(revalidationContract)}\n`,
+  );
+  await writeFile(path.join(root, 'README.md'), 'baseline README\n');
+  if (mixedProduction) {
+    await mkdir(path.join(root, 'packages', 'cli', 'src'), { recursive: true });
+    await writeFile(
+      path.join(root, 'packages', 'cli', 'src', 'marker.ts'),
+      'export const marker = 0;\n',
+    );
+  }
+  await git(['init', '-q', '-b', 'master'], root);
+  await git(
+    [
+      'add',
+      '.rig/revalidation.json',
+      'README.md',
+      ...(mixedProduction ? ['packages/cli/src/marker.ts'] : []),
+    ],
+    root,
+  );
+  await git(['commit', '-q', '-m', 'baseline'], root);
+  const baselineHeadSha = await git(['rev-parse', 'HEAD'], root);
+  await git(['checkout', '-q', '-b', 'docs/RP-367'], root);
+
+  const claims = (await import(
+    pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href
+  )) as {
+    revalidateClaim: (input: Record<string, unknown>) => { result: string };
+  };
+  const ticket = {
+    id: 'RP-367',
+    state: 'open' as const,
+    title: 'classify README-only workflow prose',
+    labels: [],
+    blockedBy: [],
+    blocks: [],
+  };
+  expect(
+    claims.revalidateClaim({
+      projectRoot: root,
+      ticket,
+      point: 'SELECT',
+      targetSha: baselineHeadSha,
+      allowCreate: true,
+    }).result,
+  ).toBe('BASELINE_CREATED');
+  await writeFile(
+    path.join(root, 'README.md'),
+    'controller prose calls this release a refactor, but final Git paths decide applicability.\n',
+  );
+  if (mixedProduction) {
+    await writeFile(
+      path.join(root, 'packages', 'cli', 'src', 'marker.ts'),
+      'export const marker = 1;\n',
+    );
+  }
+  await git(
+    [
+      'add',
+      'README.md',
+      '.rig/claims/RP-367.json',
+      ...(mixedProduction ? ['packages/cli/src/marker.ts'] : []),
+    ],
+    root,
+  );
+  await git(['commit', '-q', '-m', 'document root workflow'], root);
+  return root;
+};
+
 describe('RP-306 pr-ship enforcement contract', () => {
   it('runs verify-ship for a ticket before it can emit SHIP and treats exit 2 as HOLD', async () => {
     const skill = await readFile(prShipSkill, 'utf8');
@@ -115,15 +189,47 @@ describe('RP-306 pr-ship enforcement contract', () => {
   });
 
   it('derives TDD-0 from a docs-only final Git diff even when controller prose says otherwise', async () => {
+    const root = await rootReadmeProject();
+    const result = await run(
+      process.execPath,
+      [tddEvidence, 'verify-ship', '--ticket', 'RP-367', '--base', 'master'],
+      root,
+      {
+        ...process.env,
+        RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-readme-run-')),
+      },
+    );
+
+    expect(result.code, result.out).toBe(0);
+    expect(result.out).toMatch(/TDD-0|not applicable/i);
+  });
+
+  it('keeps docs-only final Git diffs at TDD-0 when controller prose says otherwise', async () => {
     const root = await docsOnlyProject();
     const result = await run(
       process.execPath,
       [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
       root,
-      { ...process.env, RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-fresh-run-')) },
+      {
+        ...process.env,
+        RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-fresh-run-')),
+      },
     );
 
     expect(result.code, result.out).toBe(0);
     expect(result.out).toMatch(/TDD-0|not applicable/i);
+  });
+
+  it('keeps a root README.md diff mixed with a production path at TDD-2', async () => {
+    const root = await rootReadmeProject({ mixedProduction: true });
+    const result = await run(
+      process.execPath,
+      [tddEvidence, 'verify-ship', '--ticket', 'RP-367', '--base', 'master'],
+      root,
+      { ...process.env, RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-pr-ship-mixed-run-')) },
+    );
+
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/TDD-2|final Git diff|TDD evidence/i);
   });
 });
