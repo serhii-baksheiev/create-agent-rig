@@ -8,16 +8,28 @@ import { initProject } from './init.js';
 /** A user-facing failure: message is printed as-is, no stack trace. */
 export class CreateError extends Error {}
 
+// RP-252. The per-step bound on each git child `initGitRepository` /
+// `commitGitBaseline` runs. Generous because a real git init/add/commit of
+// the payload takes well under a second, so it only catches a genuine hang.
+export const GIT_STEP_TIMEOUT_MS = 60_000;
+
 export interface CreateOptions {
   cwd: string;
   /**
    * Initialise git with a baseline commit (default true) so the first change —
-   * human or agent — diffs against a pristine template. Never fatal: a missing
-   * git skips silently.
+   * human or agent — diffs against a pristine template. A missing or failing
+   * git still skips silently; a git step that exceeds its bound fails create
+   * with a named error (RP-252).
    */
   git?: boolean;
   /** Opt into the experimental workflow layer (RP-180) — see `initProject`. */
   withWorkflow?: boolean;
+  /**
+   * Bound on each git child `initGitRepository` / `commitGitBaseline` runs,
+   * in milliseconds. Defaults to `GIT_STEP_TIMEOUT_MS`; exists so a test can
+   * use a short bound instead of waiting out the real one.
+   */
+  gitTimeoutMs?: number;
 }
 
 export interface CreateResult {
@@ -63,7 +75,8 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
   await ensureEmptyOrAbsent(projectDir);
   await mkdir(projectDir, { recursive: true });
 
-  const gitReady = options.git !== false && (await initGitRepository(projectDir));
+  const gitTimeoutMs = options.gitTimeoutMs ?? GIT_STEP_TIMEOUT_MS;
+  const gitReady = options.git !== false && (await initGitRepository(projectDir, gitTimeoutMs));
 
   await initProject(projectDir, {
     project: { name: projectName, scope: projectName, region: '' },
@@ -71,7 +84,7 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
   });
 
   if (gitReady) {
-    await commitGitBaseline(projectDir);
+    await commitGitBaseline(projectDir, gitTimeoutMs);
   }
 
   return { projectDir, projectName };
@@ -79,34 +92,59 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
 
 const run = promisify(execFile);
 
-const gitInvocation = (projectDir: string) => ({
+const gitInvocation = (projectDir: string, timeoutMs: number) => ({
   quiet: ['-c', 'gc.auto=0', '-c', 'maintenance.auto=false'],
-  where: { cwd: projectDir, env: gitEnv() },
+  // `killSignal: 'SIGKILL'` so a child that ignores SIGTERM cannot outlive
+  // the bound (RP-252).
+  where: { cwd: projectDir, env: gitEnv(), timeout: timeoutMs, killSignal: 'SIGKILL' as const },
 });
 
-async function initGitRepository(projectDir: string): Promise<boolean> {
-  const { quiet, where } = gitInvocation(projectDir);
+/**
+ * Node's `execFile` rejects a timed-out child with `error.killed === true`
+ * (RP-252) — distinct from every other way a git call can fail. Throws a
+ * user-facing `CreateError` naming the step and the bound; does nothing for
+ * any other error, leaving the caller's existing swallow-and-continue intact.
+ */
+function throwOnTimeout(error: unknown, step: string, timeoutMs: number, projectDir: string): void {
+  const killed =
+    typeof error === 'object' && error !== null && 'killed' in error && error.killed === true;
+  if (!killed) return;
+  throw new CreateError(
+    `${step} did not finish within ${timeoutMs} ms — create stopped. ` +
+      `Remove ${projectDir} and run create again, or pass --no-git to skip Git.`,
+  );
+}
+
+async function initGitRepository(projectDir: string, timeoutMs: number): Promise<boolean> {
+  const { quiet, where } = gitInvocation(projectDir, timeoutMs);
   try {
     await run('git', [...quiet, 'init', '--quiet'], where);
     return true;
-  } catch {
+  } catch (error) {
+    throwOnTimeout(error, 'git init', timeoutMs, projectDir);
     // git missing or unusable — generation never fails on this.
     return false;
   }
 }
 
-async function commitGitBaseline(projectDir: string): Promise<void> {
+async function commitGitBaseline(projectDir: string, timeoutMs: number): Promise<void> {
   // Disable git's background maintenance for these one-shot commands: a commit
   // can otherwise fork an auto-gc / maintenance process that keeps writing to
   // .git/objects/pack after we return — a non-deterministic tail that races any
   // caller cleaning up the directory, and pointless work on a one-commit repo.
-  const { quiet, where } = gitInvocation(projectDir);
+  const { quiet, where } = gitInvocation(projectDir, timeoutMs);
   // Pin both repository locations even though cwd is already the child. If a
   // later refactor calls this without a successful `git init`, Git must fail
   // here rather than discover and mutate a parent repository.
   const repository = [`--git-dir=${path.join(projectDir, '.git')}`, `--work-tree=${projectDir}`];
   try {
     await run('git', [...quiet, ...repository, 'add', '-A'], where);
+  } catch (error) {
+    throwOnTimeout(error, 'git add', timeoutMs, projectDir);
+    // git missing or unusable — generation never fails on this.
+    return;
+  }
+  try {
     // Explicit identity: the baseline must commit even where git has no
     // global user configured (fresh machines, CI). --no-verify here shields
     // the baseline from the USER'S global hooks only — the generated
@@ -128,7 +166,8 @@ async function commitGitBaseline(projectDir: string): Promise<void> {
       ],
       where,
     );
-  } catch {
+  } catch (error) {
+    throwOnTimeout(error, 'git commit', timeoutMs, projectDir);
     // git missing or unusable — generation never fails on this.
   }
 }
