@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-359",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "9f233b2905aa855c5871169129d350859cf6986b2876118894b15f0b50c8373e",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/e2e-run-report.test.ts",
+      "fullName": "run cleans up only owned bootstrap descendants when its deadline expires"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "9f233b2905aa855c5871169129d350859cf6986b2876118894b15f0b50c8373e",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "a8a7f19394e1522bff8ab88f5f375b9b7652f09deb48279f070afc122763aecb"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-359",
+    "applicability": {
+      "level": "TDD-1",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-359-red"
+      }
+    },
+    "baseline": {
+      "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/e2e-run-report.test.ts",
+        "fullName": "run cleans up only owned bootstrap descendants when its deadline expires",
+        "fileSha256": "25b75fcf5007185a0ea075b938b4b46bc5f96c919df9aac0b1dba9fa4c4d9ebd"
+      },
+      "source": {
+        "runId": "20261004-120954-rp359",
+        "seq": 4
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "4111a713d4eafb572723d97defbe6a786d024510eebd609eacd9d119a88338ad"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "1e92817d445de9eb0c471fd6518d8e25442de89cee5c7776ab1fc3c826b61942"
+      }
+    }
+  }
+}

@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -469,6 +470,99 @@ describe('run', () => {
     const cause = (failure() as { cause?: unknown }).cause;
     const keys = typeof cause === 'object' && cause !== null ? Object.keys(cause) : [];
     expect(keys.filter((key) => key !== 'code' && key !== 'signal')).toEqual([]);
+  });
+
+  /**
+   * RP-359: `exec`'s `timeout` kills only the direct child. A bootstrap child
+   * (`npx` → `npm exec` → `npm install`) that stalls past its deadline leaves
+   * every descendant it started running as an orphan — measured on a real e2e
+   * fixture, `npm exec` and `npm install` were still alive ~40 s after the
+   * fixture's own deadline, with stalled registry connections.
+   *
+   * This reproduces the shape without any network: the `run` child spawns one
+   * grandchild of its own (not detached, so it inherits the child's process
+   * group on POSIX — exactly the npx→npm chain's own shape) and then stalls
+   * forever itself. An UNRELATED sentinel process, started directly by this
+   * test rather than through `run`, stands in for "everything outside the
+   * killed tree" — it must survive untouched.
+   */
+  it('cleans up only owned bootstrap descendants when its deadline expires', async () => {
+    const tmp = await mkdtemp(path.join(tmpdir(), 'caf-run-descendants-'));
+    const pidFile = path.join(tmp, 'grandchild.pid');
+
+    // Not a descendant of the `run` child below — it must outlive the kill.
+    const sentinel = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+      stdio: 'ignore',
+    });
+    const sentinelPid = sentinel.pid;
+    if (sentinelPid == null) {
+      throw new Error('the sentinel process did not report a pid');
+    }
+
+    let grandchildPid: number | undefined;
+    try {
+      // Spawned, not detached: a plain descendant of the `run` child, the
+      // same shape as npx's own npm/node chain. Writes its pid synchronously
+      // and then stalls, same as its parent.
+      const script = [
+        "const { spawn } = require('node:child_process');",
+        "const fs = require('node:fs');",
+        "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });",
+        `fs.writeFileSync(${JSON.stringify(pidFile)}, String(grandchild.pid));`,
+        'setInterval(() => {}, 1000);',
+      ].join('\n');
+
+      let rejection: unknown;
+      try {
+        const resolved = await run(process.execPath, ['-e', script], {
+          timeout: 1500,
+          cwd: tmp,
+        });
+        rejection = new Error(`run resolved instead of rejecting: ${JSON.stringify(resolved)}`);
+      } catch (error) {
+        rejection = error;
+      }
+
+      expect(rejection).toBeInstanceOf(Error);
+      expect((rejection as Error).message).toContain('timed out after');
+
+      grandchildPid = Number((await readFile(pidFile, 'utf8')).trim());
+      expect(Number.isInteger(grandchildPid)).toBe(true);
+
+      // Bounded poll: today the grandchild is never killed, so this proves
+      // the behaviour by observation (ESRCH), not by inference from the
+      // parent's own exit.
+      const POLL_INTERVAL_MS = 50;
+      const pollDeadline = Date.now() + 3_000;
+      let grandchildAlive = true;
+      while (Date.now() < pollDeadline) {
+        try {
+          process.kill(grandchildPid, 0);
+        } catch {
+          grandchildAlive = false;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+      }
+      expect(grandchildAlive).toBe(false);
+
+      // The control: an unrelated process outside the killed tree is untouched.
+      expect(() => process.kill(sentinelPid, 0)).not.toThrow();
+    } finally {
+      try {
+        sentinel.kill('SIGKILL');
+      } catch {
+        // already gone
+      }
+      if (grandchildPid != null) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL');
+        } catch {
+          // already gone — the point of the test
+        }
+      }
+      await removeFixture(tmp);
+    }
   });
 });
 
