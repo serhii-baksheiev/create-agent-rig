@@ -169,9 +169,20 @@ function versionTags() {
   return tags;
 }
 
+/**
+ * `## X.Y.Z` headings in `markdown`, in file order — exact only. Anchored at
+ * both ends, so `## X.Y.Z (release candidate)` (RP-353: an accepted but
+ * unpublished release candidate, frozen while master moves on) is correctly
+ * excluded: it is not a released version, and forcing one into this table
+ * would demand a ledger row before the bytes it names have actually shipped.
+ */
+export function parseChangelogVersions(markdown) {
+  return [...markdown.matchAll(/^## (\d+\.\d+\.\d+)$/gm)].map((m) => m[1]);
+}
+
 /** `## X.Y.Z` headings of CHANGELOG.md, in file order. */
 function changelogVersions() {
-  return [...readFileSync(CHANGELOG, 'utf8').matchAll(/^## (\d+\.\d+\.\d+)$/gm)].map((m) => m[1]);
+  return parseChangelogVersions(readFileSync(CHANGELOG, 'utf8'));
 }
 
 /** sha256 of every agent-os blob at one commit, keyed by install-relative path. */

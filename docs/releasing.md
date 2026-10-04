@@ -39,6 +39,31 @@ the script's own header says where each is blind.
 It is a preflight, not a gate: nothing runs it for you, and a green run is not a
 verdict on the release. Pinned in `test/template/release-preflight.test.ts`.
 
+### Preflighting a frozen, unpublished release candidate
+
+A release candidate that was accepted and frozen under `release/<version>-rc`
+can sit there while `origin/master` keeps moving — a later version prepared on
+top of it. Ordinary mode above refuses that checkout outright: it requires HEAD
+to be origin/master's **current** tip, and a frozen candidate is, by design,
+no longer that. For exactly this situation:
+
+```sh
+node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>
+```
+
+This still runs every manifest, ledger, payload and tarball check ordinary mode
+runs. What it replaces is only the git question: instead of "is HEAD
+origin/master's current tip", it asks three things specific to a frozen
+candidate — HEAD must be exactly the given sha; the fully-qualified
+`refs/remotes/origin/release/<package.json version>-rc` must resolve and name
+that same sha; and the sha must still be an ancestor of `origin/master`. The
+working tree must still be clean, exactly as in ordinary mode. Like ordinary
+mode, it reads refs as git already has them and does not fetch.
+
+No flag at all is ordinary mode, entirely unchanged. This mode does not publish
+or tag anything by itself — it only tells you whether the frozen bytes still
+check out clean against the three facts above.
+
 ## Exact-SHA network acceptance
 
 The existing E2E workflow has an opt-in release lane. A dispatch with

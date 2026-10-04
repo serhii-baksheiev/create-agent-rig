@@ -12,6 +12,18 @@ import {
 } from '../../scripts/build-hash-history.mjs';
 // @ts-expect-error — a plain .mjs rulebook script
 import { withoutGitLocation } from '../../.claude/scripts/git-env.mjs';
+// RP-353: the heading-parsing half of `changelogVersions()` is private and
+// reads straight off disk, so it cannot be pinned directly with a synthetic
+// fixture today. Taken off the namespace, not by name — a missing export fails
+// only the tests that use it, the same reasoning
+// `test/template/release-preflight.test.ts` states for its own namespace
+// import.
+// @ts-expect-error — a plain .mjs release script, imported for its pure parts
+import * as hashHistory from '../../scripts/build-hash-history.mjs';
+
+const { parseChangelogVersions } = hashHistory as {
+  parseChangelogVersions: (markdown: string) => string[];
+};
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -256,5 +268,48 @@ describe('the agent-os layer uses only the supported token', () => {
   it('would catch a violation — the matcher itself, not just its result', () => {
     const sample = 'import { thing } from "@app/core";';
     expect(UNSUPPORTED.some((token) => sample.includes(token))).toBe(true);
+  });
+});
+
+// RP-353: 1.2.0 frozen at `release/1.2.0-rc` while master prepares 1.2.1 must
+// not force a ledger row for 1.2.0 before it has actually been published — the
+// declared escape is the heading `## X.Y.Z (release candidate)`, which this
+// table's own regex already excludes by being anchored (`^## (\d+\.\d+\.\d+)$`).
+// This pins that on purpose, with the regex pulled out where a test can reach
+// it, so a future "helpful" loosening of the anchor is caught here rather than
+// surfacing as a demand for a ledger row on an unpublished candidate.
+describe('the changelog heading that counts as "released" — exact only, a candidate heading is not released yet', () => {
+  it('matches only an exact "## X.Y.Z" heading, skipping a release-candidate one between two real releases', () => {
+    const changelog = [
+      '## 1.2.1',
+      '',
+      'body',
+      '',
+      '## 1.2.0 (release candidate)',
+      '',
+      'body',
+      '',
+      '## 1.1.0',
+      '',
+      'body',
+      '',
+    ].join('\n');
+    expect(parseChangelogVersions(changelog)).toEqual(['1.2.1', '1.1.0']);
+  });
+
+  // The direction that would cost a release: each of these carries the literal
+  // substring "## 1.2.0", which is exactly what a looser match would accept.
+  it('does not treat a looser candidate spelling as released either', () => {
+    for (const heading of ['## 1.2.0-rc', '## 1.2.0 rc1', '## 1.2.0beta', '## 1.2.0.1']) {
+      expect(parseChangelogVersions(`${heading}\n\nbody\n`), heading).toEqual([]);
+    }
+  });
+
+  // The independent oracle: the committed CHANGELOG.md, read through this
+  // file's OWN duplicated regex (`changelogVersions` above) rather than through
+  // `parseChangelogVersions` checking its own work.
+  it("agrees with the committed CHANGELOG.md read through this file's own duplicated regex", async () => {
+    const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    expect(parseChangelogVersions(changelog)).toEqual(await changelogVersions());
   });
 });
