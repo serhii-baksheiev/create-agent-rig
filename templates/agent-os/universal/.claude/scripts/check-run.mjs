@@ -308,7 +308,22 @@ const DARWIN = process.platform === 'darwin';
 
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
 const ANSI_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]/g;
-const stripAnsi = (text) => text.replace(ANSI_PATTERN, '');
+// RP-323 (security-scanner battery, shapes s28/s29) — `ANSI_PATTERN` above
+// matches only a CSI sequence (`ESC [ … letter`); an OSC sequence (a
+// terminal TITLE, `ESC ] 0 ; text BEL`, or HYPERLINK, `ESC ] 8 ; ; url ST`
+// where ST is `ESC \`) starts with `ESC ]` instead and was left untouched,
+// so its own bytes could sit inside a PEM BEGIN header and break the
+// `private-key-block` pattern's match. `[^\x07\x1b]*` followed by the
+// literal terminator alternation cannot backtrack catastrophically (the
+// negated class excludes both terminator bytes, so there is exactly one way
+// to split it from what follows) — see check-run.test.ts
+// (absent in a generated rig) › "finishes within a bounded time" (many UNTERMINATED
+// `ESC ]` openers). An unterminated `ESC ]` (no BEL, no ST ever arrives) is
+// left exactly as it is — a stated limit, not a gap this pattern tries to
+// close.
+// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+const OSC_PATTERN = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const stripAnsi = (text) => text.replace(ANSI_PATTERN, '').replace(OSC_PATTERN, '');
 
 // RP-290 review round 3 (security-scanner, reproduced on Linux/WSL) — these
 // three used to be `/^\s*FAIL\s+(.+?)\s*$/`-shaped: a non-greedy capture
@@ -717,6 +732,26 @@ const prepareVitestStructuredResultTarget = (runDir, name) => {
 // O(line length).
 const OVERFLOW_TAIL_CHARS = 256;
 
+// RP-323 (security-scanner battery, shape s27) — `private-key-block`'s own
+// padding class (`[A-Z0-9 ]*`, between `-----BEGIN ` and `PRIVATE KEY-----`)
+// is unbounded, so no FIXED-size `tail` can contain every header: a header
+// long enough to straddle a read-chunk boundary more than `OVERFLOW_TAIL_CHARS`
+// characters from either end pushes its own `-----BEGIN ` prefix out of that
+// small window before the segment carrying `PRIVATE KEY-----` ever arrives.
+// This pattern recognises evaluated text that ends MID-header — a
+// `-----BEGIN ` not yet followed by `PRIVATE KEY-----` — so `appendSegment`
+// can carry the open prefix itself forward as next segment's context,
+// instead of only the last `OVERFLOW_TAIL_CHARS` raw characters.
+const OPEN_HEADER_PATTERN = /-----BEGIN [A-Z0-9 ]*$/;
+// A cap on how large that carried-forward open prefix may grow across
+// segments before this feeder fails CLOSED instead of growing it without
+// bound (`invariants.md`'s bounded-work rule): past this many characters of
+// padding with no closing `PRIVATE KEY-----` yet seen, the block is armed
+// outright (`lastLineMarker = 'begin'`) and the carry is dropped, falling
+// back to the ordinary `OVERFLOW_TAIL_CHARS` tail for whatever follows. No
+// test drives the carry past this cap — untested design limit.
+const OPEN_HEADER_MAX_CHARS = 4096;
+
 /**
  * A streaming line splitter: feed chunks, get complete lines as they close.
  * Bounded per the module header — at most `LINE_MAX_BYTES` of a PENDING
@@ -763,13 +798,33 @@ const OVERFLOW_TAIL_CHARS = 256;
  * the header shape must be checked after stripping ANSI, not on the raw
  * segment", and › "closes the block on that same line, so a normal FAIL
  * line and the line after it are not swallowed".
+ *
+ * `normalize` (RP-323) is the same text transform the non-overLimit path in
+ * `runCheck` applies before matching — `relativize(stripAnsi(...))` — passed
+ * in rather than hard-coded, so this incremental scan sees a header shaped
+ * only after cwd is stripped out of it exactly like the whole-line path
+ * does; it defaults to `stripAnsi` alone so a caller that never relativizes
+ * (none in this module) still gets ANSI/OSC stripped. See ›
+ * "still arms the block — the over-limit incremental marker scan must
+ * relativize before matching, the same as the per-line scan already does".
+ * `OPEN_HEADER_PATTERN` (RP-323) additionally carries an unterminated BEGIN
+ * header's own open prefix forward across segments — see its own comment,
+ * above — in place of the plain `OVERFLOW_TAIL_CHARS` tail, for exactly the
+ * case the normal-length straddle tests above already cover for a line that
+ * never goes over the per-line cap at all: see › "still arms the block,
+ * even though the line itself is over the 64 KiB per-line cap".
  */
-const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
+const makeLineFeeder = (onLine, { lineMaxBytes = LINE_MAX_BYTES, normalize = stripAnsi } = {}) => {
   let pending = '';
   let pendingBytes = 0;
   let overLimit = false;
   let tail = '';
   let lastLineMarker = null;
+  // RP-323 — the open (unterminated) BEGIN header prefix carried forward in
+  // place of `tail`, once this line's evaluated text ends mid-header; `null`
+  // when this line is not currently inside one. See `OPEN_HEADER_PATTERN`'s
+  // own comment, above.
+  let openHeaderCarry = null;
 
   const resetLine = () => {
     pending = '';
@@ -777,15 +832,38 @@ const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
     overLimit = false;
     tail = '';
     lastLineMarker = null;
+    openHeaderCarry = null;
   };
 
   const appendSegment = (segment) => {
     if (segment.length > 0) {
-      const evalText = stripAnsi(tail + segment);
+      const context = openHeaderCarry !== null ? openHeaderCarry : tail;
+      const evalText = normalize(context + segment);
       const beginIndex = lastMatchIndex(evalText, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
       const endIndex = lastMatchIndex(evalText, PRIVATE_KEY_END_PATTERN_GLOBAL);
       if (beginIndex !== -1 || endIndex !== -1) {
         lastLineMarker = beginIndex > endIndex ? 'begin' : 'end';
+      }
+      // A cheap `includes` check first (RP-323): the overwhelming majority
+      // of segments carry no BEGIN at all, and skipping straight past the
+      // regex for them keeps this feeder's per-chunk cost close to the
+      // single linear scan the module header promises, rather than paying
+      // for `OPEN_HEADER_PATTERN`'s own (bounded, but non-zero) backtracking
+      // on text that could never match it.
+      openHeaderCarry = null;
+      if (evalText.includes('-----BEGIN ')) {
+        const openMatch = OPEN_HEADER_PATTERN.exec(evalText);
+        if (openMatch !== null) {
+          if (openMatch[0].length <= OPEN_HEADER_MAX_CHARS) {
+            openHeaderCarry = openMatch[0];
+          } else {
+            // Fail CLOSED rather than growing the carry without bound
+            // (`OPEN_HEADER_MAX_CHARS`'s own comment): a BEGIN header padded
+            // this far with no closing `PRIVATE KEY-----` yet seen is armed
+            // outright instead.
+            lastLineMarker = 'begin';
+          }
+        }
       }
       tail = (tail + segment).slice(-OVERFLOW_TAIL_CHARS);
     }
@@ -832,11 +910,12 @@ const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
  * Stream one capture file to `dest` (raw bytes, unmodified) and through
  * `onLine` (decoded, line by line) — a bounded chunk at a time, never the
  * whole file at once. See the module header for why the child's own output
- * is captured through a file rather than read live from a pipe.
+ * is captured through a file rather than read live from a pipe. `normalize`
+ * (RP-323) is forwarded to `makeLineFeeder` unchanged — see its own comment.
  */
-const passThroughAndProcess = (filePath, dest, onLine) =>
+const passThroughAndProcess = (filePath, dest, onLine, normalize) =>
   new Promise((resolve, reject) => {
-    const feeder = makeLineFeeder(onLine);
+    const feeder = makeLineFeeder(onLine, { normalize });
     const readStream = createReadStream(filePath);
     readStream.on('data', (chunk) => {
       dest.write(chunk);
@@ -1533,8 +1612,23 @@ const runCheck = async ({ name, timeoutSeconds, vitestJson, command }) => {
     }
 
     if (!spawnError) {
-      await passThroughAndProcess(stdoutCapturePath, process.stdout, makeProcessLine());
-      await passThroughAndProcess(stderrCapturePath, process.stderr, makeProcessLine());
+      // RP-323 — the SAME normalisation the non-overLimit branch below
+      // applies (`relativize(stripAnsi(...))`) is handed to the over-limit
+      // incremental scan too, so a header shaped only after cwd is
+      // relativized out of it is not missed on that path either.
+      const normalizeForLineFeeder = (text) => relativize(stripAnsi(text));
+      await passThroughAndProcess(
+        stdoutCapturePath,
+        process.stdout,
+        makeProcessLine(),
+        normalizeForLineFeeder,
+      );
+      await passThroughAndProcess(
+        stderrCapturePath,
+        process.stderr,
+        makeProcessLine(),
+        normalizeForLineFeeder,
+      );
     }
   } finally {
     if (stdoutFd !== null) {
