@@ -2337,6 +2337,18 @@ sometimes earlier (step 6). Everything before that is mechanical:
    ledger does not mention, naming the version and the npm command" and ›
    "points at a commit whose package.json carries that version".
 
+   A heading can also read `## X.Y.Z (release candidate)`: that version has
+   been accepted and frozen for publication but is not yet published — no
+   ledger row and no hash-history entry for it until the owner actually
+   publishes. After publication, reconcile the heading back to the plain
+   `## X.Y.Z` form and write the ledger row at the **next** release, as step 4
+   above already does. `node scripts/build-hash-history.mjs` refuses to run
+   when a candidate heading is left on any version other than the one
+   currently being prepared, naming the stale version — reconciliation was
+   forgotten, not still pending. Pinned in `test/template/hash-history.test.ts`
+   › "throws, naming the stale version, for a candidate heading on a version
+   other than the one being prepared".
+
 5. This file, and `PLAN.md` if the plan's claims changed.
 6. **`pnpm test` again — this run, not step 1, is the one that can catch a
    stale hash table.** The check compares the table against the versions this
@@ -2364,6 +2376,12 @@ sometimes earlier (step 6). Everything before that is mechanical:
    would actually produce. What it looks at is the code, not this list; what it
    cannot see is stated in its own header. It is a preflight, not a gate —
    nothing runs it for you, and exit 0 is not a verdict on the release.
+
+   A release candidate frozen under `release/<version>-rc` while
+   `origin/master` has since moved on preflights with
+   `node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>`
+   instead — see `docs/releasing.md`, "Preflighting a frozen, unpublished
+   release candidate".
 
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and

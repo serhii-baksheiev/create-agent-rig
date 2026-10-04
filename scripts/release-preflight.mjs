@@ -9,6 +9,22 @@
 // fact goes stale, which is the defect class 0.8.0 shipped to remove. This runs
 // the checks instead of describing them.
 //
+// RP-353: a second, narrow mode for preflighting a release candidate that was
+// accepted and frozen under `release/<version>-rc` while `origin/master` has
+// since moved on to a later version — ordinary mode's "HEAD is origin/master's
+// current tip" can never pass for such a candidate, and must not be made to.
+//
+//   node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>
+//
+// Frozen mode resolves
+// `refs/remotes/origin/release/<package.json version>-rc` and
+// `refs/remotes/origin/master` EXACTLY — `git show-ref --verify --hash`, never
+// `git rev-parse`'s short-name DWIM fallback onto a same-named tag or branch —
+// and checks HEAD against the candidate sha, the release ref against HEAD, and
+// the candidate's ancestry in `origin/master`'s history. Any frozen-mode git
+// finding stops the run there: `npm pack` (which builds the real tarball) is
+// never reached once one has fired.
+//
 // Deliberately phrased as what it LOOKS AT rather than as what it guarantees.
 // The limits block below says what it cannot see.
 //
@@ -35,7 +51,9 @@
 //     the artifact that would ship rather than a description of it — but it is
 //     not free and it writes into `packages/cli/dist`.
 //  3. **It reads `origin/master` as git already has it.** It does not fetch, so
-//     a stale remote ref reads as agreement. Fetch first if that matters.
+//     a stale remote ref reads as agreement. Fetch first if that matters. The
+//     same is true of `--frozen-candidate`'s release ref: it is read as git
+//     already has it, never fetched.
 //  4. **It asks about NAMES, never content.** The credential question is
 //     delegated to `isCredentialPath` in `.claude/scripts/lib/secrets.mjs` — the
 //     same module `guard-secret-file` and `validate-no-secrets.mjs` read, so the
@@ -52,8 +70,11 @@
 //     preflight that fails when the network is down is a preflight nobody runs.
 //
 // The pure parts are exported and tested; `main` reads the world and hands them
-// the results. Pinned in `test/template/release-preflight.test.ts` — absent in a
-// generated rig, this being the generator's own script.
+// the results. Pinned in `test/template/release-preflight.test.ts` and
+// `test/template/release-candidate-preflight.test.ts` — absent in a generated
+// rig, this being the generator's own script. The exact-ref resolution and the
+// stop-before-pack behaviour are pinned end to end, against the real script and
+// real git, in `test/template/release-preflight-frozen-e2e.test.ts`.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -250,6 +271,156 @@ export const gitFindings = ({ status, head, remote }) => {
   return findings;
 };
 
+/**
+ * The frozen-candidate counterpart of `gitFindings` above — never conflated
+ * with it. Ordinary mode keeps asking "is HEAD origin/master's CURRENT tip";
+ * this asks the three things a frozen, accepted-but-unpublished release
+ * candidate actually needs: is the checkout sitting exactly on the candidate,
+ * does `refs/remotes/origin/release/<version>-rc` still name it, and is it
+ * still reachable from `origin/master`'s history.
+ *
+ * `releaseRefSha` is `null` when the ref could not be resolved — ancestry
+ * cannot be asked at all without a resolved ref, so an unresolved ref already
+ * says everything the ancestry check could add and the two never both fire.
+ */
+export const frozenCandidateGitFindings = ({
+  status,
+  head,
+  sha,
+  releaseRefName,
+  releaseRefSha,
+  isAncestorOfMaster,
+}) => {
+  const findings = [];
+
+  if (String(status ?? '') !== '') {
+    findings.push(
+      'the working tree is not clean — publish from a checkout whose bytes are all committed, ' +
+        'since npm pack reads the working directory and not the index',
+    );
+  }
+
+  if (head !== sha) {
+    findings.push(
+      `HEAD is ${head} but the frozen candidate is ${sha} — check out the exact candidate sha ` +
+        'before preflighting it',
+    );
+  }
+
+  if (releaseRefSha === null || releaseRefSha === undefined) {
+    findings.push(
+      `${releaseRefName} could not be resolved — cannot confirm the release ref still names ` +
+        'the frozen candidate',
+    );
+  } else if (releaseRefSha !== sha) {
+    findings.push(
+      `${releaseRefName} is ${releaseRefSha} but the frozen candidate is ${sha} — the release ` +
+        'ref no longer names this candidate',
+    );
+  }
+
+  if (releaseRefSha != null && !isAncestorOfMaster) {
+    findings.push(
+      `${sha} is not an ancestor of origin/master — the frozen candidate must still be ` +
+        "reachable from master's history",
+    );
+  }
+
+  return findings;
+};
+
+/**
+ * Whether `changelog` documents `version` under one of the two sanctioned
+ * headings: exactly `## X.Y.Z`, or exactly `## X.Y.Z (release candidate)` for
+ * an accepted-but-unpublished candidate. Nothing looser than either — a loose
+ * match (`.includes`/`toContain`) would also accept `## X.Y.Z.1` or
+ * `## X.Y.Z-rc`, which carry the same substring but document something else.
+ */
+export const changelogHeadingFindings = (changelog, version) => {
+  const escaped = String(version).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^## ${escaped}(?: \\(release candidate\\))?$`, 'm');
+  return pattern.test(String(changelog ?? ''))
+    ? []
+    : [
+        `CHANGELOG.md documents no exact "## ${version}" or "## ${version} (release candidate)" ` +
+          'heading',
+      ];
+};
+
+/**
+ * Argument parsing, run before any git call or `npm pack` — pure argv-in,
+ * decision-out, so an invalid argument can be refused before either runs.
+ * `--frozen-candidate <sha>` is
+ * the one recognized flag, and it is refused whenever anything about it is
+ * not exactly as declared: missing value, wrong length, not lowercase, not
+ * hex, repeated, or accompanied by an argument nothing else explains.
+ */
+export const parseReleasePreflightArgs = (argv) => {
+  const args = [...(argv ?? [])];
+  if (args.length === 0) return { mode: 'normal' };
+
+  let sha;
+  let seenFlag = false;
+  const rest = [];
+
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i];
+    if (arg === '--frozen-candidate') {
+      if (seenFlag) {
+        return {
+          mode: 'invalid',
+          error: '--frozen-candidate was given more than once — ambiguous, not "last one wins"',
+        };
+      }
+      seenFlag = true;
+      i += 1;
+      const value = args[i];
+      if (value === undefined) {
+        return { mode: 'invalid', error: '--frozen-candidate requires a sha argument' };
+      }
+      sha = value;
+    } else {
+      rest.push(arg);
+    }
+  }
+
+  if (!seenFlag) {
+    return { mode: 'invalid', error: `unrecognized argument(s): ${args.join(' ')}` };
+  }
+
+  if (rest.length > 0) {
+    return {
+      mode: 'invalid',
+      error: `unexpected extra argument(s) alongside --frozen-candidate: ${rest.join(' ')}`,
+    };
+  }
+
+  if (sha.length !== 40) {
+    return {
+      mode: 'invalid',
+      error:
+        `--frozen-candidate requires a 40-character lowercase hex sha, got "${sha}" ` +
+        `(${sha.length} characters)`,
+    };
+  }
+
+  if (sha !== sha.toLowerCase()) {
+    return {
+      mode: 'invalid',
+      error: `--frozen-candidate requires a lowercase sha, got "${sha}"`,
+    };
+  }
+
+  if (!/^[0-9a-f]{40}$/.test(sha)) {
+    return {
+      mode: 'invalid',
+      error: `--frozen-candidate requires a 40-character lowercase hex sha, got "${sha}"`,
+    };
+  }
+
+  return { mode: 'frozen-candidate', sha };
+};
+
 /** The file `npm pack` writes for a version. */
 export const expectedTarballName = (version) => `${PACKAGE_NAME}-${version}.tgz`;
 
@@ -297,6 +468,31 @@ const readJson = (relative) => JSON.parse(readFileSync(path.join(root, relative)
 const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 
 /**
+ * Resolves `fullRef` (e.g. `refs/remotes/origin/master`) to its sha, or `null`
+ * when it does not exist — never git's own DWIM short-name fallback.
+ *
+ * `git rev-parse <fullref>` is NOT safe for this: gitrevisions(7) has git
+ * retry the whole string as a short name when the literal ref is absent, so
+ * `git rev-parse refs/remotes/origin/master` silently resolves a TAG or
+ * BRANCH literally named `refs/remotes/origin/master` when the real
+ * remote-tracking ref does not exist. `git show-ref --verify --hash <fullref>`
+ * resolves only that exact ref and never falls back — confirmed against real
+ * git before this was written, and pinned end to end in
+ * `test/template/release-preflight-frozen-e2e.test.ts`'s cases (3), (4) and
+ * (7).
+ */
+const resolveExactRef = (fullRef) => {
+  try {
+    return execFileSync('git', ['show-ref', '--verify', '--hash', fullRef], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
+/**
  * The packed file list, from the real `npm pack`.
  *
  * `--json` is asked for so the listing is parsed rather than scraped out of the
@@ -323,23 +519,87 @@ const packedPaths = () => {
 };
 
 function main() {
+  // Argument parsing runs BEFORE any git call or `npm pack`: an invalid
+  // argument is refused here, with nothing else having run yet.
+  const { mode, sha, error } = parseReleasePreflightArgs(process.argv.slice(2));
+  if (mode === 'invalid') {
+    console.log(formatReport([error]));
+    return exitCodeFor([error]);
+  }
+
   const findings = [];
 
   const rootManifest = readJson('package.json');
   const inner = readJson('packages/cli/package.json');
   const version = rootManifest.version;
+  const changelog = readFileSync(path.join(root, 'CHANGELOG.md'), 'utf8');
 
   findings.push(...manifestFindings({ root: rootManifest, inner }));
   findings.push(...ledgerFindings(readJson('templates/release-ledger.json'), version));
+  findings.push(...changelogHeadingFindings(changelog, version));
 
   const head = git(['rev-parse', 'HEAD']);
-  let remote = '';
-  try {
-    remote = git(['rev-parse', 'origin/master']);
-  } catch {
-    // Left as '' — `gitFindings` reports it, and reports it once.
+  const status = git(['status', '--porcelain']);
+
+  if (mode === 'frozen-candidate') {
+    // `release/<version>-rc` is this candidate's frozen home: unlike
+    // `origin/master`, which keeps moving once a later version is prepared
+    // on top of it, this ref is the one the candidate was pushed under and
+    // never changes out from under this check.
+    const releaseRefName = `refs/remotes/origin/release/${version}-rc`;
+    const releaseRefSha = resolveExactRef(releaseRefName);
+    const masterRefSha = resolveExactRef('refs/remotes/origin/master');
+    // `origin/master` unresolvable is reported once, below, and distinctly
+    // from "not an ancestor" — the ancestry question is never even asked in
+    // that case, so `frozenCandidateGitFindings` is handed `true` here only to
+    // suppress its own ancestor finding, not as a claim that ancestry holds.
+    let isAncestorOfMaster = true;
+    if (masterRefSha !== null) {
+      isAncestorOfMaster = false;
+      try {
+        git(['merge-base', '--is-ancestor', sha, masterRefSha]);
+        isAncestorOfMaster = true;
+      } catch (error) {
+        // `merge-base --is-ancestor` exits 1 for "not an ancestor" and
+        // anything else (bad object, a crashed git) for an actual failure —
+        // only the former is a decided "no" and is swallowed here.
+        if (error?.status !== 1) throw error;
+      }
+    }
+    findings.push(
+      ...frozenCandidateGitFindings({
+        status,
+        head,
+        sha,
+        releaseRefName,
+        releaseRefSha,
+        isAncestorOfMaster,
+      }),
+    );
+    if (masterRefSha === null) {
+      findings.push(
+        'origin/master could not be resolved — cannot confirm the frozen candidate is reachable from its history',
+      );
+    }
+  } else {
+    let remote = '';
+    try {
+      remote = git(['rev-parse', 'origin/master']);
+    } catch {
+      // Left as '' — `gitFindings` reports it, and reports it once.
+    }
+    findings.push(...gitFindings({ status, head, remote }));
   }
-  findings.push(...gitFindings({ status: git(['status', '--porcelain']), head, remote }));
+
+  // A frozen-mode git finding stops here, before `npm pack` ever runs:
+  // `packedPaths()` builds the real tarball (`prepare` → `tsc`), and a
+  // candidate that already failed the ref/ancestry questions above has
+  // nothing left to gain from paying that cost — see the header's point 2
+  // and `test/template/release-preflight-frozen-e2e.test.ts`'s item B.
+  if (mode === 'frozen-candidate' && findings.length > 0) {
+    console.log(formatReport(findings));
+    return exitCodeFor(findings);
+  }
 
   const { filename, paths } = packedPaths();
   findings.push(...payloadFindings(paths));

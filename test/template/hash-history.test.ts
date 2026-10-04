@@ -12,6 +12,30 @@ import {
 } from '../../scripts/build-hash-history.mjs';
 // @ts-expect-error — a plain .mjs rulebook script
 import { withoutGitLocation } from '../../.claude/scripts/git-env.mjs';
+// RP-353: the heading-parsing half of `changelogVersions()` is private and
+// reads straight off disk, so it cannot be pinned directly with a synthetic
+// fixture today. Taken off the namespace, not by name — a missing export fails
+// only the tests that use it, the same reasoning
+// `test/template/release-preflight.test.ts` states for its own namespace
+// import.
+// @ts-expect-error — a plain .mjs release script, imported for its pure parts
+import * as hashHistory from '../../scripts/build-hash-history.mjs';
+
+const { parseChangelogVersions, assertCandidateHeadingsAreCurrent } = hashHistory as {
+  parseChangelogVersions: (markdown: string) => string[];
+  // RP-353 review blocker D: a `## X.Y.Z (release candidate)` heading is only
+  // ever correct for the version CURRENTLY being prepared (package.json's own
+  // version) — for any OTHER version it means reconciliation back to
+  // `## X.Y.Z` was forgotten after THAT version published, and the ledger
+  // requirement at the NEXT release must not silently skip it the way
+  // `parseChangelogVersions` does today (its anchored regex excludes every
+  // candidate heading, whichever version it names, with no way to tell "still
+  // pending" apart from "forgot to reconcile"). Pure, and throws rather than
+  // returning findings — the same shape `releasedFromLedger` already uses in
+  // this file for "the CHANGELOG and the ledger disagree about what has been
+  // released", which this is a sibling check for.
+  assertCandidateHeadingsAreCurrent: (markdown: string, currentVersion: string) => void;
+};
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -256,5 +280,147 @@ describe('the agent-os layer uses only the supported token', () => {
   it('would catch a violation — the matcher itself, not just its result', () => {
     const sample = 'import { thing } from "@app/core";';
     expect(UNSUPPORTED.some((token) => sample.includes(token))).toBe(true);
+  });
+});
+
+// RP-353: 1.2.0 frozen at `release/1.2.0-rc` while master prepares 1.2.1 must
+// not force a ledger row for 1.2.0 before it has actually been published — the
+// declared escape is the heading `## X.Y.Z (release candidate)`, which this
+// table's own regex already excludes by being anchored (`^## (\d+\.\d+\.\d+)$`).
+// This pins that on purpose, with the regex pulled out where a test can reach
+// it, so a future "helpful" loosening of the anchor is caught here rather than
+// surfacing as a demand for a ledger row on an unpublished candidate.
+describe('the changelog heading that counts as "released" — exact only, a candidate heading is not released yet', () => {
+  it('matches only an exact "## X.Y.Z" heading, skipping a release-candidate one between two real releases', () => {
+    const changelog = [
+      '## 1.2.1',
+      '',
+      'body',
+      '',
+      '## 1.2.0 (release candidate)',
+      '',
+      'body',
+      '',
+      '## 1.1.0',
+      '',
+      'body',
+      '',
+    ].join('\n');
+    expect(parseChangelogVersions(changelog)).toEqual(['1.2.1', '1.1.0']);
+  });
+
+  // The direction that would cost a release: each of these carries the literal
+  // substring "## 1.2.0", which is exactly what a looser match would accept.
+  it('does not treat a looser candidate spelling as released either', () => {
+    for (const heading of ['## 1.2.0-rc', '## 1.2.0 rc1', '## 1.2.0beta', '## 1.2.0.1']) {
+      expect(parseChangelogVersions(`${heading}\n\nbody\n`), heading).toEqual([]);
+    }
+  });
+
+  // The independent oracle: the committed CHANGELOG.md, read through this
+  // file's OWN duplicated regex (`changelogVersions` above) rather than through
+  // `parseChangelogVersions` checking its own work.
+  it("agrees with the committed CHANGELOG.md read through this file's own duplicated regex", async () => {
+    const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    expect(parseChangelogVersions(changelog)).toEqual(await changelogVersions());
+  });
+});
+
+// RP-353 review blocker D: `parseChangelogVersions` above correctly EXCLUDES
+// every "(release candidate)" heading from "released" — that part is already
+// right, and the describe block above pins it. What is missing is telling two
+// very different reasons for a candidate heading apart:
+//
+//   - it names the version CURRENTLY being prepared (package.json's own
+//     version) — correct, unpublished, still pending;
+//   - it names ANY OTHER version — which can only mean that version was
+//     published and nobody reconciled its heading back to `## X.Y.Z`
+//     afterwards. Left alone, `parseChangelogVersions` simply drops that
+//     version from the "released" list forever: `releasedFromLedger` never
+//     sees it, never demands a ledger row for it, and the published version
+//     is silently absent from `hash-history.json` — an upgrade on a
+//     manifest-less rig then treats every file that version shipped as
+//     unrecognised, exactly the failure class this whole table exists to
+//     prevent (see this file's own header comment above).
+//
+// `assertCandidateHeadingsAreCurrent` is the check: it throws, naming the
+// stale version, when the changelog carries a release-candidate heading for
+// anything other than the version being prepared. It is silent for a
+// candidate heading on the version being prepared itself, and silent when
+// there is no candidate heading at all.
+describe('the changelog heading history — a release-candidate heading left on an OLD version means reconciliation was forgotten', () => {
+  it('says nothing when the only candidate heading names the version currently being prepared', () => {
+    const changelog = [
+      '## 1.2.0 (release candidate)',
+      '',
+      'body',
+      '',
+      '## 1.1.0',
+      '',
+      'body',
+      '',
+    ].join('\n');
+    expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.2.0')).not.toThrow();
+  });
+
+  it('says nothing when there is no candidate heading at all', () => {
+    const changelog = ['## 1.2.0', '', 'body', '', '## 1.1.0', '', 'body', ''].join('\n');
+    expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.2.0')).not.toThrow();
+  });
+
+  // The defect this exists to catch: 1.1.0 was published (its CHANGELOG
+  // heading should have become plain `## 1.1.0`), reconciliation was
+  // forgotten, and 1.2.1 is now being prepared. Today's code gives this no
+  // signal at all — `parseChangelogVersions` just quietly drops 1.1.0 from the
+  // released list.
+  it('throws, naming the stale version, for a candidate heading on a version other than the one being prepared', () => {
+    const changelog = [
+      '## 1.2.1',
+      '',
+      'body',
+      '',
+      '## 1.1.0 (release candidate)',
+      '',
+      'body',
+      '',
+    ].join('\n');
+    expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.2.1')).toThrow(/1\.1\.0/);
+  });
+
+  // The message has to tell the owner what to do, not just that something is
+  // wrong — the same courtesy `releasedFromLedger`'s own thrown messages pay
+  // (naming the exact npm command to run).
+  it('names the fix: reconcile the stale heading to the plain form after publication', () => {
+    const changelog = '## 1.1.0 (release candidate)\n\nbody\n';
+    expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.2.0')).toThrow(/## 1\.1\.0/);
+    expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.2.0')).toThrow(/reconcil/i);
+  });
+
+  // Independent of how many stale candidate headings exist, and independent of
+  // whether the CURRENT version's own candidate heading is also present — the
+  // one check must not let a legitimately-pending heading mask a forgotten one
+  // sitting right next to it.
+  it('throws for a stale heading even when the current version also carries its own pending candidate heading', () => {
+    const changelog = [
+      '## 1.3.0 (release candidate)',
+      '',
+      'body',
+      '',
+      '## 1.2.0 (release candidate)',
+      '',
+      'body',
+      '',
+    ].join('\n');
+    expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.3.0')).toThrow(/1\.2\.0/);
+  });
+
+  // Exactness, mirrored from the sibling suite above: a looser spelling that
+  // merely carries the substring "(release candidate)" adjacent to a version
+  // number must not be read as one by this check either — it is not a
+  // candidate heading at all, so it is simply not this check's business,
+  // exactly as it is not `parseChangelogVersions`'s.
+  it('does not mistake a loosely-spelled heading for a candidate heading needing reconciliation', () => {
+    const changelog = '## 1.1.0-rc\n\nbody\n';
+    expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.2.0')).not.toThrow();
   });
 });

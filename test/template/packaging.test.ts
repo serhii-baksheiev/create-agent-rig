@@ -4,6 +4,15 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+// RP-353: taken off the namespace rather than by name, the same reasoning
+// `test/template/release-preflight.test.ts` already states for its own import
+// of this script — a missing export fails only the tests that use it.
+// @ts-expect-error — a plain .mjs release script, imported for its pure parts
+import * as releasePreflight from '../../scripts/release-preflight.mjs';
+
+const { changelogHeadingFindings } = releasePreflight as {
+  changelogHeadingFindings: (changelog: string, version: string) => string[];
+};
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -303,6 +312,34 @@ describe('the root manifest is publish-complete', () => {
     // and the release checklist, so the next release is not reassembled from memory
     expect(changelog).toMatch(/npm pack --dry-run/);
     expect(changelog).toMatch(/2FA|owner/i);
+  });
+
+  // RP-353: the assertion two tests above this one reads
+  // `expect(changelog).toContain(`## ${pkg.version}`)`, which also accepts any
+  // heading that merely STARTS with the version — `## 1.1.1.1` carries
+  // `## 1.1.1` as a literal substring. `changelogHeadingFindings` is the
+  // strict form: exactly `## X.Y.Z`, or exactly `## X.Y.Z (release
+  // candidate)` for an accepted-but-unpublished candidate, and nothing looser
+  // than either.
+  it('documents this version under the strict heading syntax, not merely a heading that starts with it', async () => {
+    const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
+      version: string;
+    };
+    const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
+    expect(changelogHeadingFindings(changelog, pkg.version)).toEqual([]);
+  });
+
+  // The gap the loose `toContain` check cannot see: a heading for a different,
+  // merely-prefix-matching version must still be rejected.
+  it('rejects a heading that only starts with the version — the gap a toContain check misses', () => {
+    expect(changelogHeadingFindings('## 1.1.1.1\n\nnotes\n', '1.1.1')).not.toEqual([]);
+  });
+
+  it('accepts the declared release-candidate syntax and nothing looser than it', () => {
+    expect(changelogHeadingFindings('## 2.0.0 (release candidate)\n\nnotes\n', '2.0.0')).toEqual(
+      [],
+    );
+    expect(changelogHeadingFindings('## 2.0.0 (candidate)\n\nnotes\n', '2.0.0')).not.toEqual([]);
   });
 
   it('the bin entry keeps its shebang', async () => {
