@@ -24,6 +24,8 @@ import {
 const MAX_JSON_BYTES = 5 * 1024 * 1024;
 const MAX_IMPLEMENTATION_DELTA_BYTES = 5 * 1024 * 1024;
 const MAX_TRACKER_BODY_BYTES = 64 * 1024;
+const REMOTE_DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_REMOTE_DEFAULT_BYTES = 4096;
 const SHA256 = /^[a-f0-9]{64}$/;
 const TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const TDD_SPEC_PREFIX = 'rig:tdd-spec/v1 ';
@@ -601,7 +603,7 @@ const recordRed = async ({ projectRoot, runDir, ticket, check }) => {
 
 const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   const { run, event, test } = checkEvent({ projectRoot, runDir, check, outcome: 'pass' });
-  const { file, claim } = claimRecord(projectRoot, ticket);
+  const { file, claim, raw } = claimRecord(projectRoot, ticket);
   const priorEvidence = claim.tddEvidence;
   const historyValidation = validateTddEvidenceHistory({
     ticket,
@@ -623,6 +625,15 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
     throw new Error('claim record does not carry a valid tracker-derived relevant test scope');
   }
   if (!sameTest(test, priorEvidence.red?.test)) throw new Error('GREEN test identity or file hash changed after RED');
+  // RP-370 review round 1 (B2): there was a guard here comparing the PRIOR
+  // evidence's delta against every history entry's recorded delta. It fired
+  // on a chain that legitimately revisits an earlier boundary (A -> B -> A),
+  // blocking the *next* refinement away from it (A -> C) even though that
+  // move is forward, not a repeat. Deleted rather than replaced — the
+  // adjacent same-baseline-refinement and merged-default-refresh checks
+  // below, plus `validateTddEvidenceHistory` in lib/tdd-evidence.mjs, are
+  // what decide whether a given GREEN actually changes the implementation;
+  // shipping authority is the recomputed final diff, not this history scan.
   const observedHead = event.data.gitHead;
   const currentHead = resolveCommit(projectRoot, 'HEAD');
   if (!/^[a-f0-9]{40}$/.test(observedHead ?? '') || observedHead !== currentHead) {
@@ -642,16 +653,30 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
       sameFingerprint(entry?.data?.workingTreeDiff, observedWorkingTreeDiff),
   );
   if (!boundaryEvent) throw new Error('GREEN check has no preceding implementation boundary provenance');
-  const refresh =
+  const refinement =
     priorEvidence.applicability.level === 'TDD-2'
+      ? sameBaselineRefinement({
+          projectRoot,
+          ticket,
+          priorEvidence,
+          history: claim.tddEvidenceHistory,
+          currentHead,
+          claimRaw: raw,
+        })
+      : null;
+  const refresh =
+    priorEvidence.applicability.level === 'TDD-2' && refinement === null
       ? mergedDefaultRefresh({ projectRoot, ticket, priorEvidence, history: claim.tddEvidenceHistory, currentHead })
       : null;
   const delta = implementationDeltaFingerprint({
     projectRoot,
-    baselineHeadSha: refresh?.defaultHead ?? priorEvidence.baseline.headSha,
+    baselineHeadSha: refinement?.defaultHead ?? refresh?.defaultHead ?? priorEvidence.baseline.headSha,
     bindingBaselineHeadSha: priorEvidence.baseline.headSha,
     ticket,
   });
+  if (refinement && sameFingerprint(delta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
+    throw new Error('GREEN refinement does not change the prior implementation boundary');
+  }
   if (refresh && !sameFingerprint(delta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
     throw new Error('GREEN refresh working-tree delta does not reproduce the prior implementation boundary');
   }
@@ -696,22 +721,22 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   const validation = validatePortableEvidence(evidence);
   if (!validation.ok) throw new Error(`portable GREEN evidence is invalid: ${validation.problems[0]}`);
   let tddEvidenceHistory = claim.tddEvidenceHistory;
-  if (refresh) {
+  if (refresh || refinement) {
     const transition = {
       priorGreenFingerprint: priorEvidence.green.fingerprint,
       replacementGreenFingerprint: evidence.green.fingerprint,
       priorImplementationBoundaryFingerprint: priorEvidence.implementationBoundary.fingerprint,
       replacementImplementationBoundaryFingerprint: evidence.implementationBoundary.fingerprint,
-      mergedDefaultSha: refresh.defaultHead,
+      ...(refresh ? { mergedDefaultSha: refresh.defaultHead } : { sameBaselineRefinement: true }),
       fingerprint: fingerprintEvidence({
         ticket,
         baselineHeadSha: priorEvidence.baseline.headSha,
-        stage: 'merged-default-green-refresh',
+        stage: refresh ? 'merged-default-green-refresh' : 'same-baseline-green-refinement',
         priorGreenFingerprint: priorEvidence.green.fingerprint,
         replacementGreenFingerprint: evidence.green.fingerprint,
         priorImplementationBoundaryFingerprint: priorEvidence.implementationBoundary.fingerprint,
         replacementImplementationBoundaryFingerprint: evidence.implementationBoundary.fingerprint,
-        mergedDefaultSha: refresh.defaultHead,
+        ...(refresh ? { mergedDefaultSha: refresh.defaultHead } : { sameBaselineRefinement: true }),
       }),
     };
     tddEvidenceHistory = [...(claim.tddEvidenceHistory ?? []), { evidence: priorEvidence, transition }];
@@ -761,6 +786,111 @@ const defaultTargetSha = (projectRoot) => {
   throw new Error('merged default branch cannot be resolved');
 };
 
+const hasOriginRemote = (projectRoot) => {
+  try {
+    gitText(projectRoot, ['config', '--get', 'remote.origin.url']);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// RP-370 review round 1 (B1): one bounded `ls-remote --symref` query naming
+// HEAD plus both conventional default-branch names, instead of a query
+// hard-coded to `refs/heads/master` alone — so a rig whose origin default is
+// `main` gets the same re-GREEN authority a `master` rig always had. Matches
+// are read by the ref name git prints verbatim, never by how many lines came
+// back: `ls-remote`'s own suffix-matching means a decoy branch like
+// `x/refs/heads/master` can appear in the output (tagged under its own full
+// name), and counting lines instead of names is what let that decoy block
+// every future re-GREEN.
+const REMOTE_DEFAULT_REFS = ['refs/heads/master', 'refs/heads/main'];
+const SYMREF_LINE = /^ref:\s+(refs\/heads\/\S+)\s+HEAD$/;
+const ADVERTISED_LINE = /^([a-f0-9]{40})\s+(\S+)$/;
+
+const liveDefaultTargetSha = (projectRoot) => {
+  // No origin configured: there is no live remote authority to ask, so the
+  // live default IS the default `targetShaOf` already resolves from local refs
+  // (it prefers any remote-tracking ref still present, then local master/main).
+  if (!hasOriginRemote(projectRoot)) return defaultTargetSha(projectRoot);
+  const readAdvertised = () => {
+    let output;
+    try {
+      output = execFileSync(
+        'git',
+        ['-C', projectRoot, 'ls-remote', '--symref', 'origin', 'HEAD', ...REMOTE_DEFAULT_REFS],
+        {
+          encoding: 'utf8',
+          env: withoutGitLocation(),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: REMOTE_DEFAULT_TIMEOUT_MS,
+          maxBuffer: MAX_REMOTE_DEFAULT_BYTES,
+        },
+      ).trim();
+    } catch {
+      throw new Error('live current default branch cannot be resolved from origin');
+    }
+    let defaultRef = null;
+    const shasByRef = new Map();
+    for (const line of output.split('\n').filter(Boolean)) {
+      const symref = SYMREF_LINE.exec(line);
+      if (symref) {
+        defaultRef = symref[1];
+        continue;
+      }
+      const advertised = ADVERTISED_LINE.exec(line);
+      if (!advertised) continue;
+      const [, sha, ref] = advertised;
+      if (!shasByRef.has(ref)) shasByRef.set(ref, new Set());
+      shasByRef.get(ref).add(sha);
+    }
+    const shasFor = (ref) => [...(shasByRef.get(ref) ?? [])];
+    const distinct = new Set(
+      defaultRef ? [...shasFor('HEAD'), ...shasFor(defaultRef)] : REMOTE_DEFAULT_REFS.flatMap(shasFor),
+    );
+    if (distinct.size !== 1) {
+      throw new Error('live current default branch is missing or ambiguous');
+    }
+    return [...distinct][0];
+  };
+  const advertised = readAdvertised();
+  try {
+    resolveCommit(projectRoot, advertised);
+  } catch {
+    try {
+      execFileSync(
+        'git',
+        [
+          '-C',
+          projectRoot,
+          'fetch',
+          '-q',
+          '--no-write-fetch-head',
+          '--no-tags',
+          '--no-recurse-submodules',
+          '--refmap=',
+          'origin',
+          advertised,
+        ],
+        {
+          encoding: 'utf8',
+          env: withoutGitLocation(),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: REMOTE_DEFAULT_TIMEOUT_MS,
+          maxBuffer: MAX_REMOTE_DEFAULT_BYTES,
+        },
+      );
+      resolveCommit(projectRoot, advertised);
+    } catch {
+      throw new Error('live current default branch object could not be imported');
+    }
+  }
+  if (readAdvertised() !== advertised) {
+    throw new Error('live current default branch changed during verification');
+  }
+  return advertised;
+};
+
 const mergeParents = (projectRoot, head) => {
   let fields;
   try {
@@ -774,21 +904,144 @@ const mergeParents = (projectRoot, head) => {
   return { priorHead: fields[1], defaultHead: fields[2] };
 };
 
+const isMergeCommit = (projectRoot, head) => {
+  try {
+    const fields = gitText(projectRoot, ['rev-list', '--parents', '-n', '1', head]).split(/\s+/);
+    return fields[0] === head && fields.length === 3 && fields.slice(1).every((value) => /^[a-f0-9]{40}$/.test(value));
+  } catch {
+    return false;
+  }
+};
+
+const ordinaryCommitParent = (projectRoot, head) => {
+  try {
+    const fields = gitText(projectRoot, ['rev-list', '--parents', '-n', '1', head]).split(/\s+/);
+    if (fields[0] !== head || fields.length !== 2 || !/^[a-f0-9]{40}$/.test(fields[1])) return null;
+    return fields[1];
+  } catch {
+    return null;
+  }
+};
+
 const priorRefreshDefault = ({ projectRoot, priorEvidence, history, priorHead }) => {
   if (history === undefined) return priorEvidence.baseline.headSha;
-  const terminalTransition = history.at(-1)?.transition;
-  if (terminalTransition?.priorRedFingerprint !== undefined || terminalTransition?.replacementRedFingerprint !== undefined) {
-    return priorEvidence.baseline.headSha;
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const transition = history[index]?.transition;
+    if (transition?.sameBaselineRefinement === true) continue;
+    if (transition?.priorRedFingerprint !== undefined || transition?.replacementRedFingerprint !== undefined) {
+      return priorEvidence.baseline.headSha;
+    }
+    const defaultHead = transition?.mergedDefaultSha;
+    if (!/^[a-f0-9]{40}$/.test(defaultHead ?? '') || !isAncestor(projectRoot, defaultHead, priorHead)) {
+      throw new Error('GREEN refresh parent does not descend from the prior validated default transition');
+    }
+    return defaultHead;
   }
-  const defaultHead = terminalTransition?.mergedDefaultSha;
-  if (!/^[a-f0-9]{40}$/.test(defaultHead ?? '') || !isAncestor(projectRoot, defaultHead, priorHead)) {
-    throw new Error('GREEN refresh parent does not descend from the prior validated default transition');
+  return priorEvidence.baseline.headSha;
+};
+
+const sameBaselineRefinement = ({ projectRoot, ticket, priorEvidence, history, currentHead, claimRaw }) => {
+  const defaultHead = liveDefaultTargetSha(projectRoot);
+  if (!isAncestor(projectRoot, priorEvidence.baseline.headSha, defaultHead)) {
+    throw new Error('live current default branch does not descend from the selected-work baseline');
   }
-  return defaultHead;
+  if (!isAncestor(projectRoot, priorEvidence.baseline.headSha, currentHead)) {
+    throw new Error('GREEN refinement HEAD does not descend from the selected-work baseline');
+  }
+  const hasMergedDefault = history?.some((entry) => /^[a-f0-9]{40}$/.test(entry?.transition?.mergedDefaultSha ?? ''));
+  if (defaultHead === priorEvidence.baseline.headSha && !hasMergedDefault && !isMergeCommit(projectRoot, currentHead)) {
+    if (currentHead === priorEvidence.baseline.headSha) return { defaultHead };
+    if (trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) {
+      try {
+        const retainedDelta = implementationDeltaFingerprint({
+          projectRoot,
+          baselineHeadSha: priorEvidence.baseline.headSha,
+          bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+          headSha: currentHead,
+          ticket,
+        });
+        if (sameFingerprint(retainedDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
+          return { defaultHead };
+        }
+      } catch {
+        return null;
+      }
+    }
+    const priorHead = ordinaryCommitParent(projectRoot, currentHead);
+    if (!priorHead || !trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) return null;
+    let retainedDelta;
+    try {
+      retainedDelta = implementationDeltaFingerprint({
+        projectRoot,
+        baselineHeadSha: priorEvidence.baseline.headSha,
+        bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+        headSha: priorHead,
+        ticket,
+      });
+    } catch {
+      return null;
+    }
+    return sameFingerprint(retainedDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)
+      ? { defaultHead }
+      : null;
+  }
+  // The anchor for a refinement on top of an already-validated merged default
+  // is that default (priorDefault, e.g. M1) — never the live default branch
+  // tip, which may have advanced past it unmerged, and never the selected
+  // baseline, which would re-attribute production content M1 already carried
+  // in to this item. Mirrors the no-merged-default branch above: try the
+  // commit the correction landed on directly (uncommitted correction), then
+  // its parent (committed correction), both anchored at priorDefault.
+  const priorDefault = priorRefreshDefault({ projectRoot, priorEvidence, history, priorHead: currentHead });
+  if (currentHead === priorEvidence.baseline.headSha) return { defaultHead: priorDefault };
+  if (!isAncestor(projectRoot, priorDefault, currentHead)) return null;
+  if (trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) {
+    try {
+      const retainedDelta = implementationDeltaFingerprint({
+        projectRoot,
+        baselineHeadSha: priorDefault,
+        bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+        headSha: currentHead,
+        ticket,
+      });
+      if (sameFingerprint(retainedDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
+        return { defaultHead: priorDefault };
+      }
+    } catch {
+      return null;
+    }
+  }
+  // A committed correction may only fall back to the pre-correction parent
+  // when a merged default was already validated for this chain (hasMergedDefault).
+  // Without one, the live default has merely advanced unmerged — the item
+  // must import it through mergedDefaultRefresh, not bypass it by committing
+  // on top of the untouched baseline.
+  if (!hasMergedDefault) return null;
+  const priorHead = ordinaryCommitParent(projectRoot, currentHead);
+  if (!priorHead || !trackedClaimMatchesHead({ projectRoot, ticket, raw: claimRaw })) return null;
+  let retainedDelta;
+  try {
+    retainedDelta = implementationDeltaFingerprint({
+      projectRoot,
+      baselineHeadSha: priorDefault,
+      bindingBaselineHeadSha: priorEvidence.baseline.headSha,
+      headSha: priorHead,
+      ticket,
+    });
+  } catch {
+    return null;
+  }
+  return sameFingerprint(retainedDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)
+    ? { defaultHead: priorDefault }
+    : null;
 };
 
 const mergedDefaultRefresh = ({ projectRoot, ticket, priorEvidence, history, currentHead }) => {
-  const defaultHead = defaultTargetSha(projectRoot);
+  const cachedDefaultHead = defaultTargetSha(projectRoot);
+  const defaultHead = liveDefaultTargetSha(projectRoot);
+  if (cachedDefaultHead !== defaultHead) {
+    throw new Error('GREEN refresh cached default target does not match the live current default branch');
+  }
   const { priorHead, defaultHead: mergedParent } = mergeParents(projectRoot, currentHead);
   if (mergedParent !== defaultHead) {
     throw new Error('GREEN refresh did not merge the current default branch tip');
