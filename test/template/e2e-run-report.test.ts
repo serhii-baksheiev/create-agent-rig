@@ -14,6 +14,7 @@ import {
   redactUrlCredentials,
   run,
 } from '../e2e/run.js';
+import { skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -609,7 +610,7 @@ describe('run', () => {
    * A bounded race stands in for "never", since a test cannot itself wait
    * forever: if `run` has not settled within `DESCENDANT_DEADLINE_MS +
    * RACE_MARGIN_MS`, the outcome is read as `'still-pending'` rather than
-   * letting the test hang. Today that is exactly what happens.
+   * letting the test hang. Before RP-359 that is exactly what happened.
    */
   it(
     'still rejects at its deadline when the child has exited but a descendant holds its output open',
@@ -620,7 +621,14 @@ describe('run', () => {
     // than share that one — the same reason the sibling `run timeout
     // handling` describe below gives its slow case an explicit timeout.
     { timeout: 20_000 },
-    async () => {
+    async (context) => {
+      skipUnless(
+        context,
+        process.platform !== 'win32',
+        "a grandchild started with stdio 'inherit' does not keep an exited child's stdout pipe " +
+          'open on win32 (measured on windows-latest at cfbd606: run() settled after 58 ms), so ' +
+          'the held-pipe stall this case builds cannot be constructed there',
+      );
       const tmp = await mkdtemp(path.join(tmpdir(), 'caf-run-held-output-'));
       const pidFile = path.join(tmp, 'grandchild.pid');
       let grandchildPid: number | undefined;
