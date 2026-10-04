@@ -512,7 +512,6 @@ const request = async (
         if (byteLimit === null) {
           payload = await response.json();
         } else {
-          // The read charges responseByteBudget itself, chunk by chunk.
           const { text } = await readTextWithinByteLimit(
             response,
             byteLimit,
