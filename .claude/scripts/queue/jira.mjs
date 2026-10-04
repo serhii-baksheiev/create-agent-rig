@@ -356,7 +356,10 @@ const readTextWithinByteLimit = async (response, byteLimit, method, route) => {
 
 // Commentary contributes to the claim fingerprint, so an incomplete inline
 // window must be replaced with Jira's authoritative comment feed before the
-// existing pure mapper sees it. These bounds cover one selection, not one
+// existing pure mapper sees it. Pinned in
+// test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+// "hydrates every comment before mapping a listed Jira issue while preserving
+// authoritative completeness". These bounds cover one selection, not one
 // request: a board can contain many truncated inline windows.
 const COMMENT_PAGE_SIZE = 20;
 const MAX_COMMENT_RECORDS = 1000;
@@ -544,8 +547,6 @@ const assertProjectVisible = async ({ project, jql, env, deadlineAt = null }) =>
 
 const inlineCommentaryIsComplete = (issue) => {
   const comment = issue?.fields?.comment;
-  // Preserve the longstanding no-comment shape: an issue without this field
-  // maps to the empty, complete commentary set in `toTicket`.
   if (!comment) return true;
   if (!Number.isSafeInteger(comment.total) || comment.total < 0 || !Array.isArray(comment.comments)) return false;
   const ids = comment.comments.map((entry) => entry?.id).filter((id) => id !== undefined && id !== null);
@@ -562,8 +563,11 @@ const commentIdOf = (comment, ticketId) => {
 
 /**
  * Replace a truncated search-field comment window with the authoritative,
- * bounded comment feed. This deliberately returns raw issue data; `toTicket`
- * stays the pure mapper used by offline callers and by `find`.
+ * bounded comment feed. Pinned in
+ * test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+ * "hydrates every comment before mapping a listed Jira issue while preserving
+ * authoritative completeness". This deliberately returns raw issue data;
+ * `toTicket` stays the pure mapper used by offline callers and by `find`.
  */
 const hydrateCommentary = async (issue, { env, deadlineAt, budget }) => {
   if (inlineCommentaryIsComplete(issue)) return issue;
