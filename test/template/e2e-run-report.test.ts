@@ -472,6 +472,16 @@ describe('run', () => {
     expect(keys.filter((key) => key !== 'code' && key !== 'signal')).toEqual([]);
   });
 
+  // Shared by every deadline-driven case below: a generous bound against the
+  // documented spawn-to-pid-write worst case (the sibling `run timeout
+  // handling` describe's own `STALLED_CHILD_BOUND_MS` comment further down:
+  // 285 ms median, 5 314 ms worst case on a loaded Windows host, for a
+  // heavier script that also writes a startup line first). Both scripts
+  // below do less work before writing their pid file, but reuse the same
+  // figure rather than risk a tighter one the deadline could fire inside of —
+  // which is exactly advisory A2's point about the 1 500 ms this used before.
+  const DESCENDANT_DEADLINE_MS = 8_000;
+
   /**
    * RP-359: `exec`'s `timeout` kills only the direct child. A bootstrap child
    * (`npx` → `npm exec` → `npm install`) that stalls past its deadline leaves
@@ -515,7 +525,7 @@ describe('run', () => {
       let rejection: unknown;
       try {
         const resolved = await run(process.execPath, ['-e', script], {
-          timeout: 1500,
+          timeout: DESCENDANT_DEADLINE_MS,
           cwd: tmp,
         });
         rejection = new Error(`run resolved instead of rejecting: ${JSON.stringify(resolved)}`);
@@ -564,6 +574,133 @@ describe('run', () => {
       await removeFixture(tmp);
     }
   });
+
+  // How long the race below waits past the deadline before concluding the
+  // promise is simply never going to settle on its own. Generous on purpose:
+  // the point is to tell "rejected, a little late" apart from "hung", not to
+  // pin a tight figure.
+  const RACE_MARGIN_MS = 4_000;
+
+  /**
+   * RP-359 cold review, B2: `killTree` kills every descendant it finds by
+   * walking `ps`'s `ppid` column from the direct child's own pid — but that
+   * walk runs only once the deadline fires, and if the direct child has by
+   * then already EXITED, its pid is gone from `ps` entirely and the walk
+   * finds nothing, even though a descendant it started is still alive
+   * (reparented, so its `ppid` no longer names the dead child). `killTree`
+   * also never touches `child.stdout`/`child.stderr` — only `execFile`'s own
+   * `timeout` destroyed those, and `run` now disables it in favour of its own
+   * deadline (see `run`'s own comment on why). So when that surviving
+   * descendant still holds the direct child's stdout pipe open (inherited,
+   * not piped afresh), the pipe never sees EOF: `exec`'s promise waits on the
+   * child's `close` event, which Node does not emit until every stdio stream
+   * has closed, and nothing here makes that happen.
+   *
+   * The shape, without any network: the direct child spawns a grandchild
+   * with `stdio: 'inherit'` — so the grandchild holds the same stdout pipe
+   * `exec` is reading — writes the grandchild's pid to a file, and exits
+   * immediately itself. The grandchild then stalls forever, holding the pipe
+   * open. `run`'s deadline still fires, but on the current implementation
+   * nothing it does closes that pipe, so `run` never settles: measured at
+   * 1 504 ms when the descendant does not hold the output open (the case
+   * above) against 6 059 ms with a 6 s descendant here — unbounded if the
+   * descendant simply never ends, which this fixture's grandchild does not.
+   *
+   * A bounded race stands in for "never", since a test cannot itself wait
+   * forever: if `run` has not settled within `DESCENDANT_DEADLINE_MS +
+   * RACE_MARGIN_MS`, the outcome is read as `'still-pending'` rather than
+   * letting the test hang. Today that is exactly what happens.
+   */
+  it(
+    'still rejects at its deadline when the child has exited but a descendant holds its output open',
+    // The worst-case wait (`DESCENDANT_DEADLINE_MS + RACE_MARGIN_MS` =
+    // 12 000 ms) leaves too little margin against this file's 15 000 ms
+    // default (`vitest.config.ts`'s `template` project) once spawn and
+    // cleanup overhead is added, so this case states its own budget rather
+    // than share that one — the same reason the sibling `run timeout
+    // handling` describe below gives its slow case an explicit timeout.
+    { timeout: 20_000 },
+    async () => {
+      const tmp = await mkdtemp(path.join(tmpdir(), 'caf-run-held-output-'));
+      const pidFile = path.join(tmp, 'grandchild.pid');
+      let grandchildPid: number | undefined;
+      let runPromise: Promise<{ stdout: string; stderr: string }> | undefined;
+
+      try {
+        // Not detached, and given `stdio: 'inherit'` rather than a fresh
+        // pipe: the grandchild holds the exact same stdout pipe `exec` is
+        // reading from the direct child. The direct child writes the
+        // grandchild's pid and exits immediately — no stall of its own —
+        // while the grandchild stalls forever, still holding that pipe open.
+        const script = [
+          "const { spawn } = require('node:child_process');",
+          "const fs = require('node:fs');",
+          "const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'inherit' });",
+          `fs.writeFileSync(${JSON.stringify(pidFile)}, String(grandchild.pid));`,
+          'process.exit(0);',
+        ].join('\n');
+
+        runPromise = run(process.execPath, ['-e', script], {
+          timeout: DESCENDANT_DEADLINE_MS,
+          cwd: tmp,
+        });
+
+        const sleep = (ms: number): Promise<void> =>
+          new Promise((resolve) => setTimeout(resolve, ms));
+
+        const started = Date.now();
+        const outcome = await Promise.race([
+          runPromise.then(
+            () => 'resolved' as const,
+            () => 'rejected' as const,
+          ),
+          sleep(DESCENDANT_DEADLINE_MS + RACE_MARGIN_MS).then(() => 'still-pending' as const),
+        ]);
+        const elapsed = Date.now() - started;
+
+        grandchildPid = Number((await readFile(pidFile, 'utf8')).trim());
+        expect(Number.isInteger(grandchildPid)).toBe(true);
+
+        expect(
+          outcome,
+          `run() ${outcome} after ${elapsed} ms against a ${DESCENDANT_DEADLINE_MS} ms deadline ` +
+            `(race margin ${RACE_MARGIN_MS} ms) — a descendant still holding the child's stdout ` +
+            `pipe open must not stop run() from rejecting at its deadline`,
+        ).toBe('rejected');
+        expect(elapsed).toBeLessThan(DESCENDANT_DEADLINE_MS + RACE_MARGIN_MS);
+      } finally {
+        // The pid file is written before the direct child's near-instant
+        // exit, well inside the deadline, so it exists by now even on the
+        // 'still-pending' path above — but read it defensively in case the
+        // assertions above threw before this point was reached.
+        if (grandchildPid == null) {
+          try {
+            grandchildPid = Number((await readFile(pidFile, 'utf8')).trim());
+          } catch {
+            // never written — nothing to kill
+          }
+        }
+        if (grandchildPid != null && Number.isInteger(grandchildPid)) {
+          try {
+            process.kill(grandchildPid, 'SIGKILL');
+          } catch {
+            // already gone
+          }
+        }
+        // Killing the grandchild above closes the pipe it was holding open,
+        // which is what finally lets `exec`'s own promise settle — resolved
+        // or rejected, either way `run` must not be left pending when this
+        // test ends.
+        if (runPromise) {
+          await runPromise.then(
+            () => undefined,
+            () => undefined,
+          );
+        }
+        await removeFixture(tmp);
+      }
+    },
+  );
 });
 
 /**
