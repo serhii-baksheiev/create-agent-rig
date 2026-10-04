@@ -1,5 +1,16 @@
 # Mechanical TDD evidence
 
+⚠ **This record is not synced.** It is authored here and stays here, like
+`agent-roles-1.0.md` and `memory-rig-boundary.md` beside it.
+
+Status: retired 2026-10-04 by the owner's scope correction RP-398 — the
+Mechanical TDD evidence contract this record describes was removed from the
+1.2.0 release contract before it shipped; TDD enforcement moves to upstream
+Probity (RP-399). The shipped mechanism — `tdd-evidence.mjs`,
+`lib/tdd-evidence.mjs`, the `pr-ship` `verify-ship` step and its tests — was
+deleted along with this change; git history before this change has them. The
+body below is kept unchanged as the record of the experiment.
+
 Status: accepted
 
 ## Decision
