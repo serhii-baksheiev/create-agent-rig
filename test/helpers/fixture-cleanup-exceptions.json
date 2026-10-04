@@ -6,5 +6,9 @@
   {
     "file": "test/template/remove-fixture.test.ts",
     "reason": "A comment naming the call shape the helper replaces, not a removal."
+  },
+  {
+    "file": "test/helpers/stub-command.ts",
+    "reason": "restore() is synchronous: every caller restores from a finally without awaiting, so it removes the stub directory it created with rmSync under removeFixture's own retry bounds instead of the async helper (RP-348)."
   }
 ]

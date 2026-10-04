@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-348",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "4c0e11cdae4a9d520c4ea946fe11b2ac7fde58ea60a4d868582af8c6922c817e",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/stub-command.test.ts",
+      "fullName": "test/helpers/stub-command restore removes the stub directory it created, including the Windows executable link, and nothing else"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "4c0e11cdae4a9d520c4ea946fe11b2ac7fde58ea60a4d868582af8c6922c817e",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "9eed7674b48956aec59d27d900659bfc5e5fe6c60f027fea7cd76f96f912c979"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-348",
+    "applicability": {
+      "level": "TDD-1",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-348-red"
+      }
+    },
+    "baseline": {
+      "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/stub-command.test.ts",
+        "fullName": "test/helpers/stub-command restore removes the stub directory it created, including the Windows executable link, and nothing else",
+        "fileSha256": "d3ec4cfa6b4b529abb6691dc989284811448b3b26c022cad813ec0175107a209"
+      },
+      "source": {
+        "runId": "20261004-113123-rp348",
+        "seq": 4
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "ba64f51d75318db64b11f2742b17a4bddd0486a4590a86cf3c664af419abd6bd"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "02316cd7818241174e628081f91f1c8d8cb39eae9079ae54fee4deab09e21736"
+      }
+    }
+  }
+}
