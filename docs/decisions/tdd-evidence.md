@@ -133,9 +133,18 @@ the work. The `pr-ship` verifier reads the claim
 from branch `HEAD`, compares it with the current tracker and final Git diff,
 and records compact evidence fingerprints in the run journal.
 When the relevant specification is unchanged, a fresh GREEN may replace a
-completed TDD-2 chain after an implementation refinement. The recorder resolves
-`origin/master` with a bounded live query and does not trust or alter a
-remote-tracking cache. If the live default has advanced, a pre-import refinement
+completed TDD-2 chain after an implementation refinement. With an `origin`
+remote configured, the recorder reads the live default with one bounded query:
+the branch origin advertises as `HEAD`, or else exactly one of
+`refs/heads/master` and `refs/heads/main`, matched by exact name. It does not
+alter a remote-tracking cache, and a missing or ambiguous answer refuses. With
+no `origin` URL there is no live authority to ask, so the recorder uses the
+default the claim baseline itself resolves from local refs, as before. These
+three cases are pinned in `test/template/tdd-green-refinement-authority.test.ts` (absent in a generated rig)
+› "records a merged-default refresh when origin's default branch is main",
+› "does not treat a branch named x/refs/heads/master as a second default" and
+› "records a merged-default refresh in a repository with no origin remote".
+If the live default has advanced, a pre-import refinement
 is eligible only when it remains uncommitted and the committed boundary still
 matches the retained evidence. The replacement must have a different production
 delta, retain the original RED and relevant test bytes, and append a bounded

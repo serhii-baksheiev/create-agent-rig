@@ -810,8 +810,8 @@ const ADVERTISED_LINE = /^([a-f0-9]{40})\s+(\S+)$/;
 
 const liveDefaultTargetSha = (projectRoot) => {
   // No origin configured: there is no live remote authority to ask, so the
-  // live default IS the local default `targetShaOf` already resolves
-  // (local master/main) — the no-remote shape `targetShaOf` has always had.
+  // live default IS the default `targetShaOf` already resolves from local refs
+  // (it prefers any remote-tracking ref still present, then local master/main).
   if (!hasOriginRemote(projectRoot)) return defaultTargetSha(projectRoot);
   const readAdvertised = () => {
     let output;
