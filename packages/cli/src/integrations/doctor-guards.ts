@@ -4,6 +4,10 @@ import { readBounded } from './verify.js';
 import { runProviderProcess } from './spawn.js';
 import { agentOsUniversalDir } from '../templates.js';
 import { isDeepStrictEqual } from 'node:util';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const MAX_BYTES = 1024 * 1024;
 const WIRING = ['.claude/settings.json', '.codex/hooks.json'] as const;
@@ -59,9 +63,15 @@ const FIXTURE_WRAPPER = String.raw`
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),cp=require('node:child_process'),url=require('node:url');
 void (async()=>{
 const source=process.argv[1];
-const root=fs.mkdtempSync(path.join(os.tmpdir(),'rig-guard-fixtures-'));
-const parent=path.resolve(os.tmpdir()),resolved=path.resolve(root);
-if(!resolved.startsWith(parent+path.sep)||!path.basename(resolved).startsWith('rig-guard-fixtures-'))throw new Error('unsafe fixture root');
+// RP-310: the parent now owns root creation (and cleanup if this child is
+// killed before its own finally runs), so it is handed in as argv[2] rather
+// than mkdtemp'd here. The child's own os.tmpdir() can differ from the
+// parent's (spawn.ts forwards TEMP/TMP, never TMPDIR), so validate shape and
+// existence instead of requiring it live under this process's tmpdir().
+const root=process.argv[2];
+const resolved=path.resolve(root);
+if(!path.isAbsolute(root)||!path.basename(resolved).startsWith('rig-guard-fixtures-'))throw new Error('unsafe fixture root');
+if(fs.lstatSync(resolved).isSymbolicLink()||!fs.lstatSync(resolved).isDirectory())throw new Error('unsafe fixture root');
 let code=1;
 let flag,env;
 try {
@@ -140,13 +150,52 @@ export async function inspectGuards(options: InspectGuardsOptions): Promise<Guar
       return failed('hook-integrity-invalid');
   }
 
-  const batch = await (options.runner ?? runProviderProcess)({
-    executable: process.execPath,
-    args: ['-e', FIXTURE_WRAPPER, agentOsUniversalDir()],
-    repoDir: options.repoDir,
-    timeoutMs: 30_000,
-    maxOutputBytes: 8 * 1024,
-  });
+  // RP-310: the parent, not the child, owns the fixture root — a batch
+  // killed at the timeout never reaches the child's own `finally`, so only
+  // the parent is positioned to clear the flag it handed the child and
+  // remove the root afterward.
+  const root = await mkdtemp(path.join(tmpdir(), 'rig-guard-fixtures-'));
+  let batch: Awaited<ReturnType<typeof runProviderProcess>>;
+  try {
+    batch = await (options.runner ?? runProviderProcess)({
+      executable: process.execPath,
+      args: ['-e', FIXTURE_WRAPPER, agentOsUniversalDir(), root],
+      repoDir: options.repoDir,
+      timeoutMs: 30_000,
+      maxOutputBytes: 8 * 1024,
+    });
+  } finally {
+    // Best-effort: never let cleanup change the verdict above or throw past
+    // this function. Clear before removing — unattended-flag.mjs derives the
+    // flag name from realpath(CLAUDE_PROJECT_DIR), which resolves to a
+    // different spelling once the directory is gone (macOS /var vs
+    // /private/var).
+    try {
+      const home = path.join(root, 'home');
+      const unattendedModulePath = path.join(
+        agentOsUniversalDir(),
+        '.claude',
+        'scripts',
+        'unattended-flag.mjs',
+      );
+      const flag = (await import(pathToFileURL(unattendedModulePath).href)) as {
+        clearUnattended: (flagEnv: NodeJS.ProcessEnv) => unknown;
+      };
+      flag.clearUnattended({
+        ...process.env,
+        HOME: home,
+        APPDATA: home,
+        CLAUDE_PROJECT_DIR: root,
+      });
+    } catch {
+      // Already cleared, or never armed — the normal path.
+    }
+    try {
+      await rm(root, { recursive: true, force: true });
+    } catch {
+      // Already removed — the normal path.
+    }
+  }
   if (batch.status !== 'ok' || batch.exitCode !== 0) return failed('guard-fixture-batch-failed');
   return { status: 'pass', reason: 'guards-verified' };
 }
