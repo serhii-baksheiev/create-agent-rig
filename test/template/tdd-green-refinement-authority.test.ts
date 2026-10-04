@@ -551,18 +551,16 @@ it('does not treat a branch named x/refs/heads/master as a second default', asyn
 // is moving the implementation forward, not repeating anything. Once stuck
 // this way the chain stays stuck: a later merged-default refresh hits the
 // identical guard before it ever reaches refresh-specific logic.
-it('keeps refining after a refinement returns to an earlier boundary', async () => {
-  const fixture = await setupInitialGreen();
-  const { defaultClone, remote, root, runDir, trackerEnv } = fixture;
-
-  // Each step is a source commit, a GREEN check and record, and then a
-  // separate commit of the recorded claim — the same two-commit shape
-  // `setupInitialGreen` itself uses for the very first GREEN. Committing the
-  // claim after every step (not only the last) matters here: an uncommitted
-  // claim update changes which provenance path `sameBaselineRefinement` takes
-  // on the NEXT call, which would make this case exercise something other
-  // than the boundary-repeat guard it is pinned on.
-  const refineAndRecord = async (content: string, label: string) => {
+// Each step is a source commit, a GREEN check and record, and then a separate
+// commit of the recorded claim — the same two-commit shape `setupInitialGreen`
+// itself uses for the very first GREEN. Committing the claim after every step
+// (not only the last) matters here: an uncommitted claim update changes which
+// provenance path `sameBaselineRefinement` takes on the NEXT call, which would
+// make these cases exercise something other than the boundary revisit they
+// are pinned on.
+const refineAndRecordOn =
+  ({ root, runDir, trackerEnv }: Awaited<ReturnType<typeof setupInitialGreen>>) =>
+  async (content: string, label: string) => {
     await writeFile(path.join(root, 'src', 'feature.ts'), content);
     await git(['add', 'src/feature.ts'], root);
     await git(['commit', '-q', '-m', `${label} source`], root);
@@ -574,14 +572,28 @@ it('keeps refining after a refinement returns to an earlier boundary', async () 
     await git(['commit', '-q', '-m', `${label} record GREEN`], root);
   };
 
+// The revisit and the refresh after it are two cases rather than one: each
+// attested GREEN is a real nested Vitest run, and the single six-run case sat
+// at the 15 s case budget on windows-latest (13228 ms at c641788, timed out at
+// b94e5e5). Split, each case does five runs and keeps every assertion.
+it('keeps refining after a refinement returns to an earlier boundary', async () => {
+  const refineAndRecord = refineAndRecordOn(await setupInitialGreen());
   await refineAndRecord(refinedImplementation, 'refine-to-b'); // A -> B
   await refineAndRecord(initialImplementation, 'refine-back-to-a'); // B -> A
   await refineAndRecord(thirdRefinedImplementation, 'refine-to-c'); // A -> C
+});
+
+it('records a merged-default refresh after a refinement returned to an earlier boundary', async () => {
+  const fixture = await setupInitialGreen();
+  const { defaultClone, remote, root, runDir, trackerEnv } = fixture;
+  const refineAndRecord = refineAndRecordOn(fixture);
+  await refineAndRecord(refinedImplementation, 'refine-to-b'); // A -> B
+  await refineAndRecord(initialImplementation, 'refine-back-to-a'); // B -> A
 
   // A merged-default refresh must also still be reachable after the chain
-  // has revisited a boundary — the guard above fires before refinement vs.
-  // refresh is even decided, so it is not only the next refinement that can
-  // get stuck.
+  // has revisited a boundary — a guard that fires before refinement vs.
+  // refresh is even decided would get the refresh stuck too, not only the
+  // next refinement.
   const imported = await advanceRemoteDefault({ defaultClone, remote, root, fetch: true });
   await git(
     ['merge', '--no-ff', '-q', 'origin/master', '-m', 'merge validated default after revisit'],
