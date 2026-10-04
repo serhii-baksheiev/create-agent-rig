@@ -359,8 +359,7 @@ const readTextWithinByteLimit = async (response, byteLimit, method, route) => {
 // existing pure mapper sees it. Pinned in
 // test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
 // "hydrates every comment before mapping a listed Jira issue while preserving
-// authoritative completeness". These bounds cover one selection, not one
-// request: a board can contain many truncated inline windows.
+// authoritative completeness".
 const COMMENT_PAGE_SIZE = 20;
 const MAX_COMMENT_RECORDS = 1000;
 const MAX_COMMENT_PAGES = 50;
@@ -596,6 +595,11 @@ const hydrateCommentary = async (issue, { env, deadlineAt, budget }) => {
     if (budget.bytes.remaining <= 0) {
       throw new Error(`jira comment metadata for ${ticketId} exceeded the response byte budget`);
     }
+    // An earlier issue may have spent the shared records budget; refuse before
+    // sending this issue's first request rather than after its round trip.
+    if (total === null && budget.records.remaining <= 0) {
+      throw new Error(`jira comment metadata for ${ticketId} found the shared record budget already exhausted`);
+    }
     const page = await request(
       `/rest/api/3/issue/${encodeURIComponent(ticketId)}/comment?startAt=${startAt}&maxResults=${COMMENT_PAGE_SIZE}`,
       {
@@ -604,6 +608,9 @@ const hydrateCommentary = async (issue, { env, deadlineAt, budget }) => {
         deadlineAt,
         maxResponseBytes: Math.min(MAX_COMMENT_BYTES, budget.bytes.remaining),
         responseByteBudget: budget.bytes,
+        // No retry: a failed read only leaves this one ticket incomplete, and
+        // retries would spend the selection's shared deadline on it.
+        retryTransient: false,
       },
     );
     pages += 1;
@@ -696,7 +703,16 @@ export const listEligible = async ({
       // Sequential on purpose: the caps above are shared by one selection and
       // must be checked before each outbound comment request.
       for (const issue of response.issues) {
-        hydrated.push(await hydrateCommentary(issue, { env, deadlineAt: hydrationDeadlineAt, budget }));
+        // One ticket's failed read must not fail the selection: keep the issue
+        // as search returned it, whose truncated window maps to incomplete.
+        // Pinned in test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+        // "leaves only that ticket incomplete when the authoritative comment
+        // read is unavailable or incomplete".
+        try {
+          hydrated.push(await hydrateCommentary(issue, { env, deadlineAt: hydrationDeadlineAt, budget }));
+        } catch {
+          hydrated.push(issue);
+        }
       }
       return hydrated;
     })());

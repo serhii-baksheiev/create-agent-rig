@@ -100,10 +100,11 @@ const installJira = (
       ).length;
       return Promise.resolve(searchReply(url, searchCalls, call.signal)).then(response);
     }
-    if (url.pathname === '/rest/api/3/issue/RP-368/comment') {
-      const commentCalls = calls.filter(
-        (entry) => entry.url.pathname === '/rest/api/3/issue/RP-368/comment',
-      ).length;
+    // Generalised from a single hardcoded RP-368 path so a test can install a
+    // second issue's comment route too (RP-368's own call-count filters below
+    // still match only its own pathname, so every existing assertion is unaffected).
+    if (/^\/rest\/api\/3\/issue\/[^/]+\/comment$/.test(url.pathname)) {
+      const commentCalls = calls.filter((entry) => entry.url.pathname === url.pathname).length;
       return Promise.resolve(commentReply(url, commentCalls, call.signal)).then(response);
     }
     return Promise.resolve(response({ status: 404, statusText: 'Not Found' }));
@@ -152,6 +153,62 @@ it('hydrates every comment before mapping a listed Jira issue while preserving a
   expect(commentCalls.every((call) => call.method === 'GET')).toBe(true);
   expect(commentCalls.every((call) => call.signal instanceof AbortSignal)).toBe(true);
 
+  // A second, independently truncated issue whose own comment read is
+  // unavailable: its failure stays scoped to it — RP-368 above still
+  // hydrates complete, this one is listed with its inline window and
+  // `complete: false`, and the selection as a whole still resolves.
+  const secondIssueInlineIds = Array.from(
+    { length: 20 },
+    (_, index) => `rp369-comment-${index + 1}`,
+  );
+  const secondIssue = () => ({
+    key: 'RP-369',
+    fields: {
+      summary: 'a second truncated issue whose comment read is unavailable',
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+      labels: ['rel-1.2.0'],
+      priority: null,
+      created: '2026-10-03T00:00:00.000+0000',
+      issuelinks: [],
+      comment: { total: 25, comments: commentsFrom(secondIssueInlineIds) },
+    },
+  });
+
+  const twoIssueCalls = installJira(
+    (url) => {
+      if (url.pathname === '/rest/api/3/issue/RP-369/comment') {
+        return { status: 503, statusText: 'Service Unavailable' };
+      }
+      const startAt = Number(url.searchParams.get('startAt') ?? 0);
+      return startAt === 0
+        ? commentaryPage(0, commentsFrom(expectedIds.slice(0, 20)), { isLast: false })
+        : commentaryPage(20, commentsFrom(expectedIds.slice(20)));
+    },
+    () => ({ body: { issues: [listedIssue(), secondIssue()], isLast: true } }),
+  );
+
+  const twoTickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+
+  expect(twoTickets).toHaveLength(2);
+  const hydratedRp368 = twoTickets.find((ticket) => ticket.id === 'RP-368');
+  const unavailableRp369 = twoTickets.find((ticket) => ticket.id === 'RP-369');
+  expect(hydratedRp368?.commentary).toEqual({
+    count: expectedIds.length,
+    ids: expectedIds,
+    complete: true,
+  });
+  expect(unavailableRp369?.commentary).toEqual({
+    count: 25,
+    ids: secondIssueInlineIds,
+    complete: false,
+  });
+  expect(
+    twoIssueCalls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-369/comment'),
+  ).toHaveLength(1);
+
   const chunk = new TextEncoder().encode('x'.repeat(256 * 1024));
   let pulls = 0;
   let pulledBytes = 0;
@@ -173,7 +230,16 @@ it('hydrates every comment before mapping a listed Jira issue while preserving a
     }),
   }));
 
-  await expect(list()).rejects.toThrow(/comment|byte|size|cap|limit|bound/i);
+  const streamedTickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+  expect(streamedTickets).toHaveLength(1);
+  expect(streamedTickets[0]!.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
   expect(
     streamingCalls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
   ).toHaveLength(1);
@@ -198,7 +264,16 @@ it('hydrates every comment before mapping a listed Jira issue while preserving a
   }));
 
   try {
-    await expect(list()).rejects.toThrow(/comment|byte|size|cap|limit|bound/i);
+    const oversizedTickets = (await list()) as Array<{
+      id: string;
+      commentary: { count: number; ids: string[]; complete: boolean };
+    }>;
+    expect(oversizedTickets).toHaveLength(1);
+    expect(oversizedTickets[0]!.commentary).toEqual({
+      count: expectedIds.length,
+      ids: inlineIds,
+      complete: false,
+    });
     expect(
       oversizedCalls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
     ).toHaveLength(1);
@@ -263,14 +338,32 @@ it('hydrates every comment before mapping a listed Jira issue while preserving a
   ).toHaveLength(0);
 });
 
-it('fails closed when the authoritative comment read is unavailable or incomplete', async () => {
+it('leaves only that ticket incomplete when the authoritative comment read is unavailable or incomplete', async () => {
   installJira(() => ({ status: 503, statusText: 'Service Unavailable' }));
-  await expect(list()).rejects.toThrow(/comment|503|unavailable|authoritative/i);
+  const unavailable = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+  expect(unavailable).toHaveLength(1);
+  expect(unavailable[0]!.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
 
   const calls = installJira(() =>
     commentaryPage(0, commentsFrom(expectedIds.slice(0, 20)), { isLast: true }),
   );
-  await expect(list()).rejects.toThrow(/comment|incomplete|truncated|total|complete/i);
+  const incomplete = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+  expect(incomplete).toHaveLength(1);
+  expect(incomplete[0]!.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
   expect(
     calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
   ).toHaveLength(1);
@@ -302,23 +395,44 @@ it.each([
       }),
     ],
   },
-])('fails closed before mapping when an authoritative comment page $name', async ({ pages }) => {
-  installJira((_url, call) => pages[Math.min(call - 1, pages.length - 1)]!);
-  await expect(list()).rejects.toThrow(/comment|duplicate|id|metadata|total|complete/i);
-});
+])(
+  'leaves only that ticket incomplete before mapping when an authoritative comment page $name',
+  async ({ pages }) => {
+    installJira((_url, call) => pages[Math.min(call - 1, pages.length - 1)]!);
+    const tickets = (await list()) as Array<{
+      id: string;
+      commentary: { count: number; ids: string[]; complete: boolean };
+    }>;
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0]!.commentary).toEqual({
+      count: expectedIds.length,
+      ids: inlineIds,
+      complete: false,
+    });
+  },
+);
 
-it('rejects metadata whose declared record total exceeds the bounded hydration cap before it accumulates comments', async () => {
+it('leaves only that ticket incomplete when its declared record total exceeds the bounded hydration cap before it accumulates comments', async () => {
   const calls = installJira(() =>
     commentaryPage(0, commentsFrom(expectedIds.slice(0, 20)), { total: 1001, isLast: false }),
   );
 
-  await expect(list()).rejects.toThrow(/comment|record|cap|limit|total|bound/i);
+  const tickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+  expect(tickets).toHaveLength(1);
+  expect(tickets[0]!.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
   expect(
     calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
   ).toHaveLength(1);
 });
 
-it('rejects a page stream whose total grows, rather than accumulating an unbounded authoritative read', async () => {
+it("leaves only that ticket incomplete when a page stream's total grows, rather than accumulating an unbounded authoritative read", async () => {
   const calls = installJira((url) => {
     const startAt = Number(url.searchParams.get('startAt') ?? 0);
     return commentaryPage(startAt, commentsFrom(expectedIds.slice(startAt, startAt + 20)), {
@@ -327,13 +441,22 @@ it('rejects a page stream whose total grows, rather than accumulating an unbound
     });
   });
 
-  await expect(list()).rejects.toThrow(/comment|grow|total|metadata|bound/i);
+  const tickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+  expect(tickets).toHaveLength(1);
+  expect(tickets[0]!.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
   expect(
     calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
   ).toHaveLength(2);
 });
 
-it('rejects a comment page that exceeds the byte budget before its records reach the mapper', async () => {
+it('leaves only that ticket incomplete when a comment page exceeds the byte budget before its records reach the mapper', async () => {
   installJira(() =>
     commentaryPage(0, commentsFrom(expectedIds.slice(0, 20)), {
       isLast: false,
@@ -341,10 +464,19 @@ it('rejects a comment page that exceeds the byte budget before its records reach
     }),
   );
 
-  await expect(list()).rejects.toThrow(/comment|byte|size|cap|limit|bound/i);
+  const tickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+  expect(tickets).toHaveLength(1);
+  expect(tickets[0]!.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
 });
 
-it('applies a timeout to an authoritative comment page that never finishes', async () => {
+it('leaves only that ticket incomplete when an authoritative comment page never finishes, once its timeout fires', async () => {
   vi.useFakeTimers();
   let commentRequestStarted!: () => void;
   const commentRequest = new Promise<void>((resolve) => {
@@ -357,12 +489,84 @@ it('applies a timeout to an authoritative comment page that never finishes', asy
     });
   });
 
-  const pending = list();
-  const rejected = expect(pending).rejects.toThrow(/comment|timed out|timeout/i);
+  // Attached synchronously, so a rejection while the timer is advanced below
+  // is never briefly unhandled — the same shape the deadline case further up
+  // this file uses for the same reason.
+  const outcome = list().then(
+    (tickets) => ({ tickets }),
+    (error) => ({ error }),
+  ) as Promise<{
+    tickets?: Array<{
+      id: string;
+      commentary: { count: number; ids: string[]; complete: boolean };
+    }>;
+    error?: Error;
+  }>;
   await commentRequest;
   expect(
     calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
   ).toHaveLength(1);
   await vi.advanceTimersByTimeAsync(20_000);
-  await rejected;
+  const result = await outcome;
+  if (result.error) throw result.error;
+  const tickets = result.tickets!;
+  expect(tickets).toHaveLength(1);
+  expect(tickets[0]!.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
+});
+
+it('makes zero comment requests for a later truncated ticket once one ticket has exhausted the shared records budget', async () => {
+  // One ticket's declared total (1000) consumes the entire shared
+  // MAX_COMMENT_RECORDS budget in a single page — a bound this fixture must
+  // respect too, so it returns all 1000 comments at once rather than paging.
+  const exhaustingIds = Array.from({ length: 1000 }, (_, index) => `rp900-comment-${index + 1}`);
+  const exhaustingIssue = () => ({
+    key: 'RP-900',
+    fields: {
+      summary: 'a ticket whose declared comment total alone exhausts the shared records budget',
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+      labels: ['rel-1.2.0'],
+      priority: null,
+      created: '2026-10-03T00:00:00.000+0000',
+      issuelinks: [],
+      comment: { total: 1000, comments: commentsFrom(exhaustingIds.slice(0, 20)) },
+    },
+  });
+
+  const calls = installJira(
+    (url) => {
+      if (url.pathname === '/rest/api/3/issue/RP-900/comment') {
+        return commentaryPage(0, commentsFrom(exhaustingIds), { total: 1000, isLast: true });
+      }
+      // RP-368's comment endpoint must never be reached once the shared
+      // budget is exhausted — if it is, this loudly distinct failure makes
+      // that visible instead of silently returning a plausible page.
+      return {
+        status: 500,
+        statusText: 'RP-368 comment must not be requested once the shared budget is exhausted',
+      };
+    },
+    () => ({ body: { issues: [exhaustingIssue(), listedIssue()], isLast: true } }),
+  );
+
+  const tickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+
+  expect(tickets).toHaveLength(2);
+  const exhausting = tickets.find((ticket) => ticket.id === 'RP-900');
+  const starved = tickets.find((ticket) => ticket.id === 'RP-368');
+  expect(exhausting?.commentary).toEqual({ count: 1000, ids: exhaustingIds, complete: true });
+  expect(starved?.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
+  expect(
+    calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
+  ).toHaveLength(0);
 });
