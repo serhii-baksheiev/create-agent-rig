@@ -75,11 +75,11 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/lib/claim-records.mjs',
   '.claude/scripts/lib/revalidation-evidence.mjs',
   '.claude/scripts/lib/revalidation-points.mjs',
-  // RP-305: pure authoritative applicability and portable-evidence contract.
-  '.claude/scripts/lib/tdd-evidence.mjs',
-  // RP-306: workflow-only producer and shipping verifier for Mechanical TDD
-  // evidence. Core installs have neither the queue/tracker seam nor pr-ship.
-  '.claude/scripts/tdd-evidence.mjs',
+  // RP-398: RP-305/RP-306's Mechanical TDD evidence contract (the
+  // `lib/tdd-evidence.mjs` applicability/evidence core and the
+  // `tdd-evidence.mjs` producer/shipping verifier) was an owner scope
+  // correction, removed from the 1.2.0 release contract before it shipped —
+  // it never belonged in `workflow`, and now it is in neither layer.
   '.rig/revalidation.json',
   // the queue seam
   '.claude/scripts/queue/core.mjs',
@@ -105,7 +105,6 @@ const EXPECTED_WORKFLOW = new Set([
   'docs/decisions/gate-coverage.md',
   'docs/decisions/closing-a-task.md',
   'docs/decisions/content-blind-revalidation.md',
-  'docs/decisions/tdd-evidence.md',
   'docs/decisions/run-directory.md',
   'docs/decisions/spacing-rations-mechanisms.md',
   'docs/decisions/stop-conditions-in-a-file.md',
