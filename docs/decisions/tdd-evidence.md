@@ -9,7 +9,8 @@ Mechanical TDD evidence contract this record describes was removed from the
 Probity (RP-399). The shipped mechanism — `tdd-evidence.mjs`,
 `lib/tdd-evidence.mjs`, the `pr-ship` `verify-ship` step and its tests — was
 deleted along with this change; git history before this change has them. The
-body below is kept unchanged as the record of the experiment.
+body below is kept unchanged as the record of the experiment, including
+its original `Status: accepted` line, which no longer holds.
 
 Status: accepted
 

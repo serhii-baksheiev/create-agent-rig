@@ -306,6 +306,35 @@ describe('check-run.mjs spawns the given command with no shell of its own', () =
   });
 });
 
+// --- RP-398: the Mechanical TDD additions (--vitest-json, structuredResult,
+// check-boundary, gitHead/workingTreeDiff) are removed; check-run.mjs returns
+// to its pre-feature (1.1.1, d5eac95) shape, which has no `--vitest-json`
+// flag at all. ---------------------------------------------------------------
+
+describe('argument parsing has no leftover TDD-only flag', () => {
+  it('check-run takes no --vitest-json flag: it is refused as an unrecognised argument', async () => {
+    const cwd = await freshCwd();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    const result = await runCheckRun(
+      [
+        '--name',
+        'unit',
+        '--vitest-json',
+        'unit',
+        '--',
+        ...runnerCommand(runnerPath, { exitCode: 0 }),
+      ],
+      { cwd },
+    );
+    // 1.1.1's parseArgs (d5eac95) has no `--vitest-json` branch, so the flag
+    // falls into the `else return { error: \`unknown flag ${flag}\` }` arm —
+    // printed verbatim to stderr, followed by a newline, then exit(2).
+    expect(result.code, result.out).toBe(2);
+    expect(result.stderr).toBe('unknown flag --vitest-json\n');
+    expect(result.stdout).toBe('');
+  });
+});
+
 // --- RIG_RUN_DIR unset -------------------------------------------------------
 
 describe('RIG_RUN_DIR unset', () => {
@@ -1064,6 +1093,52 @@ process.exit(Number(config.exitCode ?? 1));
       expect(logContent).not.toContain('noise line 0 ');
     },
   );
+});
+
+// --- RP-398: the Mechanical TDD additions carried no trace into a
+// check-result, and recorded no separate event of their own. -----------------
+
+/**
+ * Puts `cwd` under real git version control, with one commit on HEAD — the
+ * pre-removal `check-run.mjs` only populates `gitHead`/`workingTreeDiff` (and
+ * only then emits a `check-boundary` event) when `git rev-parse --verify
+ * HEAD` resolves in `cwd`; an ordinary `mkdtemp` directory outside any
+ * repository would make `gitHeadOf` fail closed to `null` regardless of
+ * whether the feature is still wired up, which would pass this test
+ * vacuously on the pre-removal script too. `user.email`/`user.name` are set
+ * LOCALLY (never read from the real git identity) so the commit succeeds
+ * even where no global identity is configured.
+ */
+const initGitRepo = async (cwd: string): Promise<void> => {
+  const env = hermeticEnv();
+  await run('git', ['init', '-q'], cwd, env);
+  await run('git', ['config', 'user.email', 'check-run-test@example.invalid'], cwd, env);
+  await run('git', ['config', 'user.name', 'check-run test'], cwd, env);
+  const commit = await run('git', ['commit', '--allow-empty', '-q', '-m', 'init'], cwd, env);
+  expect(commit.code, commit.out).toBe(0);
+};
+
+describe('a check-result carries none of the removed Mechanical TDD fields', () => {
+  it('a check-result carries no git head, working-tree diff or structured result, and no check-boundary event is written', async () => {
+    const cwd = await freshCwd();
+    await initGitRepo(cwd);
+    const runDir = await freshRunDir();
+    const runnerPath = await writeFixture(cwd, 'runner.mjs', RUNNER_SOURCE);
+    const result = await runCheckRun(
+      ['--name', 'unit', '--', ...runnerCommand(runnerPath, { exitCode: 0 })],
+      { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+    );
+    expect(result.code, result.out).toBe(0);
+
+    const { readRun } = await loadRunJournal();
+    const { events } = readRun({ runDir });
+    const record = events.find((event) => event.kind === 'check-result');
+    expect(record, 'no check-result event was recorded').toBeDefined();
+    expect(record!.data).not.toHaveProperty('gitHead');
+    expect(record!.data).not.toHaveProperty('workingTreeDiff');
+    expect(record!.data).not.toHaveProperty('structuredResult');
+    expect(events.some((event) => event.kind === 'check-boundary')).toBe(false);
+  });
 });
 
 // --- secret-shaped output never reaches durable evidence --------------------
