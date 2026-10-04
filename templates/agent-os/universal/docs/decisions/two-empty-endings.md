@@ -16,8 +16,9 @@ why a parked cause outranks a holding one. It is not loaded into any session.
   (the other session finishes), a trigger (a human declares it), an owner (the
   item is marked for another repository and a human moves or re-marks it —
   AR-132), a `re-scope` item (a human rewrites it against the current code and
-  removes the label — AR-144), and a `deferred` item (it carries the `parked`
-  label and a human un-parks it — AR-144).
+  removes the label — AR-144), and a `deferred` item: `parked` needs human
+  un-parking, while `frozen` and `later` remain deferred for their item-level
+  reason (AR-144).
 
 An empty queue wants refilling. A held one wants interleaving, time, or — for a
 trigger or an owner — the human act the stop line names.

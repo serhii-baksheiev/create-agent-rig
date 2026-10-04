@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -489,6 +489,38 @@ describe('pr-ship skill (universal)', () => {
     expect(fm['allowed-tools']).toBeTruthy();
   });
 
+  // RP-398: the Mechanical TDD evidence contract (RP-305/RP-306) was an owner
+  // scope correction, removed from the 1.2.0 release contract before it
+  // shipped. Neither pr-ship copy may run the verifier or name its script.
+  it('pr-ship ships no Mechanical TDD gate: no verify-ship step and no tdd-evidence reference', async () => {
+    const [claude, agents] = await Promise.all([
+      readFile(skillPath('universal', '.claude', 'skills', 'pr-ship'), 'utf8'),
+      readFile(skillPath('universal', '.agents', 'skills', 'pr-ship'), 'utf8'),
+    ]);
+    for (const content of [claude, agents]) {
+      expect(content).not.toMatch(/tdd-evidence\.mjs/);
+      expect(content).not.toMatch(/verify-ship/);
+    }
+  });
+
+  // RP-398: the producer/verifier script, its pure helper, and the decision
+  // record that documented the contract are all gone from the shipped tree —
+  // not merely unlinked from the two prose files above.
+  it('ships no tdd-evidence.mjs, lib/tdd-evidence.mjs, or docs/decisions/tdd-evidence.md', async () => {
+    const universalRoot = path.join(repoRoot, 'templates', 'agent-os', 'universal');
+    const removedPaths = [
+      path.join(universalRoot, '.claude', 'scripts', 'tdd-evidence.mjs'),
+      path.join(universalRoot, '.claude', 'scripts', 'lib', 'tdd-evidence.mjs'),
+      path.join(universalRoot, 'docs', 'decisions', 'tdd-evidence.md'),
+    ];
+    for (const removedPath of removedPaths) {
+      await expect(
+        access(removedPath),
+        `${path.relative(universalRoot, removedPath)} is still shipped`,
+      ).rejects.toThrow();
+    }
+  });
+
   // AR-65: this gate reads other gates' answers, so it is the one place where a
   // free-prose verdict actually costs something — a reviewer that returned no
   // parseable block, or a HOLD naming nothing, was until now indistinguishable
@@ -578,6 +610,40 @@ describe('pr-ship skill (universal)', () => {
       explaining,
       'pr-ship never connects an `incomplete` report to a launched reviewer with no record',
     ).not.toHaveLength(0);
+  });
+
+  it('checks reviewer-fix prose and its sibling claims before it spends another gate round', async () => {
+    // A prose HOLD can be fixed in one sentence while the same stale claim
+    // remains elsewhere in the branch.  Returning straight to step 0 burns a
+    // finite round before check-premises gets a second chance to catch it.
+    const content = await readGateSpec('pr-ship');
+    const verdict = content.slice(content.indexOf('## Verdict'));
+    expect(verdict, 'the verdict section must still exist').not.toBe('');
+
+    const proseHold = verdict.search(
+      /after[\s\S]{0,160}reviewer[\s-]*fix[\s\S]{0,160}(prose[\s-]*HOLD|HOLD[\s-]*prose)[\s\S]{0,220}check-premises/i,
+    );
+    expect(
+      proseHold,
+      'only a reviewer-fix for a prose HOLD needs the extra check-premises pass',
+    ).toBeGreaterThanOrEqual(0);
+
+    const secondPremises = verdict.search(
+      /after[\s\S]{0,280}fix[\s\S]{0,280}check-premises[\s\S]{0,280}(fix|own)[\s-]*(delta|prose)[\s\S]{0,280}before[\s\S]{0,120}step\s*0/i,
+    );
+    expect(
+      secondPremises,
+      'a reviewer-fix must receive check-premises on its own prose before step 0',
+    ).toBeGreaterThanOrEqual(0);
+
+    const siblingSearch = verdict.search(
+      /whole[\s-]*(branch[\s-]*)?diff[\s\S]{0,220}sibling[\s\S]{0,220}(same|matching)[\s\S]{0,120}claim/i,
+    );
+    expect(
+      siblingSearch,
+      'the reviewer-fix path must search the full branch diff for sibling claims',
+    ).toBeGreaterThanOrEqual(0);
+    expect(verdict.slice(siblingSearch)).toMatch(/correct[\s\S]{0,160}(stale|sibling)/i);
   });
 });
 

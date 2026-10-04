@@ -172,33 +172,6 @@ blockers.
    "continues when only updatedAt moved and still reports the marker evidence"
    and `test/template/content-blind-revalidation.test.ts` › "refuses a deleted
    tracked claim in a fresh run without take-up markers".
-   **Mechanical TDD evidence.** Before a ticketed branch can emit `SHIP`, run:
-
-   ```sh
-   node .claude/scripts/tdd-evidence.mjs verify-ship --ticket <item-id> --base origin/<default>
-   ```
-
-   - **0** — the final Git diff determines whether portable TDD-2 evidence is
-     required and, when required, it matches the selected baseline and final
-     production diff. Continue. This verifier does not yet assert a higher
-     tracker-mandated TDD level.
-   - **exit 2** — `HOLD`: portable TDD evidence is missing, stale or does not match
-     the final production diff. Restore the required evidence and re-enter the
-     gate; prose cannot waive it.
-   - **1** — the verifier could not complete its bounded verification. Treat it
-     as `HOLD` and repair the named prerequisite.
-
-   For a TDD-2 PASS, copy the exact RED, implementation-boundary and
-   GREEN SHA-256 fingerprints printed by the verifier into the compact
-   `evidence` entries of this gate's verdict and the PR description. Put the
-   same compact verdict in the tracker at close. A local run-journal record
-   alone is not the durable PR/tracker audit verdict. Never copy raw test logs.
-   The output binding is pinned in `test/template/tdd-durable-verdict.test.ts`
-   (absent in a generated rig) › "prints the exact portable RED,
-   implementation-boundary, and GREEN fingerprints on a TDD-2 PASS".
-
-   Owner-directed work has no item claim, so this ticket-bound verification does
-   not apply; state that condition in the verdict rather than inventing an id.
 
 2. **Route the diff before you spend on it.** This gate always ran its most
    expensive path, so a typo fix in a README bought the same fan-out as a
@@ -492,7 +465,10 @@ blockers.
   clean gate is a real result.
 - `HOLD` — name every blocker: the failing check by name, the reviewer finding
   with its file:line, or the DoD item that does not hold. Blocking findings are
-  resolved, not argued with; after fixes, the gate runs again from **step 0** —
+  resolved, not argued with. After a reviewer-fix for a prose HOLD, run `check-premises` on the
+  fix's own prose delta before returning to **step 0**. Search the whole branch
+  diff for sibling copies of the same claim and correct every stale sibling
+  copy before the gate runs again from **step 0** —
   which counts the new round and is what makes "again" finite. Re-entering at
   step 1 skips the counter, and the unbounded rounds this gate measured are
   exactly what that produces.

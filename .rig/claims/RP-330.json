@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-330",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "803b4fde181f1c54d8664127d2816b20de9b1032d9756a321c6361b281643384",
+      "targetSha": "c3bf157125b64346757b06e87a75f36a7812b0fc"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/loop-close-reference.test.ts",
+      "fullName": "GitHub Issues close lifecycle guidance keeps GitHub issues open through BEFORE_CLOSE by using Refs in the PR body and squash title"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "803b4fde181f1c54d8664127d2816b20de9b1032d9756a321c6361b281643384",
+      "targetSha": "c3bf157125b64346757b06e87a75f36a7812b0fc"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "783f049c7385068488b0a28d6344d1dd9bed672571a9eba280f3a6fc515700c0"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-330",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-330-green-formatted"
+      }
+    },
+    "baseline": {
+      "headSha": "c3bf157125b64346757b06e87a75f36a7812b0fc"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/loop-close-reference.test.ts",
+        "fullName": "GitHub Issues close lifecycle guidance keeps GitHub issues open through BEFORE_CLOSE by using Refs in the PR body and squash title",
+        "fileSha256": "a324378624978d2741ad796b6df19f002d46af8abebd6c0d39f78b2bc374bf37"
+      },
+      "source": {
+        "runId": "20261001-2054-rel-1-2-0-rp330",
+        "seq": 11
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "fa0e84208e8bd1857667c1e5ca8dc9216c655a25eff642c2a35f305a34fb80cf"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "36dd3b22bd33c11757d6d5ae1074e499bd440e64d4c8c4a519be540459466981"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-2054-rel-1-2-0-rp330",
+        "seq": 12
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "5b5c03020e4c39884325f0c393b80619ec6be5216f64760843f148ede31d1f80"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "36dd3b22bd33c11757d6d5ae1074e499bd440e64d4c8c4a519be540459466981"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "08d15d642ed7fc1c4cdac37fd111f2debd7c9852106a55fa9e60f5ba14c76741"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/loop-close-reference.test.ts",
+        "fullName": "GitHub Issues close lifecycle guidance keeps GitHub issues open through BEFORE_CLOSE by using Refs in the PR body and squash title",
+        "fileSha256": "a324378624978d2741ad796b6df19f002d46af8abebd6c0d39f78b2bc374bf37"
+      },
+      "source": {
+        "runId": "20261001-2054-rel-1-2-0-rp330",
+        "seq": 13
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "c77dc1f2503f4d6fa41b1f163b4b202dcec1c68024622b9d515dc4d013af0c6e"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "08d15d642ed7fc1c4cdac37fd111f2debd7c9852106a55fa9e60f5ba14c76741"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "6cba04220da5486e7c7fd5736440c2d669d89f816b732d8c2e6521af6d22329d"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-330",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-330-green-bound"
+          }
+        },
+        "baseline": {
+          "headSha": "c3bf157125b64346757b06e87a75f36a7812b0fc"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/loop-close-reference.test.ts",
+            "fullName": "GitHub Issues close lifecycle guidance keeps GitHub issues open through BEFORE_CLOSE by using Refs in the PR body and squash title",
+            "fileSha256": "050b48117826f15390a0b78c46e717c3d20a297c5e2921631542401df9846a0a"
+          },
+          "source": {
+            "runId": "20261001-2054-rel-1-2-0-rp330",
+            "seq": 5
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "73b3bc1d38de60cf5a065181a40e51d3398077a6ee48f500b58d04b5ac2905eb"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "9758f2c37d6e23fc62667da4422131b36f1a7c04a3ac640228dba2c508173939"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261001-2054-rel-1-2-0-rp330",
+            "seq": 6
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "5b5c03020e4c39884325f0c393b80619ec6be5216f64760843f148ede31d1f80"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "9758f2c37d6e23fc62667da4422131b36f1a7c04a3ac640228dba2c508173939"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "cb2eee72642b664954739e5d93f998366b2f4b1b21453396d11ec55b6dc22404"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/loop-close-reference.test.ts",
+            "fullName": "GitHub Issues close lifecycle guidance keeps GitHub issues open through BEFORE_CLOSE by using Refs in the PR body and squash title",
+            "fileSha256": "050b48117826f15390a0b78c46e717c3d20a297c5e2921631542401df9846a0a"
+          },
+          "source": {
+            "runId": "20261001-2054-rel-1-2-0-rp330",
+            "seq": 7
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "8c21ec23f953e8c6fe8248114a65fb172ee09d69e875f3e1815449d74f9f3135"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "cb2eee72642b664954739e5d93f998366b2f4b1b21453396d11ec55b6dc22404"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "df41f19b97b873502e3258d5efa43d33e602c51b2afa6948a300423abf817c13"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "9758f2c37d6e23fc62667da4422131b36f1a7c04a3ac640228dba2c508173939"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "36dd3b22bd33c11757d6d5ae1074e499bd440e64d4c8c4a519be540459466981"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "28d906ed8feb4b9a2da8e9d9a9c7ef1f3d86850a0a65566f2d281907630bb642"
+        }
+      }
+    }
+  ]
+}

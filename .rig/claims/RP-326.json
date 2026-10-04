@@ -1,0 +1,308 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-326",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "a0c4541e011a227796dc33ff86e0cbc8d8e570072b5faad0ea861b516c3a7360",
+      "targetSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/plan-deferral-identity.test.ts",
+      "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "a0c4541e011a227796dc33ff86e0cbc8d8e570072b5faad0ea861b516c3a7360",
+      "targetSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "091ff0f4ab4c5df9696e26d3522d9a62f887cc3c6a5473fa08c7148628fe1d91"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-326",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-326-green-deferred-wording"
+      }
+    },
+    "baseline": {
+      "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/plan-deferral-identity.test.ts",
+        "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+        "fileSha256": "de9a3a5fbecf2f15e183efb7a68d0e9f33cc4e13ab4df1f7686b09d017503408"
+      },
+      "source": {
+        "runId": "20261001-1505-rel-1-2-0-rp326",
+        "seq": 34
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "fff2c0773752d4f0eb529481bcbf1c9d2d0a2a7a9c50c56c3b7339e4d3054d7a"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "22d8e6e9c4047e3a9c2d6503f81c350a790e7137416b3b6d884df8b94bf1c4f9"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261001-1505-rel-1-2-0-rp326",
+        "seq": 35
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "c4a1dc0e5a40e0e31fa9ee5f0ada29024682ec494efd8f5047037d28a1d39581"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "22d8e6e9c4047e3a9c2d6503f81c350a790e7137416b3b6d884df8b94bf1c4f9"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "0593d402790c16202ddaa5740fc7aabcb22c3e1e8ea15051d2a3bb4f8d959ba0"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/plan-deferral-identity.test.ts",
+        "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+        "fileSha256": "de9a3a5fbecf2f15e183efb7a68d0e9f33cc4e13ab4df1f7686b09d017503408"
+      },
+      "source": {
+        "runId": "20261001-1505-rel-1-2-0-rp326",
+        "seq": 36
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "454c35407b9b776b1e3720ebc7ad802468b9b3bf95906fee5f75703dddd20baa"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "0593d402790c16202ddaa5740fc7aabcb22c3e1e8ea15051d2a3bb4f8d959ba0"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "b0475547074a02c57de180b1c62cc67acebcdcd4b21967a04d5078f72d47d21d"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-326",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-326-green-fixed"
+          }
+        },
+        "baseline": {
+          "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/plan-deferral-identity.test.ts",
+            "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+            "fileSha256": "0ee1195ac5bffdd0a1edf50da51ddf4b2557fe42346d95bc2a4be118bc4b6402"
+          },
+          "source": {
+            "runId": "20261001-1505-rel-1-2-0-rp326",
+            "seq": 8
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "5d9ffc43ec5f973140fc00e45d51897ece2a057034d7187fca398cb73b72fbe0"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "63336ebeef0cedd8eceae149138459ee6339da299e364d24a62a11cae651c756"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261001-1505-rel-1-2-0-rp326",
+            "seq": 11
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "322fc3835f97f320a2953a196a4eac5afbd6bb6759fa6bfa36cc2ef6c73b2dba"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "63336ebeef0cedd8eceae149138459ee6339da299e364d24a62a11cae651c756"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "2c40be368c1511189bd5e8ddad35995eedea410b93adc12f73fc11dc531d57b6"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/plan-deferral-identity.test.ts",
+            "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+            "fileSha256": "0ee1195ac5bffdd0a1edf50da51ddf4b2557fe42346d95bc2a4be118bc4b6402"
+          },
+          "source": {
+            "runId": "20261001-1505-rel-1-2-0-rp326",
+            "seq": 12
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "7daa63378bd1232b09c56801130a0eedb210d6a74d6b29a18166accb7d7a33fc"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "2c40be368c1511189bd5e8ddad35995eedea410b93adc12f73fc11dc531d57b6"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "cef49bc35232ca5cf7795807f1cee61de947cc33467aaad3c7d9482867aeac9e"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "63336ebeef0cedd8eceae149138459ee6339da299e364d24a62a11cae651c756"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "8af79fd56f93224e144b3f0c5aad7b6d6d06c41becfb1037eae0010eac9abd9b"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "a225def01e4f74e2851da432879b0770bbdf7ed15c75f175d8b4878c75b0a0c0"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-326",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-326-green-title"
+          }
+        },
+        "baseline": {
+          "headSha": "c5b4f9fd43af5d340654f05118c2737bd773f782"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/plan-deferral-identity.test.ts",
+            "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+            "fileSha256": "193a78dce1aec3dc5edf65610d3e4c182d2e6008346120b77923f05ccbf71228"
+          },
+          "source": {
+            "runId": "20261001-1505-rel-1-2-0-rp326",
+            "seq": 17
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "b253c9dd8c6412a5e60c4928d69845b380f862fce478744bbef499e7ef6f27fb"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "8af79fd56f93224e144b3f0c5aad7b6d6d06c41becfb1037eae0010eac9abd9b"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261001-1505-rel-1-2-0-rp326",
+            "seq": 18
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "4f86c93d500b04d6890df680119eb1bf15e908fa74834da0c70842b18c8437de"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "8af79fd56f93224e144b3f0c5aad7b6d6d06c41becfb1037eae0010eac9abd9b"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "afedf656c7ca9ed1b1c56cf33abb8692fa1be2a5be694eac163a19effc5d2dc9"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/plan-deferral-identity.test.ts",
+            "fullName": "preserves frozen and later markers through parsePlan to truthful deferred selection",
+            "fileSha256": "193a78dce1aec3dc5edf65610d3e4c182d2e6008346120b77923f05ccbf71228"
+          },
+          "source": {
+            "runId": "20261001-1505-rel-1-2-0-rp326",
+            "seq": 19
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "66acd675088c055e89a67e4925e5a5711b3c9603d5303dd219c15f59ef681225"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "afedf656c7ca9ed1b1c56cf33abb8692fa1be2a5be694eac163a19effc5d2dc9"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "1728a2d490934d96d8ce48ddf4d0368456ab28475a53b3d9a1ed111d49ccf850"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "8af79fd56f93224e144b3f0c5aad7b6d6d06c41becfb1037eae0010eac9abd9b"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "22d8e6e9c4047e3a9c2d6503f81c350a790e7137416b3b6d884df8b94bf1c4f9"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "1ffdb10cd6bffac47980487172c939b4c345399bb474b8bdeae7f882c8b2dc05"
+        }
+      }
+    }
+  ]
+}

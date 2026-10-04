@@ -76,6 +76,12 @@ scripts/            prepare (build+hooks), sync-agent-os (composes this file),
    commit to `master` directly, merge through a PR once CI is green. The
    pre-0.2.0 history was authored straight on `master`; that was a dogfooding
    gap — it stops here.
+7. **Adopt, Wrap, Extend, Build** (`docs/decisions/adopt-wrap-extend-build.md`).
+   A Jira item that proposes a new Rig-native subsystem or specialized
+   capability carries an "Existing alternatives considered" section: the
+   solutions evaluated, why adopting or wrapping them is insufficient, and which
+   Rig-specific requirement needs a custom implementation. Ordinary
+   implementation tickets need nothing new.
 
 ## Foot-guns
 

@@ -12,6 +12,7 @@
 // defaults to `plan-md`, which is the only adapter that works in a freshly
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
+import { execFileSync } from 'node:child_process';
 import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
@@ -31,7 +32,8 @@ import { changedSinceOf, headShaOf } from './as-of.mjs';
 // apart from `state.mjs` so the read path does not drag the tier computation —
 // and `detect-missed-gate.mjs` behind it — into a CLI that never calls either.
 import { checkoutIsShippable, mainCheckoutRoot } from './checkout.mjs';
-import { revalidateClaim, targetShaOf } from '../lib/claim-records.mjs';
+import { revalidateClaim, targetShaOf, unverifiableResult } from '../lib/claim-records.mjs';
+import { withoutGitLocation } from '../git-env.mjs';
 
 const ADAPTERS = {
   'plan-md': './plan-md.mjs',
@@ -620,6 +622,16 @@ if (invokedDirectly()) {
         : join(mainCheckoutRoot(projectRoot), '.claude', 'queue.state.json'),
     );
     adapter = await resolveAdapter(config.adapter ?? 'plan-md');
+    if (
+      config.options?.scope !== undefined &&
+      config.options.scope !== null &&
+      adapter.supportsScope === false
+    ) {
+      throw new Error(
+        `${adapter.name} does not support options.scope: PLAN.md markers are not tracker labels, so ` +
+          'a label scope cannot select a narrower queue. Use a tracker adapter with labels instead.',
+      );
+    }
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exit(1);
@@ -954,12 +966,35 @@ if (invokedDirectly()) {
         }
       }
     }
-    let claim = revalidateClaim({
+    const targetSha = targetShaOf(claimRoot);
+    let claim = null;
+    if (targetSha === null) {
+      try {
+        execFileSync('git', ['-C', claimRoot, 'config', '--get', 'remote.origin.url'], {
+          env: withoutGitLocation(),
+          stdio: 'ignore',
+        });
+        claim = unverifiableResult({
+          ticket: result.ticket,
+          point: 'SELECT',
+          reason: 'configured origin has no usable remote default',
+        });
+      } catch (error) {
+        if (error?.status !== 1) {
+          claim = unverifiableResult({
+            ticket: result.ticket,
+            point: 'SELECT',
+            reason: 'configured origin could not be inspected',
+          });
+        }
+      }
+    }
+    claim ??= revalidateClaim({
       projectRoot: claimRoot,
       ticket: result.ticket,
       point: 'SELECT',
       claimedState: adapter.claimedState,
-      targetSha: targetShaOf(claimRoot),
+      targetSha,
       allowCreate: true,
       isResume: selectedBefore,
     });

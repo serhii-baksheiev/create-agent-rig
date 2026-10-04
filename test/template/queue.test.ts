@@ -1572,9 +1572,12 @@ describe('stop conditions — the loop is bounded by health and queue depth', ()
     // What actually frees one: a human changing the item's own marker. Same
     // wording the loop skill already uses, so the two cannot drift apart.
     'trigger-human': /marker|hand(?:s|ed) it over/i,
-    // AR-144: two lifecycle holds, each freed by one human act on the item.
+    // AR-144: re-scope has one human remedy. `deferred` is an aggregate cause:
+    // a parked item needs human un-parking, while frozen and later items retain
+    // their own item-level reason. A held aggregate must say both, so it cannot
+    // falsely prescribe un-parking for every deferred item.
     're-scope': /rewrites it.*removes the label/i,
-    deferred: /un-parks it/i,
+    deferred: /parked.*human un-parking; frozen and later.*item-level reason/i,
   };
 
   it('names a remedy for every cause that can hold an item back', async () => {

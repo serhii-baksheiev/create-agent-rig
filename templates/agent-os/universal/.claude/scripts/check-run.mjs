@@ -263,28 +263,23 @@
 // `dest.write(chunk)` without checking its return value or pausing the source
 // read on it, so a stalled destination reader (the caller's own stdout/stderr)
 // still lets unflushed data queue in memory without bound.
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   closeSync,
-  constants as fsConstants,
   createReadStream,
   existsSync,
-  fstatSync,
-  lstatSync,
   mkdirSync,
   openSync,
-  readSync,
   realpathSync,
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { createHash, randomBytes } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { recordEvent } from './run-journal.mjs';
-import { withoutGitLocation } from './git-env.mjs';
 import { findSecretValues, SECRET_VALUE_PATTERNS } from './lib/secrets.mjs';
 
 const REDACTED_LINE = '[redacted]';
@@ -294,9 +289,6 @@ const LOG_MAX_BYTES = 5 * 1024 * 1024;
 const FAILED_TESTS_MAX = 50;
 const FAILED_TEST_MAX_CHARS = 300;
 const LINE_MAX_BYTES = 64 * 1024;
-const STRUCTURED_RESULT_MAX_BYTES = 5 * 1024 * 1024;
-const WORKTREE_DIFF_MAX_BYTES = 5 * 1024 * 1024;
-const GIT_HEAD = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 
 const WIN32 = process.platform === 'win32';
 // Read from `process.platform` directly, not injectable (RP-295, RP-290
@@ -477,13 +469,11 @@ const buildTail = (lines) => {
 const parseArgs = (argv) => {
   let name = null;
   let timeoutSeconds = null;
-  let vitestJson = null;
   let i = 0;
   for (; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === '--name') name = argv[(i += 1)] ?? null;
     else if (flag === '--timeout') timeoutSeconds = Number(argv[(i += 1)]);
-    else if (flag === '--vitest-json') vitestJson = argv[(i += 1)] ?? null;
     else if (flag === '--') {
       i += 1;
       break;
@@ -504,206 +494,8 @@ const parseArgs = (argv) => {
     ok: true,
     name,
     timeoutSeconds: Number.isFinite(timeoutSeconds) && timeoutSeconds > 0 ? timeoutSeconds : null,
-    vitestJson,
     command,
   };
-};
-
-const safeStructuredResultName = (value) =>
-  typeof value === 'string' &&
-  value.length > 0 &&
-  value.length <= 255 &&
-  !value.includes('/') &&
-  !value.includes('\\') &&
-  value !== '.' &&
-  value !== '..';
-
-const SHA256 = /^[a-f0-9]{64}$/;
-const MAX_STRUCTURED_COMMAND_ARGS = 128;
-const MAX_STRUCTURED_COMMAND_ARG_BYTES = 4096;
-
-const isNodeExecutable = (value) => {
-  if (typeof value !== 'string' || value.length === 0) return false;
-  try {
-    return realpathSync(value) === realpathSync(process.execPath);
-  } catch {
-    return false;
-  }
-};
-
-// Decide this before the child starts. A child-controlled path can be replaced
-// after it runs, so post-run realpath is not evidence of what was executed.
-const normalizedVitestCommand = (runDir, name, command, cwd) => {
-  if (!safeStructuredResultName(name) || !runDir || !isNodeExecutable(command[0])) return null;
-  const runner = installedVitestModule(command[1], cwd);
-  const args = command.slice(2);
-  if (runner === null || args[0] !== 'run' || optionValue(args, '--reporter') !== 'json') return null;
-  const outputFile = optionValue(args, '--outputFile');
-  if (outputFile === null || path.resolve(cwd, outputFile) !== path.resolve(runDir, name)) return null;
-  return [process.execPath, runner, ...command.slice(2)];
-};
-
-// Only the direct Node → installed Vitest module invocation is attested. A
-// JSON-shaped file written by `node -e`, or by an arbitrary executable named
-// "vitest", is not evidence that Vitest observed the result. This deliberately
-// keeps the accepted shape narrow; callers can pass Node's resolved
-// `node_modules/vitest/vitest.mjs` path.
-const installedVitestModule = (value, cwd) => {
-  if (typeof value !== 'string' || path.basename(value) !== 'vitest.mjs') return null;
-  let resolved;
-  try {
-    resolved = realpathSync(path.resolve(cwd, value));
-    const stat = lstatSync(resolved);
-    if (!stat.isFile() || stat.isSymbolicLink()) return null;
-  } catch {
-    return null;
-  }
-  return path.basename(path.dirname(resolved)) === 'vitest' &&
-    path.basename(path.dirname(path.dirname(resolved))) === 'node_modules'
-    ? resolved
-    : null;
-};
-
-const structuredCommandHash = (command) => {
-  if (
-    !Array.isArray(command) ||
-    command.length === 0 ||
-    command.length > MAX_STRUCTURED_COMMAND_ARGS ||
-    command.some(
-      (argument) => typeof argument !== 'string' || Buffer.byteLength(argument, 'utf8') > MAX_STRUCTURED_COMMAND_ARG_BYTES,
-    )
-  ) {
-    return null;
-  }
-  return createHash('sha256').update(JSON.stringify(command)).digest('hex');
-};
-
-const optionValue = (args, option) => {
-  for (let index = 0; index < args.length; index += 1) {
-    if (args[index] === option) return args[index + 1] ?? null;
-    if (args[index].startsWith(`${option}=`)) return args[index].slice(option.length + 1);
-  }
-  return null;
-};
-
-const validVitestReport = (value, outcome) => {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || !Array.isArray(value.testResults)) return false;
-  if (typeof value.success !== 'boolean' || !Number.isInteger(value.numFailedTests) || value.numFailedTests < 0) {
-    return false;
-  }
-  const failedAssertions = value.testResults.some(
-    (result) =>
-      Array.isArray(result?.assertionResults) &&
-      result.assertionResults.some((assertion) => assertion?.status === 'failed'),
-  );
-  return outcome === 'pass'
-    ? value.success && value.numFailedTests === 0 && !failedAssertions
-    : !value.success && value.numFailedTests > 0 && failedAssertions;
-};
-
-const vitestStructuredResult = (runDir, name, command, cwd, outcome) => {
-  if (!safeStructuredResultName(name) || !runDir) return null;
-  const commandSha256 = structuredCommandHash(command);
-  if (commandSha256 === null || command[0] !== process.execPath) return null;
-  const runner = installedVitestModule(command[1], cwd);
-  const args = command.slice(2);
-  if (runner === null || args[0] !== 'run' || optionValue(args, '--reporter') !== 'json') return null;
-  const outputFile = optionValue(args, '--outputFile');
-  if (outputFile === null || path.resolve(cwd, outputFile) !== path.resolve(runDir, name)) return null;
-
-  const file = path.join(runDir, name);
-  let declared;
-  try {
-    declared = lstatSync(file);
-  } catch {
-    return null;
-  }
-  if (declared.isSymbolicLink() || !declared.isFile() || declared.size > STRUCTURED_RESULT_MAX_BYTES) return null;
-
-  let fd;
-  try {
-    // O_NOFOLLOW rejects a target swapped to a symlink after lstat. The
-    // dev/inode and size checks bind the opened descriptor to that lstat and
-    // reject replacement or growth while it is read.
-    // Node only exposes O_NOFOLLOW when the host OS supplies it. Windows has
-    // no such flag in Node's constants, so the same path is still usable
-    // there: the fd and pathname are both checked before and after the read.
-    // A path swap to a link or another file fails one of those identity checks.
-    const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
-    fd = openSync(file, fsConstants.O_RDONLY | noFollow);
-    const opened = fstatSync(fd);
-    if (
-      !opened.isFile() ||
-      opened.dev !== declared.dev ||
-      opened.ino !== declared.ino ||
-      opened.size !== declared.size ||
-      opened.size > STRUCTURED_RESULT_MAX_BYTES
-    ) {
-      return null;
-    }
-    const contents = Buffer.alloc(opened.size);
-    let offset = 0;
-    while (offset < contents.length) {
-      const bytesRead = readSync(fd, contents, offset, contents.length - offset, offset);
-      if (bytesRead === 0) return null;
-      offset += bytesRead;
-    }
-    const after = fstatSync(fd);
-    const namedAfter = lstatSync(file);
-    if (
-      after.dev !== opened.dev ||
-      after.ino !== opened.ino ||
-      after.size !== opened.size ||
-      namedAfter.isSymbolicLink() ||
-      !namedAfter.isFile() ||
-      namedAfter.dev !== declared.dev ||
-      namedAfter.ino !== declared.ino ||
-      namedAfter.size !== declared.size
-    ) {
-      return null;
-    }
-    let report;
-    try {
-      report = JSON.parse(contents.toString('utf8'));
-    } catch {
-      return null;
-    }
-    if (!validVitestReport(report, outcome)) return null;
-    const sha256 = createHash('sha256').update(contents).digest('hex');
-    if (!SHA256.test(sha256)) return null;
-    return {
-      format: 'vitest-json',
-      path: name,
-      sha256,
-      runner: {
-        schema: 1,
-        kind: 'vitest',
-        modulePathSha256: createHash('sha256').update(runner).digest('hex'),
-        commandSha256,
-      },
-    };
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-};
-
-// The child owns this output. Removing a prior regular file before the child
-// starts prevents a stale successful-looking report from being bound to this
-// check; a link or any non-file is a refusal rather than a path to follow.
-const prepareVitestStructuredResultTarget = (runDir, name) => {
-  if (name === null) return;
-  if (!safeStructuredResultName(name)) throw new Error('unsafe --vitest-json result name');
-  if (!runDir) return;
-  const file = path.join(runDir, name);
-  try {
-    const stat = lstatSync(file);
-    if (stat.isSymbolicLink() || !stat.isFile()) throw new Error('structured result target is not a regular file');
-    unlinkSync(file);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') throw error;
-  }
 };
 
 // A small, FIXED-size rolling window (characters, not bytes — the header it
@@ -1142,49 +934,16 @@ const NOT_RECORDED_NOTICE =
   'check-run: the result was not recorded — no run directory (RIG_RUN_DIR) is declared\n';
 
 /** Records one `check-result` event when `RIG_RUN_DIR` is declared, or prints the one-line notice explaining why not. */
-const recordOrNotify = (data, boundary = null) => {
+const recordOrNotify = (data) => {
   const runDir = process.env.RIG_RUN_DIR;
   if (!runDir) {
     process.stderr.write(NOT_RECORDED_NOTICE);
     return;
   }
   try {
-    if (boundary !== null) {
-      recordEvent({ runDir, kind: 'check-boundary', data: boundary, now: new Date().toISOString() });
-    }
     recordEvent({ runDir, kind: 'check-result', data, now: new Date().toISOString() });
   } catch (error) {
     process.stderr.write(`check-run: the result was NOT recorded — ${error.message}\n`);
-  }
-};
-
-const gitHeadOf = (cwd) => {
-  try {
-    const head = execFileSync('git', ['-C', cwd, 'rev-parse', '--verify', 'HEAD'], {
-      encoding: 'utf8',
-      env: withoutGitLocation(),
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return GIT_HEAD.test(head) ? head : null;
-  } catch {
-    return null;
-  }
-};
-
-// Capture the checked implementation boundary before the child runs. A commit
-// id alone cannot distinguish two uncommitted production states at the same
-// HEAD, so record a bounded digest of Git's binary working-tree diff too.
-const workingTreeDiffFingerprint = (cwd, gitHead) => {
-  if (gitHead === null) return null;
-  try {
-    const diff = execFileSync(
-      'git',
-      ['-C', cwd, 'diff', '--binary', '--no-ext-diff', '--no-textconv', gitHead, '--'],
-      { encoding: 'buffer', env: withoutGitLocation(), maxBuffer: WORKTREE_DIFF_MAX_BYTES },
-    );
-    return { algorithm: 'sha256', value: createHash('sha256').update(diff).digest('hex') };
-  } catch {
-    return null;
   }
 };
 
@@ -1303,12 +1062,8 @@ const normalizeFailedTestId = (id) => {
   return `${pathPart.split('\\').join('/')}${rest}`;
 };
 
-const runCheck = async ({ name, timeoutSeconds, vitestJson, command }) => {
+const runCheck = async ({ name, timeoutSeconds, command }) => {
   const cwd = process.cwd();
-  const attestedCommand = normalizedVitestCommand(process.env.RIG_RUN_DIR, vitestJson, command, cwd);
-  const spawnedCommand = attestedCommand ?? command;
-  const gitHead = gitHeadOf(cwd);
-  const workingTreeDiff = workingTreeDiffFingerprint(cwd, gitHead);
   const cwdReal = computeCwdReal(cwd);
   const prefixCandidates = buildPrefixCandidates(cwd, cwdReal);
   // Stops at the first matching prefix candidate, not every one of them
@@ -1462,8 +1217,7 @@ const runCheck = async ({ name, timeoutSeconds, vitestJson, command }) => {
 
     let child = null;
     try {
-      prepareVitestStructuredResultTarget(process.env.RIG_RUN_DIR, vitestJson);
-      child = spawnForCommand(spawnedCommand, cwd, stdoutFd, stderrFd);
+      child = spawnForCommand(command, cwd, stdoutFd, stderrFd);
     } catch (error) {
       spawnError = error;
     }
@@ -1601,8 +1355,6 @@ const runCheck = async ({ name, timeoutSeconds, vitestJson, command }) => {
     signal,
     timedOut,
     failedTests,
-    ...(gitHead === null ? {} : { gitHead }),
-    ...(workingTreeDiff === null ? {} : { workingTreeDiff }),
   };
 
   const runDir = process.env.RIG_RUN_DIR;
@@ -1617,13 +1369,8 @@ const runCheck = async ({ name, timeoutSeconds, vitestJson, command }) => {
     mkdirSync(path.join(runDir, 'checks'), { recursive: true });
     writeFileSync(path.join(runDir, 'checks', logFileName), logBuffer.finalize());
     data.log = `checks/${logFileName}`;
-    const structuredResult = vitestStructuredResult(runDir, vitestJson, spawnedCommand, cwd, outcome);
-    if (structuredResult) data.structuredResult = structuredResult;
     if (outcome === 'fail') data.tail = buildTail(tailLines);
-    recordOrNotify(
-      data,
-      gitHead === null ? null : { schema: 1, name, gitHead, ...(workingTreeDiff === null ? {} : { workingTreeDiff }) },
-    );
+    recordOrNotify(data);
   } catch (error) {
     process.stderr.write(`check-run: the result was NOT recorded — ${error.message}\n`);
   }

@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-364",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "bf2e87cba8142b3eff93350f3e398b8aea2b7140cdd7f9c2303a0e5e420f7450",
+      "targetSha": "590a3a9c6a1f57090dea7b16020d738369e35b7a"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-baseline-continuation.test.ts",
+      "fullName": "RP-306 portable baseline continuation refreshes TDD-2 GREEN across two verified merged default advances without attributing either production delta"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "bf2e87cba8142b3eff93350f3e398b8aea2b7140cdd7f9c2303a0e5e420f7450",
+      "targetSha": "590a3a9c6a1f57090dea7b16020d738369e35b7a"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "02c41c2437a26aefc6e294b585abda733172137a5c4c6754502a47be68206702"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-364",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "rp364-two-default-green-04"
+      }
+    },
+    "baseline": {
+      "headSha": "590a3a9c6a1f57090dea7b16020d738369e35b7a"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-baseline-continuation.test.ts",
+        "fullName": "RP-306 portable baseline continuation refreshes TDD-2 GREEN across two verified merged default advances without attributing either production delta",
+        "fileSha256": "4d37441916ae4fcea6c59e3dbf79b2a4f05c509119f4bbf470bf1bef469d65bd"
+      },
+      "source": {
+        "runId": "rp364-20261003",
+        "seq": 7
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "a264180c19c0e85dc42f7b7060289bf90c92e7da69d686cd8c081ba1b00188fb"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "2ef0067becec5758737fea28bccdc84734c09971d900be71763de016d1e0a817"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "rp364-20261003",
+        "seq": 24
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "d1bf252bcd6def3df9c96b2dfc27d0128231c6e6bfaee1d4988d3f162cb3d2d2"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "2ef0067becec5758737fea28bccdc84734c09971d900be71763de016d1e0a817"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "4612e3580e105b4c621d1728e44fac5aa5259d2aa0190988d8a17031923bf6ca"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-baseline-continuation.test.ts",
+        "fullName": "RP-306 portable baseline continuation refreshes TDD-2 GREEN across two verified merged default advances without attributing either production delta",
+        "fileSha256": "4d37441916ae4fcea6c59e3dbf79b2a4f05c509119f4bbf470bf1bef469d65bd"
+      },
+      "source": {
+        "runId": "rp364-20261003",
+        "seq": 25
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "6a956655b39d79428de5ba268c2e50179cf51a6da16628dcef77302369351ea4"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "4612e3580e105b4c621d1728e44fac5aa5259d2aa0190988d8a17031923bf6ca"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "6025b92bedebaae3487bf54e293a1070b1c3393191a0cc06a333b30c351bd293"
+      }
+    }
+  }
+}

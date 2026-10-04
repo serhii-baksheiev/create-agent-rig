@@ -18,6 +18,10 @@ import { recordEscalation } from '../run-state.mjs';
 
 export const name = 'plan-md';
 export const claimedState = 'open';
+// PLAN.md markers are adapter-local selection metadata, not tracker or release
+// labels, so a label scope cannot express a narrower queue here. The CLI refuses
+// a configured scope rather than silently treating every item as out of scope.
+export const supportsScope = false;
 
 const AGENT_QUEUE = /^##\s+Agent queue\s*$/i;
 const OPERATOR_QUEUE = /^##\s+Operator queue\s*$/i;
@@ -73,7 +77,18 @@ const MARKERS = {
   reScope: /\[re-scope\]/i,
   obsolete: /\[obsolete\]/i,
   parked: /\[parked\]/i,
+  frozen: /\[frozen\]/i,
+  later: /\[later\]/i,
 };
+
+const LIFECYCLE_MARKERS = [
+  ['keep-core', MARKERS.keepCore],
+  ['re-scope', MARKERS.reScope],
+  ['obsolete', MARKERS.obsolete],
+  ['parked', MARKERS.parked],
+  ['frozen', MARKERS.frozen],
+  ['later', MARKERS.later],
+];
 
 /**
  * Parse the Agent queue into neutral tickets. Order in the file IS the priority.
@@ -103,9 +118,10 @@ export const parsePlan = (plan) => {
     const match = /^\s*[-*]\s+(.*\S)\s*$/.exec(line);
     if (!match) continue;
     const raw = match[1];
+    const labels = LIFECYCLE_MARKERS.filter(([, marker]) => marker.test(raw)).map(([label]) => label);
     const title = raw
       .replace(
-        /\[(elevated|triage|trigger-auto|trigger-human|keep-core|re-scope|obsolete|parked|owner:[^\]\s]+)\]/gi,
+        /\[(elevated|triage|trigger-auto|trigger-human|keep-core|re-scope|obsolete|parked|frozen|later|owner:[^\]\s]+)\]/gi,
         '',
       )
       .replace(/\s+/g, ' ')
@@ -123,7 +139,7 @@ export const parsePlan = (plan) => {
       // for writes — it is not a body and core does not read it as one.
       body: null,
       state: 'open',
-      labels: [],
+      labels,
       tier: MARKERS.elevated.test(raw) ? 'elevated' : 'normal',
       // No links are expressible in a flat list — see the limit at the top.
       blockedBy: [],
@@ -142,18 +158,8 @@ export const parsePlan = (plan) => {
           : null,
       owner: MARKERS.owner.exec(raw)?.[1] ?? null,
       // The markers present, handed to the one precedence rule (`core.mjs` ›
-      // lifecycleOf) rather than re-deriving it here. Hygiene cannot report a
-      // contradiction on this adapter: a flat list carries no labels for it to read.
-      ...lifecycleOf(
-        [
-          ['keep-core', MARKERS.keepCore],
-          ['re-scope', MARKERS.reScope],
-          ['obsolete', MARKERS.obsolete],
-          ['parked', MARKERS.parked],
-        ]
-          .filter(([, marker]) => marker.test(raw))
-          .map(([label]) => label),
-      ),
+      // lifecycleOf) rather than re-deriving it here.
+      ...lifecycleOf(labels),
     });
   }
   return items;

@@ -38,6 +38,7 @@ describe('one exclusion list for every repository scan', () => {
       '.claude/worktrees/**',
       '**/.codex-*/**',
       '**/.prepare-*/**',
+      '**/rp371-vitest-worker-probe-*/**',
     ]);
   });
 

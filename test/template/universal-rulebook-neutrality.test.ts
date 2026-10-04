@@ -46,4 +46,16 @@ describe('universal rulebook neutrality after the stack layers are retired', () 
     expect(workflow).not.toMatch(/verify the deployed surface is healthy/i);
     expect(workflow).not.toMatch(/target's post-deploy verdict/i);
   });
+
+  // RP-398: the Mechanical TDD evidence contract (RP-305/RP-306) was an owner
+  // scope correction, removed from the 1.2.0 release contract before it
+  // shipped. Ordinary TDD discipline — the Red/Green/Refactor motion this
+  // section opens with — stays; only the pointer to the removed contract
+  // goes.
+  it('workflow.md names no mechanical TDD evidence contract', async () => {
+    const workflow = await readFile(path.join(universal, 'rules', 'workflow.md'), 'utf8');
+
+    expect(workflow).toContain('TDD is the default motion');
+    expect(workflow).not.toMatch(/tdd-evidence\.md/);
+  });
 });
