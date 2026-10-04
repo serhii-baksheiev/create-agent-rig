@@ -21,11 +21,10 @@ const { gitFindings, frozenCandidateGitFindings } = releasePreflight as {
   }) => string[];
 };
 
-// RP-353: this file is the real-git half of the frozen-candidate preflight —
-// `release-preflight.test.ts` pins the pure functions against hard-coded
-// shas, which proves the DECISION logic; this proves the GIT FACTS that logic
-// is handed are read correctly off real refs (a fully-qualified remote ref, a
-// real ancestor check), which hard-coded booleans cannot. Everything below runs
+// RP-353: this file feeds the pure frozen-candidate decision with facts this
+// test reads from real refs itself (a remote-tracking ref, a real ancestor
+// check). It does not exercise how the script reads them; that end-to-end
+// path is release-preflight-frozen-e2e.test.ts. Everything below runs
 // inside its own temporary bare origin and clone — never this repository's own
 // refs, per this task's own worktree rule.
 const GLOBAL_GIT_ARGS = [

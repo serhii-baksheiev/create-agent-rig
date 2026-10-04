@@ -52,17 +52,36 @@ node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha
 ```
 
 This still runs every manifest, ledger, payload and tarball check ordinary mode
-runs. What it replaces is only the git question: instead of "is HEAD
-origin/master's current tip", it asks three things specific to a frozen
-candidate — HEAD must be exactly the given sha; the fully-qualified
+runs — including the CHANGELOG heading check both modes now share: `CHANGELOG.md`
+must document the version being prepared under exactly `## X.Y.Z` or exactly
+`## X.Y.Z (release candidate)`, nothing looser. What frozen mode replaces is
+only the git question: instead of "is HEAD origin/master's current tip", it
+asks three things specific to a frozen candidate — HEAD must be exactly the
+given sha; the fully-qualified
 `refs/remotes/origin/release/<package.json version>-rc` must resolve and name
-that same sha; and the sha must still be an ancestor of `origin/master`. The
-working tree must still be clean, exactly as in ordinary mode. Like ordinary
-mode, it reads refs as git already has them and does not fetch.
+that same sha; and the sha must still be an ancestor of `origin/master`. Both
+refs are resolved exactly (`git show-ref --verify --hash`), never through
+git's own short-name fallback onto a same-named tag or branch. The working
+tree must still be clean, exactly as in ordinary mode. Like ordinary mode, it
+reads refs as git already has them and does not fetch.
 
-No flag at all is ordinary mode, entirely unchanged. This mode does not publish
-or tag anything by itself — it only tells you whether the frozen bytes still
-check out clean against the three facts above.
+No flag at all is ordinary mode, unchanged. This mode does not publish or tag
+anything by itself — it only tells you whether the frozen bytes still check
+out clean against the three facts above. Any git finding in this mode stops
+the run there: `npm pack` is never reached once one has fired.
+
+Pinned end to end, against the real script and real git, in
+`test/template/release-preflight-frozen-e2e.test.ts` — "clears the exact
+candidate on the real remote-tracking release ref, ancestor of origin/master,
+and still reaches npm", "reports the release ref missing, naming it, and never
+reaches npm (B: a frozen git finding must stop before packing)", "still reports
+the release ref missing when a TAG shadows its exact name (A: only the exact
+remote-tracking ref counts)", "still reports the release ref missing when a
+BRANCH shadows its exact name (A: only the exact remote-tracking ref counts)",
+"reports a release ref that resolves to a different commit, and never reaches
+npm", "reports a candidate that is not reachable from origin/master, and never
+reaches npm", and "reports origin/master as unresolvable rather than silently
+trusting a TAG that shadows its name".
 
 ## Exact-SHA network acceptance
 

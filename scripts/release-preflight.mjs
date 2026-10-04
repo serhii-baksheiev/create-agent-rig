@@ -16,7 +16,14 @@
 //
 //   node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>
 //
-// No flag at all is ordinary mode, exactly as above and otherwise unchanged.
+// No flag at all is ordinary mode, exactly as above. Frozen mode resolves
+// `refs/remotes/origin/release/<package.json version>-rc` and
+// `refs/remotes/origin/master` EXACTLY — `git show-ref --verify --hash`, never
+// `git rev-parse`'s short-name DWIM fallback onto a same-named tag or branch —
+// and checks HEAD against the candidate sha, the release ref against HEAD, and
+// the candidate's ancestry in `origin/master`'s history. Any frozen-mode git
+// finding stops the run there: `npm pack` (which builds the real tarball) is
+// never reached once one has fired.
 //
 // Deliberately phrased as what it LOOKS AT rather than as what it guarantees.
 // The limits block below says what it cannot see.
@@ -63,8 +70,11 @@
 //     preflight that fails when the network is down is a preflight nobody runs.
 //
 // The pure parts are exported and tested; `main` reads the world and hands them
-// the results. Pinned in `test/template/release-preflight.test.ts` — absent in a
-// generated rig, this being the generator's own script.
+// the results. Pinned in `test/template/release-preflight.test.ts` and
+// `test/template/release-candidate-preflight.test.ts` — absent in a generated
+// rig, this being the generator's own script. The exact-ref resolution and the
+// stop-before-pack behaviour are pinned end to end, against the real script and
+// real git, in `test/template/release-preflight-frozen-e2e.test.ts`.
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
@@ -458,6 +468,31 @@ const readJson = (relative) => JSON.parse(readFileSync(path.join(root, relative)
 const git = (args) => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 
 /**
+ * Resolves `fullRef` (e.g. `refs/remotes/origin/master`) to its sha, or `null`
+ * when it does not exist — never git's own DWIM short-name fallback.
+ *
+ * `git rev-parse <fullref>` is NOT safe for this: gitrevisions(7) has git
+ * retry the whole string as a short name when the literal ref is absent, so
+ * `git rev-parse refs/remotes/origin/master` silently resolves a TAG or
+ * BRANCH literally named `refs/remotes/origin/master` when the real
+ * remote-tracking ref does not exist. `git show-ref --verify --hash <fullref>`
+ * resolves only that exact ref and never falls back — confirmed against real
+ * git before this was written, and pinned end to end in
+ * `test/template/release-preflight-frozen-e2e.test.ts`'s cases (3), (4) and
+ * (7).
+ */
+const resolveExactRef = (fullRef) => {
+  try {
+    return execFileSync('git', ['show-ref', '--verify', '--hash', fullRef], {
+      cwd: root,
+      encoding: 'utf8',
+    }).trim();
+  } catch {
+    return null;
+  }
+};
+
+/**
  * The packed file list, from the real `npm pack`.
  *
  * `--json` is asked for so the listing is parsed rather than scraped out of the
@@ -512,25 +547,24 @@ function main() {
     // on top of it, this ref is the one the candidate was pushed under and
     // never changes out from under this check.
     const releaseRefName = `refs/remotes/origin/release/${version}-rc`;
-    let releaseRefSha = null;
-    try {
-      releaseRefSha = git(['rev-parse', releaseRefName]);
-    } catch {
-      // Left as null — `frozenCandidateGitFindings` reports it, and reports
-      // it once; it also skips the ancestry question, which cannot be asked
-      // without a resolved ref.
-    }
-    let isAncestorOfMaster = false;
-    try {
-      git(['merge-base', '--is-ancestor', sha, 'refs/remotes/origin/master']);
-      isAncestorOfMaster = true;
-    } catch {
-      // Left as false — either not an ancestor, or origin/master itself
-      // could not be resolved; `frozenCandidateGitFindings` only asks this
-      // question when the release ref resolved, so an unresolved master here
-      // is already covered by the ref check above in the one case that
-      // matters: no candidate can be a push target of a ref that cannot be
-      // resolved at all.
+    const releaseRefSha = resolveExactRef(releaseRefName);
+    const masterRefSha = resolveExactRef('refs/remotes/origin/master');
+    // `origin/master` unresolvable is reported once, below, and distinctly
+    // from "not an ancestor" — the ancestry question is never even asked in
+    // that case, so `frozenCandidateGitFindings` is handed `true` here only to
+    // suppress its own ancestor finding, not as a claim that ancestry holds.
+    let isAncestorOfMaster = true;
+    if (masterRefSha !== null) {
+      isAncestorOfMaster = false;
+      try {
+        git(['merge-base', '--is-ancestor', sha, masterRefSha]);
+        isAncestorOfMaster = true;
+      } catch (error) {
+        // `merge-base --is-ancestor` exits 1 for "not an ancestor" and
+        // anything else (bad object, a crashed git) for an actual failure —
+        // only the former is a decided "no" and is swallowed here.
+        if (error?.status !== 1) throw error;
+      }
     }
     findings.push(
       ...frozenCandidateGitFindings({
@@ -542,14 +576,24 @@ function main() {
         isAncestorOfMaster,
       }),
     );
-  } else {
-    let remote = '';
-    try {
-      remote = git(['rev-parse', 'origin/master']);
-    } catch {
-      // Left as '' — `gitFindings` reports it, and reports it once.
+    if (masterRefSha === null) {
+      findings.push(
+        'origin/master could not be resolved — cannot confirm the frozen candidate is reachable from its history',
+      );
     }
+  } else {
+    const remote = resolveExactRef('refs/remotes/origin/master') ?? '';
     findings.push(...gitFindings({ status, head, remote }));
+  }
+
+  // A frozen-mode git finding stops here, before `npm pack` ever runs:
+  // `packedPaths()` builds the real tarball (`prepare` → `tsc`), and a
+  // candidate that already failed the ref/ancestry questions above has
+  // nothing left to gain from paying that cost — see the header's point 2
+  // and `test/template/release-preflight-frozen-e2e.test.ts`'s item B.
+  if (mode === 'frozen-candidate' && findings.length > 0) {
+    console.log(formatReport(findings));
+    return exitCodeFor(findings);
   }
 
   const { filename, paths } = packedPaths();

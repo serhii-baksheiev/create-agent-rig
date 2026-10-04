@@ -180,9 +180,29 @@ export function parseChangelogVersions(markdown) {
   return [...markdown.matchAll(/^## (\d+\.\d+\.\d+)$/gm)].map((m) => m[1]);
 }
 
-/** `## X.Y.Z` headings of CHANGELOG.md, in file order. */
-function changelogVersions() {
-  return parseChangelogVersions(readFileSync(CHANGELOG, 'utf8'));
+/**
+ * Throws when `markdown` carries a `## X.Y.Z (release candidate)` heading for
+ * any version OTHER than `currentVersion` — exact only, the same spelling
+ * `parseChangelogVersions` excludes. Such a heading is correct for exactly one
+ * version: the one currently being prepared. For any other version it can only
+ * mean that version published and nobody reconciled its heading back to the
+ * plain `## X.Y.Z` form afterwards — left alone, `parseChangelogVersions`
+ * quietly drops that version from "released" forever, and it never gets a
+ * ledger row or a hash-history entry.
+ *
+ * Silent for the current version's own pending candidate heading, and silent
+ * when there is no candidate heading at all.
+ */
+export function assertCandidateHeadingsAreCurrent(markdown, currentVersion) {
+  for (const match of String(markdown).matchAll(/^## (\d+\.\d+\.\d+) \(release candidate\)$/gm)) {
+    const version = match[1];
+    if (version === currentVersion) continue;
+    throw new Error(
+      `CHANGELOG.md still has "## ${version} (release candidate)" but ${currentVersion} is ` +
+        `the version being prepared — ${version} has published, so reconcile its heading to ` +
+        `the plain "## ${version}" form`,
+    );
+  }
 }
 
 /** sha256 of every agent-os blob at one commit, keyed by install-relative path. */
@@ -224,9 +244,11 @@ function hashesAt(commit) {
 function main() {
   const currentVersion = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
   const ledger = JSON.parse(readFileSync(LEDGER, 'utf8'));
+  const changelog = readFileSync(CHANGELOG, 'utf8');
   let released;
   try {
-    released = releasedFromLedger(ledger, currentVersion, changelogVersions());
+    assertCandidateHeadingsAreCurrent(changelog, currentVersion);
+    released = releasedFromLedger(ledger, currentVersion, parseChangelogVersions(changelog));
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     return 1;
