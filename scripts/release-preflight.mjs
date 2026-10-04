@@ -16,7 +16,7 @@
 //
 //   node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>
 //
-// No flag at all is ordinary mode, exactly as above. Frozen mode resolves
+// Frozen mode resolves
 // `refs/remotes/origin/release/<package.json version>-rc` and
 // `refs/remotes/origin/master` EXACTLY — `git show-ref --verify --hash`, never
 // `git rev-parse`'s short-name DWIM fallback onto a same-named tag or branch —
@@ -350,7 +350,7 @@ export const changelogHeadingFindings = (changelog, version) => {
 /**
  * Argument parsing, run before any git call or `npm pack` — pure argv-in,
  * decision-out, so an invalid argument can be refused before either runs.
- * No flag at all is ordinary mode, unchanged. `--frozen-candidate <sha>` is
+ * `--frozen-candidate <sha>` is
  * the one recognized flag, and it is refused whenever anything about it is
  * not exactly as declared: missing value, wrong length, not lowercase, not
  * hex, repeated, or accompanied by an argument nothing else explains.
@@ -582,7 +582,12 @@ function main() {
       );
     }
   } else {
-    const remote = resolveExactRef('refs/remotes/origin/master') ?? '';
+    let remote = '';
+    try {
+      remote = git(['rev-parse', 'origin/master']);
+    } catch {
+      // Left as '' — `gitFindings` reports it, and reports it once.
+    }
     findings.push(...gitFindings({ status, head, remote }));
   }
 

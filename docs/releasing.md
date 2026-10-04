@@ -51,9 +51,8 @@ no longer that. For exactly this situation:
 node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>
 ```
 
-This still runs every manifest, ledger, payload and tarball check ordinary mode
-runs — including the CHANGELOG heading check both modes now share: `CHANGELOG.md`
-must document the version being prepared under exactly `## X.Y.Z` or exactly
+It keeps ordinary mode's manifest, ledger and CHANGELOG heading checks:
+`CHANGELOG.md` must document the version being prepared under exactly `## X.Y.Z` or exactly
 `## X.Y.Z (release candidate)`, nothing looser. What frozen mode replaces is
 only the git question: instead of "is HEAD origin/master's current tip", it
 asks three things specific to a frozen candidate — HEAD must be exactly the
@@ -65,7 +64,7 @@ git's own short-name fallback onto a same-named tag or branch. The working
 tree must still be clean, exactly as in ordinary mode. Like ordinary mode, it
 reads refs as git already has them and does not fetch.
 
-No flag at all is ordinary mode, unchanged. This mode does not publish or tag
+This mode does not publish or tag
 anything by itself — it only tells you whether the frozen bytes still check
 out clean against the three facts above. Any git finding in this mode stops
 the run there: `npm pack` is never reached once one has fired.

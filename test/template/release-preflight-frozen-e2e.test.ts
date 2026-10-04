@@ -25,27 +25,10 @@ import { withoutGitLocation } from '../../.claude/scripts/git-env.mjs';
 // rule), with a stand-in `npm` on PATH that proves whether it was ever asked
 // to pack.
 //
-// Two defects this suite exists to catch, confirmed against real git 2.47.1
-// before a single assertion below was written:
-//
-//   A. `git rev-parse <releaseRefName>` and `git merge-base --is-ancestor <sha>
-//      refs/remotes/origin/master` do not resolve ONLY the exact
-//      remote-tracking ref they are given — git's own disambiguation rules
-//      (gitrevisions(7)) try the WHOLE STRING again as a short name when the
-//      literal path does not exist, which lands on `refs/tags/<that string>`
-//      or `refs/heads/<that string>`. A tag or branch an attacker (or an
-//      honest mistake) names literally `refs/remotes/origin/release/<v>-rc`,
-//      or `refs/remotes/origin/master`, is read as if it WERE the real
-//      remote-tracking ref whenever the real one is absent. `git show-ref
-//      --verify --quiet <fullref>` does not fall back this way — confirmed
-//      empirically the same session this file was written, alongside the
-//      production code's current `git rev-parse` call, which does.
-//   B. `main()` pushes every frozen-candidate git finding onto `findings` and
-//      then unconditionally calls `packedPaths()` (`npm pack`) regardless of
-//      whether any finding fired — there is no early return. `npm pack` runs
-//      `prepare`, which runs `tsc`: an invalid or frozen-and-wrong candidate
-//      still pays that cost, and worse, still risks shipping bytes nobody
-//      should trust enough to inspect.
+// The cases below pin two properties of frozen mode: (A) only the exact
+// remote-tracking refs count, never a tag or branch that git's short-name
+// lookup would land on when the real ref is missing; (B) a frozen git finding
+// stops the run before `npm pack`.
 //
 // The fixture is deliberately minimal: a copy of the real script plus its one
 // runtime dependency (`.claude/scripts/lib/secrets.mjs`, which itself imports
