@@ -65,7 +65,7 @@ const assigneeIdOf = (assignee) => {
 };
 
 /**
- * The unique, stringified comment ids a `fields.comment` carries — `[]` when
+ * The stringified comment ids a `fields.comment` carries — `[]` when
  * `comments` is absent or not an array. Shared by `toTicket` and
  * `inlineCommentaryIsComplete` so the two never disagree about the same ids.
  */
@@ -363,14 +363,12 @@ const readTextWithinByteLimit = async (response, byteLimit, method, route, respo
       // The stream has already terminated.
     }
   };
-  // The over-limit chunk itself was already pulled off the wire before this
-  // throws, so it is charged to the shared budget here — at the point the
-  // overflow is detected — rather than only on the success path below. A
-  // charge that ran solely after `JSON.parse` would never fire for the one
-  // page that overflowed, handing every later issue the FULL budget again
-  // once this one throws and the per-ticket catch in `listEligible` moves on.
-  const overflow = (message, overflowBytes) => {
-    if (responseByteBudget) responseByteBudget.remaining -= bytes + overflowBytes;
+  // Each chunk is charged to the shared budget as it is read, so no way this
+  // read ends (overflow, stream error, success) leaves read bytes uncharged.
+  // Pinned in test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+  // "charges the bytes read before a mid-stream error to the shared byte
+  // budget, so later truncated tickets send no request once it is spent".
+  const overflow = (message) => {
     cancel();
     throw new Error(message);
   };
@@ -378,12 +376,13 @@ const readTextWithinByteLimit = async (response, byteLimit, method, route, respo
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
+      if (responseByteBudget) responseByteBudget.remaining -= value.byteLength;
       const remainingBytes = byteLimit - bytes;
       if (value.byteLength > remainingBytes) {
-        overflow(`jira ${method} ${route} exceeded its response byte budget`, value.byteLength);
+        overflow(`jira ${method} ${route} exceeded its response byte budget`);
       }
       if (value.byteLength === remainingBytes) {
-        overflow(`jira ${method} ${route} reached its response byte budget`, value.byteLength);
+        overflow(`jira ${method} ${route} reached its response byte budget`);
       }
       const chunk = Buffer.from(value);
       chunks.push(chunk);
@@ -513,14 +512,14 @@ const request = async (
         if (byteLimit === null) {
           payload = await response.json();
         } else {
-          const { text, bytes } = await readTextWithinByteLimit(
+          // The read charges responseByteBudget itself, chunk by chunk.
+          const { text } = await readTextWithinByteLimit(
             response,
             byteLimit,
             method,
             route,
             responseByteBudget,
           );
-          if (responseByteBudget) responseByteBudget.remaining -= bytes;
           payload = JSON.parse(text);
         }
       }

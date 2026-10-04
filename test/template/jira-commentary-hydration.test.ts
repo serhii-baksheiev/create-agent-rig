@@ -652,6 +652,140 @@ it("makes zero comment requests for a later truncated ticket once one ticket's o
   ).toHaveLength(0);
 });
 
+// RP-368 review blocker: `readTextWithinByteLimit` only charges
+// `responseByteBudget` on the success path (line 523) or inside `overflow()`
+// (line 373) — never in the catch around its own `await reader.read()`
+// (near line 392). A page that overflows ITS OWN limit is covered by the
+// test just above this one; this one covers the sibling case named in the
+// review: `reader.read()` itself REJECTING mid-body, as a dropped connection
+// would, after reading fewer bytes than its limit allowed. The bytes already
+// pulled off the wire before that rejection must still be charged, or a
+// later truncated ticket is handed the full MAX_COMMENT_BYTES allowance
+// again instead of the sliver the first ticket actually left behind.
+it('charges the bytes read before a mid-stream error to the shared byte budget, so later truncated tickets send no request once it is spent', async () => {
+  // Ticket 1: its comment stream reads 1 MiB − 4 KiB — just under jira.mjs's
+  // own MAX_COMMENT_BYTES (1 MiB, hard-coded here the same way the overflow
+  // test above does) — and then REJECTS on the next read, simulating a
+  // dropped connection rather than an over-limit chunk. Charged correctly,
+  // this leaves exactly 4 KiB of the shared byte budget for every ticket
+  // that follows.
+  const firstInlineIds = Array.from({ length: 20 }, (_, index) => `rp950-comment-${index + 1}`);
+  const firstIssue = () => ({
+    key: 'RP-950',
+    fields: {
+      summary: 'a ticket whose comment stream errors mid-page, just under the byte budget',
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+      labels: ['rel-1.2.0'],
+      priority: null,
+      created: '2026-10-03T00:00:00.000+0000',
+      issuelinks: [],
+      comment: { total: 31, comments: commentsFrom(firstInlineIds) },
+    },
+  });
+  const firstChunk = new Uint8Array(1024 * 1024 - 4096); // 1 MiB − 4 KiB
+  let firstPulls = 0;
+
+  // Ticket 2: once ticket 1's charge has shrunk the shared budget to 4 KiB,
+  // THIS ticket's own per-page limit is that same 4 KiB — so a chunk just
+  // one byte over it overflows immediately and drives the shared budget
+  // negative. That negative balance is what makes ticket 3's own request
+  // provably unreachable below, rather than merely small: under the bug
+  // this test is written against, ticket 1's charge never happens, ticket
+  // 2's much smaller chunk is read well within the still-full budget, and
+  // the shared budget stays strongly positive for ticket 3.
+  const secondInlineIds = Array.from({ length: 20 }, (_, index) => `rp951-comment-${index + 1}`);
+  const secondIssue = () => ({
+    key: 'RP-951',
+    fields: {
+      summary: 'a ticket whose own shrunken byte budget is overflowed by one byte',
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+      labels: ['rel-1.2.0'],
+      priority: null,
+      created: '2026-10-03T00:00:00.000+0000',
+      issuelinks: [],
+      comment: { total: 31, comments: commentsFrom(secondInlineIds) },
+    },
+  });
+  const secondChunk = new Uint8Array(4096 + 1); // 4 KiB + 1 byte: one byte over the shrunken limit
+
+  const calls = installJira(
+    (url) => {
+      if (url.pathname === '/rest/api/3/issue/RP-950/comment') {
+        return {
+          stream: new ReadableStream(
+            {
+              pull(controller) {
+                firstPulls += 1;
+                if (firstPulls === 1) {
+                  controller.enqueue(firstChunk);
+                  return;
+                }
+                controller.error(new Error('RP-950 comment stream reset mid-page'));
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+        };
+      }
+      if (url.pathname === '/rest/api/3/issue/RP-951/comment') {
+        return {
+          stream: new ReadableStream(
+            {
+              pull(controller) {
+                controller.enqueue(secondChunk);
+                controller.close();
+              },
+            },
+            { highWaterMark: 0 },
+          ),
+        };
+      }
+      // RP-368's comment endpoint must never be reached: by the time it is
+      // this ticket's turn, the shared byte budget is already negative.
+      return {
+        status: 500,
+        statusText: 'RP-368 comment must not be requested once the shared byte budget is exhausted',
+      };
+    },
+    () => ({ body: { issues: [firstIssue(), secondIssue(), listedIssue()], isLast: true } }),
+  );
+
+  const tickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+
+  expect(tickets).toHaveLength(3);
+  expect(tickets.find((ticket) => ticket.id === 'RP-950')?.commentary).toEqual({
+    count: 31,
+    ids: firstInlineIds,
+    complete: false,
+  });
+  expect(tickets.find((ticket) => ticket.id === 'RP-951')?.commentary).toEqual({
+    count: 31,
+    ids: secondInlineIds,
+    complete: false,
+  });
+  expect(tickets.find((ticket) => ticket.id === 'RP-368')?.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
+
+  expect(
+    calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-950/comment'),
+  ).toHaveLength(1);
+  expect(
+    calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-951/comment'),
+  ).toHaveLength(1);
+  // The assertion the defect was reported against: once the first ticket's
+  // mid-stream error has correctly spent the shared byte budget, the third
+  // ticket's comment endpoint is never reached at all.
+  expect(
+    calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
+  ).toHaveLength(0);
+});
+
 // RP-368 round 2, blocker B2: `inlineCommentaryIsComplete` sends an issue to
 // hydration whenever its inline `comment` field is malformed — a present
 // `total` that is not a non-negative safe integer, or `comments` that is not
