@@ -120,6 +120,11 @@ const featureTest =
 const initialFeature = 'export const feature = () => "old";\n';
 const initialImplementation = 'export const feature = (value = "new") => value;\n';
 const refinedImplementation = 'export const feature = (value = "new") => value.trim();\n';
+// RP-370 review round 1 (B2): a third, independent production boundary used
+// by "keeps refining after a refinement returns to an earlier boundary" to
+// move PAST a boundary the chain already visited once (A -> B -> A -> C).
+const thirdRefinedImplementation =
+  'export const feature = (value = "new") => value.trim().toString();\n';
 
 const claimBytes = (root: string) => readFile(path.join(root, '.rig', 'claims', 'RP-375.json'));
 
@@ -133,7 +138,20 @@ const FIXED_B0_COMMIT_DATE = '2020-01-01T00:00:00+00:00';
 const setupInitialGreen = async ({
   commitInitialImplementation = true,
   commitDate,
-}: { commitInitialImplementation?: boolean; commitDate?: string } = {}) => {
+  defaultBranch = 'master',
+  useOrigin = true,
+}: {
+  commitInitialImplementation?: boolean;
+  commitDate?: string;
+  // RP-370 review round 1 (B1): the fixture's bare origin publishes under this
+  // branch name, so a non-'master' default (e.g. 'main') is reachable without
+  // rewriting every call site below.
+  defaultBranch?: string;
+  // RP-370 review round 1 (B1): when false, the fixture never configures an
+  // 'origin' remote at all — the local repository is the whole story, which is
+  // the "no remote configured" shape `liveDefaultTargetSha` must also handle.
+  useOrigin?: boolean;
+} = {}) => {
   const root = await mkdtemp(path.join(tmpdir(), 'rp375-same-baseline-'));
   const runDir = await mkdtemp(path.join(tmpdir(), 'rp375-same-baseline-run-'));
   const remote = await mkdtemp(path.join(tmpdir(), 'rp375-same-baseline-remote-'));
@@ -151,10 +169,17 @@ const setupInitialGreen = async ({
       "export default { test: { include: ['test/**/*.test.ts'], globals: true } };\n",
     ),
   ]);
-  await git(['init', '-q', '-b', 'master'], root);
+  await git(['init', '-q', '-b', defaultBranch], root);
   await git(['config', 'core.autocrlf', 'true'], root);
-  await git(['init', '--bare', '-q', remote], root);
-  await git(['remote', 'add', 'origin', remote], root);
+  if (useOrigin) {
+    await git(['init', '--bare', '-q', remote], root);
+    // Pin the bare origin's HEAD to the branch this fixture actually
+    // publishes under: a bare `init` otherwise follows `init.defaultBranch`,
+    // which may not agree with `defaultBranch` above and would leave a clone
+    // of `remote` checked out on the wrong (or an unborn) branch.
+    await git(['symbolic-ref', 'HEAD', `refs/heads/${defaultBranch}`], remote);
+    await git(['remote', 'add', 'origin', remote], root);
+  }
   await git(
     [
       'add',
@@ -167,11 +192,16 @@ const setupInitialGreen = async ({
   );
   await git(['commit', '-q', '-m', 'B0 selected baseline'], root, { date: commitDate });
   const baseline = await git(['rev-parse', 'HEAD'], root);
-  await git(['push', '-q', 'origin', 'master'], root);
-  await git(['fetch', '-q', 'origin'], root);
+  let defaultClone = '';
+  if (useOrigin) {
+    await git(['push', '-q', 'origin', defaultBranch], root);
+    await git(['fetch', '-q', 'origin'], root);
+  }
   await git(['checkout', '-q', '-b', 'feat/RP-375'], root);
-  const defaultClone = await mkdtemp(path.join(tmpdir(), 'rp375-same-baseline-default-'));
-  await git(['clone', '-q', remote, defaultClone], root);
+  if (useOrigin) {
+    defaultClone = await mkdtemp(path.join(tmpdir(), 'rp375-same-baseline-default-'));
+    await git(['clone', '-q', remote, defaultClone], root);
+  }
 
   const claims = (await import(
     pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href
@@ -251,23 +281,27 @@ const advanceRemoteDefault = async ({
   root,
   fetch,
   foreignContent = 'export const foreignDefault = true;\n',
+  defaultBranch = 'master',
 }: {
   defaultClone: string;
   remote: string;
   root: string;
   fetch: boolean;
   foreignContent?: string;
+  // RP-370 review round 1 (B1): advance the branch the fixture actually
+  // publishes as its default under, not a hardcoded 'master'.
+  defaultBranch?: string;
 }) => {
   await writeFile(path.join(defaultClone, 'src', 'foreign-default.ts'), foreignContent);
   await git(['add', 'src/foreign-default.ts'], defaultClone);
   await git(['commit', '-q', '-m', 'M1 foreign default production'], defaultClone);
   const advanced = await git(['rev-parse', 'HEAD'], defaultClone);
-  await git(['push', '-q', 'origin', 'master'], defaultClone);
-  expect(await git(['ls-remote', remote, 'refs/heads/master'], root)).toContain(advanced);
+  await git(['push', '-q', 'origin', defaultBranch], defaultClone);
+  expect(await git(['ls-remote', remote, `refs/heads/${defaultBranch}`], root)).toContain(advanced);
   if (fetch) await git(['fetch', '-q', 'origin'], root);
   return {
     advanced,
-    cached: await git(['rev-parse', 'refs/remotes/origin/master'], root),
+    cached: await git(['rev-parse', `refs/remotes/origin/${defaultBranch}`], root),
     defaultClone,
   };
 };
@@ -428,3 +462,140 @@ it.each([['committed', true] as const, ['uncommitted', false] as const])(
     expect(ship.code, ship.out).toBe(0);
   },
 );
+
+// RP-370 review round 1 (B1): `liveDefaultTargetSha` only ever asks origin
+// about `refs/heads/master`, but every TDD-2 re-GREEN (both a same-baseline
+// refinement and a merged-default refresh) calls it unconditionally. A rig
+// whose origin default branch is `main` must still be able to record a
+// GREEN after importing a foreign advance of that default.
+it("records a merged-default refresh when origin's default branch is main", async () => {
+  const fixture = await setupInitialGreen({ defaultBranch: 'main' });
+  const { defaultClone, remote, root, runDir, trackerEnv } = fixture;
+  const imported = await advanceRemoteDefault({
+    defaultClone,
+    remote,
+    root,
+    fetch: true,
+    defaultBranch: 'main',
+  });
+  await git(['merge', '--no-ff', '-q', 'origin/main', '-m', 'merge foreign main default'], root);
+  expect(await git(['rev-parse', 'origin/main'], root)).toBe(imported.advanced);
+  const check = 'unit-green-main-default-refresh';
+  expect((await runVitest({ root, runDir, name: check, trackerEnv })).code).toBe(0);
+  const recorded = await record({ root, runDir, action: 'record-green', check, trackerEnv });
+  expect(recorded.code, recorded.out).toBe(0);
+});
+
+// Same defect, the simpler shape: no default advance at all, just an owned
+// correction after GREEN. `sameBaselineRefinement` reaches `liveDefaultTargetSha`
+// before it ever inspects whether anything actually moved.
+it("records a same-baseline refinement when origin's default branch is main", async () => {
+  const fixture = await setupInitialGreen({ defaultBranch: 'main' });
+  const { root, runDir, trackerEnv } = fixture;
+  await refineSource(root);
+  const check = 'unit-green-main-default-same-baseline';
+  expect((await runVitest({ root, runDir, name: check, trackerEnv })).code).toBe(0);
+  const recorded = await record({ root, runDir, action: 'record-green', check, trackerEnv });
+  expect(recorded.code, recorded.out).toBe(0);
+});
+
+// RP-370 review round 1 (B1): a repository with no `origin` remote at all is
+// also a rig this script has to serve — `targetShaOf` in lib/claim-records.mjs
+// already falls back to a local `master`/`main` there. `liveDefaultTargetSha`
+// does not: it runs `git ls-remote ... origin ...` unconditionally and that
+// fails outright with no remote named `origin` configured.
+it('records a merged-default refresh in a repository with no origin remote', async () => {
+  const fixture = await setupInitialGreen({ useOrigin: false });
+  const { root, runDir, trackerEnv } = fixture;
+  await git(['checkout', '-q', 'master'], root);
+  await writeFile(
+    path.join(root, 'src', 'foreign-local-default.ts'),
+    'export const foreignLocalDefault = true;\n',
+  );
+  await git(['add', 'src/foreign-local-default.ts'], root);
+  await git(['commit', '-q', '-m', 'M1 local default advance (no origin)'], root);
+  const advancedLocalMaster = await git(['rev-parse', 'HEAD'], root);
+  await git(['checkout', '-q', 'feat/RP-375'], root);
+  await git(['merge', '--no-ff', '-q', 'master', '-m', 'merge local default advance'], root);
+  expect(await git(['rev-parse', 'master'], root)).toBe(advancedLocalMaster);
+  const check = 'unit-green-no-origin-merged-default-refresh';
+  expect((await runVitest({ root, runDir, name: check, trackerEnv })).code).toBe(0);
+  const recorded = await record({ root, runDir, action: 'record-green', check, trackerEnv });
+  expect(recorded.code, recorded.out).toBe(0);
+});
+
+// RP-370 review round 1 (B1, security advisory): `git ls-remote --refs origin
+// refs/heads/master` tail-matches any ref whose path ENDS with those
+// components — a branch literally named `x/refs/heads/master` reports as a
+// second `refs/heads/master` line, which `liveDefaultTargetSha` reads as
+// ambiguity and refuses. An attacker-reachable branch name must not be able
+// to block every future re-GREEN on the item.
+it('does not treat a branch named x/refs/heads/master as a second default', async () => {
+  const fixture = await setupInitialGreen();
+  const { baseline, remote, root, runDir, trackerEnv } = fixture;
+  await git(['push', '-q', remote, `${baseline}:refs/heads/x/refs/heads/master`], root);
+  await refineSource(root);
+  const check = 'unit-green-decoy-branch-name';
+  expect((await runVitest({ root, runDir, name: check, trackerEnv })).code).toBe(0);
+  const recorded = await record({ root, runDir, action: 'record-green', check, trackerEnv });
+  expect(recorded.code, recorded.out).toBe(0);
+});
+
+// RP-370 review round 1 (B2): the recorder's "GREEN refinement history
+// repeats an implementation boundary" guard compares the PRIOR evidence
+// (the state about to be superseded) against every history entry's recorded
+// delta, not against the state the chain is about to MOVE TO. A chain that
+// legitimately returns to an earlier boundary (A -> B -> A) leaves that
+// earlier boundary's delta sitting in history; the very next refinement
+// away from it (A -> C) then collides with that stale entry even though it
+// is moving the implementation forward, not repeating anything. Once stuck
+// this way the chain stays stuck: a later merged-default refresh hits the
+// identical guard before it ever reaches refresh-specific logic.
+it('keeps refining after a refinement returns to an earlier boundary', async () => {
+  const fixture = await setupInitialGreen();
+  const { defaultClone, remote, root, runDir, trackerEnv } = fixture;
+
+  // Each step is a source commit, a GREEN check and record, and then a
+  // separate commit of the recorded claim — the same two-commit shape
+  // `setupInitialGreen` itself uses for the very first GREEN. Committing the
+  // claim after every step (not only the last) matters here: an uncommitted
+  // claim update changes which provenance path `sameBaselineRefinement` takes
+  // on the NEXT call, which would make this case exercise something other
+  // than the boundary-repeat guard it is pinned on.
+  const refineAndRecord = async (content: string, label: string) => {
+    await writeFile(path.join(root, 'src', 'feature.ts'), content);
+    await git(['add', 'src/feature.ts'], root);
+    await git(['commit', '-q', '-m', `${label} source`], root);
+    const check = `unit-green-${label}`;
+    expect((await runVitest({ root, runDir, name: check, trackerEnv })).code).toBe(0);
+    const recorded = await record({ root, runDir, action: 'record-green', check, trackerEnv });
+    expect(recorded.code, recorded.out).toBe(0);
+    await git(['add', '.rig/claims/RP-375.json'], root);
+    await git(['commit', '-q', '-m', `${label} record GREEN`], root);
+  };
+
+  await refineAndRecord(refinedImplementation, 'refine-to-b'); // A -> B
+  await refineAndRecord(initialImplementation, 'refine-back-to-a'); // B -> A
+  await refineAndRecord(thirdRefinedImplementation, 'refine-to-c'); // A -> C
+
+  // A merged-default refresh must also still be reachable after the chain
+  // has revisited a boundary — the guard above fires before refinement vs.
+  // refresh is even decided, so it is not only the next refinement that can
+  // get stuck.
+  const imported = await advanceRemoteDefault({ defaultClone, remote, root, fetch: true });
+  await git(
+    ['merge', '--no-ff', '-q', 'origin/master', '-m', 'merge validated default after revisit'],
+    root,
+  );
+  expect(await git(['rev-parse', 'origin/master'], root)).toBe(imported.advanced);
+  const checkRefresh = 'unit-green-refresh-after-revisit';
+  expect((await runVitest({ root, runDir, name: checkRefresh, trackerEnv })).code).toBe(0);
+  const recordedRefresh = await record({
+    root,
+    runDir,
+    action: 'record-green',
+    check: checkRefresh,
+    trackerEnv,
+  });
+  expect(recordedRefresh.code, recordedRefresh.out).toBe(0);
+});

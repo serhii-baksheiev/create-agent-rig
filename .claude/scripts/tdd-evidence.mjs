@@ -625,18 +625,15 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
     throw new Error('claim record does not carry a valid tracker-derived relevant test scope');
   }
   if (!sameTest(test, priorEvidence.red?.test)) throw new Error('GREEN test identity or file hash changed after RED');
-  if (
-    claim.tddEvidenceHistory?.some(
-      (entry) =>
-        entry?.transition?.sameBaselineRefinement === true &&
-        sameFingerprint(
-          entry?.evidence?.implementationBoundary?.implementationDeltaFingerprint,
-          priorEvidence.implementationBoundary?.implementationDeltaFingerprint,
-        ),
-    )
-  ) {
-    throw new Error('GREEN refinement history repeats an implementation boundary');
-  }
+  // RP-370 review round 1 (B2): there was a guard here comparing the PRIOR
+  // evidence's delta against every history entry's recorded delta. It fired
+  // on a chain that legitimately revisits an earlier boundary (A -> B -> A),
+  // blocking the *next* refinement away from it (A -> C) even though that
+  // move is forward, not a repeat. Deleted rather than replaced — the
+  // adjacent same-baseline-refinement and merged-default-refresh checks
+  // below, plus `validateTddEvidenceHistory` in lib/tdd-evidence.mjs, are
+  // what decide whether a given GREEN actually changes the implementation;
+  // shipping authority is the recomputed final diff, not this history scan.
   const observedHead = event.data.gitHead;
   const currentHead = resolveCommit(projectRoot, 'HEAD');
   if (!/^[a-f0-9]{40}$/.test(observedHead ?? '') || observedHead !== currentHead) {
@@ -789,29 +786,72 @@ const defaultTargetSha = (projectRoot) => {
   throw new Error('merged default branch cannot be resolved');
 };
 
+const hasOriginRemote = (projectRoot) => {
+  try {
+    gitText(projectRoot, ['config', '--get', 'remote.origin.url']);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+// RP-370 review round 1 (B1): one bounded `ls-remote --symref` query naming
+// HEAD plus both conventional default-branch names, instead of a query
+// hard-coded to `refs/heads/master` alone — so a rig whose origin default is
+// `main` gets the same re-GREEN authority a `master` rig always had. Matches
+// are read by the ref name git prints verbatim, never by how many lines came
+// back: `ls-remote`'s own suffix-matching means a decoy branch like
+// `x/refs/heads/master` can appear in the output (tagged under its own full
+// name), and counting lines instead of names is what let that decoy block
+// every future re-GREEN.
+const REMOTE_DEFAULT_REFS = ['refs/heads/master', 'refs/heads/main'];
+const SYMREF_LINE = /^ref:\s+(refs\/heads\/\S+)\s+HEAD$/;
+const ADVERTISED_LINE = /^([a-f0-9]{40})\s+(\S+)$/;
+
 const liveDefaultTargetSha = (projectRoot) => {
+  // No origin configured: there is no live remote authority to ask, so the
+  // live default IS the local default `targetShaOf` already resolves
+  // (local master/main) — the no-remote shape `targetShaOf` has always had.
+  if (!hasOriginRemote(projectRoot)) return defaultTargetSha(projectRoot);
   const readAdvertised = () => {
     let output;
     try {
-      output = execFileSync('git', ['-C', projectRoot, 'ls-remote', '--refs', 'origin', 'refs/heads/master'], {
-        encoding: 'utf8',
-        env: withoutGitLocation(),
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeout: REMOTE_DEFAULT_TIMEOUT_MS,
-        maxBuffer: MAX_REMOTE_DEFAULT_BYTES,
-      }).trim();
+      output = execFileSync(
+        'git',
+        ['-C', projectRoot, 'ls-remote', '--symref', 'origin', 'HEAD', ...REMOTE_DEFAULT_REFS],
+        {
+          encoding: 'utf8',
+          env: withoutGitLocation(),
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: REMOTE_DEFAULT_TIMEOUT_MS,
+          maxBuffer: MAX_REMOTE_DEFAULT_BYTES,
+        },
+      ).trim();
     } catch {
       throw new Error('live current default branch cannot be resolved from origin');
     }
-    const fields = output.split('\n').filter(Boolean).map((line) => line.split(/\s+/));
-    if (
-      fields.length !== 1 ||
-      !/^[a-f0-9]{40}$/.test(fields[0]?.[0] ?? '') ||
-      fields[0]?.[1] !== 'refs/heads/master'
-    ) {
+    let defaultRef = null;
+    const shasByRef = new Map();
+    for (const line of output.split('\n').filter(Boolean)) {
+      const symref = SYMREF_LINE.exec(line);
+      if (symref) {
+        defaultRef = symref[1];
+        continue;
+      }
+      const advertised = ADVERTISED_LINE.exec(line);
+      if (!advertised) continue;
+      const [, sha, ref] = advertised;
+      if (!shasByRef.has(ref)) shasByRef.set(ref, new Set());
+      shasByRef.get(ref).add(sha);
+    }
+    const shasFor = (ref) => [...(shasByRef.get(ref) ?? [])];
+    const distinct = new Set(
+      defaultRef ? [...shasFor('HEAD'), ...shasFor(defaultRef)] : REMOTE_DEFAULT_REFS.flatMap(shasFor),
+    );
+    if (distinct.size !== 1) {
       throw new Error('live current default branch is missing or ambiguous');
     }
-    return fields[0][0];
+    return [...distinct][0];
   };
   const advertised = readAdvertised();
   try {
@@ -824,6 +864,7 @@ const liveDefaultTargetSha = (projectRoot) => {
           '-C',
           projectRoot,
           'fetch',
+          '-q',
           '--no-write-fetch-head',
           '--no-tags',
           '--no-recurse-submodules',
