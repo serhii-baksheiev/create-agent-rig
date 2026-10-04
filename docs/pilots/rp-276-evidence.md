@@ -30,7 +30,7 @@ The GitHub timelines show exactly one `in-progress` label event per item in this
 - #3 closed **21:45:17Z** (issue timeline `closed` event).
 - #4 closed **21:47:34Z** (issue timeline `closed` event).
 - #5 selected (`item-selection: taken 5`) at **21:48:09Z** (`c-B/.claude/runs/20261005-014533-pilot-B/decisions.jsonl` seq 4) — i.e. 35s after #4's close, and claimed/labelled in-progress at 21:48:24Z, claim comment posted 21:52:54Z. Both predecessors were closed before #5 was taken.
-- Three separate `nothing-selectable` SELECT outcomes, while #4/#5 were still blocked/in-progress, explicitly describe this state:
+- Seven `nothing-selectable` SELECT outcomes before 21:48:09Z each counted one item held by `blocked` (pilot-A 21:36:56Z and 21:45:44Z; pilot-B 21:34:35Z, 21:36:48Z, 21:36:55Z and 21:45:40Z; pilot-C 21:43:31Z). Three of them, quoted:
   - `c-A/.../20261005-012514-pilot-A/decisions.jsonl` seq 35 (21:36:56Z): "3 item(s) are takeable work held back right now — 2 held by in-progress, 1 held by blocked... 1 item(s) are parked — 1 escalated."
   - `c-B/.../20261005-013638-pilot-B/decisions.jsonl` seq 1–2 (21:36:48Z, 21:36:55Z): same wording.
   - `c-C/.../20261005-012908/decisions.jsonl` seq 45 (21:43:31Z): "2 held by in-progress, 1 held by blocked."
@@ -52,7 +52,7 @@ No selection ever names an out-of-scope or already-claimed item as "taken." Out-
 Three controllers ran against four items (#2–#5); the plan let at most three run at once (#2, #3, #4), with #5 gated on #3 and #4, and the blocked item produced real `nothing-selectable` stops rather than invented work:
 
 - pilot-A run 1 stopped `nothing-selectable` at 21:36:56Z while #3 (claimed, escalated at 21:36:45Z) and #4 (in progress under pilot-B) were both open, so the join #5 was still blocked on both.
-- pilot-B run 2 (`20261005-013638-pilot-B`) stopped `nothing-selectable` twice (21:36:48Z, 21:36:55Z) immediately after its own escalation, before resuming #4 post-amendment.
+- pilot-B's first run (`20261005-012536-pilot-B`) escalated #4 at 21:33:56Z and stopped `nothing-selectable` at 21:34:35Z. Its second run (`20261005-013638-pilot-B`) recorded two `nothing-selectable` selections at its start (21:36:48Z, 21:36:55Z), then resumed the #4 it already held from its continuation note after the amendment.
 - Final state: pilot-A ends on `nothing-selectable` (queue has no more scoped, unclaimed, unblocked work for it after #3); pilot-C ends on `nothing-selectable` after #2; pilot-B alone drains the dependent tail (#4 then #5) and is the one to see `queue-empty`.
 
 ## 5. Merge/close unlocks downstream — PASS
@@ -97,7 +97,7 @@ GitHub `assignees` on #2–#5 are all `[]` — no issue was ever assigned to a p
 - Stale-claim releases before start, comments at 21:23:48Z (#2) and 21:23:51Z (#3): "Stale claim released for the RP-276 resume run... the item returns to the ready pool for a fresh independent controller."
 - The contract amendment, PR #11 (merged 21:35:20Z), opened in response to the escalations.
 - Escalation answers posted as "Operator decision" comments on #4 (21:35:23Z) and #3 (21:37:09Z), both pointing at #11 rather than hand-editing any claim or code.
-- Restarting headless sessions (see §9/anomalies) — restarting a controller process is not assigning an item.
+- Restarting headless sessions and adding the bounded-wait instruction to the controllers' prompt (see §9/anomalies) — neither assigns an item.
 
 No comment or label event assigns an item to a named controller by hand; each claim is backed by the controller's claim record (`workflowClaim`), its `in-progress` label and its claim comment.
 
@@ -112,13 +112,13 @@ Run directories (all under `.claude/runs/` in each clone):
 - `c-B/.claude/runs/20261005-014533-pilot-B/` — restarted pilot-B run (claims #5, ships it, proposal.json for #18, final `queue-empty`).
 - `c-C/.claude/runs/20261005-012908/` — single pilot-C run (claims #2, ships it, proposal.json for #16, `nothing-selectable`).
 
-Each run directory contains `decisions.jsonl` (gate verdicts) and `events.jsonl` (revalidation/claim/dispatch-start/dispatch-end/check-result events with `dispatch-end` carrying model/usage telemetry), plus `state.json` (take-up timestamps, escalation counters), `budget.md`, `pr-body.md`, per-reviewer `.md` reports, and `checks/*.log` raw command output. `.rig/claims/{1..5}.json` in each clone record the SELECT baselines; `.claude/gate-rounds.json` in each clone records the per-branch round counters (`pilot-a/issue-3-count-prefix: 3`, `pilot-B/4-count-suffix: 3`, `pilot-B/5-summarize-report: 1`, `pilot-C/issue-2-contributor-readme: 3`).
+Each run directory contains `decisions.jsonl` (gate verdicts) and `events.jsonl` (revalidation/claim/dispatch-start/dispatch-end/check-result events with `dispatch-end` carrying model/usage telemetry), plus `state.json` (take-up timestamps, escalation counters), `budget.md`, `pr-body.md`, per-reviewer `.md` reports, and `checks/*.log` raw command output. `.rig/claims/<n>.json` in each clone records the SELECT baselines of the items that clone selected, plus the tracked records merged in from other controllers' PRs; `.claude/gate-rounds.json` in each clone records the per-branch round counters (`pilot-a/issue-3-count-prefix: 3`, `pilot-B/4-count-suffix: 3`, `pilot-B/5-summarize-report: 1`, `pilot-C/issue-2-contributor-readme: 3`).
 
 Logs: `<pilot-host>/logs/pilot-{A,B,C}.log` (final summaries + stop condition + run dir, per prompt instructions), plus `pilot-A-run1.log`, `pilot-B-run1.log`, `pilot-B-run2.log` documenting the earlier, superseded headless sessions. `pids.txt`/`pids-C.txt` record the launched process IDs.
 
 ## Anomalies (honest list)
 
-- **Headless session exits while waiting on CI.** pilot-A's first session ended while waiting for PR #14's CI (`pilot-A-run1.log`: "PR #14 is open. I'm waiting for CI `verify` to finish..."). pilot-B's first session ended on `nothing-selectable` after its escalation; its second session (`20261005-013638-pilot-B`) ended while waiting for PR #15's CI (`pilot-B-run2.log`: "Still waiting on the background CI poll for PR #15..."). The relaunched runs `20261005-014340-pilot-A` and `20261005-014533-pilot-B` picked up the in-flight PRs and finished the merge and close. The cause is the headless session ending with the turn, not the queue adapter; the controllers' instructions were amended to wait with a bounded foreground command.
+- **Headless session exits while waiting on CI.** pilot-A's first session ended while waiting for PR #14's CI (`pilot-A-run1.log`: "PR #14 is open. I'm waiting for CI `verify` to finish..."). pilot-B's first session (`20261005-012536-pilot-B`) ended on `nothing-selectable` after escalating #4; its second session (`20261005-013638-pilot-B`) resumed #4 and ended while waiting for PR #15's CI (`pilot-B-run2.log`: "Still waiting on the background CI poll for PR #15..."). The relaunched runs `20261005-014340-pilot-A` and `20261005-014533-pilot-B` picked up the in-flight PRs and finished the merge and close. The cause is the headless session ending with the turn, not the queue adapter; the controllers' instructions were amended to wait with a bounded foreground command.
 - **Escalations.** #3 and #4 both escalated (documented-stall) at gate round 1 over the same stale contract clause (see §7); both resolved via operator decision + PR #11 and shipped by round 3.
 - **Uncommitted journal files in every clone.** `journal/2026-10.md` is untracked (`git status --short`) in all three clones — by design/rule ("committing straight to master isn't allowed," noted independently by pilot-A, pilot-B and pilot-C in their final logs). Not an error; flagged by each controller itself.
 - **Three improvement proposals filed as triage issues**, none of which altered pilot behavior: #12 (pilot-B: delete the untracked SELECT baseline after a refused claim), #16 (pilot-C: BEFORE_PR re-hold cost 2 of 3 gate rounds on a no-op comment-fingerprint change), #18 (pilot-B: post progress comments through the adapter, not raw `gh`, to avoid spurious `claim:commentary` drift at BEFORE_CLOSE).
