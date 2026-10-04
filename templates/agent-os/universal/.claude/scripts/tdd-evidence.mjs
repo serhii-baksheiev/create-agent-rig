@@ -25,6 +25,8 @@ const MAX_JSON_BYTES = 5 * 1024 * 1024;
 const MAX_IMPLEMENTATION_DELTA_BYTES = 5 * 1024 * 1024;
 const MAX_TRACKER_BODY_BYTES = 64 * 1024;
 const REMOTE_DEFAULT_TIMEOUT_MS = 10_000;
+// RP-396: a local merge-tree computation over two already-present commits.
+const MERGE_TREE_TIMEOUT_MS = 30_000;
 const MAX_REMOTE_DEFAULT_BYTES = 4096;
 const SHA256 = /^[a-f0-9]{64}$/;
 const TICKET = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -677,9 +679,10 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   if (refinement && sameFingerprint(delta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
     throw new Error('GREEN refinement does not change the prior implementation boundary');
   }
-  if (refresh && !sameFingerprint(delta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
-    throw new Error('GREEN refresh working-tree delta does not reproduce the prior implementation boundary');
-  }
+  // RP-396: a refresh's own working-tree delta is no longer required to be
+  // byte-identical to the prior boundary — `mergedDefaultRefresh` already
+  // proved the merge commit adds nothing beyond the mechanical merge of its
+  // parents, and nothing uncommitted rides along on top of it (below).
   const runId = basename(runDir);
   const boundarySource = { runId, seq: boundaryEvent.seq };
   const implementationBoundary = {
@@ -1036,6 +1039,59 @@ const sameBaselineRefinement = ({ projectRoot, ticket, priorEvidence, history, c
     : null;
 };
 
+// RP-396: a clean direct merge of the current default branch may also touch
+// one of the item's OWN production files, in a hunk disjoint from the
+// item's owned hunk. The owned hunk's text is unchanged, but its pre-image
+// blob differs because the default tip already carries the foreign hunk —
+// so requiring the working-tree delta to stay byte-identical to the prior
+// boundary (the old check) refuses a lawful merge. The invariant that
+// actually matters is narrower: the merge commit adds nothing beyond the
+// mechanical merge of its two parents (checked here), and nothing
+// uncommitted rides along on top of it (checked by the sibling below).
+const mechanicalMergeTree = ({ projectRoot, currentHead, priorHead, defaultHead }) => {
+  let headTree;
+  try {
+    headTree = gitText(projectRoot, ['rev-parse', `${currentHead}^{tree}`]);
+  } catch {
+    throw new Error('GREEN refresh merge commit tree could not be read');
+  }
+  let output;
+  try {
+    // Needs git >= 2.38 for `merge-tree --write-tree`; an older git exits
+    // non-zero here exactly like a real conflict would, so both fail closed
+    // on the same message below.
+    output = execFileSync(
+      'git',
+      ['-C', projectRoot, 'merge-tree', '--write-tree', priorHead, defaultHead],
+      {
+        encoding: 'utf8',
+        env: withoutGitLocation(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: MERGE_TREE_TIMEOUT_MS,
+        maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES,
+      },
+    );
+  } catch {
+    throw new Error('GREEN refresh merge commit is not the mechanical merge of its parents');
+  }
+  const mergedTree = output.split('\n')[0]?.trim();
+  if (!/^[a-f0-9]{40}$/.test(mergedTree ?? '') || mergedTree !== headTree) {
+    throw new Error('GREEN refresh merge commit is not the mechanical merge of its parents');
+  }
+};
+
+const noUncommittedProductionChange = ({ projectRoot, currentHead, ticket }) => {
+  let paths;
+  try {
+    paths = productionPaths({ projectRoot, baselineHeadSha: currentHead, ticket });
+  } catch {
+    throw new Error('GREEN refresh working tree could not be checked for an uncommitted production change');
+  }
+  if (paths.length > 0) {
+    throw new Error('GREEN refresh carries an uncommitted production change');
+  }
+};
+
 const mergedDefaultRefresh = ({ projectRoot, ticket, priorEvidence, history, currentHead }) => {
   const cachedDefaultHead = defaultTargetSha(projectRoot);
   const defaultHead = liveDefaultTargetSha(projectRoot);
@@ -1063,6 +1119,8 @@ const mergedDefaultRefresh = ({ projectRoot, ticket, priorEvidence, history, cur
   if (!sameFingerprint(priorDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
     throw new Error('GREEN refresh parent does not reproduce the prior implementation boundary');
   }
+  mechanicalMergeTree({ projectRoot, currentHead, priorHead, defaultHead });
+  noUncommittedProductionChange({ projectRoot, currentHead, ticket });
   return { defaultHead };
 };
 

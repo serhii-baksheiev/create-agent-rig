@@ -120,9 +120,19 @@ run the same relevant test and test-file content through `check-run.mjs` with
 a new structured output name, then run `record-green` with its passing check
 name. A completed TDD-2 chain may receive a fresh GREEN only when the current
 HEAD is one direct merge of the current default-branch tip, that tip is a strict
-descendant of the selected baseline and prior validated default tip, and both
-the merge first parent and the actual working-tree delta reproduce the prior
-implementation boundary. When the terminal history entry is a validated prior
+descendant of the selected baseline and prior validated default tip, the merge
+first parent reproduces the prior implementation boundary, the merge commit
+equals the mechanical merge of its two parents (`git merge-tree --write-tree`,
+refusing a conflict or an unsupported git the same way), and the working tree
+carries no uncommitted production change on top of it — not that the
+working-tree delta stays byte-identical to the prior boundary, which a clean
+merge that also touches the item's own production file in a disjoint hunk
+cannot satisfy even though it adds nothing beyond the merge:
+`test/template/tdd-green-refresh-overlap.test.ts` (absent in a generated rig)
+› "refreshes GREEN after a clean direct default merge that also changed the
+item's own production file" and › "still refuses a merge commit that adds a
+manual production edit to the item's own file".
+When the terminal history entry is a validated prior
 merged-default refresh, that reconstruction starts from its recorded default
 tip; a validated stale-RED replacement leaves the selected baseline as the
 first refresh's reconstruction base. The refreshed boundary starts at the
