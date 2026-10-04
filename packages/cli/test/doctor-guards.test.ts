@@ -1,4 +1,4 @@
-import { access, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
@@ -38,13 +38,15 @@ async function exists(file: string): Promise<boolean> {
 // itself rather than importing unattended-flag.mjs/stop-flag.mjs to ask them
 // whether a fixture flag is armed, AND identifies this call's own fixture
 // without asking production's own cleanup whether it ran. The fixture run
-// root is `mkdtemp(path.join(os.tmpdir(), 'rig-guard-fixtures-'))`, made
-// either inside the spawned child (whose env allow-list in spawn.ts forwards
-// TEMP/TMP but never TMPDIR) or by `inspectGuards` itself in this process. So
-// overriding TMPDIR, TEMP and TMP for the duration of one `inspectGuards` call
-// pins `os.tmpdir()` on both sides to a directory this test alone created and
-// named — no other call, in this run or a sibling test file, can ever produce
-// a runDir under it. A flag whose `runDir`
+// root is `mkdtemp(path.join(os.tmpdir(), 'rig-guard-fixtures-'))`, made by
+// `inspectGuards` itself in this process — RP-310 moved root ownership from
+// the spawned child to the parent, so there is no longer a second process
+// that could make it instead. Overriding TMPDIR (read on POSIX) as well as
+// TEMP and TMP (read on Windows) for the duration of one `inspectGuards` call
+// therefore pins `os.tmpdir()`, on whichever platform this runs, to a
+// directory this test alone created and named — no other call, in this run
+// or a sibling test file, can ever produce a runDir under it. A flag whose
+// `runDir`
 // starts with that exact directory is therefore this call's fixture, full
 // stop: no runDir-existence heuristic, no dependence on a "before" snapshot,
 // no dependence on sibling timing.
@@ -222,51 +224,138 @@ describe('doctor guard inspection', () => {
   });
 
   it('clears the fixture unattended flag from the real home when the guard batch is killed before its own cleanup (RP-310)', async () => {
-    // `root` is populated by the injected runner below — it stands in for the
-    // FIXTURE_WRAPPER child up to the exact moment it is killed, before its
-    // own `finally` (clearUnattended + rmSync) ever runs.
-    let root: string | undefined;
-
-    const runner = async (options: ProviderProcessOptions): Promise<ProviderProcessResult> => {
-      // RP-310's intended fix has the parent pass the fixture root as the
-      // 4th arg; today's parent passes none, so this falls back to mkdtemp'ing
-      // its own root exactly as the current child does.
-      const passedRoot = options.args[3];
-      root =
-        typeof passedRoot === 'string'
-          ? passedRoot
-          : await mkdtemp(path.join(tmpdir(), 'rig-guard-fixtures-'));
-      const home = path.join(root, 'home');
-      const env = { ...process.env, HOME: home, APPDATA: home, CLAUDE_PROJECT_DIR: root };
-      const unattendedModulePath = path.join(
-        agentOsUniversalDir(),
-        '.claude',
-        'scripts',
-        'unattended-flag.mjs',
-      );
-      const flag = (await import(pathToFileURL(unattendedModulePath).href)) as {
-        writeUnattended: (
-          record: { item: string; runDir: string | null; allow: string[] },
-          flagEnv: NodeJS.ProcessEnv,
-        ) => string[];
-      };
-      flag.writeUnattended({ item: 'fixture', runDir: root, allow: [] }, env);
-      // Killed before reaching its own finally: no clearUnattended, no rmSync.
-      return batchResult('timeout', null);
-    };
+    // Both phases below stand in for the FIXTURE_WRAPPER child at a
+    // different moment of its life, and each populates its own root via the
+    // injected runner — tracked separately so the shared `finally` can sweep
+    // litter from whichever phase actually ran.
+    let killedRoot: string | undefined;
+    let cleanupFailedRoot: string | undefined;
 
     try {
-      const result = await inspectGuards({ repoDir: repo, runner });
+      // Phase 1: the batch is killed before it ever reaches its own
+      // `finally` (clearUnattended + rmSync) — only the parent is left to
+      // clear the flag it handed the child.
+      const killedRunner = async (
+        options: ProviderProcessOptions,
+      ): Promise<ProviderProcessResult> => {
+        // RP-310 has the parent own the fixture root and pass it as the 4th
+        // arg — there is no longer a child-side fallback that mkdtemp's its
+        // own root, so a parent that forgot to pass one is a defect, not a
+        // case to paper over.
+        const passedRoot = options.args[3];
+        if (typeof passedRoot !== 'string') {
+          throw new Error('inspectGuards did not pass the fixture root as args[3]');
+        }
+        killedRoot = passedRoot;
+        const home = path.join(killedRoot, 'home');
+        const env = { ...process.env, HOME: home, APPDATA: home, CLAUDE_PROJECT_DIR: killedRoot };
+        const unattendedModulePath = path.join(
+          agentOsUniversalDir(),
+          '.claude',
+          'scripts',
+          'unattended-flag.mjs',
+        );
+        const flag = (await import(pathToFileURL(unattendedModulePath).href)) as {
+          writeUnattended: (
+            record: { item: string; runDir: string | null; allow: string[] },
+            flagEnv: NodeJS.ProcessEnv,
+          ) => string[];
+        };
+        flag.writeUnattended({ item: 'fixture', runDir: killedRoot, allow: [] }, env);
+        // Before returning, confirm — with the RP-310 exact-match oracle,
+        // not production's own reader — that a real-home flag for this root
+        // is actually armed. Without this, a `writeUnattended` that
+        // silently no-oped would still let the "no leftover" assertion
+        // below pass vacuously.
+        expect(await fixtureFlagsForExactRoot(killedRoot)).toHaveLength(1);
+        // Killed before reaching its own finally: no clearUnattended, no rmSync.
+        return batchResult('timeout', null);
+      };
 
-      expect(result).toEqual({ status: 'fail', reason: 'guard-fixture-batch-failed' });
-      if (root === undefined) throw new Error('the runner never ran — nothing to assert');
+      const killedResult = await inspectGuards({ repoDir: repo, runner: killedRunner });
 
-      const leaked = await fixtureFlagsForExactRoot(root);
-      expect(leaked).toEqual([]);
-      expect(await exists(root)).toBe(false);
+      expect(killedResult).toEqual({ status: 'fail', reason: 'guard-fixture-batch-failed' });
+      if (killedRoot === undefined) throw new Error('the runner never ran — nothing to assert');
+
+      expect(await fixtureFlagsForExactRoot(killedRoot)).toEqual([]);
+      expect(await exists(killedRoot)).toBe(false);
+
+      // Phase 2: the batch itself succeeds, but the parent's own post-batch
+      // cleanup (clearUnattended or removing the root) fails — that failure
+      // must surface as a distinct, non-silent verdict rather than being
+      // swallowed into a pass.
+      const cleanupFailedRunner = async (
+        options: ProviderProcessOptions,
+      ): Promise<ProviderProcessResult> => {
+        const passedRoot = options.args[3];
+        if (typeof passedRoot !== 'string') {
+          throw new Error('inspectGuards did not pass the fixture root as args[3]');
+        }
+        cleanupFailedRoot = passedRoot;
+        const home = path.join(cleanupFailedRoot, 'home');
+        const env = {
+          ...process.env,
+          HOME: home,
+          APPDATA: home,
+          CLAUDE_PROJECT_DIR: cleanupFailedRoot,
+        };
+        const unattendedModulePath = path.join(
+          agentOsUniversalDir(),
+          '.claude',
+          'scripts',
+          'unattended-flag.mjs',
+        );
+        const flag = (await import(pathToFileURL(unattendedModulePath).href)) as {
+          writeUnattended: (
+            record: { item: string; runDir: string | null; allow: string[] },
+            flagEnv: NodeJS.ProcessEnv,
+          ) => string[];
+        };
+        const written = flag.writeUnattended(
+          { item: 'fixture', runDir: cleanupFailedRoot, allow: [] },
+          env,
+        );
+        // `writeUnattended` mirrors the flag into both trusted homes (the
+        // real one and this fixture's own fake HOME). Sabotage only the
+        // fake-home copy, deterministically and cross-platform: delete the
+        // file and put a directory in its place, so the parent's own
+        // unguarded `rmSync` on it — inside `clearUnattended` — throws an
+        // EISDIR-class error rather than the ENOENT it already tolerates.
+        const fakeHomeFlag = written.find((file) => file.startsWith(home + path.sep));
+        if (fakeHomeFlag === undefined) {
+          throw new Error("writeUnattended did not mirror a flag under this fixture's fake home");
+        }
+        await rm(fakeHomeFlag, { force: true });
+        await mkdir(fakeHomeFlag);
+        // The batch itself succeeded — only the parent's own post-batch
+        // cleanup is sabotaged.
+        return batchResult('ok', 0);
+      };
+
+      const cleanupFailedResult = await inspectGuards({
+        repoDir: repo,
+        runner: cleanupFailedRunner,
+      });
+
+      expect(cleanupFailedResult).toEqual({
+        status: 'fail',
+        reason: 'guard-fixture-cleanup-failed',
+      });
+      if (cleanupFailedRoot === undefined) {
+        throw new Error('the runner never ran — nothing to assert');
+      }
+
+      // Independent oracle: `clearUnattended`'s own candidate loop continues
+      // past one failing removal, so the mirrored real-home flag is still
+      // cleared even though the sabotaged fake-home one could not be — the
+      // cleanup failure is reported, not papered over by also leaving other,
+      // removable flags behind.
+      expect(await fixtureFlagsForExactRoot(cleanupFailedRoot)).toEqual([]);
     } finally {
-      // Never leave litter in the real home even on a RED run.
-      if (root !== undefined) {
+      // Never leave litter in the real home, or a sabotaged fake home, even
+      // on a RED run — for every root either phase used.
+      for (const root of [killedRoot, cleanupFailedRoot]) {
+        if (root === undefined) continue;
         const leaked = await fixtureFlagsForExactRoot(root);
         await Promise.all(leaked.map((file) => rm(file, { force: true })));
         await removeFixture(root);

@@ -18,7 +18,8 @@ export type GuardInspection = {
     | 'guards-verified'
     | 'hook-wiring-invalid'
     | 'hook-integrity-invalid'
-    | 'guard-fixture-batch-failed';
+    | 'guard-fixture-batch-failed'
+    | 'guard-fixture-cleanup-failed';
 };
 export type InspectGuardsOptions = { repoDir: string; runner?: typeof runProviderProcess };
 
@@ -56,8 +57,9 @@ function includesWiring(actual: unknown, expected: unknown): boolean {
 /**
  * Fixed package-owned fixture runner. The payload consists only of bytes from
  * `initFileContents`; it never loads the checked repository's hooks, settings,
- * commands, or input. It makes an isolated root and runs the finite fixtures
- * under a child process managed by the common safe-process boundary.
+ * commands, or input. It runs the finite fixtures, under a child process
+ * managed by the common safe-process boundary, inside the isolated root
+ * `inspectGuards` creates and hands it.
  */
 const FIXTURE_WRAPPER = String.raw`
 const fs=require('node:fs'),os=require('node:os'),path=require('node:path'),cp=require('node:child_process'),url=require('node:url');
@@ -156,6 +158,7 @@ export async function inspectGuards(options: InspectGuardsOptions): Promise<Guar
   // remove the root afterward.
   const root = await mkdtemp(path.join(tmpdir(), 'rig-guard-fixtures-'));
   let batch: Awaited<ReturnType<typeof runProviderProcess>>;
+  let cleanupFailed = false;
   try {
     batch = await (options.runner ?? runProviderProcess)({
       executable: process.execPath,
@@ -165,11 +168,13 @@ export async function inspectGuards(options: InspectGuardsOptions): Promise<Guar
       maxOutputBytes: 8 * 1024,
     });
   } finally {
-    // Best-effort: never let cleanup change the verdict above or throw past
-    // this function. Clear before removing — unattended-flag.mjs derives the
-    // flag name from realpath(CLAUDE_PROJECT_DIR), which resolves to a
-    // different spelling once the directory is gone (macOS /var vs
-    // /private/var).
+    // Best-effort: never let cleanup throw past this function. Clear before
+    // removing — unattended-flag.mjs derives the flag name from
+    // realpath(CLAUDE_PROJECT_DIR), which resolves to a different spelling
+    // once the directory is gone (macOS /var vs /private/var). Both steps
+    // normally no-op (a missing flag is skipped, `rm({force:true})` ignores
+    // a missing path), so a catch here is a real failure — recorded below,
+    // never swallowed.
     try {
       const home = path.join(root, 'home');
       const unattendedModulePath = path.join(
@@ -188,14 +193,15 @@ export async function inspectGuards(options: InspectGuardsOptions): Promise<Guar
         CLAUDE_PROJECT_DIR: root,
       });
     } catch {
-      // Already cleared, or never armed — the normal path.
+      cleanupFailed = true;
     }
     try {
       await rm(root, { recursive: true, force: true });
     } catch {
-      // Already removed — the normal path.
+      cleanupFailed = true;
     }
   }
   if (batch.status !== 'ok' || batch.exitCode !== 0) return failed('guard-fixture-batch-failed');
+  if (cleanupFailed) return failed('guard-fixture-cleanup-failed');
   return { status: 'pass', reason: 'guards-verified' };
 }
