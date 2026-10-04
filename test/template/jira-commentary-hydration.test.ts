@@ -570,3 +570,160 @@ it('makes zero comment requests for a later truncated ticket once one ticket has
     calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
   ).toHaveLength(0);
 });
+
+// RP-368 round 2, blocker B1: `readTextWithinByteLimit` throws when a page
+// overflows its own byte limit BEFORE the bytes it already read are charged
+// to `budget.bytes` (the charge only runs on the success path, after the page
+// has been fully read and parsed). A failed, over-limit page must still spend
+// the shared byte budget it pulled — otherwise every later truncated issue is
+// handed the FULL MAX_COMMENT_BYTES allowance again, and a board with many
+// truncated issues each streaming an oversized page reads every one of them
+// in full instead of stopping once the selection's shared budget is spent.
+it("makes zero comment requests for a later truncated ticket once one ticket's overflowing page has exhausted the shared byte budget", async () => {
+  // One ticket's comment page overflows the ENTIRE shared MAX_COMMENT_BYTES
+  // budget in its very first chunk — the budget is spent here by reading more
+  // than the per-page byte limit allows, not by declaring a huge total (that
+  // is the RECORDS-budget case just above this one).
+  const overflowingInlineIds = Array.from(
+    { length: 20 },
+    (_, index) => `rp910-comment-${index + 1}`,
+  );
+  const overflowingIssue = () => ({
+    key: 'RP-910',
+    fields: {
+      summary: 'a ticket whose comment page overflows the shared byte budget',
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+      labels: ['rel-1.2.0'],
+      priority: null,
+      created: '2026-10-03T00:00:00.000+0000',
+      issuelinks: [],
+      comment: { total: 31, comments: commentsFrom(overflowingInlineIds) },
+    },
+  });
+
+  // 1 MiB + 1 byte: one byte over jira.mjs's own MAX_COMMENT_BYTES, hard-coded
+  // here rather than imported — the same convention the oversized-chunk case
+  // earlier in this file already uses.
+  const overflowChunk = new Uint8Array(1024 * 1024 + 1);
+
+  const calls = installJira(
+    (url) => {
+      if (url.pathname === '/rest/api/3/issue/RP-910/comment') {
+        return {
+          stream: new ReadableStream({
+            pull(controller) {
+              controller.enqueue(overflowChunk);
+              controller.close();
+            },
+          }),
+        };
+      }
+      // RP-368's comment endpoint must never be reached once the shared BYTE
+      // budget is exhausted — if it is, this loudly distinct failure makes
+      // that visible instead of silently returning a plausible page.
+      return {
+        status: 500,
+        statusText: 'RP-368 comment must not be requested once the shared byte budget is exhausted',
+      };
+    },
+    () => ({ body: { issues: [overflowingIssue(), listedIssue()], isLast: true } }),
+  );
+
+  const tickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+
+  expect(tickets).toHaveLength(2);
+  const overflowing = tickets.find((ticket) => ticket.id === 'RP-910');
+  const starved = tickets.find((ticket) => ticket.id === 'RP-368');
+  expect(overflowing?.commentary).toEqual({
+    count: 31,
+    ids: overflowingInlineIds,
+    complete: false,
+  });
+  expect(starved?.commentary).toEqual({
+    count: expectedIds.length,
+    ids: inlineIds,
+    complete: false,
+  });
+  expect(
+    calls.filter((call) => call.url.pathname === '/rest/api/3/issue/RP-368/comment'),
+  ).toHaveLength(0);
+});
+
+// RP-368 round 2, blocker B2: `inlineCommentaryIsComplete` sends an issue to
+// hydration whenever its inline `comment` field is malformed — a present
+// `total` that is not a non-negative safe integer, or `comments` that is not
+// an array. But once that hydration read fails (any status, including these
+// 503s), the per-ticket catch in `listEligible` leaves the RAW issue for
+// `toTicket` to map — and `toTicket` disagrees with `inlineCommentaryIsComplete`
+// about the very same field: it falls back to `comments.length` / `[]` and
+// reports `complete: true` for a shape `inlineCommentaryIsComplete` itself
+// just refused to trust.
+it.each([
+  { name: 'total is missing entirely', comment: { comments: [{ id: '1' }] } },
+  {
+    name: 'total is a numeric string, not a number',
+    comment: { total: '5', comments: [{ id: '1' }] },
+  },
+  {
+    name: 'total is a number but not a safe integer',
+    comment: { total: 5.5, comments: [{ id: '1' }] },
+  },
+  { name: 'total is present but comments is absent', comment: { total: 0 } },
+  { name: 'total is present but comments is not an array', comment: { total: 0, comments: {} } },
+])(
+  'lists an issue complete: false when its authoritative read fails and the inline comment field it fell back to has $name',
+  async ({ comment }) => {
+    const malformedIssue = () => ({
+      key: 'RP-920',
+      fields: {
+        summary: 'an issue whose inline comment field is malformed',
+        status: { name: 'To Do', statusCategory: { key: 'new' } },
+        labels: ['rel-1.2.0'],
+        priority: null,
+        created: '2026-10-03T00:00:00.000+0000',
+        issuelinks: [],
+        comment,
+      },
+    });
+    installJira(
+      () => ({ status: 503, statusText: 'Service Unavailable' }),
+      () => ({ body: { issues: [malformedIssue()], isLast: true } }),
+    );
+
+    const tickets = (await list()) as Array<{
+      id: string;
+      commentary: { count: number; ids: string[]; complete: boolean };
+    }>;
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0]!.commentary.complete).toBe(false);
+  },
+);
+
+it('maps an issue with no comment field at all to the empty, complete commentary set, with no hydration attempt', async () => {
+  const noCommentIssue = () => ({
+    key: 'RP-921',
+    fields: {
+      summary: 'an issue with no comment field at all',
+      status: { name: 'To Do', statusCategory: { key: 'new' } },
+      labels: ['rel-1.2.0'],
+      priority: null,
+      created: '2026-10-03T00:00:00.000+0000',
+      issuelinks: [],
+    },
+  });
+  const calls = installJira(
+    () => ({ status: 500, statusText: 'comment hydration must not be attempted' }),
+    () => ({ body: { issues: [noCommentIssue()], isLast: true } }),
+  );
+
+  const tickets = (await list()) as Array<{
+    id: string;
+    commentary: { count: number; ids: string[]; complete: boolean };
+  }>;
+  expect(tickets).toHaveLength(1);
+  expect(tickets[0]!.commentary).toEqual({ count: 0, ids: [], complete: true });
+  expect(calls.filter((call) => /\/comment$/.test(call.url.pathname))).toHaveLength(0);
+});

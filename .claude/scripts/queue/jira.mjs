@@ -64,6 +64,45 @@ const assigneeIdOf = (assignee) => {
     : UNREADABLE_ASSIGNEE;
 };
 
+/**
+ * The unique, stringified comment ids a `fields.comment` carries — `[]` when
+ * `comments` is absent or not an array. Shared by `toTicket` and
+ * `inlineCommentaryIsComplete` so the two never disagree about the same ids.
+ */
+const commentaryIdsOf = (comment) =>
+  Array.isArray(comment?.comments)
+    ? comment.comments
+        .map((entry) => entry?.id)
+        .filter((id) => id !== undefined && id !== null)
+        .map(String)
+    : [];
+
+/**
+ * Whether a `fields.comment` is trustworthy enough to report as a COMPLETE
+ * commentary set. An ABSENT field is vacuously complete — there is nothing to
+ * doubt. A PRESENT field is complete only when `total` is a non-negative safe
+ * integer, `comments` is an array, every id is unique, and the id count equals
+ * `total`; anything else (a missing, non-numeric or fractional `total`, a
+ * non-array `comments`) is reported incomplete rather than silently falling
+ * back to `comments.length` the way the count below still does. One rule, one
+ * implementation: `toTicket`'s `commentary.complete` and
+ * `inlineCommentaryIsComplete` (which decides whether hydration is needed at
+ * all) both call this, so they cannot drift apart (`invariants.md`: one
+ * mechanism, one implementation). Pinned in
+ * `test/template/queue-jira.test.ts` (absent in a generated rig) ›
+ * "reports complete: false for a present comment field whose $name" and ›
+ * "keeps the empty, complete commentary set when the issue carries no comment
+ * field at all".
+ */
+const commentaryIsComplete = (comment) => {
+  if (!comment) return true;
+  if (!Number.isSafeInteger(comment.total) || comment.total < 0 || !Array.isArray(comment.comments)) {
+    return false;
+  }
+  const ids = commentaryIdsOf(comment);
+  return ids.length === comment.total && new Set(ids).size === ids.length;
+};
+
 /** Jira timestamps use +0000 rather than Z; normalise so string compare sorts right. */
 const toIso = (created) => {
   if (!created) return null;
@@ -100,10 +139,7 @@ export const toTicket = (issue) => {
   const links = fields.issuelinks ?? [];
   const category = statusCategory(fields);
   const comments = Array.isArray(fields.comment?.comments) ? fields.comment.comments : [];
-  const commentaryIds = comments
-    .map((comment) => comment?.id)
-    .filter((id) => id !== undefined && id !== null)
-    .map(String);
+  const commentaryIds = commentaryIdsOf(fields.comment);
   const commentaryCount = Number.isInteger(fields.comment?.total)
     ? fields.comment.total
     : comments.length;
@@ -156,12 +192,15 @@ export const toTicket = (issue) => {
     commentary: {
       count: commentaryCount,
       ids: commentaryIds,
-      // Jira may return only the first page while still declaring the total.
-      // A partial set cannot truthfully fingerprint commentary; the shared
-      // claim resolver turns this explicit false into UNVERIFIABLE.
-      complete:
-        commentaryIds.length === commentaryCount &&
-        new Set(commentaryIds).size === commentaryIds.length,
+      // Jira may return only the first page while still declaring the total,
+      // or the inline field itself may be malformed (a missing, non-numeric
+      // or fractional `total`, a non-array `comments`). Either way a partial
+      // or untrustworthy set cannot truthfully fingerprint commentary; the
+      // shared claim resolver turns this explicit false into UNVERIFIABLE.
+      // `commentaryIsComplete` is the one predicate both this mapper and
+      // `inlineCommentaryIsComplete` (below, deciding whether to hydrate)
+      // read, so neither can trust a shape the other already refused.
+      complete: commentaryIsComplete(fields.comment),
     },
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
@@ -307,7 +346,7 @@ const MAX_ATTEMPTS = 4;
 const DEFAULT_TIMEOUT_MS = 20_000;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const readTextWithinByteLimit = async (response, byteLimit, method, route) => {
+const readTextWithinByteLimit = async (response, byteLimit, method, route, responseByteBudget = null) => {
   const reader = response.body?.getReader?.();
   if (!reader) {
     throw new Error(`jira ${method} ${route} has no readable response body for its byte budget`);
@@ -324,18 +363,27 @@ const readTextWithinByteLimit = async (response, byteLimit, method, route) => {
       // The stream has already terminated.
     }
   };
+  // The over-limit chunk itself was already pulled off the wire before this
+  // throws, so it is charged to the shared budget here — at the point the
+  // overflow is detected — rather than only on the success path below. A
+  // charge that ran solely after `JSON.parse` would never fire for the one
+  // page that overflowed, handing every later issue the FULL budget again
+  // once this one throws and the per-ticket catch in `listEligible` moves on.
+  const overflow = (message, overflowBytes) => {
+    if (responseByteBudget) responseByteBudget.remaining -= bytes + overflowBytes;
+    cancel();
+    throw new Error(message);
+  };
   try {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
       const remainingBytes = byteLimit - bytes;
       if (value.byteLength > remainingBytes) {
-        cancel();
-        throw new Error(`jira ${method} ${route} exceeded its response byte budget`);
+        overflow(`jira ${method} ${route} exceeded its response byte budget`, value.byteLength);
       }
       if (value.byteLength === remainingBytes) {
-        cancel();
-        throw new Error(`jira ${method} ${route} reached its response byte budget`);
+        overflow(`jira ${method} ${route} reached its response byte budget`, value.byteLength);
       }
       const chunk = Buffer.from(value);
       chunks.push(chunk);
@@ -465,7 +513,13 @@ const request = async (
         if (byteLimit === null) {
           payload = await response.json();
         } else {
-          const { text, bytes } = await readTextWithinByteLimit(response, byteLimit, method, route);
+          const { text, bytes } = await readTextWithinByteLimit(
+            response,
+            byteLimit,
+            method,
+            route,
+            responseByteBudget,
+          );
           if (responseByteBudget) responseByteBudget.remaining -= bytes;
           payload = JSON.parse(text);
         }
@@ -544,13 +598,7 @@ const assertProjectVisible = async ({ project, jql, env, deadlineAt = null }) =>
   }
 };
 
-const inlineCommentaryIsComplete = (issue) => {
-  const comment = issue?.fields?.comment;
-  if (!comment) return true;
-  if (!Number.isSafeInteger(comment.total) || comment.total < 0 || !Array.isArray(comment.comments)) return false;
-  const ids = comment.comments.map((entry) => entry?.id).filter((id) => id !== undefined && id !== null);
-  return ids.length === comment.total && new Set(ids.map(String)).size === ids.length;
-};
+const inlineCommentaryIsComplete = (issue) => commentaryIsComplete(issue?.fields?.comment);
 
 const commentIdOf = (comment, ticketId) => {
   const id = comment?.id;
