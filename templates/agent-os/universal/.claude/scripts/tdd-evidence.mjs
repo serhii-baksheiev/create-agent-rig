@@ -681,8 +681,9 @@ const recordGreen = ({ projectRoot, runDir, ticket, check }) => {
   }
   // RP-396: a refresh's own working-tree delta is no longer required to be
   // byte-identical to the prior boundary — `mergedDefaultRefresh` already
-  // proved the merge commit adds nothing beyond the mechanical merge of its
-  // parents, and nothing uncommitted rides along on top of it (below).
+  // proved the merge is anchored at the prior validated default and adds
+  // nothing beyond the mechanical merge of its two parents, and that
+  // nothing uncommitted rides along on top of it (below).
   const runId = basename(runDir);
   const boundarySource = { runId, seq: boundaryEvent.seq };
   const implementationBoundary = {
@@ -1045,9 +1046,12 @@ const sameBaselineRefinement = ({ projectRoot, ticket, priorEvidence, history, c
 // blob differs because the default tip already carries the foreign hunk —
 // so requiring the working-tree delta to stay byte-identical to the prior
 // boundary (the old check) refuses a lawful merge. The invariant that
-// actually matters is narrower: the merge commit adds nothing beyond the
-// mechanical merge of its two parents (checked here), and nothing
-// uncommitted rides along on top of it (checked by the sibling below).
+// actually matters is narrower: the merge commit is anchored at the prior
+// validated default (checked by `mergeBaseAnchoredAtPriorDefault` below) and
+// adds nothing beyond the mechanical merge of its two parents (checked
+// here) — anchoring alone is not enough, because an anchored merge can
+// still carry a hand-edited tree — and nothing uncommitted rides along on
+// top of it (checked by the sibling after that).
 const mechanicalMergeTree = ({ projectRoot, currentHead, priorHead, defaultHead }) => {
   let headTree;
   try {
@@ -1077,6 +1081,49 @@ const mechanicalMergeTree = ({ projectRoot, currentHead, priorHead, defaultHead 
   const mergedTree = output.split('\n')[0]?.trim();
   if (!/^[a-f0-9]{40}$/.test(mergedTree ?? '') || mergedTree !== headTree) {
     throw new Error('GREEN refresh merge commit is not the mechanical merge of its parents');
+  }
+};
+
+// RP-396 review round 1 (B1, Class A false SHIP): `mechanicalMergeTree`
+// proves the merge commit is the mechanical merge of its two parents, but
+// `git merge-tree` picks its OWN merge base from commit ancestry — never
+// required to equal `priorDefault` (the point the prior boundary was
+// measured from: the selected baseline, or the last validated
+// merged-default refresh). Ordinary history reproduces the gap: the
+// item merges an intermediate default commit with no refresh recorded,
+// then removes that commit's file on its own branch, then merges a LATER
+// default advance that never touches the removed file again — that merge's
+// own computed base is the intermediate commit, so it is clean and the
+// deletion of default production content ships unnoticed. The merge must
+// therefore be anchored at the prior validated default as well as be
+// mechanical: the merge base of the merge's first parent and the default
+// tip must be exactly one commit, and it must be `priorDefault`.
+// See test/template/tdd-green-refresh-anchor.test.ts (absent in a generated
+// rig) › "refuses a refresh whose merge base is not the prior validated
+// default".
+const mergeBaseAnchoredAtPriorDefault = ({ projectRoot, priorHead, defaultHead, priorDefault }) => {
+  let output;
+  try {
+    output = execFileSync(
+      'git',
+      ['-C', projectRoot, 'merge-base', '--all', priorHead, defaultHead],
+      {
+        encoding: 'utf8',
+        env: withoutGitLocation(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeout: MERGE_TREE_TIMEOUT_MS,
+        maxBuffer: MAX_IMPLEMENTATION_DELTA_BYTES,
+      },
+    );
+  } catch {
+    throw new Error('GREEN refresh merge base is not the prior validated default');
+  }
+  const lines = output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+  if (lines.length !== 1 || !/^[a-f0-9]{40}$/.test(lines[0]) || lines[0] !== priorDefault) {
+    throw new Error('GREEN refresh merge base is not the prior validated default');
   }
 };
 
@@ -1119,6 +1166,7 @@ const mergedDefaultRefresh = ({ projectRoot, ticket, priorEvidence, history, cur
   if (!sameFingerprint(priorDelta, priorEvidence.implementationBoundary?.implementationDeltaFingerprint)) {
     throw new Error('GREEN refresh parent does not reproduce the prior implementation boundary');
   }
+  mergeBaseAnchoredAtPriorDefault({ projectRoot, priorHead, defaultHead, priorDefault });
   mechanicalMergeTree({ projectRoot, currentHead, priorHead, defaultHead });
   noUncommittedProductionChange({ projectRoot, currentHead, ticket });
   return { defaultHead };

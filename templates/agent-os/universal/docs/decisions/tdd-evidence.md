@@ -121,17 +121,31 @@ a new structured output name, then run `record-green` with its passing check
 name. A completed TDD-2 chain may receive a fresh GREEN only when the current
 HEAD is one direct merge of the current default-branch tip, that tip is a strict
 descendant of the selected baseline and prior validated default tip, the merge
-first parent reproduces the prior implementation boundary, the merge commit
+first parent reproduces the prior implementation boundary, the merge base of
+that first parent and the default tip is exactly one commit and it is the
+prior validated default (the selected baseline, or the last validated
+merged-default refresh) — `git merge-tree`'s own merge-base choice is never
+taken on faith, because an intermediate default commit merged without a
+refresh, then edited away on the item's own branch, can leave a later merge
+mechanical and clean while silently shipping a deletion of default
+production:
+`test/template/tdd-green-refresh-anchor.test.ts` (absent in a generated rig)
+› "refuses a refresh whose merge base is not the prior validated default" —
+the merge commit
 equals the mechanical merge of its two parents (`git merge-tree --write-tree`,
-refusing a conflict or an unsupported git the same way), and the working tree
-carries no uncommitted production change on top of it — not that the
+refusing a conflict or an unsupported git the same way), and no tracked
+production file carries an uncommitted change on top of it — not that the
 working-tree delta stays byte-identical to the prior boundary, which a clean
 merge that also touches the item's own production file in a disjoint hunk
 cannot satisfy even though it adds nothing beyond the merge:
 `test/template/tdd-green-refresh-overlap.test.ts` (absent in a generated rig)
 › "refreshes GREEN after a clean direct default merge that also changed the
 item's own production file" and › "still refuses a merge commit that adds a
-manual production edit to the item's own file".
+manual production edit to the item's own file"; the uncommitted-change check
+itself is pinned in
+`test/template/tdd-green-refresh-anchor.test.ts` (absent in a generated rig)
+› "refuses a refresh while a tracked production edit is left uncommitted on
+top of a clean merge".
 When the terminal history entry is a validated prior
 merged-default refresh, that reconstruction starts from its recorded default
 tip; a validated stale-RED replacement leaves the selected baseline as the
