@@ -207,6 +207,41 @@ describe('jira → the neutral ticket shape', () => {
     // closed items never reach selection
     expect(tickets.map((t) => t.id)).toEqual(['ABC-1']);
   });
+
+  // RP-368 round 2, blocker B2: `toTicket` falls back to `comments.length` /
+  // `[]` for a PRESENT `comment` field whose `total` or `comments` is
+  // malformed, and reports `complete: true` from that fallback — a shape
+  // `inlineCommentaryIsComplete` (the hydration decision right above this
+  // mapper) already refuses to trust. A present `comment` field must report
+  // `complete: true` only when `total` is a non-negative safe integer,
+  // `comments` is an array, every id is unique, and the count equals `total`.
+  it.each([
+    { name: 'total is missing entirely', comment: { comments: [{ id: '1' }] } },
+    {
+      name: 'total is a numeric string, not a number',
+      comment: { total: '5', comments: [{ id: '1' }] },
+    },
+    {
+      name: 'total is a number but not a safe integer',
+      comment: { total: 5.5, comments: [{ id: '1' }] },
+    },
+    { name: 'total is present but comments is absent', comment: { total: 0 } },
+    { name: 'total is present but comments is not an array', comment: { total: 0, comments: {} } },
+  ])('reports complete: false for a present comment field whose $name', async ({ comment }) => {
+    const { toTicket } = await load('jira.mjs');
+    const ticket = toTicket(issue({ fields: { comment } })) as Ticket & {
+      commentary: { count: number; ids: string[]; complete: boolean };
+    };
+    expect(ticket.commentary.complete).toBe(false);
+  });
+
+  it('keeps the empty, complete commentary set when the issue carries no comment field at all', async () => {
+    const { toTicket } = await load('jira.mjs');
+    const ticket = toTicket(issue()) as Ticket & {
+      commentary: { count: number; ids: string[]; complete: boolean };
+    };
+    expect(ticket.commentary).toEqual({ count: 0, ids: [], complete: true });
+  });
 });
 
 describe('the JQL it builds', () => {
