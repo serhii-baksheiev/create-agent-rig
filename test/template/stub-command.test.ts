@@ -174,7 +174,6 @@ describe('test/helpers/stub-command', () => {
     const sentinelFile = path.join(sentinelDir, 'keep.txt');
     await writeFile(sentinelFile, 'keep');
 
-    const nlinkBefore = (await stat(process.execPath)).nlink;
     const leftover: string[] = [];
     try {
       for (let lifetime = 0; lifetime < 3; lifetime += 1) {
@@ -182,29 +181,24 @@ describe('test/helpers/stub-command', () => {
         leftover.push(handle.bin);
         await expect(stat(handle.bin)).resolves.toBeTruthy();
 
-        if (process.platform === 'win32') {
-          const stubExecutable = path.join(handle.bin, 'rp348stub.exe');
-          const [exeStats, nodeStats] = await Promise.all([
-            stat(stubExecutable, { bigint: true }),
-            stat(process.execPath, { bigint: true }),
-          ]);
-          // Only a hard link raises the running binary's nlink; the EXDEV
-          // fallback copy is a distinct inode and proves nothing here.
-          if (exeStats.ino === nodeStats.ino) {
-            const nlinkDuring = (await stat(process.execPath)).nlink;
-            expect(nlinkDuring).toBe(nlinkBefore + 1);
-          }
-        }
+        // On win32 the executable inside the directory is the hard link (or
+        // the EXDEV copy) that used to outlive restore(). The running
+        // binary's nlink is not asserted: every concurrent stubCommand in a
+        // parallel worker moves the same host-wide counter, so only this
+        // lifetime's own link path is checked, through its directory.
+        const stubExecutable =
+          process.platform === 'win32' ? path.join(handle.bin, 'rp348stub.exe') : null;
+        if (stubExecutable !== null) await expect(stat(stubExecutable)).resolves.toBeTruthy();
 
         handle.restore();
         // The directory this lifetime created must be gone before the next
         // one starts, or a leak here would just be masked by the next loop.
         await expect(stat(handle.bin)).rejects.toMatchObject({ code: 'ENOENT' });
+        if (stubExecutable !== null) {
+          await expect(stat(stubExecutable)).rejects.toMatchObject({ code: 'ENOENT' });
+        }
         leftover.pop();
       }
-
-      const nlinkAfter = (await stat(process.execPath)).nlink;
-      expect(nlinkAfter).toBe(nlinkBefore);
 
       // The sentinel, created before any stub existed, is untouched.
       await expect(stat(sentinelDir)).resolves.toBeTruthy();
