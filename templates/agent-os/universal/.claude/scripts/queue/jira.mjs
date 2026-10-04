@@ -637,7 +637,12 @@ const hydrateCommentary = async (issue, { env, deadlineAt, budget }) => {
       comments.push(comment);
     }
     startAt += page.comments.length;
-    if (page.isLast === true) {
+    // The comment endpoint's pages carry no isLast field, so the declared
+    // total is the completion signal. Pinned in
+    // test/template/jira-commentary-paging.test.ts (absent in a generated rig) ›
+    // "hydrates a truncated comment window from comment pages that carry no
+    // isLast field, as Jira Cloud returns them".
+    if (page.isLast === true || comments.length === total) {
       if (comments.length !== total) {
         throw new Error(`jira comment metadata for ${ticketId} is incomplete`);
       }
