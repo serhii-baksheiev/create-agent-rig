@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -17,6 +18,22 @@ const vitestCli = path.join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs');
 
 type Result = { code: number; out: string };
 type Revalidation = { result: string; action: string };
+type Phase = { startedAt: number; completed: number; lastStage: string };
+
+const phases = new AsyncLocalStorage<Phase>();
+
+const measure = async <T>(stage: string, operation: () => Promise<T>) => {
+  const phase = phases.getStore();
+  const result = await operation();
+  if (phase) {
+    phase.completed += 1;
+    phase.lastStage = stage;
+    console.error(
+      `[rp375-baseline-stage] completed=${phase.completed} stage=${stage} elapsedMs=${Math.round(performance.now() - phase.startedAt)}`,
+    );
+  }
+  return result;
+};
 
 const run = (file: string, args: string[], cwd: string, env = process.env): Promise<Result> =>
   new Promise((resolve) => {
@@ -26,13 +43,41 @@ const run = (file: string, args: string[], cwd: string, env = process.env): Prom
   });
 
 const git = async (args: string[], cwd: string) => {
-  const result = await run(
-    'git',
-    ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
-    cwd,
+  const result = await measure(`git:${args[0] ?? 'unknown'}`, () =>
+    run('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], cwd),
   );
   if (result.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.out}`);
   return result.out.trim();
+};
+
+const fetchOriginMaster = (root: string) =>
+  git(['fetch', '-q', 'origin', '+refs/heads/master:refs/remotes/origin/master'], root);
+
+const publishOriginMaster = async (root: string) => {
+  await git(['push', '-q', 'origin', 'master:master'], root);
+  await fetchOriginMaster(root);
+};
+
+const deleteOriginMaster = async (root: string) => {
+  await git(['push', '-q', 'origin', '--delete', 'master'], root);
+  await git(['update-ref', '-d', 'refs/remotes/origin/master'], root);
+};
+
+const publishDivergentOriginMain = async ({
+  root,
+  baseline,
+}: {
+  root: string;
+  baseline: string;
+}) => {
+  await git(['push', '-q', 'origin', 'master:master', `${baseline}:refs/heads/main`], root);
+  await fetchOriginMaster(root);
+  await git(['fetch', '-q', 'origin', '+refs/heads/main:refs/remotes/origin/main'], root);
+};
+
+const deleteOriginMain = async (root: string) => {
+  await git(['push', '-q', 'origin', '--delete', 'main'], root);
+  await git(['update-ref', '-d', 'refs/remotes/origin/main'], root);
 };
 
 const runVitest = ({
@@ -47,30 +92,32 @@ const runVitest = ({
   trackerEnv?: NodeJS.ProcessEnv;
 }) => {
   const resultName = `${name}.json`;
-  return run(
-    process.execPath,
-    [
-      checkRun,
-      '--name',
-      name,
-      '--vitest-json',
-      resultName,
-      '--',
+  return measure(`check:${name}`, () =>
+    run(
       process.execPath,
-      vitestCli,
-      'run',
-      '--pool=threads',
-      '--maxWorkers=1',
-      '--root',
+      [
+        checkRun,
+        '--name',
+        name,
+        '--vitest-json',
+        resultName,
+        '--',
+        process.execPath,
+        vitestCli,
+        'run',
+        '--pool=threads',
+        '--maxWorkers=1',
+        '--root',
+        root,
+        '--config',
+        path.join(root, 'vitest.config.mjs'),
+        '--reporter=json',
+        '--outputFile',
+        path.join(runDir, resultName),
+      ],
       root,
-      '--config',
-      path.join(root, 'vitest.config.mjs'),
-      '--reporter=json',
-      '--outputFile',
-      path.join(runDir, resultName),
-    ],
-    root,
-    { ...trackerEnv, RIG_RUN_DIR: runDir },
+      { ...trackerEnv, RIG_RUN_DIR: runDir },
+    ),
   );
 };
 
@@ -87,10 +134,12 @@ const record = ({
   check: string;
   trackerEnv?: NodeJS.ProcessEnv;
 }) =>
-  run(process.execPath, [tddEvidence, action, '--ticket', 'RP-306', '--check', check], root, {
-    ...trackerEnv,
-    RIG_RUN_DIR: runDir,
-  });
+  measure(`receipt:${action}:${check}`, () =>
+    run(process.execPath, [tddEvidence, action, '--ticket', 'RP-306', '--check', check], root, {
+      ...trackerEnv,
+      RIG_RUN_DIR: runDir,
+    }),
+  );
 
 const contract = {
   schemaVersion: 1,
@@ -121,9 +170,22 @@ describe('RP-306 portable baseline continuation', () => {
       "export default { test: { include: ['test/**/*.test.ts'], globals: true } };\n",
     );
     await git(['init', '-q', '-b', 'master'], root);
+    await git(['init', '--bare', '-q', path.join(root, 'origin.git')], root);
+    await git(
+      [
+        '--git-dir',
+        path.join(root, 'origin.git'),
+        'symbolic-ref',
+        'HEAD',
+        'refs/heads/fixture-default',
+      ],
+      root,
+    );
     await git(['remote', 'add', 'origin', path.join(root, 'origin.git')], root);
     await git(['add', '.rig/revalidation.json', 'src/feature.ts'], root);
     await git(['commit', '-q', '-m', 'B0 selected work baseline'], root);
+    await git(['push', '-q', '--set-upstream', 'origin', 'master'], root);
+    await fetchOriginMaster(root);
     const baseline = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', '-b', 'feat/RP-306'], root);
 
@@ -232,6 +294,7 @@ describe('RP-306 portable baseline continuation', () => {
     );
     await git(['add', 'src/rp325.ts'], root);
     await git(['commit', '-q', '-m', 'M1 disjoint RP-325 advance'], root);
+    await publishOriginMaster(root);
     const firstDefaultAdvance = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge current master', 'master'], root);
@@ -247,7 +310,6 @@ describe('RP-306 portable baseline continuation', () => {
 
     // The fully-qualified remote default is the only acceptable first refresh
     // target; a same-spelled local tag must not shadow it.
-    await git(['update-ref', 'refs/remotes/origin/master', firstDefaultAdvance], root);
     await git(['tag', '-f', 'origin/master', baseline], root);
 
     const firstRefreshedGreen = await runVitest({
@@ -303,68 +365,59 @@ describe('RP-306 portable baseline continuation', () => {
     );
     await git(['add', 'src/rp350.ts'], root);
     await git(['commit', '-q', '-m', 'M2 disjoint RP-350 advance'], root);
+    await publishOriginMaster(root);
     const secondDefaultAdvance = await git(['rev-parse', 'HEAD'], root);
     await git(['checkout', '-q', 'feat/RP-306'], root);
     await git(['merge', '--no-ff', '-m', 'merge next current master', 'master'], root);
     expect(await git(['rev-parse', 'HEAD^2'], root)).toBe(secondDefaultAdvance);
 
-    // A configured remote with no trustworthy remote target must fail closed:
-    // the local default advance and a local tag are not substitutes for it.
-    await git(['update-ref', '-d', 'refs/remotes/origin/master'], root);
-    const missingDefaultGreen = await runVitest({
+    // This is the one fresh native PASS for the unchanged post-merge source
+    // boundary. The two authority probes below only alter remote refs: they
+    // deliberately reuse this receipt rather than pay three identical Vitest
+    // startups under one 15 s dependent workflow.
+    const secondBoundaryGreen = await runVitest({
       root,
       runDir,
-      name: 'unit-green-missing-default',
+      name: 'unit-green-second-merged-boundary',
       trackerEnv,
     });
-    expect(missingDefaultGreen.code, missingDefaultGreen.out).toBe(0);
+    expect(secondBoundaryGreen.code, secondBoundaryGreen.out).toBe(0);
+
+    // A configured remote with no trustworthy remote target must fail closed:
+    // the local default advance and a local tag are not substitutes for it.
+    await deleteOriginMaster(root);
     const missingDefaultRefresh = await record({
       root,
       runDir,
       action: 'record-green',
-      check: 'unit-green-missing-default',
+      check: 'unit-green-second-merged-boundary',
       trackerEnv,
     });
     expect(missingDefaultRefresh.code, missingDefaultRefresh.out).toBe(1);
     expect(missingDefaultRefresh.out).toMatch(/default|resolve/i);
 
     // Divergent remote candidates remain unsafe when origin/HEAD is absent.
-    await git(['update-ref', 'refs/remotes/origin/master', secondDefaultAdvance], root);
-    await git(['update-ref', 'refs/remotes/origin/main', baseline], root);
-    const ambiguousDefaultGreen = await runVitest({
-      root,
-      runDir,
-      name: 'unit-green-ambiguous-default',
-      trackerEnv,
-    });
-    expect(ambiguousDefaultGreen.code, ambiguousDefaultGreen.out).toBe(0);
+    await publishDivergentOriginMain({ root, baseline });
     const ambiguousDefaultRefresh = await record({
       root,
       runDir,
       action: 'record-green',
-      check: 'unit-green-ambiguous-default',
+      check: 'unit-green-second-merged-boundary',
       trackerEnv,
     });
     expect(ambiguousDefaultRefresh.code, ambiguousDefaultRefresh.out).toBe(1);
     expect(ambiguousDefaultRefresh.out).toMatch(/default|resolve|ambiguous/i);
 
-    await git(['update-ref', '-d', 'refs/remotes/origin/main'], root);
+    await deleteOriginMain(root);
     expect(await git(['rev-parse', 'refs/remotes/origin/master'], root)).toBe(secondDefaultAdvance);
 
-    const secondRefreshedGreen = await runVitest({
-      root,
-      runDir,
-      name: 'unit-green-second-refresh',
-      trackerEnv,
-    });
-    expect(secondRefreshedGreen.code, secondRefreshedGreen.out).toBe(0);
     expect(
       (
         await record({
           root,
           runDir,
           action: 'record-green',
-          check: 'unit-green-second-refresh',
+          check: 'unit-green-second-merged-boundary',
           trackerEnv,
         })
       ).code,
@@ -411,14 +464,17 @@ describe('RP-306 portable baseline continuation', () => {
         terminalClaim.tddEvidence.implementationBoundary.fingerprint,
     });
 
-    const ship = await run(
-      process.execPath,
-      [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
-      root,
-      {
-        ...trackerEnv,
-        RIG_RUN_DIR: await mkdtemp(path.join(tmpdir(), 'tdd-baseline-resume-run-')),
-      },
+    const verificationRunDir = await mkdtemp(path.join(tmpdir(), 'tdd-baseline-resume-run-'));
+    const ship = await measure('verify-ship', () =>
+      run(
+        process.execPath,
+        [tddEvidence, 'verify-ship', '--ticket', 'RP-306', '--base', 'master'],
+        root,
+        {
+          ...trackerEnv,
+          RIG_RUN_DIR: verificationRunDir,
+        },
+      ),
     );
     expect(ship.code, ship.out).toBe(0);
     expect(ship.out).toMatch(/TDD-2|portable/i);
