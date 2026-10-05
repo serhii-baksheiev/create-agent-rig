@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
+import path from 'node:path';
 import { resolveReadableInside } from '../lib/safe-path.js';
 import { readBounded } from './verify.js';
 import type { Harness } from './registry.js';
@@ -56,8 +58,37 @@ export async function findProbityConfig(repoDir: string): Promise<ProbityConfigL
   return unsafe ? { status: 'unsafe' } : { status: 'absent' };
 }
 
-const PROBITY_PACKAGE_JSON_REL = 'node_modules/@nizos/probity/package.json';
+const PROBITY_PACKAGE_DIR_SEGMENTS = ['node_modules', '@nizos', 'probity'] as const;
+const PROBITY_LAUNCHER_REL = 'dist/bin.js';
 const MAX_PROBITY_CHECK_BYTES = 64 * 1024;
+
+/**
+ * The real, in-repository directory for the installed `@nizos/probity`
+ * package. `resolveReadableInside` never follows a symlink, which is right
+ * for most paths this codebase reads but wrong for the ordinary pnpm layout
+ * — `node_modules/@nizos/probity` is itself a symlink into
+ * `node_modules/.pnpm/...` — so this follows exactly that one link, and only
+ * when its target's real path stays inside the repository's own real root.
+ * Every other symlink anywhere else along the way is still refused exactly
+ * as `resolveReadableInside` already refuses it (RP-416 round 2, point 4).
+ */
+async function resolveProbityPackageDir(repoDir: string): Promise<string | undefined> {
+  const rel = PROBITY_PACKAGE_DIR_SEGMENTS.join('/');
+  const direct = await resolveReadableInside(repoDir, rel, 'directory');
+  if (direct.status === 'ok') return direct.path;
+  if (direct.status !== 'unsafe' || direct.reason !== 'symlink') return undefined;
+
+  let repoReal: string;
+  let linkTarget: string;
+  try {
+    repoReal = await realpath(repoDir);
+    linkTarget = await realpath(path.join(repoReal, ...PROBITY_PACKAGE_DIR_SEGMENTS));
+  } catch {
+    return undefined;
+  }
+  if (linkTarget !== repoReal && !linkTarget.startsWith(repoReal + path.sep)) return undefined;
+  return linkTarget;
+}
 
 /**
  * The installed `@nizos/probity` package version, read only from its own
@@ -66,7 +97,9 @@ const MAX_PROBITY_CHECK_BYTES = 64 * 1024;
  * readable, parseable `{ version: string }`.
  */
 export async function readInstalledProbityVersion(repoDir: string): Promise<string | undefined> {
-  const result = await readBounded(repoDir, PROBITY_PACKAGE_JSON_REL, MAX_PROBITY_CHECK_BYTES);
+  const packageDir = await resolveProbityPackageDir(repoDir);
+  if (packageDir === undefined) return undefined;
+  const result = await readBounded(packageDir, 'package.json', MAX_PROBITY_CHECK_BYTES);
   if (result.status !== 'ok') return undefined;
   let text: string;
   try {
@@ -84,6 +117,30 @@ export async function readInstalledProbityVersion(repoDir: string): Promise<stri
   } catch {
     return undefined;
   }
+}
+
+/**
+ * Whether the launcher the gate hook actually spawns
+ * (`node_modules/@nizos/probity/dist/bin.js`) exists — a `package.json` at
+ * the pinned version is not enough on its own (RP-416 round 2, point 5).
+ */
+async function hasProbityLauncherBin(repoDir: string): Promise<boolean> {
+  const packageDir = await resolveProbityPackageDir(repoDir);
+  if (packageDir === undefined) return false;
+  const resolved = await resolveReadableInside(packageDir, PROBITY_LAUNCHER_REL, 'file');
+  return resolved.status === 'ok';
+}
+
+/**
+ * Whether `probity.config.mjs` — Rig's own filename, never whatever
+ * {@link findProbityConfig} happened to find first — still matches the
+ * `configHash` the declaration entry recorded for it. `false` when the file
+ * is absent or unreadable: there is nothing to report drift against.
+ */
+async function probityConfigDrifted(repoDir: string, configHash: string): Promise<boolean> {
+  const result = await readBounded(repoDir, PROBITY_CONFIG_REL, MAX_PROBITY_CHECK_BYTES);
+  if (result.status !== 'ok') return false;
+  return probityConfigHash(result.bytes) !== configHash;
 }
 
 const GATE_MARKER = '.claude/hooks/probity-gate.mjs';
@@ -112,7 +169,12 @@ async function hasGateWiring(repoDir: string, harness: Harness): Promise<boolean
 
 export type ProbityInspectionStatus = 'pass' | 'warn' | 'fail';
 export type ProbityInspectionReason =
-  'config-missing' | 'launcher-missing' | 'version-drift' | 'wiring-missing' | 'wired';
+  | 'config-missing'
+  | 'config-drift'
+  | 'launcher-missing'
+  | 'version-drift'
+  | 'wiring-missing'
+  | 'wired';
 export type ProbityInspection = {
   status: ProbityInspectionStatus;
   reason: ProbityInspectionReason;
@@ -122,18 +184,29 @@ export type ProbityInspection = {
  * Read-only doctor surface for one declared harness. Checked in order of
  * what Probity itself cannot function without: a config file first (it
  * denies every tool action without one, so this is the one `fail`), then
- * the installed launcher, then the pinned version, then this harness's own
- * gate wiring. Never spawns the Probity launcher.
+ * whether that config has drifted from what Rig recorded, then whether the
+ * package is installed, then the pinned version, then this harness's own
+ * gate wiring, then — last, since the gate hook only ever spawns it once
+ * wiring itself is in place — the launcher file the gate actually runs.
+ * Never spawns the Probity launcher and never calls a model.
+ * `configHash`, when given, is the declaration entry's own recorded hash —
+ * threaded in by the caller rather than read here, since only `doctor.ts`
+ * has the parsed declaration.
  */
 export async function inspectProbity(
   repoDir: string,
   harness: Harness,
+  configHash?: string,
 ): Promise<ProbityInspection> {
   const config = await findProbityConfig(repoDir);
   if (config.status !== 'found') return { status: 'fail', reason: 'config-missing' };
+  if (configHash !== undefined && (await probityConfigDrifted(repoDir, configHash)))
+    return { status: 'warn', reason: 'config-drift' };
   const installedVersion = await readInstalledProbityVersion(repoDir);
   if (installedVersion === undefined) return { status: 'warn', reason: 'launcher-missing' };
   if (installedVersion !== PROBITY_VERSION) return { status: 'warn', reason: 'version-drift' };
   if (!(await hasGateWiring(repoDir, harness))) return { status: 'warn', reason: 'wiring-missing' };
+  if (!(await hasProbityLauncherBin(repoDir)))
+    return { status: 'warn', reason: 'launcher-missing' };
   return { status: 'pass', reason: 'wired' };
 }

@@ -10,5 +10,9 @@
   {
     "file": "test/helpers/stub-command.ts",
     "reason": "restore() is synchronous: every caller restores from a finally without awaiting, so it removes the stub directory it created with rmSync under removeFixture's own retry bounds instead of the async helper (RP-348)."
+  },
+  {
+    "file": "packages/cli/test/probity-doctor.test.ts",
+    "reason": "Removes a single symlink created mid-test (node_modules/@nizos/probity) so a second symlink can be written at the same path for the next assertion within the same fixture; removeFixture targets a whole fixture directory, not one link inside a still-live one (RP-416 round 2)."
   }
 ]

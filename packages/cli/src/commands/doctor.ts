@@ -114,6 +114,8 @@ function rigVersionFix(reason: string, versions: { cli: string; repository: stri
 function probityFix(reason: string): string {
   if (reason === 'config-missing')
     return 'Run create-agent-rig setup add probity (or --adopt an existing config) to generate probity.config.mjs.';
+  if (reason === 'config-drift')
+    return 'probity.config.mjs no longer matches the recorded configHash; review the hand edit, or run setup remove probity && setup add probity to regenerate it.';
   if (reason === 'launcher-missing') return `Run npm install -D @nizos/probity@${PROBITY_VERSION}.`;
   if (reason === 'version-drift')
     return `Run npm install -D @nizos/probity@${PROBITY_VERSION} to match the pinned version.`;
@@ -442,8 +444,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       continue;
     }
     if (entry.id === 'probity') {
+      const declared = intent?.entries.find((candidate) => candidate.id === 'probity');
       for (const harness of Object.keys(entry.harnesses) as Harness[]) {
-        const inspection = await inspectProbity(options.cwd, harness);
+        const inspection = await inspectProbity(options.cwd, harness, declared?.configHash);
         checks.push({
           id: `probity:${harness}`,
           status: inspection.status,

@@ -266,6 +266,54 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
     );
   });
 
+  // --- 2c. `probity:<harness>` id, its reasons, and the top-level `probity`
+  // key (RP-416) -------------------------------------------------------------
+  //
+  // "## Doctor" already states, in prose, that per-integration/per-harness
+  // ids such as `<integration>:<harness>` are built from whatever the caller
+  // declared and are excluded from the closed eleven-id table — but it never
+  // literally names `probity:<harness>` itself, nor any of the six reasons
+  // `inspectProbity` can return (five today, plus `config-drift` once round 2
+  // lands), nor the top-level `probity` summary key's own two states. A
+  // developer reading "## Doctor" has no way to find any of them without
+  // reading `probity.ts`.
+  //
+  // `wired` is deliberately NOT in this list: it already appears in "## Doctor"
+  // for the unrelated MCP-wiring vocabulary ("`wired`, `absent`, `drifted`,
+  // `foreign`, and `unreadable`"), so asserting it here would pass today for a
+  // reason that has nothing to do with probity — not a meaningful red.
+
+  describe('"## Doctor" documents the probity:<harness> check, its reasons, and the top-level probity key (RP-416)', () => {
+    const PROBITY_REASONS = [
+      'config-missing',
+      'config-drift',
+      'launcher-missing',
+      'version-drift',
+      'wiring-missing',
+    ];
+
+    it('names `probity:<harness>` in backtick code in "## Doctor"', async () => {
+      const doctorSection = section(await loadContract(), /^##\s+Doctor\b/);
+      expect(codeSpans(doctorSection).has('probity:<harness>')).toBe(true);
+    });
+
+    it.each(PROBITY_REASONS)(
+      'names the %s reason in backtick code in "## Doctor"',
+      async (reason) => {
+        const doctorSection = section(await loadContract(), /^##\s+Doctor\b/);
+        expect(codeSpans(doctorSection).has(reason)).toBe(true);
+      },
+    );
+
+    it('names the top-level `probity` key and its `not-configured`/`configured` states in "## Doctor"', async () => {
+      const doctorSection = section(await loadContract(), /^##\s+Doctor\b/);
+      const spans = codeSpans(doctorSection);
+      expect(spans.has('probity')).toBe(true);
+      expect(spans.has('not-configured')).toBe(true);
+      expect(spans.has('configured')).toBe(true);
+    });
+  });
+
   // --- 3. `setup add`/`apply`/`remove` --json `outcome` values --------------
   //
   // Observed empirically (four real `runIntegrationsCommand` calls) rather
