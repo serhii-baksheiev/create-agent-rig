@@ -384,9 +384,10 @@ model to answer any of these:
 
 - `config-missing` — no recognised `probity.config.{ts,mts,js,mjs}` file
   exists at the repository root; `fail`.
-- `config-drift` — the declaration entry's recorded `configHash` no longer
-  matches `probity.config.mjs`'s own bytes on disk (hand-edited since Rig
-  generated it); `warn`.
+- `config-drift` — every check below passes, but the declaration entry's
+  recorded `configHash` no longer matches `probity.config.mjs`'s own bytes
+  on disk (hand-edited since Rig generated it); `warn`. `setup add probity
+--adopt` keeps the edit and drops the hash.
 - `launcher-missing` — either `@nizos/probity` is not installed at all, or
   `node_modules/@nizos/probity/dist/bin.js` — the file the gate hook actually
   spawns — is absent even though the package's own `package.json` is
@@ -395,7 +396,8 @@ model to answer any of these:
   other than the pinned `1.10.1`; `warn`.
 - `wiring-missing` — this harness's own hook-wiring file
   (`.claude/settings.json` for Claude Code, `.codex/hooks.json` for Codex)
-  carries no `PreToolUse` command naming the Probity gate hook; `warn`.
+  does not name the Probity gate hook `.claude/hooks/probity-gate.mjs`;
+  `warn`.
 - `wired` — every check above passed; `ok`.
 
 The aggregate report also carries a top-level `probity` key, independent of
@@ -1707,18 +1709,17 @@ Rig-generated `probity.config.mjs` (`enforceTdd()`, scoped to `src/**`,
 the declaration entry — the version is pinned at `1.10.1` and a different
 `--version` is refused. Rig never runs `npm install` or the Probity launcher
 itself; the plan names `npm install -D @nizos/probity@1.10.1` as a manual
-next step. A pre-existing `probity.config.{ts,mts,js,mjs}` is refused unless
-`--adopt` is given — unless it is `probity.config.mjs` itself and its bytes
-already match the entry's own recorded `configHash`, in which case `add` (and
-a plain `apply`) is idempotent over it: nothing is refused, nothing is
-rewritten, and adding a new harness only extends `harnesses` on the existing
-entry. Adopting with `--adopt` leaves the file byte-identical and the
-declaration entry carries no `configHash` — Rig never hashes a file it did
-not write. `setup remove probity` deletes `probity.config.mjs` only when its
-own bytes still match the recorded `configHash`; every other case — a
-hand-edited `probity.config.mjs`, an adopted config, or any other recognised
-filename found alongside it — is left untouched and named in the JSON
-result's `probityConfigKept` field instead. Wiring the gate hook into
+next step. On a first `add`, a pre-existing `probity.config.{ts,mts,js,mjs}`
+is refused unless `--adopt` is given. Once the declaration carries a
+`probity` entry, `add` and `apply` keep whatever config exists exactly as it
+is — nothing is refused or rewritten, and adding a harness only extends
+`harnesses`. Adopting with `--adopt` leaves the file byte-identical and the
+declaration entry carries no `configHash`; adopting an edited copy of Rig's
+own config is how its ownership passes to the user. `setup remove probity`
+deletes `probity.config.mjs` only when its own bytes still match the recorded
+`configHash`; a hand-edited `probity.config.mjs` or an adopted config is kept
+and named in the JSON result's `probityConfigKept` field. Rig never deletes
+or rewrites any other recognised filename. Wiring the gate hook into
 `.claude/settings.json` or `.codex/hooks.json` is a separate slice's concern
 — `setup` never edits either file for Probity.
 

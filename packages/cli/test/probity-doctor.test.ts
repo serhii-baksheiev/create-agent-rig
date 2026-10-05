@@ -254,6 +254,29 @@ describe('doctor: probity (RP-416)', () => {
     );
   });
 
+  it('reports an operational problem ahead of config-drift: a drifted config with no launcher is launcher-missing', async () => {
+    const original = Buffer.from(PROBITY_CONFIG_TEXT);
+    const configHash = createHash('sha256').update(original).digest('hex');
+    await writeDeclaration([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true, configHash },
+    ]);
+    await writeFile(
+      path.join(repo, 'probity.config.mjs'),
+      Buffer.concat([original, Buffer.from('// hand-edited after Rig generated it\n')]),
+    );
+    await writeWiring('claude-code', true);
+
+    const { body: report } = await body();
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        id: 'probity:claude-code',
+        status: 'warn',
+        reason: 'launcher-missing',
+      }),
+    );
+  });
+
   // RP-416 round 2, point 5: the gate hook spawns `dist/bin.js` directly, but
   // `readInstalledProbityVersion` only ever reads `package.json` — a
   // package.json present at the pinned version with no `dist/bin.js` at all

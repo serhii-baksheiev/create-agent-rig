@@ -67,10 +67,9 @@ const MAX_PROBITY_CHECK_BYTES = 64 * 1024;
  * package. `resolveReadableInside` never follows a symlink, which is right
  * for most paths this codebase reads but wrong for the ordinary pnpm layout
  * — `node_modules/@nizos/probity` is itself a symlink into
- * `node_modules/.pnpm/...` — so this follows exactly that one link, and only
- * when its target's real path stays inside the repository's own real root.
- * Every other symlink anywhere else along the way is still refused exactly
- * as `resolveReadableInside` already refuses it (RP-416 round 2, point 4).
+ * `node_modules/.pnpm/...` — so this takes the package directory's real path
+ * and accepts it only when that path stays inside the repository's own real
+ * root (RP-416 round 2, point 4).
  */
 async function resolveProbityPackageDir(repoDir: string): Promise<string | undefined> {
   const rel = PROBITY_PACKAGE_DIR_SEGMENTS.join('/');
@@ -184,10 +183,9 @@ export type ProbityInspection = {
  * Read-only doctor surface for one declared harness. Checked in order of
  * what Probity itself cannot function without: a config file first (it
  * denies every tool action without one, so this is the one `fail`), then
- * whether that config has drifted from what Rig recorded, then whether the
- * package is installed, then the pinned version, then this harness's own
- * gate wiring, then — last, since the gate hook only ever spawns it once
- * wiring itself is in place — the launcher file the gate actually runs.
+ * whether the package is installed, then the pinned version, then this
+ * harness's own gate wiring, then the launcher file the gate actually runs,
+ * and only then whether Rig's generated config has been edited since.
  * Never spawns the Probity launcher and never calls a model.
  * `configHash`, when given, is the declaration entry's own recorded hash —
  * threaded in by the caller rather than read here, since only `doctor.ts`
@@ -200,13 +198,13 @@ export async function inspectProbity(
 ): Promise<ProbityInspection> {
   const config = await findProbityConfig(repoDir);
   if (config.status !== 'found') return { status: 'fail', reason: 'config-missing' };
-  if (configHash !== undefined && (await probityConfigDrifted(repoDir, configHash)))
-    return { status: 'warn', reason: 'config-drift' };
   const installedVersion = await readInstalledProbityVersion(repoDir);
   if (installedVersion === undefined) return { status: 'warn', reason: 'launcher-missing' };
   if (installedVersion !== PROBITY_VERSION) return { status: 'warn', reason: 'version-drift' };
   if (!(await hasGateWiring(repoDir, harness))) return { status: 'warn', reason: 'wiring-missing' };
   if (!(await hasProbityLauncherBin(repoDir)))
     return { status: 'warn', reason: 'launcher-missing' };
+  if (configHash !== undefined && (await probityConfigDrifted(repoDir, configHash)))
+    return { status: 'warn', reason: 'config-drift' };
   return { status: 'pass', reason: 'wired' };
 }

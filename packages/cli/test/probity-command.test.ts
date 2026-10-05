@@ -330,6 +330,74 @@ describe('setup apply probity (idempotent over a Rig-owned, hash-matching config
   );
 });
 
+describe('setup add/apply probity over a config the declaration already records as not Rig-owned', () => {
+  const add = (args: string[]) =>
+    runIntegrationsCommand({ cwd: repo, verb: 'add', args, isTTY: false });
+  const apply = () =>
+    runIntegrationsCommand({ cwd: repo, verb: 'apply', args: ['--yes', '--json'], isTTY: false });
+  const declarationText = () => readFile(declarationPath(), 'utf8');
+
+  it('setup apply after add --adopt succeeds and changes nothing', async () => {
+    const tsConfigPath = path.join(repo, 'probity.config.ts');
+    await writeFile(tsConfigPath, 'export default {}\n');
+    const adopted = await add([PROBITY, '--harness', 'claude-code', '--adopt', '--yes', '--json']);
+    expect(adopted.exitCode, adopted.stderr).toBe(0);
+    const before = await declarationText();
+
+    const result = await apply();
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(await declarationText()).toBe(before);
+    expect(await readFile(tsConfigPath, 'utf8')).toBe('export default {}\n');
+  });
+
+  it("setup apply after Rig's generated config was hand-edited succeeds without rewriting it", async () => {
+    const added = await add([PROBITY, '--harness', 'claude-code', '--yes', '--json']);
+    expect(added.exitCode, added.stderr).toBe(0);
+    const edited = `${await readFile(mjsConfigPath(), 'utf8')}// mine\n`;
+    await writeFile(mjsConfigPath(), edited);
+    const before = await declarationText();
+
+    const result = await apply();
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(await readFile(mjsConfigPath(), 'utf8')).toBe(edited);
+    expect(await declarationText()).toBe(before);
+  });
+
+  it('a repeated add for another harness after add --adopt needs no second --adopt and leaves the config alone', async () => {
+    const tsConfigPath = path.join(repo, 'probity.config.ts');
+    await writeFile(tsConfigPath, 'export default {}\n');
+    const adopted = await add([PROBITY, '--harness', 'claude-code', '--adopt', '--yes', '--json']);
+    expect(adopted.exitCode, adopted.stderr).toBe(0);
+
+    const result = await add([PROBITY, '--harness', 'codex', '--yes', '--json']);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const declaration = JSON.parse(await declarationText());
+    expect(declaration.integrations).toEqual([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code', 'codex'], selected: true },
+    ]);
+    expect(await readFile(tsConfigPath, 'utf8')).toBe('export default {}\n');
+  });
+
+  it("add --adopt over Rig's hand-edited config takes ownership: the entry loses its configHash", async () => {
+    const added = await add([PROBITY, '--harness', 'claude-code', '--yes', '--json']);
+    expect(added.exitCode, added.stderr).toBe(0);
+    const edited = `${await readFile(mjsConfigPath(), 'utf8')}// mine\n`;
+    await writeFile(mjsConfigPath(), edited);
+
+    const result = await add([PROBITY, '--harness', 'claude-code', '--adopt', '--yes', '--json']);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const declaration = JSON.parse(await declarationText());
+    expect(declaration.integrations).toEqual([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true },
+    ]);
+    expect(await readFile(mjsConfigPath(), 'utf8')).toBe(edited);
+  });
+});
+
 describe('setup remove probity', () => {
   it('removes a well-formed installation: deletes the declaration entry and the generated config file', async () => {
     const configBytes = Buffer.from(
