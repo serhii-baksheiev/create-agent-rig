@@ -91,7 +91,9 @@ contract is removed or renamed.
   descendant-process cleanup (RP-359), the nested vitest probe's scrubbed
   environment (RP-395), platform-aware admin-share evidence (RP-365), and
   about half the spawns in one revalidation test case, with two case budgets
-  named rather than changed (RP-319).
+  named rather than changed (RP-319); and the Windows e2e harness runs pnpm
+  11's own `bin/pnpm.mjs` instead of falling through to a Corepack download
+  of the latest pnpm (RP-414).
 
 ## 1.2.0
 
