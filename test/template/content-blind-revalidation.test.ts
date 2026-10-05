@@ -319,10 +319,9 @@ const claimThroughJiraAdapter = async (p: Project) => {
 /**
  * RP-409 — posts a comment through the real `comment(ticket, body)` export
  * of `queue/jira.mjs`, against a tiny stateful stub rather than through
- * `p.setIssue()`. The stub answers the POST with the same comment id the
- * caller then threads into `p.setIssue()`, so the fixture reflects what the
- * live tracker would show after this exact write — never an id invented
- * independently of what the adapter's own request produced.
+ * `p.setIssue()`, with the run directory set so the adapter's own
+ * post-write re-recording runs. The stub answers the POST with the comment id
+ * the caller then threads into `p.setIssue()`.
  */
 const commentThroughJiraAdapter = async (
   p: Project,
@@ -366,6 +365,7 @@ const commentThroughJiraAdapter = async (
           JIRA_BASE_URL: 'https://example.invalid',
           JIRA_EMAIL: 'a@b.c',
           JIRA_API_TOKEN: 'x',
+          RIG_RUN_DIR: ${JSON.stringify(p.runDir)},
         },
       },
     );
