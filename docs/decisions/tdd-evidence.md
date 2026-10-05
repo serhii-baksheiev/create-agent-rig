@@ -1,5 +1,17 @@
 # Mechanical TDD evidence
 
+⚠ **This record is not synced.** It is authored here and stays here, like
+`agent-roles-1.0.md` and `memory-rig-boundary.md` beside it.
+
+Status: retired 2026-10-04 by the owner's scope correction RP-398 — the
+Mechanical TDD evidence contract this record describes was removed from the
+1.2.0 release contract before it shipped; TDD enforcement moves to upstream
+Probity (RP-399). The shipped mechanism — `tdd-evidence.mjs`,
+`lib/tdd-evidence.mjs`, the `pr-ship` `verify-ship` step and its tests — was
+deleted along with this change; git history before this change has them. The
+body below is kept unchanged as the record of the experiment, including
+its original `Status: accepted` line, which no longer holds.
+
 Status: accepted
 
 ## Decision
@@ -88,6 +100,16 @@ activation merge commit in the tracker and release ledger.
 Every subsequent ticketed behavior change is subject to the new verifier.
 There is no bootstrap exception in the installed verifier.
 
+RP-370 is the second trust-root change, under the same rule: it adds the
+same-baseline refinement transition to the recorder that must attest it.
+Its RED and GREEN are recorded by the accepted pre-change recorder, never by
+the repaired one, so no portable TDD-2 is self-attested by the repair; if its
+production changes after that GREEN, its final head carries observed check
+evidence, not a refreshed portable claim. Its PR verdict names the reviewed
+HEAD and states this. After merge, record the activation merge commit in the
+tracker and release ledger. From that commit on the repaired contract applies
+to every ticketed change, with no inherited exemption.
+
 ## Recording a TDD-2 item
 
 Before RED, the selected tracker item's description must contain exactly one
@@ -122,6 +144,30 @@ chain with a bounded, fingerprinted refresh transition. Commit the claim with
 the work. The `pr-ship` verifier reads the claim
 from branch `HEAD`, compares it with the current tracker and final Git diff,
 and records compact evidence fingerprints in the run journal.
+When the relevant specification is unchanged, a fresh GREEN may replace a
+completed TDD-2 chain after an implementation refinement. With an `origin`
+remote configured, the recorder reads the live default with one bounded query:
+the branch origin advertises as `HEAD`, or else exactly one of
+`refs/heads/master` and `refs/heads/main`, matched by exact name. It does not
+alter a remote-tracking cache, and a missing or ambiguous answer refuses. With
+no `origin` URL there is no live authority to ask, so the recorder uses the
+default the claim baseline itself resolves from local refs, as before. These
+three cases are pinned in `test/template/tdd-green-refinement-authority.test.ts` (absent in a generated rig)
+› "records a merged-default refresh when origin's default branch is main",
+› "does not treat a branch named x/refs/heads/master as a second default" and
+› "records a merged-default refresh in a repository with no origin remote".
+If the live default has advanced, a pre-import refinement
+is eligible only when it remains uncommitted and the committed boundary still
+matches the retained evidence. The replacement must have a different production
+delta, retain the original RED and relevant test bytes, and append a bounded
+same-baseline transition. The transition is pinned in
+`test/template/tdd-green-same-baseline-refinement.test.ts` (absent in a generated rig)
+› "records a fresh same-baseline GREEN after an owned source refinement while
+retaining the prior evidence". After a validated merged-default refresh, a later
+refinement's production delta is measured from that imported default rather than
+from the selected baseline, so default-branch work is never attributed to the
+item: `test/template/tdd-green-refinement-authority.test.ts` (absent in a generated rig)
+› "keeps a later correction boundary relative to the validated merged default (%s correction)".
 If the relevant test file changes, run the changed test while failing and call
 `record-red` again before recording GREEN. The new RED must keep the same file
 and full test name with a different file hash. The recorder keeps the prior

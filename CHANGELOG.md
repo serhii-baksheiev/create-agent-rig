@@ -14,6 +14,109 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## 1.2.0 (release candidate)
+
+**1.2.0 is additive on the 1.1 line.** It ships Parallel Workflows: Spec
+Kit's `tasks.md` projects into GitHub Issues as a dependency-aware queue, the
+`loop` skill's claim/close lifecycle keeps a projected issue open through
+Rig's own `BEFORE_CLOSE` gate instead of letting a non-Rig close race it, the
+Jira queue adapter's comment-history hydration is bounded and scoped to the
+one ticket that fails rather than the whole board, and a frozen,
+unpublished release candidate can be preflighted against its own frozen refs
+independently of where `origin/master` has since moved. It also withdraws
+the experimental Mechanical TDD evidence contract before any published rig
+ever installed it. Nothing in the 1.1 contract is removed or renamed.
+
+### Added
+
+- **Parallel Workflows: Spec Kit's `tasks.md` projects into GitHub Issues as
+  a dependency-aware queue.**
+  `node .claude/scripts/queue/index.mjs import spec-kit --to github-issues --tasks <file>`
+  (workflow layer) recognises checklist tasks carrying an ID and title, reads
+  an explicit `(depends on T001)` suffix as a dependency, and writes each as
+  a `rig-spec-kit`-labelled issue with its own identity marker and
+  `Blocked by #<issue>` lines the GitHub Issues queue already understands;
+  `--dry-run` reports creates/updates/unchanged without writing anything.
+  Required lifecycle labels (`in-progress`, `escalated`, `triage`) are
+  provisioned on import when absent, idempotently, and an empty label list is
+  handled rather than refused. Malformed IDs, duplicate or unknown
+  dependencies, cycles and ambiguous existing projections are refused before
+  any issue write. See `docs/parallel-workflows.md` (RP-275, RP-277, RP-327,
+  RP-329).
+
+- **The `loop` skill references a projected GitHub issue non-closingly, so
+  Rig's own `BEFORE_CLOSE` gate — not a merge — is what closes it.** PR
+  descriptions and squash commits now say `Refs #<issue>` rather than
+  `Closes #<issue>`; GitHub no longer auto-closes the issue the moment the PR
+  merges, so the claim/close lifecycle and the adapter's own close ordering
+  remain the thing that actually closes it (RP-330).
+
+- **A frozen, unpublished release candidate can be preflighted against its
+  own frozen refs, independently of where `origin/master` has since
+  moved.** `node scripts/release-preflight.mjs --frozen-candidate <sha>`
+  requires HEAD to be exactly that sha, requires the fully-qualified
+  `refs/remotes/origin/release/<version>-rc` to resolve to that same sha, and
+  requires the sha to still be an ancestor of `origin/master`; any git finding
+  in this mode stops before `npm pack` is ever reached. See
+  `docs/releasing.md`, "Preflighting a frozen, unpublished release candidate"
+  (RP-353).
+
+### Fixed
+
+- **The Jira queue adapter's per-ticket comment hydration no longer fails
+  selection for the whole board over one ticket's bad read.** A comment-page
+  error, an oversized page, or the shared selection byte/time budget running
+  out now leaves only that ticket's comment window incomplete
+  (`UNVERIFIABLE` for that item alone) instead of throwing out of
+  `listEligible` and reporting `queue-unreadable` for every item. Hydration
+  also now finishes correctly against Jira Cloud's real comment-endpoint page
+  shape — it carries a declared `total`, never the `isLast` flag the fixtures
+  had invented — and every byte read, including bytes read before a
+  mid-stream error, is charged to the shared budget exactly once (RP-368).
+
+- **The Jira queue adapter fails closed, rather than reporting a false empty
+  queue, when it cannot confirm it is allowed to see the configured
+  project.** A genuinely empty live search now also asks Jira for
+  `BROWSE_PROJECTS` permission on that project; an unconfirmed permission
+  refuses the read instead of being indistinguishable from "there is no
+  ready work" (RP-325).
+
+- **`plan-md` refuses a configured `options.scope` instead of silently
+  treating its label-less items as out-of-scope.** PLAN.md items carry no
+  release labels, so a tracker-backed scope can no longer select against an
+  adapter that cannot express one; a board's own `"scope": null` still
+  overrides a shared `options.scope` to select unscoped. PLAN.md also gains
+  two scheduling markers, `[frozen]` and `[later]`, read as `parked` without
+  setting a lifecycle, each keeping its own item-level deferral reason rather
+  than needing a human to un-park it the way `parked` does. The `loop`
+  skill's stop line now says to change the declared scope, not wait on a
+  human, when only out-of-scope items remain (RP-286, RP-326).
+
+- **A claim's remote default is resolved through unambiguous, fully-qualified
+  refs instead of bare branch names.** `targetShaOf` resolves `origin/HEAD`
+  first, then falls back to `origin/master` or `origin/main`, refusing when
+  those two disagree; local `master`/`main` are used only when no `origin`
+  remote is configured at all. When a configured `origin` has no usable
+  remote default, `SELECT` now refuses with an `UNVERIFIABLE` revalidation
+  result before creating any claim — no claim record is written — instead of
+  proceeding with no resolvable target (RP-358).
+
+### Removed
+
+- **The experimental Mechanical TDD evidence contract is withdrawn before any
+  published rig ever installed it.** `tdd-evidence.mjs`, `lib/tdd-evidence.mjs`,
+  the git-diff fingerprinting and portable-claim verification built for it
+  (RP-305, RP-306, RP-336, RP-350, RP-352, RP-360, RP-361, RP-362,
+  RP-364, RP-370), and the `pr-ship` step that ran and held on it, all leave
+  the shipped template and the workflow layer in this same release — they
+  landed after 1.1.1 and reached no published version. `check-run.mjs` drops
+  the `--vitest-json` structured result and git-diff capture that were this
+  gate's only consumer, returning to its 1.1.1 behaviour. Ordinary TDD
+  discipline (a failing test first, `test-writer` then
+  `implementation-agent`) is unchanged; specialised TDD enforcement is
+  expected to move to an upstream, opt-in provider in a later release
+  (RP-398).
+
 ## 1.1.1
 
 **1.1.1 is a corrective hardening patch on the 1.1 line.** It closes fail-open
@@ -2326,6 +2429,15 @@ sometimes earlier (step 6). Everything before that is mechanical:
    node scripts/build-hash-history.mjs             # rebuilds the table from it
    ```
 
+   In the same change, record that release's published `dist.integrity` and
+   `dist.shasum` in `scripts/release-predecessor-integrity.json`, checked
+   against the downloaded tarball bytes rather than trusted from the registry
+   response alone:
+
+   ```sh
+   npm view create-agent-rig@<previous> dist.integrity dist.shasum
+   ```
+
    The builder reads every `## X.Y.Z` this file lists below the version in
    `package.json` and **refuses, naming the version and that command**, when
    the ledger has no entry for one — it never drops a release silently, since a
@@ -2336,6 +2448,18 @@ sometimes earlier (step 6). Everything before that is mechanical:
    `test/template/hash-history.test.ts` › "throws for a released version the
    ledger does not mention, naming the version and the npm command" and ›
    "points at a commit whose package.json carries that version".
+
+   A heading can also read `## X.Y.Z (release candidate)`: that version has
+   been accepted and frozen for publication but is not yet published — no
+   ledger row and no hash-history entry for it until the owner actually
+   publishes. After publication, reconcile the heading back to the plain
+   `## X.Y.Z` form and write the ledger row at the **next** release, as step 4
+   above already does. `node scripts/build-hash-history.mjs` refuses to run
+   when a candidate heading is left on any version other than the one
+   currently being prepared, naming the stale version — reconciliation was
+   forgotten, not still pending. Pinned in `test/template/hash-history.test.ts`
+   › "throws, naming the stale version, for a candidate heading on a version
+   other than the one being prepared".
 
 5. This file, and `PLAN.md` if the plan's claims changed.
 6. **`pnpm test` again — this run, not step 1, is the one that can catch a
@@ -2364,6 +2488,12 @@ sometimes earlier (step 6). Everything before that is mechanical:
    would actually produce. What it looks at is the code, not this list; what it
    cannot see is stated in its own header. It is a preflight, not a gate —
    nothing runs it for you, and exit 0 is not a verdict on the release.
+
+   A release candidate frozen under `release/<version>-rc` while
+   `origin/master` has since moved on preflights with
+   `node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>`
+   instead — see `docs/releasing.md`, "Preflighting a frozen, unpublished
+   release candidate".
 
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and

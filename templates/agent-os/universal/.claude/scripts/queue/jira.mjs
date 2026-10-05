@@ -64,6 +64,45 @@ const assigneeIdOf = (assignee) => {
     : UNREADABLE_ASSIGNEE;
 };
 
+/**
+ * The stringified comment ids a `fields.comment` carries — `[]` when
+ * `comments` is absent or not an array. Shared by `toTicket` and
+ * `inlineCommentaryIsComplete` so the two never disagree about the same ids.
+ */
+const commentaryIdsOf = (comment) =>
+  Array.isArray(comment?.comments)
+    ? comment.comments
+        .map((entry) => entry?.id)
+        .filter((id) => id !== undefined && id !== null)
+        .map(String)
+    : [];
+
+/**
+ * Whether a `fields.comment` is trustworthy enough to report as a COMPLETE
+ * commentary set. An ABSENT field is vacuously complete — there is nothing to
+ * doubt. A PRESENT field is complete only when `total` is a non-negative safe
+ * integer, `comments` is an array, every id is unique, and the id count equals
+ * `total`; anything else (a missing, non-numeric or fractional `total`, a
+ * non-array `comments`) is reported incomplete rather than silently falling
+ * back to `comments.length` the way the count below still does. One rule, one
+ * implementation: `toTicket`'s `commentary.complete` and
+ * `inlineCommentaryIsComplete` (which decides whether hydration is needed at
+ * all) both call this, so they cannot drift apart (`invariants.md`: one
+ * mechanism, one implementation). Pinned in
+ * `test/template/queue-jira.test.ts` (absent in a generated rig) ›
+ * "reports complete: false for a present comment field whose $name" and ›
+ * "keeps the empty, complete commentary set when the issue carries no comment
+ * field at all".
+ */
+const commentaryIsComplete = (comment) => {
+  if (!comment) return true;
+  if (!Number.isSafeInteger(comment.total) || comment.total < 0 || !Array.isArray(comment.comments)) {
+    return false;
+  }
+  const ids = commentaryIdsOf(comment);
+  return ids.length === comment.total && new Set(ids).size === ids.length;
+};
+
 /** Jira timestamps use +0000 rather than Z; normalise so string compare sorts right. */
 const toIso = (created) => {
   if (!created) return null;
@@ -100,10 +139,7 @@ export const toTicket = (issue) => {
   const links = fields.issuelinks ?? [];
   const category = statusCategory(fields);
   const comments = Array.isArray(fields.comment?.comments) ? fields.comment.comments : [];
-  const commentaryIds = comments
-    .map((comment) => comment?.id)
-    .filter((id) => id !== undefined && id !== null)
-    .map(String);
+  const commentaryIds = commentaryIdsOf(fields.comment);
   const commentaryCount = Number.isInteger(fields.comment?.total)
     ? fields.comment.total
     : comments.length;
@@ -156,12 +192,15 @@ export const toTicket = (issue) => {
     commentary: {
       count: commentaryCount,
       ids: commentaryIds,
-      // Jira may return only the first page while still declaring the total.
-      // A partial set cannot truthfully fingerprint commentary; the shared
-      // claim resolver turns this explicit false into UNVERIFIABLE.
-      complete:
-        commentaryIds.length === commentaryCount &&
-        new Set(commentaryIds).size === commentaryIds.length,
+      // Jira may return only the first page while still declaring the total,
+      // or the inline field itself may be malformed (a missing, non-numeric
+      // or fractional `total`, a non-array `comments`). Either way a partial
+      // or untrustworthy set cannot truthfully fingerprint commentary; the
+      // shared claim resolver turns this explicit false into UNVERIFIABLE.
+      // `commentaryIsComplete` is the one predicate both this mapper and
+      // `inlineCommentaryIsComplete` (below, deciding whether to hydrate)
+      // read, so neither can trust a shape the other already refused.
+      complete: commentaryIsComplete(fields.comment),
     },
     triage: labels.includes('triage'),
     trigger: labels.includes('trigger-auto')
@@ -307,6 +346,73 @@ const MAX_ATTEMPTS = 4;
 const DEFAULT_TIMEOUT_MS = 20_000;
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const readTextWithinByteLimit = async (response, byteLimit, method, route, responseByteBudget = null) => {
+  const reader = response.body?.getReader?.();
+  if (!reader) {
+    throw new Error(`jira ${method} ${route} has no readable response body for its byte budget`);
+  }
+
+  const chunks = [];
+  let bytes = 0;
+  let cancelled = false;
+  const cancel = (reason) => {
+    cancelled = true;
+    try {
+      void reader.cancel(reason).catch(() => {});
+    } catch {
+      // The stream has already terminated.
+    }
+  };
+  // Each chunk is charged to the shared budget as it is read, so no way this
+  // read ends (overflow, stream error, success) leaves read bytes uncharged.
+  // Pinned in test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+  // "charges the bytes read before a mid-stream error to the shared byte
+  // budget, so later truncated tickets send no request once it is spent".
+  const overflow = (message) => {
+    cancel();
+    throw new Error(message);
+  };
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (responseByteBudget) responseByteBudget.remaining -= value.byteLength;
+      const remainingBytes = byteLimit - bytes;
+      if (value.byteLength > remainingBytes) {
+        overflow(`jira ${method} ${route} exceeded its response byte budget`);
+      }
+      if (value.byteLength === remainingBytes) {
+        overflow(`jira ${method} ${route} reached its response byte budget`);
+      }
+      const chunk = Buffer.from(value);
+      chunks.push(chunk);
+      bytes += chunk.byteLength;
+    }
+  } catch (error) {
+    if (!cancelled) {
+      try {
+        await reader.cancel(error);
+      } catch {
+        // The response already ended or was cancelled above.
+      }
+    }
+    throw error;
+  }
+  return { text: Buffer.concat(chunks, bytes).toString('utf8'), bytes };
+};
+
+// Commentary contributes to the claim fingerprint, so an incomplete inline
+// window must be replaced with Jira's authoritative comment feed before the
+// existing pure mapper sees it. Pinned in
+// test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+// "hydrates every comment before mapping a listed Jira issue while preserving
+// authoritative completeness".
+const COMMENT_PAGE_SIZE = 20;
+const MAX_COMMENT_RECORDS = 1000;
+const MAX_COMMENT_PAGES = 50;
+const MAX_COMMENT_BYTES = 1024 * 1024;
+const COMMENT_HYDRATION_TIMEOUT_MS = DEFAULT_TIMEOUT_MS;
+
 /**
  * The wait before the next attempt: `Retry-After` in seconds when the server
  * names one, otherwise 500 ms doubling per attempt. Bounded by the attempt cap.
@@ -354,13 +460,29 @@ const request = async (
     timeoutMs = DEFAULT_TIMEOUT_MS,
     retry = {},
     retryTransient = method === 'GET',
+    deadlineAt = null,
+    maxResponseBytes = null,
+    responseByteBudget = null,
   } = {},
 ) => {
   const { baseUrl, email, token } = requireCredentials(env);
   const sleep = retry.sleep ?? defaultSleep;
   for (let attempt = 1; ; attempt += 1) {
+    const remainingMs = deadlineAt === null ? timeoutMs : deadlineAt - Date.now();
+    if (!Number.isFinite(remainingMs) || remainingMs <= 0) {
+      throw new Error(`jira ${method} ${route} timed out before its total operation budget elapsed`);
+    }
+    const requestTimeoutMs = Math.min(timeoutMs, remainingMs);
+    const remainingBytes = responseByteBudget?.remaining ?? maxResponseBytes;
+    const byteLimit =
+      maxResponseBytes === null && remainingBytes === null
+        ? null
+        : Math.min(maxResponseBytes ?? Infinity, remainingBytes ?? Infinity);
+    if (byteLimit !== null && (!Number.isFinite(byteLimit) || byteLimit <= 0)) {
+      throw new Error(`jira ${method} ${route} exceeded its response byte budget before the request`);
+    }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const timer = setTimeout(() => controller.abort(), requestTimeoutMs);
     let response;
     let payload = null;
     try {
@@ -377,10 +499,32 @@ const request = async (
       // The body is read INSIDE the timed region: headers can arrive and the
       // body then stall, which is the same hung connection with a 200 on it
       // (› "keeps the timeout armed while the body is read").
-      if (response.ok && response.status !== 204) payload = await response.json();
+      if (response.ok && response.status !== 204) {
+        const contentLength = response.headers?.get?.('Content-Length') ?? null;
+        const declaredBytes = contentLength === null ? null : Number(contentLength);
+        if (
+          byteLimit !== null &&
+          declaredBytes !== null &&
+          (!Number.isSafeInteger(declaredBytes) || declaredBytes < 0 || declaredBytes > byteLimit)
+        ) {
+          throw new Error(`jira ${method} ${route} exceeded its response byte budget`);
+        }
+        if (byteLimit === null) {
+          payload = await response.json();
+        } else {
+          const { text } = await readTextWithinByteLimit(
+            response,
+            byteLimit,
+            method,
+            route,
+            responseByteBudget,
+          );
+          payload = JSON.parse(text);
+        }
+      }
     } catch (error) {
       if (error?.name === 'AbortError' || controller.signal.aborted) {
-        throw new Error(`jira ${method} ${route} timed out after ${timeoutMs} ms`, { cause: error });
+        throw new Error(`jira ${method} ${route} timed out after ${requestTimeoutMs} ms`, { cause: error });
       }
       throw error;
     } finally {
@@ -389,7 +533,12 @@ const request = async (
     if (response.ok) return payload;
     const retryable = retryTransient && TRANSIENT.has(response.status);
     if (retryable && attempt < MAX_ATTEMPTS) {
-      await sleep(retryDelayMs(response, attempt));
+      const delay = retryDelayMs(response, attempt);
+      const remaining = deadlineAt === null ? delay : deadlineAt - Date.now();
+      if (!Number.isFinite(remaining) || remaining <= 0) {
+        throw new Error(`jira ${method} ${route} timed out before its total operation budget elapsed`);
+      }
+      await sleep(Math.min(delay, remaining));
       continue;
     }
     // The status alone; never echo the response body, which can carry the token
@@ -433,17 +582,134 @@ const FIELDS = [
  * "fails closed before treating an empty search as an empty queue when Jira %s"
  * and "accepts a genuinely empty queue after the configured project is confirmed visible".
  */
-const assertProjectVisible = async ({ project, jql, env }) => {
+const assertProjectVisible = async ({ project, jql, env, deadlineAt = null }) => {
   const projectKey = projectKeyOf({ project, jql });
   const permission = await request(
     `/rest/api/3/mypermissions?projectKey=${encodeURIComponent(projectKey)}&permissions=BROWSE_PROJECTS`,
-    { env },
+    { env, deadlineAt },
   );
   if (permission?.permissions?.BROWSE_PROJECTS?.havePermission !== true) {
     throw new Error(
       `configured Jira project ${projectKey} is not visible: ` +
         'Jira did not confirm BROWSE_PROJECTS permission',
     );
+  }
+};
+
+const inlineCommentaryIsComplete = (issue) => commentaryIsComplete(issue?.fields?.comment);
+
+const commentIdOf = (comment, ticketId) => {
+  const id = comment?.id;
+  if ((typeof id !== 'string' && typeof id !== 'number') || String(id) === '') {
+    throw new Error(`jira comment metadata for ${ticketId} has a record without an id`);
+  }
+  return String(id);
+};
+
+/**
+ * Replace a truncated search-field comment window with the authoritative,
+ * bounded comment feed. Pinned in
+ * test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+ * "hydrates every comment before mapping a listed Jira issue while preserving
+ * authoritative completeness". This deliberately returns raw issue data;
+ * `toTicket` stays the pure mapper used by offline callers and by `find`.
+ */
+const hydrateCommentary = async (issue, { env, deadlineAt, budget }) => {
+  if (inlineCommentaryIsComplete(issue)) return issue;
+  const ticketId = issue?.key;
+  if (typeof ticketId !== 'string' || ticketId === '') {
+    throw new Error('jira comment hydration cannot read an issue without a key');
+  }
+  const inlineTotal = issue?.fields?.comment?.total;
+  if (Number.isSafeInteger(inlineTotal) && inlineTotal > MAX_COMMENT_RECORDS) {
+    throw new Error(`jira comment metadata for ${ticketId} exceeds the ${MAX_COMMENT_RECORDS}-record cap`);
+  }
+
+  let total = null;
+  let startAt = 0;
+  let pages = 0;
+  const comments = [];
+  const ids = new Set();
+
+  while (true) {
+    if (pages >= MAX_COMMENT_PAGES) {
+      throw new Error(`jira comment metadata for ${ticketId} exceeded the ${MAX_COMMENT_PAGES}-page cap`);
+    }
+    if (deadlineAt - Date.now() <= 0) {
+      throw new Error(`jira comment hydration for ${ticketId} timed out before its total operation budget elapsed`);
+    }
+    if (budget.bytes.remaining <= 0) {
+      throw new Error(`jira comment metadata for ${ticketId} exceeded the response byte budget`);
+    }
+    // An earlier issue may have spent the shared records budget; refuse before
+    // sending this issue's first request rather than after its round trip.
+    if (total === null && budget.records.remaining <= 0) {
+      throw new Error(`jira comment metadata for ${ticketId} found the shared record budget already exhausted`);
+    }
+    const page = await request(
+      `/rest/api/3/issue/${encodeURIComponent(ticketId)}/comment?startAt=${startAt}&maxResults=${COMMENT_PAGE_SIZE}`,
+      {
+        env,
+        timeoutMs: DEFAULT_TIMEOUT_MS,
+        deadlineAt,
+        maxResponseBytes: Math.min(MAX_COMMENT_BYTES, budget.bytes.remaining),
+        responseByteBudget: budget.bytes,
+        // No retry: a failed read only leaves this one ticket incomplete, and
+        // retries would spend the selection's shared deadline on it.
+        retryTransient: false,
+      },
+    );
+    pages += 1;
+    if (
+      !Number.isSafeInteger(page?.total) ||
+      page.total < 0 ||
+      !Number.isSafeInteger(page?.startAt) ||
+      page.startAt !== startAt ||
+      !Array.isArray(page?.comments)
+    ) {
+      throw new Error(`jira comment metadata for ${ticketId} is corrupt`);
+    }
+    if (total === null) {
+      total = page.total;
+      if (total > MAX_COMMENT_RECORDS || total > budget.records.remaining) {
+        throw new Error(`jira comment metadata for ${ticketId} exceeds the bounded record cap`);
+      }
+      budget.records.remaining -= total;
+    } else if (page.total !== total) {
+      throw new Error(`jira comment metadata for ${ticketId} total grew or changed during hydration`);
+    }
+    if (page.comments.length > total - comments.length) {
+      throw new Error(`jira comment metadata for ${ticketId} exceeds its declared total`);
+    }
+    for (const comment of page.comments) {
+      const id = commentIdOf(comment, ticketId);
+      if (ids.has(id)) {
+        throw new Error(`jira comment metadata for ${ticketId} contains duplicate id ${id}`);
+      }
+      ids.add(id);
+      comments.push(comment);
+    }
+    startAt += page.comments.length;
+    // The comment endpoint's pages carry no isLast field, so the declared
+    // total is the completion signal. Pinned in
+    // test/template/jira-commentary-paging.test.ts (absent in a generated rig) ›
+    // "hydrates a truncated comment window from comment pages that carry no
+    // isLast field, as Jira Cloud returns them".
+    if (page.isLast === true || comments.length === total) {
+      if (comments.length !== total) {
+        throw new Error(`jira comment metadata for ${ticketId} is incomplete`);
+      }
+      return {
+        ...issue,
+        fields: {
+          ...(issue.fields ?? {}),
+          comment: { total, comments },
+        },
+      };
+    }
+    if (page.comments.length === 0 || comments.length >= total) {
+      throw new Error(`jira comment metadata for ${ticketId} is incomplete or did not advance`);
+    }
   }
 };
 
@@ -462,14 +728,42 @@ export const listEligible = async ({
   limit = 100,
   env = process.env,
 } = {}) => {
+  // Start this before the search await. A fresh per-comment deadline after a
+  // long search would make the whole selection unbounded and lets a fake-clock
+  // test advance past the first request before the hydration timer exists.
+  const hydrationDeadlineAt = issues ? null : Date.now() + COMMENT_HYDRATION_TIMEOUT_MS;
   // `issues` is the offline seam: the mapping is pure, so every shape it has to
   // handle is testable without a network or a credential.
-  const response = issues ? { issues } : await search({ project, jql, limit, env });
+  const response = issues ? { issues } : await search({ project, jql, limit, env, deadlineAt: hydrationDeadlineAt });
   if (!issues && response.issues.length === 0) {
-    await assertProjectVisible({ project, jql, env });
+    await assertProjectVisible({ project, jql, env, deadlineAt: hydrationDeadlineAt });
   }
+  const rawIssues =
+    issues ??
+    (await (async () => {
+      const budget = {
+        records: { remaining: MAX_COMMENT_RECORDS },
+        bytes: { remaining: MAX_COMMENT_BYTES },
+      };
+      const hydrated = [];
+      // Sequential on purpose: the caps above are shared by one selection and
+      // must be checked before each outbound comment request.
+      for (const issue of response.issues) {
+        // One ticket's failed read must not fail the selection: keep the issue
+        // as search returned it, whose truncated window maps to incomplete.
+        // Pinned in test/template/jira-commentary-hydration.test.ts (absent in a generated rig) ›
+        // "leaves only that ticket incomplete when the authoritative comment
+        // read is unavailable or incomplete".
+        try {
+          hydrated.push(await hydrateCommentary(issue, { env, deadlineAt: hydrationDeadlineAt, budget }));
+        } catch {
+          hydrated.push(issue);
+        }
+      }
+      return hydrated;
+    })());
   return (
-    response.issues
+    rawIssues
       .map(toTicket)
       .filter((ticket) => ticket.state !== 'closed')
       // Deliberately a SECOND enforcement of the same list the query already
@@ -506,6 +800,7 @@ export const search = async ({
   env = process.env,
   timeoutMs = DEFAULT_TIMEOUT_MS,
   retry = {},
+  deadlineAt = null,
   hardCap = 1000,
   maxPages = 100,
 } = {}) => {
@@ -536,6 +831,7 @@ export const search = async ({
       env,
       timeoutMs,
       retry,
+      deadlineAt,
     });
     const received = page?.issues ?? [];
     issues.push(...received.slice(0, Math.max(0, hardCap - issues.length)));
