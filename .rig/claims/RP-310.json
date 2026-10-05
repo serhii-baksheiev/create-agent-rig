@@ -1,0 +1,212 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-310",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "07fb75513e3791f3b1b137e77e7dcb10738a229a06016bafaa54680e48597ada",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "packages/cli/test/doctor-guards.test.ts",
+      "fullName": "doctor guard inspection clears the fixture unattended flag from the real home when the guard batch is killed before its own cleanup (RP-310)"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "07fb75513e3791f3b1b137e77e7dcb10738a229a06016bafaa54680e48597ada",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "ad590a202940d61094035ac2f1b411679678e568d4504eafc4fa41371f08a42b"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-310",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-310-green-2"
+      }
+    },
+    "baseline": {
+      "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "red": {
+      "test": {
+        "file": "packages/cli/test/doctor-guards.test.ts",
+        "fullName": "doctor guard inspection clears the fixture unattended flag from the real home when the guard batch is killed before its own cleanup (RP-310)",
+        "fileSha256": "1913132d0d1e7677673fda7ee56b0aff9a457aa80d8fc1bb4b648d462c7ab61d"
+      },
+      "source": {
+        "runId": "20261004-111441-rp310",
+        "seq": 16
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "b8f38375df41090d3d6476861610a2e6d9e431a3305b47a3ee18a866d573cc6f"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "2d3ee569a64a9037ddd3c1081096e55cde1f977e5dccfd1145c84f7bed6eddd2"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261004-111441-rp310",
+        "seq": 17
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "c791932c722e717a3e672b53a43ace6366fd4ee115cbda01daf737c08aba4de9"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "2d3ee569a64a9037ddd3c1081096e55cde1f977e5dccfd1145c84f7bed6eddd2"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "6d5d5b10657ac82697c0c9cfcacc63b1a03a322a8e6bfdfe1b47b69488c78836"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "packages/cli/test/doctor-guards.test.ts",
+        "fullName": "doctor guard inspection clears the fixture unattended flag from the real home when the guard batch is killed before its own cleanup (RP-310)",
+        "fileSha256": "1913132d0d1e7677673fda7ee56b0aff9a457aa80d8fc1bb4b648d462c7ab61d"
+      },
+      "source": {
+        "runId": "20261004-111441-rp310",
+        "seq": 18
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "4c4810745e39dd08f3d0a58c9824517bd4ee3a377dd50fb6f04e51d75d3c82c1"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "6d5d5b10657ac82697c0c9cfcacc63b1a03a322a8e6bfdfe1b47b69488c78836"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "c876664978e7bc12582bf69b00825a2f9c3825ea6c8ba33041bfa22d6a60fef7"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-310",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-310-green"
+          }
+        },
+        "baseline": {
+          "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+        },
+        "red": {
+          "test": {
+            "file": "packages/cli/test/doctor-guards.test.ts",
+            "fullName": "doctor guard inspection clears the fixture unattended flag from the real home when the guard batch is killed before its own cleanup (RP-310)",
+            "fileSha256": "91087f9cc808ee0dd24d2bfe78d46a10ee3f3b115babbab1c3252a7e82439f3f"
+          },
+          "source": {
+            "runId": "20261004-111441-rp310",
+            "seq": 4
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "7daf73a37980eca91e5c2fb689cc384e83ea0f8b23edd92f8bfc35e01d8ee090"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "50c6945cd2a191b6a5f3f6016ecdc6c309b4ef1af786c07608f73482d1f49df8"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261004-111441-rp310",
+            "seq": 5
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "b780086e25cd4f985a44b367ee304111f0b008208f8f235c9ba84bc1f9dd1112"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "50c6945cd2a191b6a5f3f6016ecdc6c309b4ef1af786c07608f73482d1f49df8"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "57f9527ece55b9f54f348ae7cd469d9a0916e137f9b169bd99366e077fdad248"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "packages/cli/test/doctor-guards.test.ts",
+            "fullName": "doctor guard inspection clears the fixture unattended flag from the real home when the guard batch is killed before its own cleanup (RP-310)",
+            "fileSha256": "91087f9cc808ee0dd24d2bfe78d46a10ee3f3b115babbab1c3252a7e82439f3f"
+          },
+          "source": {
+            "runId": "20261004-111441-rp310",
+            "seq": 6
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "dd9d5de80703bd7d1ec41e2c74e4421ac94d5d3d17496a3c4b01e9eaa6b628e3"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "57f9527ece55b9f54f348ae7cd469d9a0916e137f9b169bd99366e077fdad248"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "d5b63215af6fc908d69f497521669202ee8b98d6774e5a0602a8d7dd392640a8"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "50c6945cd2a191b6a5f3f6016ecdc6c309b4ef1af786c07608f73482d1f49df8"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "2d3ee569a64a9037ddd3c1081096e55cde1f977e5dccfd1145c84f7bed6eddd2"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "2b72de2a9b2486479893724f617d6a5e1496088b7d3dcd9df2c26252d4622ce1"
+        }
+      }
+    }
+  ]
+}
