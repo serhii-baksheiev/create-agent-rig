@@ -1949,6 +1949,7 @@ describe('applyUninstall — a file that changed after planning', () => {
   const WIRED_HOOKS = [
     '.claude/hooks/guard-secret-file.mjs',
     '.claude/hooks/guard-rulebook.mjs',
+    '.claude/hooks/probity-gate.mjs',
     '.claude/hooks/block-no-verify.mjs',
     '.claude/hooks/guard-bash.mjs',
     '.claude/hooks/guard-subagent-model.mjs',
