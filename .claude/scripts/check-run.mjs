@@ -556,9 +556,8 @@ const OVERFLOW_TAIL_CHARS = 256;
 //     would drop the marker's leading dashes ahead of an earlier one;
 //   - a marker prefix (`-----BEG`, say) immediately followed by a proper
 //     prefix of one of `runCheck`'s relativize candidates (the check's cwd,
-//     its realpath, ...) is carried forward too, and armed outright once that
-//     candidate's full text arrives without the separator `relativize` needs
-//     to strip it; `relativizeCandidates` reaches the feeder through
+//     its realpath, ...) is carried forward too; `relativizeCandidates`
+//     reaches the feeder through
 //     `makeLineFeeder`'s options, alongside `normalize`, so the feeder holds
 //     no cwd knowledge of its own; and
 //   - the same open-marker carry covers `-----END `, whichever of
@@ -577,7 +576,8 @@ const OVERFLOW_TAIL_CHARS = 256;
 // header", its `PUBLIC KEY` sibling, › "RP-323 round 4 — an edge sweep
 // across EVERY read-chunk split offset inside a BEGIN header, one run per
 // shape", › "RP-323 round 4 — a BEGIN marker split by a >256-character OSC
-// title with the check’s own cwd after it, swept at every offset", and ›
+// title with the check’s own cwd and its own path separator after it, swept
+// at every offset", and ›
 // "RP-323 round 4 — a split END marker still closes the block, swept at
 // every offset".
 const OPEN_HEADER_START = '-----BEGIN ';
