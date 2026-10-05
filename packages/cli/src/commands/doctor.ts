@@ -6,12 +6,13 @@ import {
   MAX_DECLARATION_BYTES,
   parseDeclaration,
 } from '../integrations/declaration.js';
-import { REGISTRY } from '../integrations/registry.js';
+import { REGISTRY, type Harness } from '../integrations/registry.js';
 import {
   inspectSpecKit,
   SPEC_KIT_VERSION,
   type SpecKitInspection,
 } from '../integrations/spec-kit.js';
+import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -107,6 +108,16 @@ function rigVersionFix(reason: string, versions: { cli: string; repository: stri
     return `Update create-agent-rig to at least ${versions.repository} before running setup or upgrade in this repository.`;
   }
   return "Compare the CLI version with the version recorded in this repository's manifest by hand before running setup or upgrade.";
+}
+
+/** `probity:<harness>` fix text, by reason (RP-416). */
+function probityFix(reason: string): string {
+  if (reason === 'config-missing')
+    return 'Run create-agent-rig setup add probity (or --adopt an existing config) to generate probity.config.mjs.';
+  if (reason === 'launcher-missing') return `Run npm install -D @nizos/probity@${PROBITY_VERSION}.`;
+  if (reason === 'version-drift')
+    return `Run npm install -D @nizos/probity@${PROBITY_VERSION} to match the pinned version.`;
+  return "Wire the Probity gate hook into this harness's own hook configuration.";
 }
 
 /** Bounded so a repository with an unusually large drift never grows `fix` without limit. */
@@ -430,6 +441,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       }
       continue;
     }
+    if (entry.id === 'probity') {
+      for (const harness of Object.keys(entry.harnesses) as Harness[]) {
+        const inspection = await inspectProbity(options.cwd, harness);
+        checks.push({
+          id: `probity:${harness}`,
+          status: inspection.status,
+          reason: inspection.reason,
+        });
+      }
+      continue;
+    }
     for (const [harness, state] of Object.entries(entry.harnesses)) {
       checks.push({
         id: `${entry.id}:${harness}`,
@@ -463,7 +485,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     unreadable: 'unreadable',
   } as const;
   const integrations = wiring.integrations
-    .filter((entry) => entry.id !== 'spec-kit')
+    .filter((entry) => entry.id !== 'spec-kit' && entry.id !== 'probity')
     .map((entry) => ({
       id: entry.id,
       harnesses: Object.fromEntries(
@@ -504,10 +526,21 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                       ? 'Check the machine-scoped Memory installation and its compatible version.'
                       : check.id === 'spec-kit'
                         ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
-                        : 'Review create-agent-rig setup list and the intended provider wiring.',
+                        : check.id.startsWith('probity:')
+                          ? probityFix(check.reason)
+                          : 'Review create-agent-rig setup list and the intended provider wiring.',
     })),
     integrations,
     memory: { ...memory, status: memory.status === 'pass' ? 'ok' : memory.status },
+    probity: intent?.entries.some((entry) => entry.id === 'probity')
+      ? {
+          state: 'configured',
+          version: PROBITY_VERSION,
+          runtime: 'unverified',
+          connectivity: 'not-observed',
+          trust: 'not-observed',
+        }
+      : { state: 'not-configured' },
     ...(specKit
       ? {
           specKit: {

@@ -17,6 +17,7 @@ export const KNOWN_ENTRY_KEYS: readonly string[] = Object.freeze([
   'harnesses',
   'selected',
   'targets',
+  'configHash',
 ]);
 const hash = /^[0-9a-f]{64}$/;
 export type DeclaredIntegration = {
@@ -26,6 +27,13 @@ export type DeclaredIntegration = {
   harnesses?: Harness[];
   selected?: true;
   targets?: Partial<Record<'claude-code', { entryHash: string }>>;
+  /**
+   * Probity-only (RP-416): the SHA-256 of the Rig-generated
+   * `probity.config.mjs` bytes, the same ownership shape every other
+   * provider's `targets.*.entryHash` already uses. Absent on an adopted
+   * (pre-existing) config, since Rig never hashes a file it did not write.
+   */
+  configHash?: string;
 };
 export type DeclarationTargets = { codex?: { fileHash: string } };
 export type RejectionReason = 'not-in-matrix' | 'arbitrary-command-refused' | 'malformed';
@@ -122,7 +130,9 @@ export function parseDeclaration(
       value.selected !== true ||
       (Object.hasOwn(value, 'required') && typeof value.required !== 'boolean') ||
       (Object.hasOwn(value, 'version') &&
-        (typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version)))
+        (typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version))) ||
+      (Object.hasOwn(value, 'configHash') &&
+        (typeof value.configHash !== 'string' || !hash.test(value.configHash)))
     ) {
       rejected.push({ id: value.id, reason: 'malformed' });
       continue;
@@ -180,6 +190,7 @@ export function parseDeclaration(
       ...(harnesses === undefined ? {} : { harnesses }),
       selected: true,
       ...(targets === undefined ? {} : { targets }),
+      ...(value.configHash === undefined ? {} : { configHash: value.configHash as string }),
     });
   }
   return { status: 'ok', entries, rejected, ...(targets === undefined ? {} : { targets }) };
@@ -197,6 +208,7 @@ export function serializeDeclaration(
       ...(entry.harnesses === undefined ? {} : { harnesses: entry.harnesses }),
       selected: true,
       ...(entry.targets === undefined ? {} : { targets: entry.targets }),
+      ...(entry.configHash === undefined ? {} : { configHash: entry.configHash }),
     }));
   return `${JSON.stringify(
     { schemaVersion: 1, integrations, ...(targets === undefined ? {} : { targets }) },

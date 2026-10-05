@@ -1666,6 +1666,24 @@ Executable evidence:
 - `packages/cli/test/provider-spawn.test.ts` › "returns only after a deadline
   kills a live child and grandchild on this platform".
 
+Probity is neither upstream-managed like Spec Kit nor an MCP server. `setup
+add probity --yes` writes a local, Rig-generated `probity.config.mjs`
+(`enforceTdd()`, scoped to `src/**`, `lib/**`, `test/**`, `tests/**`) and
+records its SHA-256 as `configHash` on the declaration entry — the version is
+pinned at `1.10.1` and a different `--version` is refused. Rig never runs
+`npm install` or the Probity launcher itself; the plan names
+`npm install -D @nizos/probity@1.10.1` as a manual next step. A pre-existing
+`probity.config.{ts,mts,js,mjs}` is refused unless `--adopt` is given, in
+which case it is left byte-identical and the declaration entry carries no
+`configHash` — Rig never hashes a file it did not write. `setup remove
+probity` deletes the generated config only when its bytes still match the
+recorded `configHash`; a hand-edited or adopted config is left untouched and
+named in the result instead. Wiring the gate hook into `.claude/settings.json`
+or `.codex/hooks.json` is a separate slice's concern — `setup` never edits
+either file for Probity.
+
+Executable evidence: `packages/cli/test/probity-command.test.ts`.
+
 ## Fixtures
 
 Examples, one per shape the contract names. They are illustrative payloads, not
@@ -2109,6 +2127,15 @@ each provider's own CLI or launcher; it does not copy, hash or delete their
 files, and does not claim their data as its own — `packages/cli/test/spec-kit.test.ts`
 › "requires explicit adoption before touching an external .specify payload".
 
+**Probity is a third, local ownership shape — neither an MCP server nor
+upstream-owned.** Rig owns one file it generates itself,
+`probity.config.mjs`, tracked by a `configHash` on the declaration entry the
+same way a Claude MCP entry's `entryHash` is tracked; an adopted (pre-existing)
+config carries no `configHash` and is never hashed or rewritten. Rig never
+installs the `@nizos/probity` package and never runs its launcher — the gate
+hook that does (`.claude/hooks/probity-gate.mjs`, wired per harness) is a
+separate slice.
+
 **Authorization, connectivity and trust are never claimed.** `doctor`
 reports wiring — `wired`, `absent`, `drifted`, `foreign`, `unreadable` —
 and, for a launcher it can merely find on the machine, `observed`; it never
@@ -2136,6 +2163,11 @@ baseline commit".
 for nothing else (`## setup integrations (RP-22)`) —
 `packages/cli/test/spec-kit.test.ts` › "refuses repository-controlled uv and
 uvx launchers before invoking one".
+
+**Probity only: Node and `npm` — never `uv`.** `@nizos/probity` is an npm dev
+dependency (`npm install -D @nizos/probity@1.10.1`, a manual step `setup`
+names but never runs itself); nothing about it needs `uv` or `uvx`
+(`## setup integrations (RP-22)`).
 
 **Platforms.** Linux, Windows and macOS (Apple silicon), each accepted on
 the exact packed release commit before publish, through the exact-SHA

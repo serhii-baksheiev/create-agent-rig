@@ -17,6 +17,7 @@ describe('integration intent declaration', () => {
       'spec-kit',
       'figma-mcp',
       'atlassian-mcp',
+      'probity',
     ]));
   it('round trips only finite intent and target hash fields', () =>
     expect(
@@ -98,5 +99,71 @@ describe('integration intent declaration', () => {
         REGISTRY,
       ),
     ).toMatchObject({ status: 'invalid' });
+  });
+  // RP-416: Probity's declaration entry carries a `configHash` of the Rig-
+  // generated `probity.config.mjs` bytes, the same ownership shape every
+  // other provider's `targets.*.entryHash` already uses — a well-formed one
+  // round-trips through serializeDeclaration, and a malformed one is
+  // rejected the same way a malformed version string already is.
+  it('accepts a well-formed probity configHash and keeps it through serializeDeclaration, but rejects a malformed one as malformed', () => {
+    const configHash = 'a'.repeat(64);
+    const accepted = parseDeclaration(
+      JSON.stringify({
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            harnesses: ['claude-code'],
+            selected: true,
+            configHash,
+          },
+        ],
+      }),
+      REGISTRY,
+    );
+    expect(accepted).toMatchObject({
+      status: 'ok',
+      rejected: [],
+      entries: [
+        {
+          id: 'probity',
+          version: '1.10.1',
+          harnesses: ['claude-code'],
+          configHash,
+        },
+      ],
+    });
+    expect(
+      parseDeclaration(
+        serializeDeclaration(accepted.status === 'ok' ? accepted.entries : []),
+        REGISTRY,
+      ),
+    ).toMatchObject({
+      status: 'ok',
+      entries: [{ id: 'probity', configHash }],
+    });
+
+    expect(
+      parseDeclaration(
+        JSON.stringify({
+          schemaVersion: 1,
+          integrations: [
+            {
+              id: 'probity',
+              version: '1.10.1',
+              harnesses: ['claude-code'],
+              selected: true,
+              configHash: 'not-sixty-four-hex-characters',
+            },
+          ],
+        }),
+        REGISTRY,
+      ),
+    ).toMatchObject({
+      status: 'ok',
+      entries: [],
+      rejected: [{ id: 'probity', reason: 'malformed' }],
+    });
   });
 });

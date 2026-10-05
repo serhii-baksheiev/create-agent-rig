@@ -57,6 +57,11 @@
                 }
               }
             }
+          },
+          "configHash": {
+            "description": "Probity only: the SHA-256 of the Rig-generated probity.config.mjs bytes.",
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
           }
         }
       }

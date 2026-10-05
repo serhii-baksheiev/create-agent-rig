@@ -508,6 +508,28 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
       expect(ok, JSON.stringify((validate as unknown as { errors?: unknown }).errors)).toBe(true);
     });
 
+    // RP-416: Probity's declaration entry adds a `configHash` property no
+    // other provider has (see declaration.ts's own `configHash` test for the
+    // 64-hex-character rule) — the public schema has to accept it too.
+    it('accepts a probity entry carrying a 64-hex-character configHash', () => {
+      const withConfigHash = {
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            harnesses: ['claude-code'],
+            selected: true,
+            configHash: 'b'.repeat(64),
+          },
+        ],
+      };
+      expect(
+        validate(withConfigHash),
+        JSON.stringify((validate as unknown as { errors?: unknown }).errors),
+      ).toBe(true);
+    });
+
     it.each([
       ['an unknown root key', { schemaVersion: 1, integrations: [], bogus: true }],
       ['a schemaVersion other than 1', { schemaVersion: 2, integrations: [] }],
