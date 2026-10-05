@@ -74,6 +74,18 @@ const CHECK_RUN = scriptPath('check-run.mjs');
 
 type RunResult = { code: number; stdout: string; stderr: string; out: string };
 
+// RP-323 round 5 — the `body-leak` sweeps below (every filler line forced
+// over the 64 KiB per-line cap, so the LOGGED text stays short regardless of
+// offset count) raw-forward MORE bytes through this process's own stdout
+// than a short logged line implies: `check-run.mjs` still passes the
+// child's full raw output through to ITS OWN stdout, which is what this
+// `execFile` captures. 64 MiB was enough for the small-filler sweeps round 4
+// shipped; round 5's largest shape (a ~430-character header, swept at every
+// offset, every filler now a little over double its old size) raw-forwards
+// under 90 MiB — 256 MiB leaves headroom without raising it so far that a
+// genuinely unbounded passthrough would still pass.
+const RUN_MAX_BUFFER = 256 * 1024 * 1024;
+
 const run = (
   file: string,
   args: string[],
@@ -81,7 +93,7 @@ const run = (
   env: NodeJS.ProcessEnv,
 ): Promise<RunResult> =>
   new Promise((resolve) => {
-    execFile(file, args, { cwd, env, maxBuffer: 64 * 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(file, args, { cwd, env, maxBuffer: RUN_MAX_BUFFER }, (error, stdout, stderr) => {
       resolve({
         code: error ? ((error as { code?: number }).code ?? 1) : 0,
         stdout,
@@ -3732,12 +3744,39 @@ describe('a CSI sequence sits between the first dash and the remaining dashes of
  * split exactly `offset` characters into the NEXT marker text, one marker
  * after another in the same stream.
  *
+ * RP-323 round 5 review: `fillerBytesFor` used to return the bare residue
+ * (0..LINE_MAX-1) — a NORMAL-length line, held WHOLE and RAW in the log
+ * buffer. With hundreds of offsets in one run, that raw filler is what
+ * `LOG_MAX_BYTES` (5 MiB) fills up on, long before the sweep reaches its
+ * later offsets — which this sweep's own `check-run.test.ts` assertion had
+ * no way to notice, since it only checked offsets it could find a leak
+ * marker for, never asking whether an offset's marker was even still in the
+ * log to look at. The residue is now pushed to always land OVER the 64 KiB
+ * per-line cap instead (adding an exact multiple of `LINE_MAX`, so the
+ * read-chunk-boundary placement math below is unaffected — only a multiple
+ * of the modulus ever gets added) — `check-run.mjs` then replaces the
+ * filler with its own short `[redacted: line over ... bytes]` marker, and a
+ * sweep of hundreds of offsets stays well under `LOG_MAX_BYTES` raw. Each
+ * case also writes a short `offset <n>` line of its own after the body/END
+ * pair, so `findMissingOffsetMarkers` (below) can tell "this offset's own
+ * marker is missing because the log was trimmed before the sweep ever
+ * looked" apart from "this offset's marker is present and its body is
+ * correctly absent" — the first is a trimmed, meaningless check; only the
+ * second is the leak check this sweep exists for.
+ *
  * `mode: 'body-leak'` sweeps a BEGIN-shaped `header`, printing a per-offset
- * unique key body plus an END line after each split; `mode: 'fail-sweep'`
- * sweeps a NON-key `header`, printing a per-offset unique FAIL line instead
- * of a key body; `mode: 'end-sweep'` re-arms the block with a fixed, normal
- * BEGIN `header` and a normal body line before each split END (`endText`),
- * then prints a per-offset unique FAIL line.
+ * unique key body plus an END line after each split; `mode:
+ * 'body-leak-prefixed'` is the same sweep, except the split offset it covers
+ * is relative to `markerSuffix` alone — `prefix` (round 5: a stray,
+ * never-resolved escape and the padding that puts it more than
+ * `OPEN_HEADER_MAX_CHARS` characters ahead of the marker) is fixed, UNSWEPT
+ * text on the SAME line ahead of it, so a run covering every split inside
+ * `markerSuffix` costs the same as sweeping `markerSuffix` on its own, not
+ * one inside the whole (much longer) line; `mode: 'fail-sweep'` sweeps a
+ * NON-key `header`, printing a per-offset unique FAIL line instead of a key
+ * body; `mode: 'end-sweep'` re-arms the block with a fixed, normal BEGIN
+ * `header` and a normal body line before each split END (`endText`), then
+ * prints a per-offset unique FAIL line.
  */
 const SWEEP_RUNNER_SOURCE = `
 const config = JSON.parse(process.argv[2] ?? '{}');
@@ -3749,7 +3788,8 @@ const write = (text) => {
 };
 const fillerBytesFor = (offset) => {
   const target = -(pos + 1 + offset);
-  return ((target % LINE_MAX) + LINE_MAX) % LINE_MAX;
+  const residue = ((target % LINE_MAX) + LINE_MAX) % LINE_MAX;
+  return residue + (residue === 0 ? 2 : 1) * LINE_MAX;
 };
 
 if (config.mode === 'body-leak' || config.mode === 'fail-sweep') {
@@ -3761,9 +3801,22 @@ if (config.mode === 'body-leak' || config.mode === 'fail-sweep') {
     if (config.mode === 'body-leak') {
       write('BODY_' + offset + '_X7Q\\n');
       write('-----END RSA PRIVATE KEY-----\\n');
+      write('offset ' + offset + '\\n');
     } else {
       write('FAIL test/x.test.ts > k' + offset + '\\n');
     }
+  }
+} else if (config.mode === 'body-leak-prefixed') {
+  const prefix = config.prefix;
+  const markerSuffix = config.markerSuffix;
+  const header = prefix + markerSuffix;
+  const suffixLen = Math.max(1, LINE_MAX - header.length + 1);
+  for (let offset = 1; offset < markerSuffix.length; offset += 1) {
+    write('F'.repeat(fillerBytesFor(prefix.length + offset)) + '\\n');
+    write(header + 'z'.repeat(suffixLen) + '\\n');
+    write('BODY_' + offset + '_X7Q\\n');
+    write('-----END RSA PRIVATE KEY-----\\n');
+    write('offset ' + offset + '\\n');
   }
 } else if (config.mode === 'end-sweep') {
   const header = config.header;
@@ -3781,13 +3834,35 @@ write('after-ok\\n');
 process.exit(Number(config.exitCode ?? 1));
 `;
 
-/** Every offset (out of 1..`header.length - 1`) whose unique body marker survived into `logContent` unredacted. */
-const findLeakingOffsets = (header: string, logContent: string): number[] => {
+/** Every offset (out of 1..`lengthLike.length - 1`) whose unique body marker survived into `logContent` unredacted. */
+const findLeakingOffsets = (lengthLike: { length: number }, logContent: string): number[] => {
   const leaking: number[] = [];
-  for (let offset = 1; offset < header.length; offset += 1) {
+  for (let offset = 1; offset < lengthLike.length; offset += 1) {
     if (logContent.includes(`BODY_${offset}_X7Q`)) leaking.push(offset);
   }
   return leaking;
+};
+
+/**
+ * Every offset (out of 1..`lengthLike.length - 1`) whose own short `offset
+ * <n>` line never reached `logContent` at all — round 5 review: this is
+ * what tells a trimmed log APART from a genuinely safe one. A missing
+ * marker means this offset's own slice of the log was pushed out by
+ * `LOG_MAX_BYTES` before the sweep ever got to look at it, so a PASSING
+ * leak check for that same offset (`findLeakingOffsets` above never finding
+ * its body marker either) is not evidence of anything — the body marker
+ * would be just as absent whether it was safely redacted or never logged.
+ * Checked on whole LINES of `logContent` (never substring `.includes`):
+ * `offset 1` is a literal prefix of `offset 10`, `offset 11`, ... and a
+ * substring search would read every one of those as covering offset 1 too.
+ */
+const findMissingOffsetMarkers = (lengthLike: { length: number }, logContent: string): number[] => {
+  const lines = new Set(logContent.split('\n'));
+  const missing: number[] = [];
+  for (let offset = 1; offset < lengthLike.length; offset += 1) {
+    if (!lines.has(`offset ${offset}`)) missing.push(offset);
+  }
+  return missing;
 };
 
 /** Runs one `mode: 'body-leak'` sweep for `header` and returns the recorded log and tail. */
@@ -3814,6 +3889,63 @@ const runBodyLeakSweep = async (
   return { logContent, tail };
 };
 
+/**
+ * Runs one `mode: 'body-leak-prefixed'` sweep: `prefix` is fixed, UNSWEPT
+ * text ahead of `markerSuffix` on the SAME line — see `SWEEP_RUNNER_SOURCE`'s
+ * own comment for why the split offset this covers is relative to
+ * `markerSuffix` alone.
+ */
+const runPrefixedBodyLeakSweep = async (
+  prefix: string,
+  markerSuffix: string,
+  cwd: string,
+  runDir: string,
+): Promise<{ logContent: string; tail: string }> => {
+  const runnerPath = await writeFixture(cwd, 'pem-prefixed-sweep-runner.mjs', SWEEP_RUNNER_SOURCE);
+  await runCheckRun(
+    [
+      '--name',
+      'unit',
+      '--',
+      process.execPath,
+      runnerPath,
+      JSON.stringify({ mode: 'body-leak-prefixed', prefix, markerSuffix, exitCode: 1 }),
+    ],
+    { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+  );
+  const record = await latestCheckResult(runDir);
+  const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+  const tail = record!.data.tail ?? '';
+  return { logContent, tail };
+};
+
+/** Shared by every `mode: 'body-leak'`-shaped assertion below — asserts the sweep saw EVERY offset before trusting that none of them leaked. */
+const expectSweepFoundNoLeak = (
+  lengthLike: { length: number },
+  logContent: string,
+  tail: string,
+) => {
+  const missingOffsetMarkers = findMissingOffsetMarkers(lengthLike, logContent);
+  const leakingOffsets = findLeakingOffsets(lengthLike, logContent);
+
+  expect(
+    missingOffsetMarkers,
+    `the log never shows a per-offset marker for split offset(s) [${missingOffsetMarkers.join(', ')}] ` +
+      `out of 1..${lengthLike.length - 1} — the log was trimmed before this sweep could even look at ` +
+      'them, so the leak check below is not meaningful for those offsets',
+  ).toEqual([]);
+  expect(
+    leakingOffsets,
+    `the key body leaked at read-chunk-boundary offset(s) [${leakingOffsets.join(', ')}] ` +
+      `out of 1..${lengthLike.length - 1} — at least one split of this header never armed the block`,
+  ).toEqual([]);
+  expect(tail, 'a key body leaked into the tail').not.toMatch(/BODY_\d+_X7Q/);
+  expect(
+    logContent,
+    'the run never reached its final sentinel — the sweep output was truncated',
+  ).toContain('after-ok');
+};
+
 const expectNoBodyLeakSweep = (header: string) => {
   return async () => {
     expect(
@@ -3824,18 +3956,48 @@ const expectNoBodyLeakSweep = (header: string) => {
     const cwd = await freshCwd();
     const runDir = await freshRunDir();
     const { logContent, tail } = await runBodyLeakSweep(header, cwd, runDir);
-    const leakingOffsets = findLeakingOffsets(header, logContent);
 
+    expectSweepFoundNoLeak(header, logContent, tail);
+  };
+};
+
+/**
+ * RP-323 round 5 — a stray, unresolvable escape sitting more than
+ * `OPEN_HEADER_MAX_CHARS` (4096) characters before the header, on the SAME
+ * line, defeats `decideOpenHeaderCarry` (`.claude/scripts/check-run.mjs`):
+ * it reads the FIRST unresolved escape in its evaluated text, not the one
+ * nearest the header — on purpose, so a marker split by a LATER escape is
+ * still carried from the earliest one. Two escapes neither `ANSI_PATTERN`
+ * nor `OSC_PATTERN` ever resolves make the "first" one permanent: cursor-hide
+ * (`ESC [ ? 2 5 l` — the `?` byte is outside `ANSI_PATTERN`'s `[0-9;]*`) and
+ * a G0 charset designation (`ESC ( B` — not `[`-led, so it is not a CSI
+ * sequence `ANSI_PATTERN` accepts either). Placed near the START of the
+ * line, with enough padding after it, EVERY split inside `markerSuffix`
+ * (which sits far enough along the same line) is also more than 4096
+ * characters from this stray escape — the "too far to carry" branch, which
+ * drops the carry outright instead of ever reaching the header's own
+ * (closer, still legitimately open) escape.
+ */
+const CURSOR_HIDE_ESCAPE = '\u001b[?25l';
+const DESIGNATE_G0_ESCAPE = '\u001b(B';
+const STRAY_ESCAPE_PREFIX = `${CURSOR_HIDE_ESCAPE}${DESIGNATE_G0_ESCAPE}${'Z'.repeat(4100)}`;
+
+const expectNoPrefixedBodyLeakSweep = (prefix: string, markerSuffix: string) => {
+  return async () => {
     expect(
-      leakingOffsets,
-      `the key body leaked at read-chunk-boundary offset(s) [${leakingOffsets.join(', ')}] ` +
-        `out of 1..${header.length - 1} — at least one split of this header never armed the block`,
-    ).toEqual([]);
-    expect(tail, 'a key body leaked into the tail').not.toMatch(/BODY_\d+_X7Q/);
+      markerSuffix.length,
+      'the marker shape is too short for this sweep to cover any split offset at all',
+    ).toBeGreaterThan(1);
     expect(
-      logContent,
-      'the run never reached its final sentinel — the sweep output was truncated',
-    ).toContain('after-ok');
+      prefix.length,
+      'the stray escape needs more than 4096 characters ahead of the marker for this fixture to isolate the round-5 bug',
+    ).toBeGreaterThan(4096);
+
+    const cwd = await freshCwd();
+    const runDir = await freshRunDir();
+    const { logContent, tail } = await runPrefixedBodyLeakSweep(prefix, markerSuffix, cwd, runDir);
+
+    expectSweepFoundNoLeak(markerSuffix, logContent, tail);
   };
 };
 
@@ -3925,37 +4087,142 @@ describe('RP-323 round 4 — an edge sweep across EVERY read-chunk split offset 
 // The cwd must be known before the header string can be built, so this shape
 // cannot share `expectNoBodyLeakSweep`'s header-first signature; it otherwise
 // runs the same `mode: 'body-leak'` sweep and the same leak check.
+//
+// RP-323 round 5 review: the original fixture here read `G${cwd}IN` — the
+// cwd with NO separator after it. `relativize` only ever strips a
+// candidate's own text TOGETHER WITH its trailing separator
+// (`buildPrefixCandidates`, `.claude/scripts/check-run.mjs`: every candidate
+// carries a `/` or `\` of its own) — with none in the fixture, `relativize`
+// never touches this text at all, so the premise this test's own name
+// stated ("the cwd is relativized out") was false; the sanity check below
+// only ever exercised a DIFFERENT, over-eager rule (`pendingCandidateStatus`
+// reading `'complete'` the moment `remainder` merely STARTS WITH the
+// candidate, separator or not) that arms the block regardless of whether
+// `relativize` could ever have stripped this text. The fixture now carries
+// the separator the real relativize step needs, so the normalized text this
+// test's own name describes is the thing actually being exercised.
+const cwdSeparatorMarkerSuffix = (cwd: string): string =>
+  `-----BE${OSC_TITLE('x'.repeat(300))}G${cwd}/IN RSA PRIVATE KEY-----`;
 
-describe('RP-323 round 4 — a BEGIN marker split by a >256-character OSC title with the check’s own cwd after it, swept at every offset', () => {
+// A deliberately SEPARATE copy of `lib/secrets.mjs`'s `private-key-block`
+// pattern, for each fixture's own sanity check only — never imported from
+// production (`invariants.md`, "the independent-oracle invariant").
+const PRIVATE_KEY_HEADER_PATTERN_FOR_SANITY_CHECK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+
+describe('RP-323 round 4 — a BEGIN marker split by a >256-character OSC title with the check’s own cwd and its own path separator after it, swept at every offset', () => {
   it(
-    'matches the credential pattern only once the OSC title is stripped and the cwd is relativized out, for every split offset',
+    'matches the credential pattern only once the OSC title is stripped and the cwd (with its own separator) is relativized out, for every split offset',
     { timeout: 60_000 },
     async () => {
       const cwd = await freshCwd();
       const runDir = await freshRunDir();
-      const header = `-----BE${OSC_TITLE('x'.repeat(300))}G${cwd}IN RSA PRIVATE KEY-----`;
-      // A deliberately SEPARATE copy of `lib/secrets.mjs`'s `private-key-block`
-      // pattern, for the fixture's own sanity check only — never imported from
-      // production (`invariants.md`, "the independent-oracle invariant").
-      const PRIVATE_KEY_HEADER_PATTERN_FOR_SANITY_CHECK = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/;
+      const header = cwdSeparatorMarkerSuffix(cwd);
       expect(
         PRIVATE_KEY_HEADER_PATTERN_FOR_SANITY_CHECK.test(header),
         'the raw header already matches without stripping the OSC title and relativizing cwd — the fixture does not isolate the bug',
       ).toBe(false);
 
       const { logContent, tail } = await runBodyLeakSweep(header, cwd, runDir);
-      const leakingOffsets = findLeakingOffsets(header, logContent);
+
+      expectSweepFoundNoLeak(header, logContent, tail);
+    },
+  );
+
+  it(
+    'ordinary output naming the cwd, with no separator the real header needs, never arms the block on its own', // round 5 review item 3's non-arming case
+    { timeout: 30_000 },
+    async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const LINE_MAX = 65536;
+      const padTo = (text: string) => text + 'z'.repeat(Math.max(1, LINE_MAX - text.length + 1));
+      // Neither line below contains `-----BEGIN ` anywhere — only a bare run
+      // of dashes (or a single dash) immediately followed by the cwd, the
+      // shape `pendingCandidateStatus` (`.claude/scripts/check-run.mjs`)
+      // reads as `'complete'` the moment `remainder` merely STARTS WITH the
+      // candidate text, separator or not — ordinary log output naming the
+      // check's own working directory must not be read as an open header.
+      const lines = [
+        padTo(`-----${cwd}.log`),
+        padTo(`-${cwd} done`),
+        'FAIL test/x.test.ts > after-cwd',
+        'after-ok',
+      ];
+      const runnerPath = await writeFixture(
+        cwd,
+        'cwd-non-arming-runner.mjs',
+        `process.stdout.write(${JSON.stringify(lines.join('\n') + '\n')});\nprocess.exit(1);\n`,
+      );
+
+      await runCheckRun(['--name', 'unit', '--', process.execPath, runnerPath], {
+        cwd,
+        env: hermeticEnv({ RIG_RUN_DIR: runDir }),
+      });
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
 
       expect(
-        leakingOffsets,
-        `the key body leaked at read-chunk-boundary offset(s) [${leakingOffsets.join(', ')}] ` +
-          `out of 1..${header.length - 1} — at least one split of this header never armed the block`,
-      ).toEqual([]);
-      expect(tail, 'a key body leaked into the tail').not.toMatch(/BODY_\d+_X7Q/);
+        record!.data.failedTests,
+        'ordinary output naming the cwd wrongly armed the block, swallowing the FAIL identity that followed it',
+      ).toContain('test/x.test.ts > after-cwd');
       expect(
         logContent,
-        'the run never reached its final sentinel — the sweep output was truncated',
+        'ordinary output naming the cwd wrongly armed the block, swallowing the line after the FAIL identity',
       ).toContain('after-ok');
+    },
+  );
+});
+
+// --- RP-323 round 5 (owner-authorised) — a stray, unresolvable escape more
+// than OPEN_HEADER_MAX_CHARS characters before the header defeats the
+// per-chunk carry, swept at every offset inside the header -------------------
+//
+// `STRAY_ESCAPE_PREFIX`'s own comment (above) states the mechanism; each
+// case below pairs it with one of the marker shapes round 4 already swept
+// bare — P (an OSC title inside the marker's own dashes), H (a 300-character
+// OSC 8 hyperlink wrapping BEGIN itself), and the cwd-with-separator shape
+// this review round's item 3 fixed, above.
+
+describe('RP-323 round 5 — a stray, unresolvable escape more than 4096 characters before the header defeats the per-chunk carry, swept at every offset inside the header', () => {
+  it(
+    'P: an OSC title sits inside the marker’s own dashes, behind a stray cursor-hide/charset escape pair more than 4096 characters ahead of it',
+    { timeout: 60_000 },
+    expectNoPrefixedBodyLeakSweep(
+      STRAY_ESCAPE_PREFIX,
+      `--${OSC_TITLE('x'.repeat(300))}---BEGIN RSA PRIVATE KEY-----`,
+    ),
+  );
+
+  it(
+    'H: a 300-character OSC 8 hyperlink URL wraps the word BEGIN itself, behind a stray cursor-hide/charset escape pair more than 4096 characters ahead of it',
+    { timeout: 60_000 },
+    expectNoPrefixedBodyLeakSweep(
+      STRAY_ESCAPE_PREFIX,
+      `-----${OSC_HYPERLINK(`http://${'a'.repeat(300)}`)}BEGIN${OSC_HYPERLINK('')} RSA PRIVATE KEY-----`,
+    ),
+  );
+
+  it(
+    'the cwd-with-separator shape, behind a stray cursor-hide/charset escape pair more than 4096 characters ahead of it',
+    { timeout: 60_000 },
+    async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const markerSuffix = cwdSeparatorMarkerSuffix(cwd);
+      expect(
+        PRIVATE_KEY_HEADER_PATTERN_FOR_SANITY_CHECK.test(markerSuffix),
+        'the raw marker already matches without stripping the OSC title and relativizing cwd — the fixture does not isolate the bug',
+      ).toBe(false);
+
+      const { logContent, tail } = await runPrefixedBodyLeakSweep(
+        STRAY_ESCAPE_PREFIX,
+        markerSuffix,
+        cwd,
+        runDir,
+      );
+
+      expectSweepFoundNoLeak(markerSuffix, logContent, tail);
     },
   );
 });

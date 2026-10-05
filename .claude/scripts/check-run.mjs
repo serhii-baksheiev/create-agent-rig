@@ -633,23 +633,20 @@ const hasOwnClosingDashes = (evalText, markerStart) => {
  * arrival of one of `relativizeCandidates` (`runCheck`'s own cwd/cwdReal/PWD
  * spellings, each with its own trailing separator — see
  * `buildPrefixCandidates`): `'growing'` while `remainder` is still a proper
- * prefix of some candidate (too short to say either way yet); `'complete'`
- * once `remainder` contains a candidate's own text IN FULL but not followed
- * by the separator `normalize`'s own `relativize` step needs to ever strip
- * it — the check's own cwd sitting inside the marker, with no separator ever
- * following it, is exactly this shape, and must never be read as ordinary
- * (harmless) padding; or `null` when `remainder` matches no candidate at
- * all. Bounded by `relativizeCandidates`' own size (a handful of entries)
+ * prefix of some candidate (too short to say either way yet), or `null`
+ * otherwise. `relativize` only ever strips a candidate TOGETHER WITH its own
+ * trailing separator (`buildPrefixCandidates` — every candidate carries a
+ * `/` or `\` of its own), so `remainder` containing a candidate's own text
+ * in full but with no separator after it is never text a key header can
+ * resolve to — ordinary log output naming the check's own cwd, with no
+ * separator following it, reads as harmless padding rather than arming the
+ * block. Bounded by `relativizeCandidates`' own size (a handful of entries)
  * and by `remainder`'s own length — never by anything the checked command
  * prints beyond this one marker's own trailing text.
  */
 const pendingCandidateStatus = (remainder, relativizeCandidates) => {
   for (const candidate of relativizeCandidates) {
     if (remainder.length < candidate.length && candidate.startsWith(remainder)) return 'growing';
-  }
-  for (const candidate of relativizeCandidates) {
-    const base = candidate.slice(0, -1);
-    if (remainder.length > base.length && remainder.startsWith(base)) return 'complete';
   }
   return null;
 };
@@ -659,8 +656,7 @@ const pendingCandidateStatus = (remainder, relativizeCandidates) => {
  * `evalText` (never on raw bytes — see `OPEN_HEADER_START`'s own comment,
  * above). `arm` is `'begin'` only for a fail-CLOSED case — an unresolved
  * BEGIN (or a marker-prefix-plus-candidate) this module cannot finish
- * reading before `OPEN_HEADER_MAX_CHARS`, or a relativize candidate that
- * arrives in full but without its own separator; the caller ORs it into
+ * reading before `OPEN_HEADER_MAX_CHARS`; the caller ORs it into
  * `lastLineMarker` rather than overwriting, exactly as the marker-scan
  * branch above it does. An unresolved END never arms this way — see
  * `OPEN_HEADER_MAX_CHARS`'s own comment.
@@ -684,24 +680,41 @@ const decideOpenHeaderCarry = (evalText, relativizeCandidates) => {
   }
 
   // Evaluate the escape rule BEFORE the marker-prefix rule below (RP-323
-  // round 4, the reviewer-validated fix): carries from the FIRST
-  // unresolved escape in `evalText`, not the last.
-  const escapeIndex = evalText.indexOf('\x1b');
-  if (escapeIndex !== -1) {
-    if (evalText.length - escapeIndex <= OPEN_HEADER_MAX_CHARS) {
+  // round 4): carries from the FIRST unresolved escape in `evalText`, not
+  // the last — UNLESS that first escape sits more than
+  // `OPEN_HEADER_MAX_CHARS` characters (minus the marker-prefix lookback)
+  // before the end AND is not itself a marker's own continuation (RP-323
+  // round 5): a stray escape this module can never resolve, planted far
+  // ahead of the header, would otherwise permanently shadow a
+  // legitimately open header's own (later, still-unresolved) escape. In
+  // that one case, re-evaluate from the first escape at or after
+  // `windowStart` — the earliest point this module would still carry from
+  // — instead of the stray one; finding none there falls through to the
+  // marker-prefix rule below as if no escape existed at all.
+  const firstEscapeIndex = evalText.indexOf('\x1b');
+  if (firstEscapeIndex !== -1) {
+    const windowStart = evalText.length - OPEN_HEADER_MAX_CHARS + OPEN_HEADER_START.length;
+    const precededByMarkerPrefix = (index) => {
+      const before = evalText.slice(Math.max(0, index - OPEN_HEADER_START.length), index);
+      return properPrefixSuffixLength(before, OPEN_HEADER_START) > 0;
+    };
+    const isStray = firstEscapeIndex < windowStart && !precededByMarkerPrefix(firstEscapeIndex);
+    const escapeIndex = isStray ? evalText.indexOf('\x1b', windowStart) : firstEscapeIndex;
+
+    if (escapeIndex !== -1) {
+      if (evalText.length - escapeIndex <= OPEN_HEADER_MAX_CHARS) {
+        return {
+          carry: evalText.slice(Math.max(0, escapeIndex - OPEN_HEADER_START.length)),
+          arm: null,
+        };
+      }
       return {
-        carry: evalText.slice(Math.max(0, escapeIndex - OPEN_HEADER_START.length)),
-        arm: null,
+        carry: null,
+        arm: precededByMarkerPrefix(escapeIndex) ? 'begin' : null,
       };
     }
-    const before = evalText.slice(
-      Math.max(0, escapeIndex - OPEN_HEADER_START.length),
-      escapeIndex,
-    );
-    return {
-      carry: null,
-      arm: properPrefixSuffixLength(before, OPEN_HEADER_START) > 0 ? 'begin' : null,
-    };
+    // No escape at or after `windowStart` — fall through to the
+    // marker-prefix rule below as if no escape existed at all.
   }
 
   // The marker-prefix rule: `evalText` ends with a proper prefix of
@@ -722,9 +735,6 @@ const decideOpenHeaderCarry = (evalText, relativizeCandidates) => {
       if (evalText.length - idx <= OPEN_HEADER_MAX_CHARS) {
         return { carry: evalText.slice(idx), arm: null };
       }
-      return { carry: null, arm: 'begin' };
-    }
-    if (status === 'complete') {
       return { carry: null, arm: 'begin' };
     }
   }
