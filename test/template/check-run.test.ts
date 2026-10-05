@@ -2980,19 +2980,10 @@ describe('a BEGIN header that matches the credential pattern only after cwd is r
 // themselves split by the read-chunk boundary, on an OVER-LIMIT line --------
 //
 // The straddle suites above place the split somewhere IN the padding, before
-// `PRIVATE KEY-----` ever starts. `OPEN_HEADER_PATTERN`'s own padding class
-// (`[A-Z0-9 ]`) does not admit a dash, so a split landing partway through the
-// FIVE closing dashes of `KEY-----` — some dashes in one disk-read chunk, the
-// rest in the next — leaves the carry unable to re-match on either side of
-// the split: the earlier call's own carry still ends in plain padding and is
-// stored, but the call that receives the remaining dashes evaluates text that
-// now contains a dash before `PRIVATE KEY-----` is complete, which
-// `OPEN_HEADER_PATTERN` cannot match and the full `PRIVATE_KEY_HEADER_PATTERN`
-// cannot match either (the closing dashes are still incomplete at that exact
-// call). The carry is dropped with nothing to replace it, and the ordinary
-// `OVERFLOW_TAIL_CHARS` (256) tail that takes over no longer reaches back far
-// enough to contain `-----BEGIN ` at all once a header this long (432
-// characters) has already scrolled past it.
+// `PRIVATE KEY-----` ever starts. The carry is dropped with nothing to
+// replace it, and the ordinary `OVERFLOW_TAIL_CHARS` (256) tail that takes
+// over no longer reaches back far enough to contain `-----BEGIN ` at all
+// once a header this long (432 characters) has already scrolled past it.
 
 const priorLineBytesForOffset = (offset: number): number => READ_CHUNK_BOUNDARY - offset - 1;
 
@@ -3064,13 +3055,7 @@ describe('a long-padded BEGIN header has its own CLOSING dashes split by the 64 
 //
 // The whole-segment OSC suites above place the escape sequence entirely
 // inside ONE chunk, where `stripAnsi`'s `OSC_PATTERN` sees both its opener
-// and its terminator together and strips it whole. A split landing partway
-// through the OPENER itself (`ESC` `]` in one chunk, the rest of the
-// sequence in the next) leaves that chunk's own evaluated text ending in a
-// raw, unstripped `ESC` `]` — not a valid `OPEN_HEADER_PATTERN` padding
-// character — so the same carry loss the closing-dash suite above pins
-// applies here too, for a header that would otherwise match once the OSC
-// sequence is stripped whole.
+// and its terminator together and strips it whole.
 
 describe('an OSC opener is split by the 64 KiB read-chunk boundary inside a BEGIN header, on an OVER-LIMIT line', () => {
   const BODY_LINE = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
@@ -3273,13 +3258,7 @@ describe('an OSC 8 hyperlink URL longer than 256 characters is split by the 64 K
 // OVER-LIMIT line, after ~300 characters of padding --------------------------
 //
 // The over-limit relativize suite above holds `cwd` whole within the single
-// segment that carries the rest of the header. Padding the header with 300
-// characters ahead of `cwd` and positioning the read-chunk boundary to fall
-// INSIDE the `cwd` text itself means neither call ever sees the whole `cwd`
-// substring: `relativize` cannot strip it from either half, so the raw path
-// characters (not in `OPEN_HEADER_PATTERN`'s own `[A-Z0-9 ]` padding class)
-// break the open-header carry the same way the closing-dash and OSC/CSI
-// suites above do.
+// segment that carries the rest of the header.
 
 describe('a BEGIN header matches the credential pattern only after relativize, and the cwd TEXT ITSELF is split by the 64 KiB read-chunk boundary, on an OVER-LIMIT line', () => {
   const BODY_LINE = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
@@ -3417,6 +3396,315 @@ describe('a BEGIN header pads past the 4096-character open-header cap while cros
   );
 });
 
+// --- RP-323 round-2 review: a NON-key BEGIN header crosses the open-header
+// cap on an over-limit line, arming the block for every later line ----------
+//
+// The fail-closed cap test above pads an actual (unspecified-kind) BEGIN
+// header past `OPEN_HEADER_MAX_CHARS` with no closing `PRIVATE KEY-----` on
+// the line and treats the resulting `lastLineMarker = 'begin'` as correct —
+// there is no way to tell, from that header alone, whether it would have
+// closed as a private key given more padding. A `CERTIFICATE` or
+// `PUBLIC KEY` header is not that case: it is never a private key, so no
+// `PRIVATE KEY-----`/END ever follows it, and the SAME cap arms `inPemBlock`
+// for the rest of the run regardless — redacting every later line, including
+// a later FAIL line and the line after it, which drops the failing test's
+// own identity out of `failedTests` and swallows the line that follows it.
+
+describe('a NON-key BEGIN header crosses the open-header cap on an over-limit line and arms the block for every later line', () => {
+  const OVER_LIMIT_SUFFIX_CHARS = 70_000;
+  const FAIL_LINE = 'FAIL test/a.test.ts > does a thing';
+
+  const expectNonKeyHeaderNeverArms = (header: string) => {
+    return async () => {
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'pem-non-key-overlimit-runner.mjs',
+        PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE,
+      );
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            priorLineBytes: 0,
+            header,
+            suffix: 'z'.repeat(OVER_LIMIT_SUFFIX_CHARS),
+            afterLines: [FAIL_LINE, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+
+      expect(
+        record!.data.failedTests,
+        'a later FAIL line was swallowed by a block a non-key header armed',
+      ).toContain('test/a.test.ts > does a thing');
+      expect(
+        logContent,
+        'the line after the FAIL line was swallowed by a block a non-key header armed',
+      ).toContain('after-ok');
+    };
+  };
+
+  it(
+    'still records the later FAIL line and after-ok, for a CERTIFICATE header',
+    { timeout: 20_000 },
+    expectNonKeyHeaderNeverArms('-----BEGIN CERTIFICATE-----'),
+  );
+
+  it(
+    'still records the later FAIL line and after-ok, for a PUBLIC KEY header',
+    { timeout: 20_000 },
+    expectNonKeyHeaderNeverArms('-----BEGIN PUBLIC KEY-----'),
+  );
+});
+
+// --- RP-323 round-2 review: an escape sequence sits INSIDE the `-----BEGIN `
+// marker itself, with the read-chunk edge landing more than 256 characters
+// into the header, on an OVER-LIMIT line -------------------------------------
+//
+// The OSC/CSI suites above all split an escape sequence that sits AFTER the
+// marker has already closed to `-----BEGIN ` in the raw text (padding, a
+// hyperlink URL, the header's own closing dashes). Here the escape sequence
+// instead sits BETWEEN the dashes and `BEGIN`, or wraps `BEGIN` itself, so
+// `rawText.includes(OPEN_HEADER_START)` never finds the literal, contiguous
+// `-----BEGIN ` substring at all — the carry this round adds never arms —
+// and once the read-chunk edge lands more than `OVERFLOW_TAIL_CHARS` (256)
+// characters past the marker, the small rolling tail that takes over has
+// already scrolled the dashes and `BEGIN` out of view on both sides of the
+// split.
+
+describe('an OSC 8 hyperlink wraps the word BEGIN itself, inside the marker, on an OVER-LIMIT line', () => {
+  const BODY_LINE = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
+  const END_LINE = '-----END RSA PRIVATE KEY-----';
+  const OVER_LIMIT_SUFFIX_BYTES = 70_000;
+  const LONG_URL = `http://${'a'.repeat(300)}`;
+  const header = `-----${OSC_HYPERLINK(LONG_URL)}BEGIN${OSC_HYPERLINK('')} RSA PRIVATE KEY-----`;
+  const OFFSET = 300;
+
+  it(
+    'still arms the block, even though the hyperlink wrapping BEGIN itself is split across the boundary',
+    { timeout: 20_000 },
+    async () => {
+      expect(header.length, 'the header is not long enough for this split').toBeGreaterThan(OFFSET);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'pem-osc-hyperlink-wraps-begin-runner.mjs',
+        PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE,
+      );
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            priorLineBytes: priorLineBytesForOffset(OFFSET),
+            header,
+            suffix: 'z'.repeat(OVER_LIMIT_SUFFIX_BYTES),
+            afterLines: [BODY_LINE, END_LINE, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+      const tail = record!.data.tail ?? '';
+
+      expect(
+        logContent,
+        'the key body leaked into the log — a hyperlink wrapping BEGIN itself, split across the read-chunk boundary, never armed the block',
+      ).not.toContain(BODY_LINE);
+      expect(tail, 'the key body leaked into the tail').not.toContain(BODY_LINE);
+      expect(logContent, 'the END line leaked into the log').not.toContain(END_LINE);
+      expect(tail, 'the END line leaked into the tail').not.toContain(END_LINE);
+      expect(logContent, 'the line after END was swallowed').toContain('after-ok');
+    },
+  );
+});
+
+describe('an OSC title sits inside the dashes of the marker itself, on an OVER-LIMIT line', () => {
+  const BODY_LINE = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
+  const END_LINE = '-----END RSA PRIVATE KEY-----';
+  const OVER_LIMIT_SUFFIX_BYTES = 70_000;
+  const header = `--${OSC_TITLE('x'.repeat(300))}---BEGIN RSA PRIVATE KEY-----`;
+  const OFFSET = 290;
+
+  it(
+    'still arms the block, even though the title sits inside the dashes and is split across the boundary',
+    { timeout: 20_000 },
+    async () => {
+      expect(header.length, 'the header is not long enough for this split').toBeGreaterThan(OFFSET);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'pem-osc-title-inside-dashes-runner.mjs',
+        PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE,
+      );
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            priorLineBytes: priorLineBytesForOffset(OFFSET),
+            header,
+            suffix: 'z'.repeat(OVER_LIMIT_SUFFIX_BYTES),
+            afterLines: [BODY_LINE, END_LINE, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+      const tail = record!.data.tail ?? '';
+
+      expect(
+        logContent,
+        "the key body leaked into the log — a title sitting inside the marker's own dashes, split across the read-chunk boundary, never armed the block",
+      ).not.toContain(BODY_LINE);
+      expect(tail, 'the key body leaked into the tail').not.toContain(BODY_LINE);
+      expect(logContent, 'the END line leaked into the log').not.toContain(END_LINE);
+      expect(tail, 'the END line leaked into the tail').not.toContain(END_LINE);
+      expect(logContent, 'the line after END was swallowed').toContain('after-ok');
+    },
+  );
+});
+
+describe('a CSI sequence sits between BEG and IN inside the marker itself, on an OVER-LIMIT line', () => {
+  const BODY_LINE = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
+  const END_LINE = '-----END RSA PRIVATE KEY-----';
+  const OVER_LIMIT_SUFFIX_BYTES = 70_000;
+  const header = `-----BEG\u001b[1mIN ${'A'.repeat(400)} RSA PRIVATE KEY-----`;
+  const OFFSET = 300;
+
+  it(
+    'still arms the block, even though the CSI sequence splits BEGIN itself and the padding is split across the boundary',
+    { timeout: 20_000 },
+    async () => {
+      expect(header.length, 'the header is not long enough for this split').toBeGreaterThan(OFFSET);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'pem-csi-inside-begin-runner.mjs',
+        PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE,
+      );
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            priorLineBytes: priorLineBytesForOffset(OFFSET),
+            header,
+            suffix: 'z'.repeat(OVER_LIMIT_SUFFIX_BYTES),
+            afterLines: [BODY_LINE, END_LINE, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+      const tail = record!.data.tail ?? '';
+
+      expect(
+        logContent,
+        'the key body leaked into the log — a CSI sequence splitting BEGIN itself, with the padding split across the read-chunk boundary, never armed the block',
+      ).not.toContain(BODY_LINE);
+      expect(tail, 'the key body leaked into the tail').not.toContain(BODY_LINE);
+      expect(logContent, 'the END line leaked into the log').not.toContain(END_LINE);
+      expect(tail, 'the END line leaked into the tail').not.toContain(END_LINE);
+      expect(logContent, 'the line after END was swallowed').toContain('after-ok');
+    },
+  );
+});
+
+describe('a CSI sequence sits between the first dash and the remaining dashes of the marker, on an OVER-LIMIT line', () => {
+  const BODY_LINE = 'MIIBVwIBADANBgkqhkiG9w0BAQEFAASCAT8wggE7AgEAAkEAuABCDEFGHIJKLMN';
+  const END_LINE = '-----END RSA PRIVATE KEY-----';
+  const OVER_LIMIT_SUFFIX_BYTES = 70_000;
+  const header = `-\u001b[0m----BEGIN ${'A'.repeat(300)} RSA PRIVATE KEY-----`;
+  const OFFSET = 300;
+
+  it(
+    'still arms the block, even though the CSI sequence splits the opening dashes and the padding is split across the boundary',
+    { timeout: 20_000 },
+    async () => {
+      expect(header.length, 'the header is not long enough for this split').toBeGreaterThan(OFFSET);
+
+      const cwd = await freshCwd();
+      const runDir = await freshRunDir();
+      const runnerPath = await writeFixture(
+        cwd,
+        'pem-csi-inside-dashes-runner.mjs',
+        PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE,
+      );
+
+      await runCheckRun(
+        [
+          '--name',
+          'unit',
+          '--',
+          process.execPath,
+          runnerPath,
+          JSON.stringify({
+            priorLineBytes: priorLineBytesForOffset(OFFSET),
+            header,
+            suffix: 'z'.repeat(OVER_LIMIT_SUFFIX_BYTES),
+            afterLines: [BODY_LINE, END_LINE, 'after-ok'],
+            exitCode: 1,
+          }),
+        ],
+        { cwd, env: hermeticEnv({ RIG_RUN_DIR: runDir }) },
+      );
+
+      const record = await latestCheckResult(runDir);
+      const logContent = await readFile(path.join(runDir, record!.data.log), 'utf8');
+      const tail = record!.data.tail ?? '';
+
+      expect(
+        logContent,
+        'the key body leaked into the log — a CSI sequence splitting the opening dashes, with the padding split across the read-chunk boundary, never armed the block',
+      ).not.toContain(BODY_LINE);
+      expect(tail, 'the key body leaked into the tail').not.toContain(BODY_LINE);
+      expect(logContent, 'the END line leaked into the log').not.toContain(END_LINE);
+      expect(tail, 'the END line leaked into the tail').not.toContain(END_LINE);
+      expect(logContent, 'the line after END was swallowed').toContain('after-ok');
+    },
+  );
+});
+
 // --- bounded time: a 20 MB single line of OSC-like noise --------------------
 //
 // RP-323 — a pin that the OSC gap above, once closed, must not be closed by
@@ -3461,21 +3749,15 @@ describe('a 20 MB single line of OSC-like noise (many unterminated ESC ] openers
 
 // --- bounded time: a 20 MB line exercising the open-header carry path ------
 //
-// RP-323 — the same pin as the OSC-noise suite above, aimed at the carry
-// this round adds rather than at `stripAnsi`: a single BEGIN opener followed
-// only by padding that never closes (`OPEN_HEADER_PATTERN`'s own repeated,
-// bounded `.exec` per segment), and many BEGIN openers each padded to just
-// under the 4096-character cap repeated back to back (the cap's own
-// `.exec` running again on every repetition). Built INSIDE the child (never
-// passed through argv) for the same reason `LONG_LINE_RUNNER_SOURCE` is —
-// see that fixture's own comment.
+// Built INSIDE the child (never passed through argv) for the same reason
+// `LONG_LINE_RUNNER_SOURCE` is — see that fixture's own comment.
 
 const BEGIN_THEN_PADDING_RUNNER_SOURCE = `
 const config = JSON.parse(process.argv[2] ?? '{}');
 const bytes = Number(config.lineBytes ?? 0);
 const opener = '-----BEGIN ';
-const repeats = Math.ceil(bytes / opener.length);
-process.stdout.write(opener.repeat(repeats).slice(0, bytes) + '\\n');
+const paddingBytes = Math.max(bytes - opener.length, 0);
+process.stdout.write(opener + 'A'.repeat(paddingBytes) + '\\n');
 process.exit(Number(config.exitCode ?? 0));
 `;
 

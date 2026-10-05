@@ -529,34 +529,95 @@ const OVERFLOW_TAIL_CHARS = 256;
 // is unbounded, so no FIXED-size `tail` can contain every header: a header
 // long enough to straddle a read-chunk boundary more than `OVERFLOW_TAIL_CHARS`
 // characters from either end pushes its own `-----BEGIN ` prefix out of that
-// small window before the segment carrying `PRIVATE KEY-----` ever arrives.
-// These two literals are plain ASCII, never produced or consumed by
-// `stripAnsi`/`relativize`, so whether a header has closed is legible
-// straight off the RAW (pre-`normalize`) text: `appendSegment` below finds
-// the LAST `OPEN_HEADER_START` in the raw `context + segment` and, while the
-// text from there to the end of that raw text has no `OPEN_HEADER_CLOSE` in
-// it, carries that raw suffix forward as next segment's context — in place
-// of the plain `OVERFLOW_TAIL_CHARS` tail — so the next segment's own
-// `normalize` call resolves whatever was split mid-escape, mid-path or
-// mid-dash exactly as if both segments had arrived together. Reading the
-// open/closed decision off the RAW text rather than the text `normalize`
-// produces is what makes that carry survive a read-chunk boundary landing
-// inside an escape opener, a long hyperlink URL, the header's own closing
-// dashes, or the raw `cwd` text a header matches only after relativize —
-// none of those leave `OPEN_HEADER_START`/`OPEN_HEADER_CLOSE` themselves any
-// less literal, even though each one defeats a check run against the
-// normalized text instead.
+// small window before the rest of the header ever arrives.
+//
+// `appendSegment` below decides the open/closed carry on `evalText` —
+// `normalize(context + segment)`, the SAME normalized text already computed
+// for the marker scan just above it — never on the raw bytes: a CSI sequence
+// sitting entirely inside one segment (so `normalize` resolves it
+// immediately) still breaks a literal, RAW `-----BEGIN ` substring search
+// even though the marker is already whole once stripped. An escape sequence
+// `normalize` cannot yet resolve — split mid-OSC by the read-chunk boundary
+// itself — is instead carried forward raw (together with up to
+// `OPEN_HEADER_START`'s own length of marker-prefix characters ahead of it)
+// so the next segment's `normalize` call completes it exactly as if both had
+// arrived together. A header closes at its OWN closing dashes (`-----`), not
+// at the key-specific `PRIVATE KEY-----`, so a header that is never a
+// private key (`CERTIFICATE`, `PUBLIC KEY`) closes there instead of reading
+// as open for the rest of the run.
+//
+// See `check-run.test.ts` (absent in a generated rig) › "still arms the
+// block, even though the CSI sequence splits BEGIN itself and the padding is
+// split across the boundary", › "still arms the block, even though the CSI
+// sequence splits the opening dashes and the padding is split across the
+// boundary", › "still arms the block, even though the hyperlink wrapping
+// BEGIN itself is split across the boundary", › "still arms the block, even
+// though the title sits inside the dashes and is split across the boundary",
+// › "still records the later FAIL line and after-ok, for a CERTIFICATE
+// header", and its `PUBLIC KEY` sibling.
 const OPEN_HEADER_START = '-----BEGIN ';
-const OPEN_HEADER_CLOSE = 'PRIVATE KEY-----';
 // A cap on how large that carried-forward open suffix may grow across
 // segments before this feeder fails CLOSED instead of growing it without
 // bound (`invariants.md`'s bounded-work rule): past this many characters of
-// padding with no closing `PRIVATE KEY-----` seen, the block is armed
-// outright (`lastLineMarker = 'begin'`) and the carry is dropped, falling
-// back to the ordinary `OVERFLOW_TAIL_CHARS` tail for whatever follows. See
+// padding with no closing dashes seen, the block is armed outright
+// (`lastLineMarker = 'begin'`) and the carry is dropped, falling back to the
+// ordinary `OVERFLOW_TAIL_CHARS` tail for whatever follows. See
 // `check-run.test.ts` (absent in a generated rig) › "still arms the block
 // once the carried-forward header text crosses the cap".
 const OPEN_HEADER_MAX_CHARS = 4096;
+
+/**
+ * The length of the longest proper (1..`marker.length - 1` characters)
+ * prefix of `marker` that `text` ends with, or 0 when none does. `marker`'s
+ * length is fixed (`OPEN_HEADER_START`), so this is a handful of `endsWith`
+ * checks, never a scan sized by `text`.
+ */
+const properPrefixSuffixLength = (text, marker) => {
+  for (let length = marker.length - 1; length >= 1; length -= 1) {
+    if (text.endsWith(marker.slice(0, length))) return length;
+  }
+  return 0;
+};
+
+/**
+ * The open-header carry for the NEXT `appendSegment` call, decided on
+ * `evalText` (never on raw bytes — see `OPEN_HEADER_START`'s own comment).
+ * `armBegin` is `true` only for the fail-CLOSED case (`OPEN_HEADER_MAX_CHARS`
+ * crossed with nothing left to carry); the caller ORs it into `lastLineMarker`
+ * rather than overwriting, exactly as the marker-scan branch above it does.
+ */
+const decideOpenHeaderCarry = (evalText) => {
+  const openIndex = evalText.lastIndexOf(OPEN_HEADER_START);
+  if (
+    openIndex !== -1 &&
+    !evalText.slice(openIndex + OPEN_HEADER_START.length).includes('-----')
+  ) {
+    if (evalText.length - openIndex <= OPEN_HEADER_MAX_CHARS) {
+      return { carry: evalText.slice(openIndex), armBegin: false };
+    }
+    // Fail CLOSED rather than growing the carry without bound
+    // (`OPEN_HEADER_MAX_CHARS`'s own comment).
+    return { carry: null, armBegin: true };
+  }
+
+  const prefixLength = properPrefixSuffixLength(evalText, OPEN_HEADER_START);
+  if (prefixLength > 0) {
+    return { carry: evalText.slice(-prefixLength), armBegin: false };
+  }
+
+  const escapeIndex = evalText.lastIndexOf('\x1b');
+  if (escapeIndex === -1) {
+    return { carry: null, armBegin: false };
+  }
+  if (evalText.length - escapeIndex <= OPEN_HEADER_MAX_CHARS) {
+    return {
+      carry: evalText.slice(Math.max(0, escapeIndex - OPEN_HEADER_START.length)),
+      armBegin: false,
+    };
+  }
+  const before = evalText.slice(Math.max(0, escapeIndex - OPEN_HEADER_START.length), escapeIndex);
+  return { carry: null, armBegin: properPrefixSuffixLength(before, OPEN_HEADER_START) > 0 };
+};
 
 /**
  * A streaming line splitter: feed chunks, get complete lines as they close.
@@ -613,11 +674,11 @@ const OPEN_HEADER_MAX_CHARS = 4096;
  * (none in this module) still gets ANSI/OSC stripped. See ›
  * "still arms the block — the over-limit incremental marker scan must
  * relativize before matching, the same as the per-line scan already does".
- * `OPEN_HEADER_START`/`OPEN_HEADER_CLOSE` (RP-323) additionally carry an
- * unterminated BEGIN header's own open suffix forward across segments — see
- * their own comment, above — in place of the plain `OVERFLOW_TAIL_CHARS`
- * tail, for exactly the case the normal-length straddle tests above already
- * cover for a line that never goes over the per-line cap at all: see ›
+ * `OPEN_HEADER_START` (RP-323) additionally carries an open (unterminated)
+ * BEGIN header's own suffix forward across segments — see its own comment,
+ * above — in place of the plain `OVERFLOW_TAIL_CHARS` tail, for exactly the
+ * case the normal-length straddle tests above already cover for a line that
+ * never goes over the per-line cap at all: see ›
  * "still arms the block, even though the line itself is over the 64 KiB
  * per-line cap".
  */
@@ -627,10 +688,11 @@ const makeLineFeeder = (onLine, { lineMaxBytes = LINE_MAX_BYTES, normalize = str
   let overLimit = false;
   let tail = '';
   let lastLineMarker = null;
-  // RP-323 — the open (unterminated) BEGIN header's own RAW suffix carried
-  // forward in place of `tail`, once this line's raw text ends mid-header;
-  // `null` when this line is not currently inside one. See
-  // `OPEN_HEADER_START`'s own comment, above.
+  // RP-323 — the open (unterminated) BEGIN header's own NORMALIZED suffix
+  // (`normalize(context + segment)`, never the raw bytes — see
+  // `OPEN_HEADER_START`'s own comment) carried forward in place of `tail`,
+  // once this line's evaluated text ends mid-header; `null` when this line
+  // is not currently inside one.
   let openHeaderCarry = null;
 
   const resetLine = () => {
@@ -645,33 +707,17 @@ const makeLineFeeder = (onLine, { lineMaxBytes = LINE_MAX_BYTES, normalize = str
   const appendSegment = (segment) => {
     if (segment.length > 0) {
       const context = openHeaderCarry !== null ? openHeaderCarry : tail;
-      const rawText = context + segment;
-      const evalText = normalize(rawText);
+      const evalText = normalize(context + segment);
       const beginIndex = lastMatchIndex(evalText, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
       const endIndex = lastMatchIndex(evalText, PRIVATE_KEY_END_PATTERN_GLOBAL);
       if (beginIndex !== -1 || endIndex !== -1) {
         lastLineMarker = beginIndex > endIndex ? 'begin' : 'end';
       }
-      // A cheap `includes` check first (RP-323): the overwhelming majority
-      // of segments carry no BEGIN at all, and skipping straight past
-      // `lastIndexOf` for them keeps this feeder's per-chunk cost close to
-      // the single linear scan the module header promises.
-      openHeaderCarry = null;
-      if (rawText.includes(OPEN_HEADER_START)) {
-        const openIndex = rawText.lastIndexOf(OPEN_HEADER_START);
-        const remainder = rawText.slice(openIndex);
-        if (!remainder.includes(OPEN_HEADER_CLOSE)) {
-          if (remainder.length <= OPEN_HEADER_MAX_CHARS) {
-            openHeaderCarry = remainder;
-          } else {
-            // Fail CLOSED rather than growing the carry without bound
-            // (`OPEN_HEADER_MAX_CHARS`'s own comment): a BEGIN header padded
-            // this far with no closing `PRIVATE KEY-----` seen is armed
-            // outright instead.
-            lastLineMarker = 'begin';
-          }
-        }
-      }
+
+      const decision = decideOpenHeaderCarry(evalText);
+      openHeaderCarry = decision.carry;
+      if (decision.armBegin) lastLineMarker = 'begin';
+
       tail = (tail + segment).slice(-OVERFLOW_TAIL_CHARS);
     }
     if (overLimit) return;
