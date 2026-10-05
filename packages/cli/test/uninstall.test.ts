@@ -1166,7 +1166,7 @@ describe('applyUninstall — the happy path', () => {
   // is the control: left untouched, its own `SKILL.md` is removed by this
   // run, and the directory that removal empties is still pruned exactly as
   // the test above already pins for `.claude/hooks`.
-  it('uninstall leaves the directory of an owned file the user had already deleted, while a directory emptied by its own removals is still pruned', async () => {
+  it('uninstall leaves a directory whose only owned file the user had already deleted, while a directory emptied by its own removals is still pruned', async () => {
     await installRig();
     const deletedByHand = '.claude/skills/diagnose/SKILL.md';
     const deletedByHandDir = abs('.claude/skills/diagnose');
