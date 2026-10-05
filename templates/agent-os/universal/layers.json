@@ -18,6 +18,7 @@
     ".claude/hooks/inject-rules.mjs",
     ".claude/hooks/guard-secret-file.mjs",
     ".claude/hooks/guard-rulebook.mjs",
+    ".claude/hooks/probity-gate.mjs",
     ".claude/hooks/guard-subagent-model.mjs",
     ".claude/hooks/warn-subagent-routing.mjs",
     ".claude/hooks/lib/edit-input.mjs",

@@ -1054,12 +1054,22 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       };
     };
 
+    // RP-415: a relay hands the payload bytes to another program and never
+    // interprets the edit, so it has no edit to normalise. It is held to the
+    // stricter property instead: its source never touches tool_input at all.
+    const RELAY_HOOKS = new Set(['.claude/hooks/probity-gate.mjs']);
     for (const group of config.hooks.PreToolUse) {
       if (!group.matcher?.includes('apply_patch')) continue;
       for (const hook of group.hooks) {
         const relativeHook = hook.command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
         expect(relativeHook, `cannot locate the hook in: ${hook.command}`).toBeDefined();
         const source = await text(universal, ...(relativeHook?.split('/') ?? []));
+        if (relativeHook && RELAY_HOOKS.has(relativeHook)) {
+          expect(source, `${relativeHook} is a relay but reads tool_input`).not.toMatch(
+            /tool_input/,
+          );
+          continue;
+        }
         expect(source, `${relativeHook} bypasses the shared edit normalizer`).toMatch(
           /from ['"]\.\/lib\/edit-input\.mjs['"]/,
         );
