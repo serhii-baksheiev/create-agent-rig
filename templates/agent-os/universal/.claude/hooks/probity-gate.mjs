@@ -7,9 +7,7 @@
 //   - It is INERT — exits 0, prints nothing, never even opens the project's
 //     `node_modules` — unless `.rig/integrations.json` carries an entry
 //     `{ id: 'probity', selected: true, harnesses: [...] }` naming THIS
-//     harness. No declaration, no opinion: a project that never adopted
-//     Probity pays nothing for this hook beyond one stdin read and a filter
-//     check on the tool name.
+//     harness.
 //   - When it IS declared and selected, it forwards the UNMODIFIED hook
 //     payload — the exact bytes this process received on stdin, not a
 //     reparsed or re-serialised copy — to the project-local launcher
@@ -86,11 +84,16 @@
 //     `check-run.mjs`'s own `killChildTree` uses) is killed and this hook
 //     fails open. See probity-gate.test.ts (absent in a generated rig) ›
 //     "returns within the configured bound, fails open, names the timeout on
-//     stderr, and kills the launcher child".
+//     stderr, and kills the launcher child". The answer is relayed only once
+//     the launcher has exited within the bound and printed at most
+//     MAX_LAUNCHER_OUTPUT_BYTES — see the same file › "relays nothing of an
+//     answer the launcher had only partly printed when the bound expired" and
+//     › "relays nothing when the launcher prints more than 1 MiB, and names
+//     the cap on stderr".
 //
 // Bounded work, per `.claude/rules/invariants.md`'s fail-open rule: one
 // synchronous stdin read, one JSON parse of it, one file read and one JSON
-// parse of the declaration, one spawn, one timer. No recursion, no loop over
+// parse of the declaration, one spawn, one timer, launcher output capped. No recursion, no loop over
 // anything sized by untrusted input.
 
 import { existsSync, readFileSync } from 'node:fs';
@@ -111,6 +114,9 @@ const FORWARDED_TOOLS = {
 };
 
 const DEFAULT_TIMEOUT_MS = 50_000;
+
+/** The most launcher output this hook buffers; Probity answers with one small JSON object. */
+const MAX_LAUNCHER_OUTPUT_BYTES = 1024 * 1024;
 
 const WHERE_PROBITY_BELONGS =
   'Probity (@nizos/probity) is selected for this harness in .rig/integrations.json, ' +
@@ -179,16 +185,19 @@ const spawnAndRelay = (launcherPath, harnessId, root, stdinBuffer) =>
     let settled = false;
     let stdoutEnded = false;
     let childClosed = false;
+    const chunks = [];
+    let bufferedBytes = 0;
 
-    const finish = () => {
+    const finish = (answer) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (answer !== undefined) process.stdout.write(answer);
       resolve(0);
     };
 
     const maybeFinish = () => {
-      if (stdoutEnded && childClosed) finish();
+      if (stdoutEnded && childClosed) finish(Buffer.concat(chunks));
     };
 
     const boundMs = timeoutMsFromEnv();
@@ -208,7 +217,17 @@ const spawnAndRelay = (launcherPath, harnessId, root, stdinBuffer) =>
     child.stdin.end();
 
     child.stdout.on('data', (chunk) => {
-      process.stdout.write(chunk);
+      if (settled) return;
+      bufferedBytes += chunk.length;
+      if (bufferedBytes > MAX_LAUNCHER_OUTPUT_BYTES) {
+        process.stderr.write(
+          `probity-gate: the Probity launcher printed more than ${MAX_LAUNCHER_OUTPUT_BYTES} bytes; failing open\n`,
+        );
+        killChildTree(child);
+        finish();
+        return;
+      }
+      chunks.push(chunk);
     });
     child.stdout.on('end', () => {
       stdoutEnded = true;

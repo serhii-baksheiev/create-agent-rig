@@ -127,6 +127,26 @@ function hangingLauncherScript(): string {
   ].join('\n');
 }
 
+/** A fake launcher that prints part of an answer, then never exits. */
+function partialThenHangLauncherScript(partial: string): string {
+  return [
+    "'use strict';",
+    `process.stdout.write(${JSON.stringify(partial)});`,
+    'setInterval(() => {}, 1000);',
+  ].join('\n');
+}
+
+/** A fake launcher that prints `bytes` bytes of output and exits 0. */
+function floodLauncherScript(bytes: number): string {
+  return [
+    "'use strict';",
+    'process.stdin.resume();',
+    "process.stdin.on('end', () => {",
+    `  process.stdout.write('x'.repeat(${bytes}), () => process.exit(0));`,
+    '});',
+  ].join('\n');
+}
+
 // ── Payload builders — the exact shapes Claude Code / Codex send ──
 
 const claudeWrite = (filePath = 'notes.txt') => ({
@@ -293,6 +313,47 @@ describe('probity-gate: declared and selected, launcher present — the forwarde
   });
 });
 
+describe('probity-gate: every forwarded tool reaches the launcher with its harness agent', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => removeFixture(root)));
+  });
+
+  it.each([
+    ['claude', 'Write', 'claude-code'],
+    ['claude', 'Edit', 'claude-code'],
+    ['claude', 'NotebookEdit', 'claude-code'],
+    ['codex', 'apply_patch', 'codex'],
+    ['codex', 'Edit', 'codex'],
+    ['codex', 'Write', 'codex'],
+  ] as const)('--harness=%s forwards %s with --agent %s', async (harness, toolName, agent) => {
+    const markerFile = path.join(
+      tmpdir(),
+      `probity-marker-forward-${harness}-${toolName}-${Date.now()}.json`,
+    );
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{}'),
+    });
+    roots.push(root);
+
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: toolName,
+      tool_input: {},
+    });
+    const result = await runGate([`--harness=${harness}`], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { argv: string[] };
+    expect(recorded.argv.slice(-2)).toEqual(['--agent', agent]);
+  });
+});
+
 describe('probity-gate: tool filtering — only the named tools are ever forwarded', () => {
   const roots: string[] = [];
   afterEach(async () => {
@@ -451,6 +512,48 @@ describe('probity-gate: a launcher that never exits is a bounded fail-open, not 
     expect(alive, 'the launcher child should have been killed once the gate gave up on it').toBe(
       false,
     );
+  });
+});
+
+describe('probity-gate: only a launcher that finished in time and within the output cap is relayed', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => removeFixture(root)));
+  });
+
+  it('relays nothing of an answer the launcher had only partly printed when the bound expired', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: partialThenHangLauncherScript(
+        '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"de',
+      ),
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+      RIG_PROBITY_GATE_TIMEOUT_MS: '1500',
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/timed out|timeout/i);
+  });
+
+  it('relays nothing when the launcher prints more than 1 MiB, and names the cap on stderr', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: floodLauncherScript(1024 * 1024 + 1),
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/1048576|1 MiB/);
   });
 });
 
