@@ -36,12 +36,20 @@ afterEach(async () => {
   await removeFixture(work);
 });
 
+// RP-359: on expiry run() kills the npx bootstrap's whole tree instead of
+// leaving npm exec/npm install orphaned. Below this file's own 300 s case
+// deadline (vitest.config.ts's `e2e` project default, left unchanged), so a
+// genuinely stalled bootstrap is cleaned up well before the case itself
+// times out.
+const LEGACY_BOOTSTRAP_TIMEOUT_MS = 240_000;
+
 /** Installs the pre-RP-186 payload (`fc75fe2`) into `appDir/name`. */
 async function installLegacyRig(appDir: string, name: string): Promise<string> {
   await mkdir(appDir, { recursive: true });
   await runNpx(['--yes', `--package=git+file://${repoRoot}#fc75fe2`, 'create-agent-rig', name], {
     cwd: appDir,
     env: installEnv(path.join(appDir, 'npx-cache')),
+    timeout: LEGACY_BOOTSTRAP_TIMEOUT_MS,
   });
   return path.join(appDir, name);
 }

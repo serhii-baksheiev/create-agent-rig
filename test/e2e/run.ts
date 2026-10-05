@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, type ChildProcess } from 'node:child_process';
 import { closeSync, existsSync, fstatSync, openSync, readSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -364,10 +364,168 @@ export const installEnv = (cache: string): NodeJS.ProcessEnv => ({
   npm_config_fund: 'false',
 });
 
+/** Absolute path, never resolved through `PATH` — security-scanner advisory, RP-359. */
+const POSIX_PS = '/bin/ps';
+
+/** `ps` is a local snapshot read, not a network call; bounded so a stuck `ps` cannot hang `killTree`. */
+const PS_TIMEOUT_MS = 5_000;
+
+/**
+ * Every live descendant of `rootPid`, from one `ps` snapshot walked
+ * breadth-first through its `ppid` column. Called exactly once, at the
+ * moment `run`'s own deadline (see below) fires — while the direct child,
+ * and so its whole tree, is still alive. Any later is too late: the
+ * instant a parent in that tree actually exits, its surviving children are
+ * reparented and the `ppid` link back to `rootPid` is gone.
+ *
+ * Total by construction: a `ps` failure (not installed, a platform quirk)
+ * yields no descendants rather than throwing — the direct child is still
+ * killed either way, by the caller.
+ */
+const descendantsOf = (rootPid: number): number[] => {
+  let output: string;
+  try {
+    output = execFileSync(POSIX_PS, ['-A', '-o', 'pid=,ppid='], {
+      encoding: 'utf8',
+      timeout: PS_TIMEOUT_MS,
+    });
+  } catch (error) {
+    // Surfaced rather than silent, for parity with the win32 branch below —
+    // the direct child is still killed either way, by the caller.
+    console.error(
+      `RP-359: ps could not list descendants of pid ${rootPid}: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return [];
+  }
+  const childrenOf = new Map<number, number[]>();
+  for (const line of output.split('\n')) {
+    const [pidText, ppidText] = line.trim().split(/\s+/);
+    const pid = Number(pidText);
+    const ppid = Number(ppidText);
+    if (!Number.isInteger(pid) || !Number.isInteger(ppid)) continue;
+    const siblings = childrenOf.get(ppid);
+    if (siblings) siblings.push(pid);
+    else childrenOf.set(ppid, [pid]);
+  }
+  const found: number[] = [];
+  const queue = [rootPid];
+  while (queue.length > 0) {
+    const pid = queue.shift() as number;
+    for (const kid of childrenOf.get(pid) ?? []) {
+      found.push(kid);
+      queue.push(kid);
+    }
+  }
+  return found;
+};
+
+/** Absolute path, never resolved through `PATH` — security-scanner advisory, RP-359. */
+const windowsTaskkillPath = (): string =>
+  path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe');
+
+/**
+ * Kills everything still running under `child`, then `child` itself — in
+ * that order, so nothing in the tree outlives the parent that would
+ * otherwise have kept it alive.
+ *
+ * On win32, `taskkill /T` reaches the whole tree AND the child in one call
+ * (Windows keeps a process's creation-time parent/child record even after
+ * that parent is gone, unlike POSIX's live `ppid`, which is rewritten on
+ * reparenting) — `child.kill()` after it only makes `execFile` itself see
+ * the child as killed (`child.killed`), which is what lets its own
+ * rejection carry `killed: true` for `commandFailureReport` below.
+ *
+ * RP-359 cold review, B2: `child.stdout`/`child.stderr` are destroyed
+ * unconditionally, first. `execFile`'s own `timeout` option used to close
+ * them when it fired; `run` disables that option in favour of this
+ * deadline (see `run`'s own comment), so nothing else does. A descendant
+ * that inherits the child's stdout — not piped afresh — can hold that pipe
+ * open long after the direct child itself has exited, and `exec`'s promise
+ * waits on the child's `close` event, which Node holds back until every
+ * stdio stream has closed. Without this, that promise never settles.
+ *
+ * The `ps`/`taskkill` walk below is skipped once the direct child has
+ * already exited (`exitCode`/`signalCode` set): its pid is reaped at that
+ * point and the OS is free to hand it to an unrelated process, so walking
+ * or signalling by that pid could reach a stranger rather than this tree.
+ * `child.kill()` is still called either way — on an already-exited child it
+ * is a harmless no-op — because `run`'s `timedOut` flag, not this call, is
+ * what makes the rejection carry the timeout report in that case.
+ */
+const killTree = (child: ChildProcess, killSignal: NodeJS.Signals | number | undefined): void => {
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.stdin?.destroy();
+
+  const pid = child.pid;
+  const alreadyExited = child.exitCode !== null || child.signalCode !== null;
+
+  if (pid != null && !alreadyExited) {
+    if (process.platform === 'win32') {
+      try {
+        execFileSync(windowsTaskkillPath(), ['/PID', String(pid), '/T', '/F'], {
+          stdio: 'ignore',
+        });
+      } catch {
+        // `taskkill` exits non-zero once there is nothing left under `pid` —
+        // the common case, since the deadline only fires while the child is
+        // still alive but may have already finished by the time this runs.
+        // Only a failure that is NOT "already gone" is a real cleanup
+        // problem; tell the two apart by asking whether `pid` still answers.
+        let stillRunning = true;
+        try {
+          process.kill(pid, 0);
+        } catch {
+          stillRunning = false;
+        }
+        if (stillRunning) {
+          // Surfaced rather than hidden, per RP-359 — but not thrown: a
+          // cleanup failure must not replace the rejection `run` is already
+          // reporting.
+          console.error(`RP-359: taskkill could not clean up descendants of pid ${pid}`);
+        }
+      }
+    } else {
+      for (const descendant of descendantsOf(pid)) {
+        try {
+          process.kill(descendant, 'SIGKILL');
+        } catch {
+          // ESRCH: already gone — exited on its own, or an earlier kill in
+          // this same loop already took a parent (and so this one) down.
+        }
+      }
+    }
+  }
+
+  try {
+    // A1: execFile's own default kill signal, matching the deadline this
+    // replaces. Descendants above still get SIGKILL — the tree, not the
+    // direct child, is where a graceful-shutdown handler would normally live.
+    child.kill(killSignal ?? 'SIGTERM');
+  } catch {
+    // already gone
+  }
+};
+
 /**
  * `execFile`, with the child's own output preserved on failure.
  *
  * A drop-in for the bare `exec(…)` calls the install suites used to make.
+ *
+ * RP-359: a `timeout` is never forwarded to `execFile` itself. `execFile`'s
+ * own timeout kills only the direct child, and it can never be made to
+ * kill the whole tree instead: it builds the `spawn()` options object it
+ * actually uses from a fixed property list — `cwd`, `env`, `gid`, `shell`,
+ * `signal`, `uid`, `windowsHide`, `windowsVerbatimArguments` — so a
+ * `detached` field on the caller's options is silently dropped and never
+ * reaches `spawn()` (checked against `node:child_process`'s own `execFile`
+ * source, not merely assumed), and the child can therefore never become
+ * the leader of its own POSIX process group through it. Once that kill has
+ * already run it is too late to find the rest of the tree a different
+ * way either, for the reason `descendantsOf` states. This file arms its
+ * own deadline instead and acts while the tree is still whole.
  */
 export const run = async (
   command: string,
@@ -375,18 +533,56 @@ export const run = async (
   options: Parameters<typeof exec>[2],
   reportedCommand = command,
 ): Promise<{ stdout: string; stderr: string }> => {
+  const timeoutMs = options?.timeout;
+  const armed = typeof timeoutMs === 'number' && timeoutMs > 0;
+  // `execFile`'s own default is 0 ("no timeout"); turning it off here (only
+  // when WE are taking over the deadline) leaves every other option —
+  // `cwd`, `env`, `maxBuffer`, `killSignal`, encoding, the `windows*` flags
+  // — passed through exactly as the caller gave them.
+  const execOptions = armed ? { ...options, timeout: 0 } : options;
+
+  let deadline: ReturnType<typeof setTimeout> | undefined;
+  // RP-359 cold review, B2: set the moment the deadline fires, independent
+  // of whatever `execFile` goes on to do next. Closing a descendant's
+  // inherited stdout (see `killTree`) can make `execFile` resolve normally
+  // — measured: the direct child had already exited 0 on its own, and
+  // `exec`'s promise was only waiting on the pipe that close freed — even
+  // though the deadline, not the child, is what decided this run. This flag
+  // is what still makes `run` report it as a timeout in that case.
+  let timedOut = false;
   try {
-    const { stdout, stderr } = await exec(command, args, options);
-    return { stdout: asText(stdout), stderr: asText(stderr) };
+    const execution = exec(command, args, execOptions);
+    if (armed) {
+      const child = execution.child;
+      deadline = setTimeout(() => {
+        timedOut = true;
+        killTree(child, options?.killSignal);
+      }, timeoutMs);
+      deadline.unref();
+    }
+
+    const result = await execution;
+    if (timedOut) {
+      // execFile resolved despite the deadline firing — throw so the catch
+      // block below builds the same timeout report it would have for an
+      // actual rejection.
+      throw { killed: true, stdout: result.stdout, stderr: result.stderr };
+    }
+    return { stdout: asText(result.stdout), stderr: asText(result.stderr) };
   } catch (error) {
     const cache = options?.env?.npm_config_cache;
     const failure: ExecFailure = typeof error === 'object' && error !== null ? error : {};
+    // The deadline decided this run even when `execFile` itself resolved or
+    // rejected for some other reason once its tree was torn down — force the
+    // same report `commandFailureReport` already renders when `killed` is
+    // true.
+    if (timedOut) failure.killed = true;
     throw new Error(
       commandFailureReport(
         `${reportedCommand} ${args.join(' ')}`,
-        error,
+        failure,
         npmDebugLogs(cache),
-        options?.timeout,
+        timeoutMs,
       ),
       // 🔴 Deliberately NOT `{ cause: error }`. The report above is redacted;
       // the original `execFile` rejection is not — it carries the raw `cmd`,
@@ -404,6 +600,8 @@ export const run = async (
       // eslint-disable-next-line preserve-caught-error -- see the paragraph above
       { cause: { code: failure.code, signal: failure.signal } },
     );
+  } finally {
+    if (deadline) clearTimeout(deadline);
   }
 };
 
