@@ -16,14 +16,15 @@
 //
 //   node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>
 //
-// Frozen mode resolves
-// `refs/remotes/origin/release/<package.json version>-rc` and
-// `refs/remotes/origin/master` EXACTLY — `git show-ref --verify --hash`, never
-// `git rev-parse`'s short-name DWIM fallback onto a same-named tag or branch —
-// and checks HEAD against the candidate sha, the release ref against HEAD, and
-// the candidate's ancestry in `origin/master`'s history. Any frozen-mode git
-// finding stops the run there: `npm pack` (which builds the real tarball) is
-// never reached once one has fired.
+// Both modes resolve `refs/remotes/origin/master` EXACTLY — `git show-ref
+// --verify --hash`, never `git rev-parse`'s short-name DWIM fallback onto a
+// same-named tag or branch, which would otherwise read a same-named tag or
+// branch as "origin/master" ahead of the real remote-tracking ref. Frozen
+// mode resolves `refs/remotes/origin/release/<package.json version>-rc` the
+// same exact way, and checks HEAD against the candidate sha, the release ref
+// against HEAD, and the candidate's ancestry in `origin/master`'s history.
+// Any frozen-mode git finding stops the run there: `npm pack` (which builds
+// the real tarball) is never reached once one has fired.
 //
 // Deliberately phrased as what it LOOKS AT rather than as what it guarantees.
 // The limits block below says what it cannot see.
@@ -582,12 +583,11 @@ function main() {
       );
     }
   } else {
-    let remote = '';
-    try {
-      remote = git(['rev-parse', 'origin/master']);
-    } catch {
-      // Left as '' — `gitFindings` reports it, and reports it once.
-    }
+    // `resolveExactRef`, not `git(['rev-parse', 'origin/master'])`: the same
+    // DWIM short-name fallback onto a same-named tag or branch that frozen
+    // mode's own lookup above avoids (see `resolveExactRef`'s own comment).
+    // `null` becomes `''` — `gitFindings` reports it, and reports it once.
+    const remote = resolveExactRef('refs/remotes/origin/master') ?? '';
     findings.push(...gitFindings({ status, head, remote }));
   }
 
