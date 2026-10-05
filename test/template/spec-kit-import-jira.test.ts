@@ -143,6 +143,8 @@ interface FakeJiraOptions {
   failIssueLinkInvolvingKeys?: string[];
   /** Same matching as above, but answers 201 while never persisting the link — models a write that lands without applying, caught only by the read-back. */
   dropIssueLinkInvolvingKeys?: string[];
+  /** The create request answers 201 while applying none of its `update.issuelinks` — caught only by the create path's read-back. */
+  dropCreateLinks?: boolean;
   projectKey?: string;
 }
 
@@ -319,7 +321,7 @@ const createFakeJira = (options: FakeJiraOptions = {}) => {
         ).update?.issuelinks ?? [];
       for (const entry of updateLinks) {
         const blockerKey = entry.add?.inwardIssue?.key;
-        if (blockerKey) addBlocksLink(key, blockerKey);
+        if (blockerKey && !options.dropCreateLinks) addBlocksLink(key, blockerKey);
       }
       return respond(201, {
         id: key,
@@ -799,6 +801,35 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
       ).toContain(t003Key);
     },
   );
+
+  it('a create whose Blocks link Jira did not apply fails on the read-back, names the keys created in this run and echoes no task text', async () => {
+    const sensitiveTitle = 'SENSITIVE_JIRA_TASK_TITLE_MUST_NOT_REACH_OUTPUT';
+    const { dir } = await scratchProject(
+      [
+        '# Tasks: Export',
+        '',
+        `- [ ] T001 ${sensitiveTitle}`,
+        '- [ ] T002 Generate exports (depends on T001)',
+        '',
+      ].join('\n'),
+    );
+    const jira = createFakeJira({ dropCreateLinks: true });
+    const { importSpecKit } = await loadImporter();
+
+    const thrown = await withFetch(jira, () =>
+      importSpecKit({ projectRoot: dir, target: 'jira' }),
+    ).then(
+      () => null,
+      (error: unknown) => error as Error,
+    );
+
+    expect(thrown, 'an unapplied create link must surface as a thrown error').toBeInstanceOf(Error);
+    expect(thrown!.message).toMatch(/Blocks link/);
+    expect(thrown!.message).not.toContain(sensitiveTitle);
+    expect(thrown!.message).not.toContain('Generate exports');
+    expect(thrown!.message).toContain(keyFor(jira, '001-export:T001'));
+    expect(thrown!.message).toContain(keyFor(jira, '001-export:T002'));
+  });
 
   it('refuses a stale projected link before any write', async () => {
     const tasks = [
