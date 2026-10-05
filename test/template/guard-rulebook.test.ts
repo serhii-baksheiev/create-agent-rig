@@ -174,12 +174,47 @@ const runControlledAdminShare = async (payload: object) => {
     .map((line) => JSON.parse(line) as { kind: string; candidate: string });
   return { ...result, entries };
 };
-const expectControlledAdminShareTrace = (entries: Array<{ kind: string; candidate: string }>) => {
+// RP-365: the guard's canonicalisation hands `realpathSync.native` the
+// `path.resolve` reading of the fixture's `//`-prefixed path.
+// `path.win32.resolve` keeps a UNC or verbatim-UNC spelling, so on win32 the
+// lookup reaches the controlled admin-share candidates; `path.posix.resolve`
+// collapses the leading `//` to `/`, which no controlled candidate can equal.
+// The evidence required below therefore depends on `process.platform`.
+const posixAdminShareCandidateOf = (filePath: string) =>
+  path.posix.resolve(
+    '//' +
+      filePath
+        .replace(/^\\\\\?\\UNC\\/, '')
+        .replace(/^\\\\/, '')
+        .replaceAll('\\', '/'),
+  );
+
+const expectControlledAdminShareTrace = (
+  entries: Array<{ kind: string; candidate: string }>,
+  filePath: string,
+) => {
   expect(entries.length).toBeGreaterThan(0);
   const uncEntries = entries.filter(
     (entry) => entry.candidate.startsWith('\\\\') || entry.candidate.startsWith('//'),
   );
   for (const entry of uncEntries) expect(controlledAdminSharePaths).toContain(entry.candidate);
+  // The two checks above hold for a trace made only of unrelated module-load
+  // candidates — neither one requires the walk to have ever reached this
+  // fixture's own admin-share path at all. Require that it did, on whichever
+  // delegation path this platform actually takes (see the rationale above).
+  if (process.platform === 'win32') {
+    expect(
+      entries.some(
+        (entry) =>
+          entry.kind === 'controlled' && controlledAdminSharePaths.includes(entry.candidate),
+      ),
+    ).toBe(true);
+  } else {
+    const expected = posixAdminShareCandidateOf(filePath);
+    expect(
+      entries.some((entry) => entry.kind === 'delegated-start' && entry.candidate === expected),
+    ).toBe(true);
+  }
 };
 const aliasedRoot = async () => {
   const alias = path.join(home, 'checkout-alias');
@@ -1530,7 +1565,7 @@ describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, n
         const result = await runControlledAdminShare(write(filePath));
         expect(result.code, result.stderr).toBe(2);
         expect(result.stderr).toMatch(/resolved against the repository root/i);
-        expectControlledAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries, filePath);
         return;
       }
       const result = await run(write(filePath));
@@ -1547,7 +1582,7 @@ describe('guard-rulebook: an unjudgeable UNC/device-namespace path is refused, n
         expect(result.code, result.stderr).toBe(0);
         expect(result.stderr).toBe('');
         expect(result.stdout).toBe('');
-        expectControlledAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries, filePath);
         return;
       }
       const result = await run(write(filePath));
@@ -1607,7 +1642,7 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
       if (controlledAdminShareFixturePaths.has(filePath)) {
         const result = await runControlledAdminShare(multiEdit257(filePath));
         expect(result.code, result.stderr).toBe(2);
-        expectControlledAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries, filePath);
         return;
       }
       const result = await run(multiEdit257(filePath));
@@ -1623,7 +1658,7 @@ describe('guard-rulebook: a MultiEdit global refusal is not exempt from the `//`
         expect(result.code, result.stderr).toBe(0);
         expect(result.stderr).toBe('');
         expect(result.stdout).toBe('');
-        expectControlledAdminShareTrace(result.entries);
+        expectControlledAdminShareTrace(result.entries, filePath);
         return;
       }
       const result = await run(multiEdit257(filePath));
