@@ -77,11 +77,14 @@ The compilation, identities and dry-run report are the GitHub target's
 github-issues target's shape and identities for the same tasks.md"). Each task
 becomes a Jira Task with the `rig-spec-kit` label and its identity marker as the
 first line of the description. Dependencies become native Blocks links,
-created together with the dependent issue, so the Jira queue holds a dependent
-until its blocker is done (› "an imported dependent is held by listEligible and
-selectNext until its blocker is done"). A re-import adds a missing link and
-leaves links it did not make alone (› "adds a missing Blocks link to an existing
-projected issue and leaves user links untouched"); a link between two projected
+created together with the dependent issue (› "creates dependents with their
+Blocks link in the create request (link direction), then an identical reimport
+is unchanged"), so the Jira queue holds a dependent until its blocker is done
+(› "an imported dependent is held by listEligible and selectNext until its
+blocker is done"). A re-import adds a missing link and leaves links it did not
+make alone (› "adds a missing Blocks link to an existing projected issue in the
+correct direction (link direction, repair path), and leaves user links
+untouched"); a link between two projected
 issues that `tasks.md` no longer lists is refused, never deleted — remove it by
 hand (› "refuses a stale projected link before any write").
 
@@ -90,12 +93,13 @@ search hit by key before treating it as projected, and refuses two issues
 claiming one identity (› "refuses an ambiguous projection, including one
 produced by a lagging index"). A failed write stops the import and names the
 issues already written; nothing is retried (› "a failed write names the
-completed keys, retries nothing, and echoes no task text"). After a partial
+completed keys, retries nothing, and echoes no task text" and › "a failed write
+after this run's creates (%s) names the keys created in this run and echoes no
+task text"). After a partial
 failure, run the dry run again and wait until it reports the named issues as
 `update` or `unchanged` before re-importing: an import run before the index
 catches up can create a second issue for the same task, which the next import
-then refuses as ambiguous. The importer is an operator command; the `loop`
-skill never runs it.
+then refuses as ambiguous.
 
 ## Run controllers against the shared queue
 

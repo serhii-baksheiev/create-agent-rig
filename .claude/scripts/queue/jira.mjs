@@ -866,9 +866,22 @@ export const search = async ({
       deadlineAt,
     });
     const received = page?.issues ?? [];
-    issues.push(...received.slice(0, Math.max(0, hardCap - issues.length)));
+    const room = Math.max(0, hardCap - issues.length);
+    // A page — including a FINAL one marked isLast — can carry more issues
+    // than the room left under hardCap. Dropping the overflow without
+    // flagging it would let a caller believe a short, isLast-terminated read
+    // was complete when it was actually capped.
+    const overflowedThisPage = received.length > room;
+    if (overflowedThisPage) truncated = true;
+    issues.push(...received.slice(0, room));
     const sent = nextPageToken;
     nextPageToken = page?.isLast === true ? null : (page?.nextPageToken ?? null);
+    if (overflowedThisPage && !nextPageToken) {
+      process.stderr.write(
+        `jira search: capped at ${hardCap} issues — the final page carried more than fit — ` +
+          'raise hardCap or narrow the JQL\n',
+      );
+    }
     if (nextPageToken && nextPageToken === sent) {
       process.stderr.write(
         `jira search: the server repeated page token ${JSON.stringify(sent)} — ` +

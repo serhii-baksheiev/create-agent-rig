@@ -1,33 +1,18 @@
 // RP-279 — the Jira half of the Spec Kit bridge. Everything about WHICH
 // tasks exist and HOW they depend on each other is the GitHub target's own
 // compilation, reused unchanged from `spec-kit-import.mjs`
-// (`parseTasks`/`dependenciesFor`/`reportFor`/`PROJECTED_LABEL` —
+// (`parseTasks`/`creationOrder`/`dependenciesFor`/`reportFor`/`PROJECTED_LABEL` —
 // `invariants.md`: one mechanism, one implementation). This file is only
 // what differs for Jira: a project key read from `.claude/queue.json`,
 // credentials from the environment, and native "Blocks"/"is blocked by"
 // issue links in place of a GitHub body line.
-//
-// The one piece deliberately NOT reused is `creationOrder` itself: its
-// "whole ready batch at once" tie-break is the GitHub target's own observed
-// behaviour (a committed contract this task must not change), and Jira's
-// native dependency links make write ORDER directly observable through
-// `listEligible`/`selectNext` the moment this run ends — a tie-break that
-// reorders an independent task ahead of a dependent one the file lists
-// first would let that independent task jump the dependent in the very
-// next selection, for no reason a reader of tasks.md could find. This
-// file's own `creationOrderForJira` below creates each task the instant its
-// own dependencies are satisfied, scanning from the START of tasks.md every
-// time — the same topological guarantee, with file order preserved
-// wherever the graph allows it. Pinned in `test/template/spec-kit-import-jira.test.ts`
-// (absent in a generated rig) › "an imported dependent is held by
-// listEligible and selectNext until its blocker is done".
 //
 // `importSpecKit` in `spec-kit-import.mjs` is the only public entry point —
 // it dynamically imports `importSpecKitToJira` here only once a caller asks
 // for `target: 'jira'`, which is also what keeps the two modules' mutual
 // reuse from being a circular STATIC import.
 import { join } from 'node:path';
-import { dependenciesFor, parseTasks, PROJECTED_LABEL, reportFor } from './spec-kit-import.mjs';
+import { creationOrder, dependenciesFor, parseTasks, PROJECTED_LABEL, reportFor } from './spec-kit-import.mjs';
 import {
   BLOCKED_BY,
   BLOCKS,
@@ -45,30 +30,6 @@ const markerOf = (identity) => `${MARKER_PREFIX}${identity}`;
 const identityOfMarker = (text) => (text.startsWith(MARKER_PREFIX) ? text.slice(MARKER_PREFIX.length) : null);
 
 const PERMISSIONS_NEEDED = ['BROWSE_PROJECTS', 'CREATE_ISSUES', 'EDIT_ISSUES', 'LINK_ISSUES'];
-
-/**
- * A topological sort of `tasks` that creates each one the instant its own
- * dependencies are satisfied, scanning from the start of tasks.md every time
- * — see this file's header for why this differs from the shared
- * `creationOrder` in `spec-kit-import.mjs`. Bounded by the same `MAX_TASKS`
- * `parseTasks` already enforces, so the repeated full-list scan below is
- * capped, not unbounded.
- */
-const creationOrderForJira = (tasks) => {
-  const byId = new Map(tasks.map((task) => [task.id, task]));
-  const remaining = new Map(tasks.map((task) => [task.id, new Set(task.dependencies)]));
-  const ordered = [];
-  while (remaining.size > 0) {
-    const readyId = [...remaining.keys()].find((id) => remaining.get(id).size === 0);
-    if (readyId === undefined) {
-      throw new Error('Spec Kit task dependencies contain a cycle; refusing before Jira writes.');
-    }
-    ordered.push(byId.get(readyId));
-    remaining.delete(readyId);
-    for (const dependencies of remaining.values()) dependencies.delete(readyId);
-  }
-  return ordered;
-};
 
 /** The same Atlassian-document shape `jira.mjs`'s own `comment`/`proposeTriage` build, multi-paragraph. */
 const adfOf = (paragraphs) => ({
@@ -169,6 +130,24 @@ const preflight = async ({ projectKey, env }) => {
 };
 
 /**
+ * Every issue key this bridge takes FROM Jira — a search hit, a create
+ * response — must match `<projectKey>-<positive integer>` before it is used
+ * in any further request path or trusted as owned. `projectKey` itself
+ * already passed through `jira.mjs`'s own `PROJECT_KEY` validation
+ * (`projectKeyOf`/`buildJql`), so it is safe to interpolate here unescaped.
+ */
+const assertOwnedKeyShape = (key, projectKey, context) => {
+  const shape = new RegExp(`^${projectKey}-[1-9][0-9]*$`);
+  if (typeof key !== 'string' || !shape.test(key)) {
+    throw new Error(
+      `jira spec-kit import: ${context} key ${JSON.stringify(key ?? null)} does not match the ` +
+        `expected ${projectKey}-<positive integer> shape; refusing before it is used.`,
+    );
+  }
+  return key;
+};
+
+/**
  * The rig-spec-kit-labelled hits, read by the exact query the dry-run report
  * also pins. `reportRepeatedTokenTruncation: true` — this importer is about
  * to WRITE from what it reads, so a server that repeats an ambiguous page
@@ -190,6 +169,7 @@ const searchProjected = async ({ projectKey, env }) => {
         'truncated — more pages existed than were read. Refusing before writing anything.',
     );
   }
+  for (const issue of response.issues) assertOwnedKeyShape(issue?.key, projectKey, 'search hit');
   return response.issues;
 };
 
@@ -218,21 +198,62 @@ const reReadOwned = async (hits, wantedIdentities, env) => {
   return new Map([...index].map(([identity, matches]) => [identity, matches[0]]));
 };
 
-const plannedChange = (task, owned) => {
-  if (!owned) return { identity: task.identity, action: 'create', dependencies: dependenciesFor(task) };
+/**
+ * The one change-detection function shared by the dry run and the real run
+ * (`invariants.md`: one mechanism, one implementation) — a dry-run plan that
+ * disagreed with what the real run goes on to report would be a second,
+ * silently different answer to "what changed". `keyOf` carries every
+ * identity's key already known at the time of the call: for the dry run,
+ * that is every OWNED identity only; for the real run, it also carries every
+ * identity created earlier in the same run — so a dependent whose blocker
+ * was just created in this run is compared against the blocker's real key,
+ * not treated as still missing.
+ *
+ * A missing Blocks link counts as drift exactly like a summary/description
+ * mismatch: a dependent whose body already matches but whose blocker link is
+ * absent — or whose blocker does not exist yet at all — is reported `update`,
+ * never `unchanged`, mirroring the GitHub target's own `changeFor`.
+ */
+const changeForJira = (task, owned, keyOf) => {
+  const dependencies = dependenciesFor(task);
+  if (!owned) return { identity: task.identity, action: 'create', dependencies };
+  const key = keyOf.get(task.identity) ?? owned.key;
   const marker = markerOf(task.identity);
   const currentSummary = owned.issue.fields?.summary ?? '';
   const currentParagraphs = paragraphsOf(owned.issue.fields?.description);
-  const changed =
+  const bodyChanged =
     currentSummary !== boundedSummary(task.title) ||
     currentParagraphs[0] !== marker ||
     currentParagraphs[1] !== task.title;
+  const ticket = toTicket({ key, fields: owned.issue.fields });
+  const existingBlockers = new Set(ticket.blockedBy.map((blocker) => blocker.id));
+  const missingLink = dependencies.some((dependencyIdentity) => {
+    const blockerKey = keyOf.get(dependencyIdentity);
+    // No key yet means the blocker itself does not exist yet: a link cannot
+    // be there, and one will be required once it does — drift either way.
+    return !blockerKey || !existingBlockers.has(blockerKey);
+  });
   return {
     identity: task.identity,
-    action: changed ? 'update' : 'unchanged',
-    dependencies: dependenciesFor(task),
+    action: bodyChanged || missingLink ? 'update' : 'unchanged',
+    dependencies,
   };
 };
+
+/**
+ * Every write this importer makes AFTER its own creates — a PUT, a Blocks
+ * link POST, or the read-back that confirms one landed — fails through this
+ * one constructor, matching the failed-create path's own shape: the task's
+ * IDENTITY and the keys already created in THIS run, never the task's title
+ * or body text, which is how a sensitive task description could otherwise
+ * reach a thrown message.
+ */
+const writeFailure = (step, identity, createdKeys, cause) =>
+  new Error(
+    `jira spec-kit import: failed ${step} for ${identity} after creating ` +
+      `${createdKeys.join(', ') || 'no issues'} — ${cause.message}`,
+    { cause },
+  );
 
 export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRun = false }) => {
   const env = process.env;
@@ -248,7 +269,7 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
   const projectKey = projectKeyOf({ project, jql });
 
   const { tasks } = parseTasks({ projectRoot, tasksPath });
-  const ordered = creationOrderForJira(tasks); // also validates the dependency graph has no cycle
+  const ordered = creationOrder(tasks); // also validates the dependency graph has no cycle
 
   const { linkTypeName } = await preflight({ projectKey, env });
 
@@ -277,12 +298,13 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
     }
   }
 
+  const keyOf = new Map([...owned].map(([identity, entry]) => [identity, entry.key]));
+
   if (dryRun) {
-    const planned = tasks.map((task) => plannedChange(task, owned.get(task.identity) ?? null));
+    const planned = tasks.map((task) => changeForJira(task, owned.get(task.identity) ?? null, keyOf));
     return reportFor(true, tasks, planned, 'jira');
   }
 
-  const keyOf = new Map([...owned].map(([identity, entry]) => [identity, entry.key]));
   const createdThisRun = new Set();
   const createdKeys = [];
   for (const task of ordered) {
@@ -297,11 +319,15 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
         description: adfOf([marker, task.title]),
         labels: [PROJECTED_LABEL],
       },
+      // Oracle, measured live on this project's own Jira (2026-10-05): in a
+      // create/edit request, `update.issuelinks[].add: {type, inwardIssue:
+      // {key: B}}` makes the issue being created BLOCKED BY B — `inwardIssue`
+      // names the blocker, never `outwardIssue`.
       ...(blockerKeys.length
         ? {
             update: {
               issuelinks: blockerKeys.map((blockerKey) => ({
-                add: { type: { name: linkTypeName }, outwardIssue: { key: blockerKey } },
+                add: { type: { name: linkTypeName }, inwardIssue: { key: blockerKey } },
               })),
             },
           }
@@ -319,16 +345,33 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
         { cause: error },
       );
     }
-    const key = created?.key;
-    if (typeof key !== 'string' || key === '') {
-      throw new Error(
-        `jira spec-kit import: the create response for ${task.identity} carried no issue key ` +
-          `after creating ${createdKeys.join(', ') || 'no issues'}.`,
-      );
-    }
+    const key = assertOwnedKeyShape(created?.key, projectKey, 'create response');
     keyOf.set(task.identity, key);
     createdThisRun.add(task.identity);
     createdKeys.push(key);
+
+    if (blockerKeys.length) {
+      // The create answered 2xx; that is not proof Jira applied the links
+      // this request asked for, exactly like the repair path's own
+      // read-back below.
+      let after;
+      try {
+        after = await request(`/rest/api/3/issue/${encodeURIComponent(key)}`, { env });
+      } catch (error) {
+        throw writeFailure(`reading back the newly created ${task.identity}`, task.identity, createdKeys, error);
+      }
+      const afterTicket = toTicket({ key, fields: after?.fields ?? {} });
+      const afterBlockers = new Set(afterTicket.blockedBy.map((blocker) => blocker.id));
+      const missing = blockerKeys.filter((blockerKey) => !afterBlockers.has(blockerKey));
+      if (missing.length > 0) {
+        throw writeFailure(
+          `confirming the Blocks link(s) for`,
+          task.identity,
+          createdKeys,
+          new Error(`created ${key} but the re-read issue does not show a Blocks link to ${missing.join(', ')}`),
+        );
+      }
+    }
   }
 
   const changes = [];
@@ -339,21 +382,27 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
     }
     const entry = owned.get(task.identity);
     const key = keyOf.get(task.identity);
+    const plan = changeForJira(task, entry, keyOf);
+
     const marker = markerOf(task.identity);
     const desiredSummary = boundedSummary(task.title);
     const desiredParagraphs = [marker, task.title];
     const currentSummary = entry.issue.fields?.summary ?? '';
     const currentParagraphs = paragraphsOf(entry.issue.fields?.description);
-    const changed =
+    const bodyChanged =
       currentSummary !== desiredSummary ||
       currentParagraphs[0] !== desiredParagraphs[0] ||
       currentParagraphs[1] !== desiredParagraphs[1];
-    if (changed) {
-      await request(`/rest/api/3/issue/${encodeURIComponent(key)}`, {
-        method: 'PUT',
-        body: { fields: { summary: desiredSummary, description: adfOf(desiredParagraphs) } },
-        env,
-      });
+    if (bodyChanged) {
+      try {
+        await request(`/rest/api/3/issue/${encodeURIComponent(key)}`, {
+          method: 'PUT',
+          body: { fields: { summary: desiredSummary, description: adfOf(desiredParagraphs) } },
+          env,
+        });
+      } catch (error) {
+        throw writeFailure(`updating`, task.identity, createdKeys, error);
+      }
     }
 
     const ticket = toTicket({ key, fields: entry.issue.fields });
@@ -361,33 +410,44 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
     for (const dependencyIdentity of dependenciesFor(task)) {
       const blockerKey = keyOf.get(dependencyIdentity);
       if (!blockerKey || existingBlockers.has(blockerKey)) continue;
-      await request('/rest/api/3/issueLink', {
-        method: 'POST',
-        body: {
-          type: { name: linkTypeName },
-          inwardIssue: { key },
-          outwardIssue: { key: blockerKey },
-        },
-        env,
-      });
+      try {
+        await request('/rest/api/3/issueLink', {
+          method: 'POST',
+          // Oracle, measured live on this project's own Jira (2026-10-05):
+          // POSTing `{type, inwardIssue: {key: A}, outwardIssue: {key: B}}`
+          // makes A BLOCK B — the blocker is `inwardIssue`, the dependent is
+          // `outwardIssue`.
+          body: {
+            type: { name: linkTypeName },
+            inwardIssue: { key: blockerKey },
+            outwardIssue: { key },
+          },
+          env,
+        });
+      } catch (error) {
+        throw writeFailure(`adding the Blocks link`, task.identity, createdKeys, error);
+      }
       // Read the dependent back and require the link to actually be there —
       // a POST answering 2xx is not proof Jira applied the link this importer
       // asked for.
-      const after = await request(`/rest/api/3/issue/${encodeURIComponent(key)}`, { env });
+      let after;
+      try {
+        after = await request(`/rest/api/3/issue/${encodeURIComponent(key)}`, { env });
+      } catch (error) {
+        throw writeFailure(`reading back the Blocks link`, task.identity, createdKeys, error);
+      }
       const afterTicket = toTicket({ key, fields: after?.fields ?? {} });
       if (!afterTicket.blockedBy.some((blocker) => blocker.id === blockerKey)) {
-        throw new Error(
-          `jira spec-kit import: added a Blocks link from ${key} to ${blockerKey} but the ` +
-            're-read issue does not show it; refusing to continue.',
+        throw writeFailure(
+          `confirming the Blocks link`,
+          task.identity,
+          createdKeys,
+          new Error(`added a Blocks link from ${key} to ${blockerKey} but the re-read issue does not show it`),
         );
       }
     }
 
-    changes.push({
-      identity: task.identity,
-      action: changed ? 'update' : 'unchanged',
-      dependencies: dependenciesFor(task),
-    });
+    changes.push(plan);
   }
 
   return reportFor(false, tasks, changes, 'jira');

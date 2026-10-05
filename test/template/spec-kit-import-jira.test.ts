@@ -131,6 +131,18 @@ interface FakeJiraOptions {
   searchTruncated?: boolean;
   /** Summaries whose create request answers 500 — modelling one failed write. */
   failCreateSummaries?: string[];
+  /** Summaries whose create response carries this key instead of a freshly minted one — models a malformed key Jira returned. */
+  createResponseKeyOverrides?: Record<string, string>;
+  /** PUT /issue/:key for these keys answers 500 — models a failed in-place update, after this run may already have created other issues. */
+  failPutKeys?: string[];
+  /**
+   * POST issueLink naming any of these keys (as EITHER inwardIssue or
+   * outwardIssue — matched regardless of which field the direction bug under
+   * test puts it in) answers 500 — models a failed link write.
+   */
+  failIssueLinkInvolvingKeys?: string[];
+  /** Same matching as above, but answers 201 while never persisting the link — models a write that lands without applying, caught only by the read-back. */
+  dropIssueLinkInvolvingKeys?: string[];
   projectKey?: string;
 }
 
@@ -157,6 +169,10 @@ const createFakeJira = (options: FakeJiraOptions = {}) => {
   };
   const createmetaHasIssueLinks = options.createmetaHasIssueLinks ?? true;
   const failCreateSummaries = new Set(options.failCreateSummaries ?? []);
+  const createResponseKeyOverrides = options.createResponseKeyOverrides ?? {};
+  const failPutKeys = new Set(options.failPutKeys ?? []);
+  const failIssueLinkInvolvingKeys = new Set(options.failIssueLinkInvolvingKeys ?? []);
+  const dropIssueLinkInvolvingKeys = new Set(options.dropIssueLinkInvolvingKeys ?? []);
   let nextId = 101;
 
   const calls: Call[] = [];
@@ -278,7 +294,7 @@ const createFakeJira = (options: FakeJiraOptions = {}) => {
       if (failCreateSummaries.has(summary)) {
         return respond(500, { errorMessages: ['internal error'] });
       }
-      const key = `${projectKey}-${nextId}`;
+      const key = createResponseKeyOverrides[summary] ?? `${projectKey}-${nextId}`;
       nextId += 1;
       const created: FakeIssue = {
         key,
@@ -289,14 +305,20 @@ const createFakeJira = (options: FakeJiraOptions = {}) => {
         links: [],
       };
       issues.set(key, created);
+      // Oracle (GET representation `fieldsOf` above already encodes, and the
+      // create/edit `update.issuelinks[].add` representation is the SAME
+      // shape): `inwardIssue` on the subject issue names its blocker,
+      // `outwardIssue` names something the subject blocks. A fake that
+      // decoded `outwardIssue` here as "the blocker" would silently agree
+      // with a production bug that writes the inverted direction.
       const updateLinks =
         (
           body as {
-            update?: { issuelinks?: Array<{ add?: { outwardIssue?: { key: string } } }> };
+            update?: { issuelinks?: Array<{ add?: { inwardIssue?: { key: string } } }> };
           }
         ).update?.issuelinks ?? [];
       for (const entry of updateLinks) {
-        const blockerKey = entry.add?.outwardIssue?.key;
+        const blockerKey = entry.add?.inwardIssue?.key;
         if (blockerKey) addBlocksLink(key, blockerKey);
       }
       return respond(201, {
@@ -309,6 +331,7 @@ const createFakeJira = (options: FakeJiraOptions = {}) => {
     if (singleIssue && method === 'PUT') {
       const issue = issues.get(singleIssue[1]!);
       if (!issue) return respond(404, { errorMessages: ['Issue does not exist'] });
+      if (failPutKeys.has(issue.key)) return respond(500, { errorMessages: ['internal error'] });
       const fields =
         (body as { fields?: { summary?: string; description?: unknown } }).fields ?? {};
       if (typeof fields.summary === 'string') issue.summary = fields.summary;
@@ -317,12 +340,27 @@ const createFakeJira = (options: FakeJiraOptions = {}) => {
     }
 
     if (url.pathname === '/rest/api/3/issueLink' && method === 'POST') {
+      // Measured live on this project's own Jira (2026-10-05): POSTing
+      // `{type: Blocks, inwardIssue: {key: A}, outwardIssue: {key: B}}` makes
+      // A BLOCK B — so `inwardIssue` here is the BLOCKER, `outwardIssue` is
+      // the DEPENDENT, never the other way round.
       const linkBody = body as { inwardIssue?: { key: string }; outwardIssue?: { key: string } };
-      const dependentKey = linkBody.inwardIssue?.key;
-      const blockerKey = linkBody.outwardIssue?.key;
+      const blockerKey = linkBody.inwardIssue?.key;
+      const dependentKey = linkBody.outwardIssue?.key;
       if (!dependentKey || !blockerKey)
         return respond(400, { errorMessages: ['missing issue keys'] });
-      addBlocksLink(dependentKey, blockerKey);
+      // Matched on EITHER field, not the decoded dependent alone: a test
+      // exercising the still-inverted production direction must still be
+      // able to target this exact write by the real-world key it names.
+      if (
+        failIssueLinkInvolvingKeys.has(dependentKey) ||
+        failIssueLinkInvolvingKeys.has(blockerKey)
+      ) {
+        return respond(500, { errorMessages: ['internal error'] });
+      }
+      const drop =
+        dropIssueLinkInvolvingKeys.has(dependentKey) || dropIssueLinkInvolvingKeys.has(blockerKey);
+      if (!drop) addBlocksLink(dependentKey, blockerKey);
       return respond(201, {});
     }
 
@@ -408,7 +446,7 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
     expect(jira.calls.filter(isMutatingCall), 'a dry run reads only and never writes').toEqual([]);
   });
 
-  it('creates dependents with their Blocks link in the create request, then an identical reimport is unchanged', async () => {
+  it('creates dependents with their Blocks link in the create request (link direction), then an identical reimport is unchanged', async () => {
     const { dir } = await scratchProject();
     const jira = createFakeJira();
     const { importSpecKit } = await loadImporter();
@@ -417,13 +455,18 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
     expect(first).toMatchObject({ counts: { create: 3, update: 0, unchanged: 0 } });
 
     const t001Key = keyFor(jira, '001-export:T001');
-    const t002 = jira.issues.get(keyFor(jira, '001-export:T002'))!;
+    const t002Key = keyFor(jira, '001-export:T002');
+    const t002 = jira.issues.get(t002Key)!;
     const t003 = jira.issues.get(keyFor(jira, '001-export:T003'))!;
 
     expect(t002.labels).toContain('rig-spec-kit');
     expect(t002.labels).not.toContain('triage');
     expect(t002.labels).not.toContain('operator-queue');
     expect(t002.paragraphs).toEqual(['rig-spec-kit-task:001-export:T002', 'Generate exports']);
+    // Link direction (create path): the GET representation `jira.mjs`'s own
+    // `toTicket` reads carries the dependent's blocker as an `inwardIssue`
+    // (`fieldsOf` above only ever emits `inwardIssue` for a `blockedBy`
+    // relation) — recorded here through the fake's own state, not inferred.
     expect(t002.links).toEqual([{ relation: 'blockedBy', otherKey: t001Key }]);
     expect(t003.links).toEqual([]);
 
@@ -433,22 +476,37 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
         call.pathname === '/rest/api/3/issue' &&
         (call.body as { fields: { summary: string } }).fields.summary === t002.summary,
     );
+    // Oracle: in a create/edit request, `add: {type, inwardIssue: {key: B}}`
+    // makes the issue being created blocked BY B — never `outwardIssue`,
+    // which would make the new issue BLOCK B instead.
     expect(
       (
         t002Create?.body as {
           update?: {
             issuelinks?: Array<{
-              add?: { type?: { name: string }; outwardIssue?: { key: string } };
+              add?: { type?: { name: string }; inwardIssue?: { key: string } };
             }>;
           };
         }
       )?.update?.issuelinks,
-    ).toEqual([{ add: { type: { name: 'Blocks' }, outwardIssue: { key: t001Key } } }]);
+    ).toEqual([{ add: { type: { name: 'Blocks' }, inwardIssue: { key: t001Key } } }]);
     expect(
       jira.calls.filter(
         (call) => call.method === 'POST' && call.pathname === '/rest/api/3/issueLink',
       ),
     ).toEqual([]);
+
+    const { toTicket } = await load('jira.mjs');
+    const rawByKey = (key: string) => jira.rawIssues().find((raw) => raw.key === key);
+    const dependentTicket = toTicket(rawByKey(t002Key)) as {
+      blockedBy: Array<{ id: string }>;
+    };
+    expect(dependentTicket.blockedBy.map((blocker) => blocker.id)).toEqual([t001Key]);
+    const blockerTicket = toTicket(rawByKey(t001Key)) as { blockedBy: Array<{ id: string }> };
+    expect(
+      blockerTicket.blockedBy.map((blocker) => blocker.id),
+      'the blocker must never read as blocked by its own dependent',
+    ).not.toContain(t002Key);
 
     const second = await withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' }));
     expect(second).toMatchObject({ counts: { create: 0, update: 0, unchanged: 3 } });
@@ -460,6 +518,9 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
   });
 
   it('an imported dependent is held by listEligible and selectNext until its blocker is done', async () => {
+    // Deliberately silent on WHICH independent task (T001 or T003) is picked
+    // first: that tie-break belongs to `creationOrder`/`selectNext`, not to
+    // this test. The only claim this test owns is the dependent's own hold.
     const { dir } = await scratchProject();
     const jira = createFakeJira();
     const { importSpecKit } = await loadImporter();
@@ -475,18 +536,60 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
       ticket: { id: string } | null;
       skipped: Array<{ id: string; causes: string[] }>;
     };
-    expect(selectedBefore.ticket?.id).toBe(t001Key);
+    expect(
+      selectedBefore.ticket?.id,
+      'the dependent must never be the one selected while its blocker is open',
+    ).not.toBe(t002Key);
     expect(selectedBefore.skipped).toContainEqual(
       expect.objectContaining({ id: t002Key, causes: ['blocked'] }),
     );
 
     jira.issues.get(t001Key)!.statusCategory = 'done';
     const afterDone = (await listEligible({ issues: jira.rawIssues() })) as Array<{ id: string }>;
-    const selectedAfter = selectNext(afterDone, {}) as { ticket: { id: string } | null };
-    expect(selectedAfter.ticket?.id).toBe(t002Key);
+    const selectedAfter = selectNext(afterDone, {}) as {
+      ticket: { id: string } | null;
+      skipped: Array<{ id: string }>;
+    };
+    expect(
+      selectedAfter.skipped.some((skip) => skip.id === t002Key),
+      'once its blocker is done the dependent must no longer be held back',
+    ).toBe(false);
   });
 
-  it('adds a missing Blocks link to an existing projected issue and leaves user links untouched', async () => {
+  it('creates issues in the shared creationOrder from spec-kit-import.mjs, not a second ordering', async () => {
+    const { dir } = await scratchProject();
+    const jira = createFakeJira();
+    const { importSpecKit } = await loadImporter();
+    const { creationOrder, parseTasks } = (await load('spec-kit-import.mjs')) as {
+      creationOrder: (tasks: unknown[]) => Array<{ identity: string }>;
+      parseTasks: (options: { projectRoot: string }) => { tasks: unknown[] };
+    };
+
+    await withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' }));
+
+    const { tasks } = parseTasks({ projectRoot: dir });
+    const expectedOrder = creationOrder(tasks).map((task) => task.identity);
+
+    const createCalls = jira.calls.filter(
+      (call) => call.method === 'POST' && call.pathname === '/rest/api/3/issue',
+    );
+    const actualOrder = createCalls.map((call) => {
+      const fields = (call.body as { fields: { description: unknown } }).fields;
+      const marker = paragraphsOfAdf(fields.description)[0] ?? '';
+      return marker.startsWith('rig-spec-kit-task:')
+        ? marker.slice('rig-spec-kit-task:'.length)
+        : marker;
+    });
+
+    expect(
+      actualOrder,
+      'the Jira target must create issues in the SAME order the shared creationOrder ' +
+        'produces for this tasks.md — a second, Jira-only ordering is a second answer ' +
+        'to the same question',
+    ).toEqual(expectedOrder);
+  });
+
+  it('adds a missing Blocks link to an existing projected issue in the correct direction (link direction, repair path), and leaves user links untouched', async () => {
     const { dir } = await scratchProject();
     const existing: FakeIssue[] = [
       {
@@ -528,6 +631,11 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
 
     await withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' }));
 
+    // Link direction (repair path). Oracle, measured live on this project's
+    // own Jira (2026-10-05): POSTing `{inwardIssue: {key: A}, outwardIssue:
+    // {key: B}}` makes A BLOCK B. RP-2 (the dependent) must be BLOCKED BY
+    // RP-1 (the blocker) — so RP-1 is the `inwardIssue`, RP-2 the
+    // `outwardIssue`, never the other way round.
     expect(
       jira.calls.filter(
         (call) => call.method === 'POST' && call.pathname === '/rest/api/3/issueLink',
@@ -539,8 +647,8 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
         search: '',
         body: {
           type: { name: 'Blocks' },
-          inwardIssue: { key: 'RP-2' },
-          outwardIssue: { key: 'RP-1' },
+          inwardIssue: { key: 'RP-1' },
+          outwardIssue: { key: 'RP-2' },
         },
       },
     ]);
@@ -551,7 +659,146 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
     expect(rp2.links).toContainEqual({ relation: 'blockedBy', otherKey: 'RP-1' });
     expect(rp2.links).toContainEqual({ relation: 'relatesTo', otherKey: 'RP-500' });
     expect(jira.issues.get('RP-500')!.links).toEqual([{ relation: 'relatesTo', otherKey: 'RP-2' }]);
+
+    const { toTicket } = await load('jira.mjs');
+    const rawByKey = (key: string) => jira.rawIssues().find((raw) => raw.key === key);
+    const dependentTicket = toTicket(rawByKey('RP-2')) as { blockedBy: Array<{ id: string }> };
+    expect(dependentTicket.blockedBy.map((blocker) => blocker.id)).toEqual(['RP-1']);
+    const blockerTicket = toTicket(rawByKey('RP-1')) as { blockedBy: Array<{ id: string }> };
+    expect(
+      blockerTicket.blockedBy.map((blocker) => blocker.id),
+      'the blocker must never read as blocked by its own dependent',
+    ).not.toContain('RP-2');
   });
+
+  it('reports update, not unchanged, for a dependent whose only drift is a missing Blocks link — dry run and real run', async () => {
+    const { dir } = await scratchProject();
+    // Title and description already match desired state; only the Blocks
+    // link to RP-1 is missing. The GitHub target reports this as `update`
+    // because the link lives IN the body it compares — Jira's own report
+    // must name the same drift as `update`, not `unchanged`, even though the
+    // link lives outside the summary/description it compares today.
+    const existingOf = (): FakeIssue[] => [
+      {
+        key: 'RP-1',
+        summary: 'Create the export configuration',
+        paragraphs: ['rig-spec-kit-task:001-export:T001', 'Create the export configuration'],
+        labels: ['rig-spec-kit'],
+        statusCategory: 'new',
+        links: [],
+      },
+      {
+        key: 'RP-2',
+        summary: 'Generate exports',
+        paragraphs: ['rig-spec-kit-task:001-export:T002', 'Generate exports'],
+        labels: ['rig-spec-kit'],
+        statusCategory: 'new',
+        links: [],
+      },
+      {
+        key: 'RP-3',
+        summary: 'Document why T002 exists',
+        paragraphs: ['rig-spec-kit-task:001-export:T003', 'Document why T002 exists'],
+        labels: ['rig-spec-kit'],
+        statusCategory: 'new',
+        links: [],
+      },
+    ];
+    const { importSpecKit } = await loadImporter();
+
+    const dryJira = createFakeJira({ issues: existingOf() });
+    const dryReport = await withFetch(dryJira, () =>
+      importSpecKit({ projectRoot: dir, dryRun: true, target: 'jira' }),
+    );
+    expect(dryReport).toMatchObject({
+      counts: { create: 0, update: 1, unchanged: 2 },
+      changes: [
+        { identity: '001-export:T002', action: 'update', dependencies: ['001-export:T001'] },
+      ],
+    });
+
+    const realJira = createFakeJira({ issues: existingOf() });
+    const realReport = await withFetch(realJira, () =>
+      importSpecKit({ projectRoot: dir, target: 'jira' }),
+    );
+    expect(realReport).toMatchObject({
+      counts: { create: 0, update: 1, unchanged: 2 },
+      changes: [
+        { identity: '001-export:T002', action: 'update', dependencies: ['001-export:T001'] },
+      ],
+    });
+  });
+
+  it.each([
+    ['PUT update', 'put'],
+    ['POST issueLink', 'link'],
+    ['link read-back mismatch', 'mismatch'],
+  ] as const)(
+    "a failed write after this run's creates (%s) names the keys created in this run and echoes no task text",
+    async (_label, kind) => {
+      const sensitiveTitle = 'SENSITIVE_JIRA_TASK_TITLE_MUST_NOT_REACH_OUTPUT';
+      const tasks = [
+        '# Tasks: Export',
+        '',
+        `- [ ] T001 ${sensitiveTitle}`,
+        '- [ ] T002 Generate exports (depends on T001)',
+        '- [ ] T003 Document why T002 exists',
+        '',
+      ].join('\n');
+      const { dir } = await scratchProject(tasks);
+      const existing: FakeIssue[] = [
+        {
+          key: 'RP-1',
+          summary: sensitiveTitle,
+          paragraphs: ['rig-spec-kit-task:001-export:T001', sensitiveTitle],
+          labels: ['rig-spec-kit'],
+          // A stale summary when kind === 'put' forces the PUT path; otherwise
+          // left matching so only the link write is exercised.
+          statusCategory: 'new',
+          links: [],
+        },
+        {
+          key: 'RP-2',
+          summary: kind === 'put' ? 'stale summary — forces a PUT' : 'Generate exports',
+          paragraphs: [
+            'rig-spec-kit-task:001-export:T002',
+            kind === 'put' ? 'stale summary — forces a PUT' : 'Generate exports',
+          ],
+          labels: ['rig-spec-kit'],
+          statusCategory: 'new',
+          // The Blocks link to RP-1 is MISSING in every case — for `put` it
+          // repairs after the (failing) PUT; for `link`/`mismatch` it is the
+          // write under test.
+          links: [],
+        },
+        // T003 is NOT pre-existing: it is created fresh by this run, so its
+        // key is one "created in this run" that the thrown error must name.
+      ];
+      const jira = createFakeJira({
+        issues: existing,
+        failPutKeys: kind === 'put' ? ['RP-2'] : [],
+        failIssueLinkInvolvingKeys: kind === 'link' ? ['RP-2'] : [],
+        dropIssueLinkInvolvingKeys: kind === 'mismatch' ? ['RP-2'] : [],
+      });
+      const { importSpecKit } = await loadImporter();
+
+      const thrown = await withFetch(jira, () =>
+        importSpecKit({ projectRoot: dir, target: 'jira' }),
+      ).then(
+        () => null,
+        (error: unknown) => error as Error,
+      );
+
+      expect(thrown, `${_label} must surface as a thrown error`).toBeInstanceOf(Error);
+      expect(thrown!.message).not.toContain(sensitiveTitle);
+      expect(thrown!.message).not.toContain('Generate exports');
+      const t003Key = keyFor(jira, '001-export:T003');
+      expect(
+        thrown!.message,
+        'the error must name the key(s) created by THIS run, exactly like the failed-create case',
+      ).toContain(t003Key);
+    },
+  );
 
   it('refuses a stale projected link before any write', async () => {
     const tasks = [
@@ -770,5 +1017,61 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
       withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' })),
     ).rejects.toThrow(/adapter|project|jira/i);
     expect(jira.calls, 'a config refusal must happen before any Jira request').toEqual([]);
+  });
+
+  describe('issue keys read from Jira are shape-checked before use', () => {
+    it.each([
+      ['..', 'carries no project-number shape at all'],
+      ['OTHER-5', 'names a different project than this import is configured for'],
+      ['RP-0', 'is not a positive issue number'],
+    ])('refuses a search hit whose key is %s (%s) before writing anything', async (badKey) => {
+      const tasks = '# Tasks: Export\n\n- [ ] T001 Create the export configuration\n';
+      const { dir } = await scratchProject(tasks);
+      const badHit: FakeIssue = {
+        key: badKey,
+        summary: 'Create the export configuration',
+        paragraphs: ['rig-spec-kit-task:001-export:T001', 'Create the export configuration'],
+        labels: ['rig-spec-kit'],
+        statusCategory: 'new',
+        links: [],
+      };
+      const jira = createFakeJira({ issues: [badHit], forceSearchHits: [badKey] });
+      const { importSpecKit } = await loadImporter();
+
+      await expect(
+        withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' })),
+      ).rejects.toThrow(/key|shape|RP-/i);
+      expect(
+        jira.calls.filter(isMutatingCall),
+        'a malformed key must be refused before any write, exactly like every other preflight refusal',
+      ).toEqual([]);
+    });
+
+    it('refuses a create response whose key is not <PROJECT>-<positive integer>, before it is used to build any further request', async () => {
+      const sensitiveSecondTitle = 'Generate exports';
+      const { dir } = await scratchProject();
+      const jira = createFakeJira({
+        createResponseKeyOverrides: { 'Create the export configuration': 'OTHER-5' },
+      });
+      const { importSpecKit } = await loadImporter();
+
+      await expect(
+        withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' })),
+      ).rejects.toThrow(/key|shape|RP-/i);
+      const createCalls = jira.calls.filter(
+        (call) => call.method === 'POST' && call.pathname === '/rest/api/3/issue',
+      );
+      expect(
+        createCalls,
+        "the malformed key must never be used to build the dependent task's own create request",
+      ).toHaveLength(1);
+      expect(
+        createCalls.some(
+          (call) =>
+            (call.body as { fields: { summary: string } }).fields.summary === sensitiveSecondTitle,
+        ),
+        'T002 must never be created from a blocker key this import never validated',
+      ).toBe(false);
+    });
   });
 });
