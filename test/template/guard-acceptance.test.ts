@@ -374,7 +374,15 @@ describe('guard-rulebook.mjs, run through the shipped wiring, on both harnesses'
  */
 // Empty today: every wired PreToolUse guard is executed above. An entry here
 // names a guard this file cannot execute through its wiring, and the reason.
-const ACCEPTANCE_EXCEPTIONS: Record<string, string> = {};
+const ACCEPTANCE_EXCEPTIONS: Record<string, string> = {
+  // RP-415: not a guard. It refuses nothing itself except when probity is
+  // declared and its launcher is missing, and Probity's own refusal is a JSON
+  // decision on stdout with exit 0 — never the exit 2 this file's denied
+  // fixtures require. Its relay, inertness and refusal are pinned in
+  // test/template/probity-gate.test.ts.
+  'probity-gate.mjs':
+    'relay to upstream Probity; refusals are JSON on stdout with exit 0, pinned in probity-gate.test.ts',
+};
 
 async function guardSection(): Promise<string> {
   const doc = await readFile(path.join(repoRoot, 'docs', 'compatibility.md'), 'utf8');

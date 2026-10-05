@@ -38,21 +38,38 @@
 
 import { readFileSync } from 'node:fs';
 
-/** The hook payload as an object, or `null` when there is none this hook can read. */
-export const readHookInput = () => {
+/**
+ * The exact bytes of the hook payload, alongside the same value
+ * `readHookInput` below returns from them — one read of fd 0, used both
+ * ways. Added for `probity-gate.mjs` (RP-415): every other hook here only
+ * ever INSPECTS its payload, so `readHookInput`'s parsed object was enough;
+ * that one also FORWARDS its payload, byte-for-byte, to a process this
+ * rulebook does not control, so it needs the raw bytes this function keeps
+ * and `readHookInput` throws away.
+ *
+ * @returns {{raw: Buffer, parsed: unknown}} `parsed` is `null` for anything
+ *   this hook cannot read — see `readHookInput`'s own comment.
+ */
+export const readHookInputRaw = () => {
   let raw;
   try {
-    raw = readFileSync(0, 'utf8');
+    raw = readFileSync(0);
   } catch {
-    return null;
+    return { raw: Buffer.alloc(0), parsed: null };
   }
-  if (raw.charCodeAt(0) === 0xfeff) raw = raw.slice(1);
+  let text = raw.toString('utf8');
+  if (text.charCodeAt(0) === 0xfeff) text = text.slice(1);
+  let parsed;
   try {
-    return JSON.parse(raw);
+    parsed = JSON.parse(text);
   } catch {
-    return null;
+    parsed = null;
   }
+  return { raw, parsed };
 };
+
+/** The hook payload as an object, or `null` when there is none this hook can read. */
+export const readHookInput = () => readHookInputRaw().parsed;
 
 /**
  * ── The shape of a shell command, for the Never-tier SHELL guards (RP-80) ───

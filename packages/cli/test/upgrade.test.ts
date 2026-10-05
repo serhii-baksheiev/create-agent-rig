@@ -2128,18 +2128,22 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // stays 63 — the three paths were workflow-only, never process.
   // RP-279 adds the importer's Jira target and the queue-config module it
   // shares with the queue CLI to the workflow layer (107→109); Core stays 63.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 109 manifest entries to 63', async () => {
+  // RP-415 adds the Probity gate hook (`.claude/hooks/probity-gate.mjs`) to
+  // the PROCESS layer — its wiring lives in `.claude/settings.json`, which
+  // Core installs unconditionally — so both figures move by one (109→110,
+  // 63→64).
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 110 manifest entries to 64', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(109);
+    expect(Object.keys(before!.files).length).toBe(110);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(63);
+    expect(Object.keys(after!.files).length).toBe(64);
   });
 });
 

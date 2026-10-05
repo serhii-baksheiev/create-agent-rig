@@ -193,25 +193,29 @@ function codexAgent(markdown, source, profile) {
 const hookFileOf = (command) => command.match(/\.claude\/hooks\/([A-Za-z0-9._-]+\.mjs)/)?.[1];
 
 /**
- * `record-dispatch.mjs` is the one hook whose Claude command carries an
- * argv flag (`--harness=claude`) the projection has to keep — every other
- * hook here takes no argument, so `portableHookCommand`/`windowsHookCommand`
- * have never needed to preserve one. Codex is a different harness, so the
- * flag is rewritten rather than carried over verbatim: RP-225 slice 2.
+ * Any hook whose Claude command carries the argv flag `--harness=claude` has
+ * it rewritten to `--harness=codex` in the projection — Codex is a different
+ * harness, so the flag is never carried over verbatim. Detected from the
+ * command text itself, not a per-hook name list: RP-225 slice 2 introduced
+ * this for `record-dispatch.mjs` alone; RP-415 added `probity-gate.mjs`
+ * carrying the same flag, and a name list would need one more entry every
+ * time another hook adopts it. A hook that takes no such flag never matches,
+ * so `portableHookCommand`/`windowsHookCommand` leave it untouched exactly as
+ * before.
  */
-const isRecordDispatch = (hook) => hookFileOf(hook) === 'record-dispatch.mjs';
+const carriesClaudeHarnessFlag = (hook) => hook.includes('--harness=claude');
 
 function portableHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a portable Codex hook command from: ${command}`);
   const base = `repoRoot="$(git rev-parse --show-toplevel)" && CLAUDE_PROJECT_DIR="$repoRoot" node "$repoRoot/${hook}"`;
-  return isRecordDispatch(command) ? `${base} --harness=codex` : base;
+  return carriesClaudeHarnessFlag(command) ? `${base} --harness=codex` : base;
 }
 
 function windowsHookCommand(command) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a Windows Codex hook command from: ${command}`);
-  const argumentsLine = isRecordDispatch(command)
+  const argumentsLine = carriesClaudeHarnessFlag(command)
     ? "$startInfo.Arguments = '\"' + $hookPath + '\" --harness=codex'"
     : "$startInfo.Arguments = '\"' + $hookPath + '\"'";
   const bounded = BOUNDED_STAGE_GUARDS.has(hookFileOf(command));
