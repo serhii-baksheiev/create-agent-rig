@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-413",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "63b07208392fd44f94c7f557ef7155f6a1459fe663cfd26fc79829a51c206af3",
+      "targetSha": "6704a850f34cc2000547c1084d567fc7afc57e3e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  }
+}
