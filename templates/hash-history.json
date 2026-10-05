@@ -18,7 +18,8 @@
     "0.10.1",
     "1.0.0",
     "1.0.1",
-    "1.1.0"
+    "1.1.0",
+    "1.1.1"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -48,7 +49,8 @@
         "b47bdf0d7a2f6c5b2034b8f6d683ad2b3c83bd65d15baf7de9b58cc4689d0ab1",
         "e48766714f4bceb5113c7036c380dfdbe07229feaf9b57fe4168660c5c90feb2",
         "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261",
-        "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a"
+        "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a",
+        "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -92,7 +94,8 @@
         "dc1d9c02879e383448f2336ae6433f960f86e8f8efb4ab8ccf9a17a5f7f524c3",
         "75a5bc3e1aa3fdef96b59edc90a3cb4b996708710fe16f65038e0e21853df4e8",
         "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3",
-        "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97"
+        "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97",
+        "c4b7be1c1a98a8bda06aafb2aaffd4fc2bd17a85647b91b9a92d51d7d199c8eb"
       ]
     },
     ".agents/skills/release-propose/SKILL.md": {
@@ -160,7 +163,8 @@
     ".claude/agents/implementation-agent.md": {
       "since": "0.10.0",
       "hashes": [
-        "05ef7c2543d6a9ff177fa8cf514b2c6eaf581141d41b0f41f690d5685c00f56a"
+        "05ef7c2543d6a9ff177fa8cf514b2c6eaf581141d41b0f41f690d5685c00f56a",
+        "aa06c9cb25e16d070fe61ae7d2dd4a4b91b7712f788cdeef6b07c376e120913c"
       ]
     },
     ".claude/agents/prose-reviewer.md": {
@@ -229,7 +233,8 @@
         "78047f42dda65076dd2cdb73ad530553db3d4a6f3ea7f0729590ac7286323cb1",
         "5782d91c6c54155ad8bf3e107b6574b3ad4c97baa7be673a5ed252c70b387300",
         "5ffaba69ffc9b6c39cd3c97c4f29b44627416d55793b50aa1a26ffe5efc45497",
-        "35313d53e26d47665ecd9484acf0a94ebe4df742f0f51a72bd3d5b8c0775bead"
+        "35313d53e26d47665ecd9484acf0a94ebe4df742f0f51a72bd3d5b8c0775bead",
+        "8e3388bb0ba7bd7423e1c14ecd2953f67f6f614bcc18e1d51d9a08235216eb99"
       ]
     },
     ".claude/hooks/guard-core-purity.mjs": {
@@ -248,7 +253,8 @@
         "f9e3e4b7c22c4a64f521402419707ff382b05c8deb6310f62e5545db87f7cb4f",
         "493ae58e54b055bd13ba992ee0dbfa2cb9ce9a3637ec345ab8d7cfff95831c60",
         "e3a03aa6d3077b7c397f84bfecfb6e8df0f18a5849045c51150300b4ce9f48b2",
-        "e1f85d39932c430bcbc0e8b7d65a955fef9d73b4aac4af6b7f1f8692c63729da"
+        "e1f85d39932c430bcbc0e8b7d65a955fef9d73b4aac4af6b7f1f8692c63729da",
+        "c4ad6cc8c09e962ee331c4ee5092136724e67024d28175517b6a428eb0c2b9eb"
       ]
     },
     ".claude/hooks/guard-secret-file.mjs": {
@@ -284,6 +290,12 @@
         "446d6d7c1914cf879e38c4bb6fcb454bcde95ee07a4cd2b421abd77253e58be8"
       ]
     },
+    ".claude/hooks/lib/canonical-path.mjs": {
+      "since": "1.1.1",
+      "hashes": [
+        "5657c48578b38ff5a1a6a4e46250a0fb8873346317b8be080387db2da454c6a5"
+      ]
+    },
     ".claude/hooks/lib/edit-input.mjs": {
       "since": "0.5.0",
       "hashes": [
@@ -292,7 +304,8 @@
         "572c671f8f2cad190fe2f144071954ac4d3b1357cab80a19bad584dd3b3768c8",
         "6695698d2b38c79a12292601048dd0082a0cd18bf9e69c047d47679c2e6ecf67",
         "79f400a6eccd1aa99fed2e5966f857c030fe8ba7a69df3f6819605e48277b202",
-        "d4613667b58d9215320285e663b3db6902ba656c797ee3408b6ecbec885be218"
+        "d4613667b58d9215320285e663b3db6902ba656c797ee3408b6ecbec885be218",
+        "a0921e77ef4dba818d6664b1b924be8cb87b019000f34e15726d411c3afdc1a1"
       ]
     },
     ".claude/hooks/lib/hook-input.mjs": {
@@ -305,7 +318,8 @@
     ".claude/hooks/record-dispatch.mjs": {
       "since": "1.1.0",
       "hashes": [
-        "dbd17a93446b520740bde59af92eea28defc406e1d9884ef83a856610f5bc95f"
+        "dbd17a93446b520740bde59af92eea28defc406e1d9884ef83a856610f5bc95f",
+        "52259c0f031fff68b7f4fe7b84af31bf43cfbf4eed0e6a66165aa0f3465b64a2"
       ]
     },
     ".claude/hooks/warn-subagent-routing.mjs": {
@@ -381,13 +395,15 @@
     ".claude/scripts/check-run.mjs": {
       "since": "1.1.0",
       "hashes": [
-        "9b05965cfb9ac2358d419c978ed2494202e0538118829e29ae770e204aad5a22"
+        "9b05965cfb9ac2358d419c978ed2494202e0538118829e29ae770e204aad5a22",
+        "c5b8593b65033f0b0562a0edf35371668d776198eea88d292edb40c92b195e4b"
       ]
     },
     ".claude/scripts/continuation.mjs": {
       "since": "1.1.0",
       "hashes": [
-        "797be3dd837b5b6a1bbf1d9a72fb2ae0d0f6064a89caa09a93173460ef76456a"
+        "797be3dd837b5b6a1bbf1d9a72fb2ae0d0f6064a89caa09a93173460ef76456a",
+        "96780b138fe01d7f6c7411d5bbfb131faaf452fbea0023f37e6a91cd5c5be368"
       ]
     },
     ".claude/scripts/decision-router.mjs": {
@@ -420,7 +436,8 @@
     ".claude/scripts/duplicate-work.mjs": {
       "since": "1.1.0",
       "hashes": [
-        "08df27e23b28ee0c4f1f905ec8b4a7831810d49d8641e547a6e0cc23e886abc7"
+        "08df27e23b28ee0c4f1f905ec8b4a7831810d49d8641e547a6e0cc23e886abc7",
+        "8b4d2dc8f2326265a20b57c90a4c8564d284a78805eb1c85a230a09d8197f467"
       ]
     },
     ".claude/scripts/git-env.mjs": {
@@ -643,7 +660,8 @@
     ".claude/scripts/token-report.mjs": {
       "since": "1.1.0",
       "hashes": [
-        "9703e553e3b9eaa36830323755d606b7b93fe96ec23cfbdbb319fb75e1595c14"
+        "9703e553e3b9eaa36830323755d606b7b93fe96ec23cfbdbb319fb75e1595c14",
+        "7573478573730d0c0b03fce0d6945844b1ba9513dfa29e58cf8f88b34d5ca05a"
       ]
     },
     ".claude/scripts/unattended-flag.mjs": {
@@ -711,7 +729,8 @@
         "b47bdf0d7a2f6c5b2034b8f6d683ad2b3c83bd65d15baf7de9b58cc4689d0ab1",
         "e48766714f4bceb5113c7036c380dfdbe07229feaf9b57fe4168660c5c90feb2",
         "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261",
-        "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a"
+        "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a",
+        "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -758,7 +777,8 @@
         "dc1d9c02879e383448f2336ae6433f960f86e8f8efb4ab8ccf9a17a5f7f524c3",
         "75a5bc3e1aa3fdef96b59edc90a3cb4b996708710fe16f65038e0e21853df4e8",
         "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3",
-        "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97"
+        "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97",
+        "c4b7be1c1a98a8bda06aafb2aaffd4fc2bd17a85647b91b9a92d51d7d199c8eb"
       ]
     },
     ".claude/skills/release-propose/SKILL.md": {
@@ -816,7 +836,8 @@
     ".codex/agents/implementation-agent.toml": {
       "since": "0.10.0",
       "hashes": [
-        "9a508a74957cf00345d559f6c5d06a91695938193b50fb55b6231991805c1d7e"
+        "9a508a74957cf00345d559f6c5d06a91695938193b50fb55b6231991805c1d7e",
+        "0ac7714553bd6369d6575c3fef324257da74a1fab88e4c6ed1bb08343c23d037"
       ]
     },
     ".codex/agents/prose-reviewer.toml": {
@@ -861,7 +882,8 @@
         "1fc2fc35b04fa4ad0859841af72f45695bc346d1a1a9b20ba5d971d48888a910",
         "fa9a34eb9f889910e55269b76172608b989d553583de38af34316a31f4ad570b",
         "f3eaf4a9a2c0af418a6ecf54b6d7d32065033909907ea237d51423c9129f44a7",
-        "e1e595da8de22768ad65fd8ea4d4a9f1d2e4ebe33a5b3ce6058f9c2e7bd0c217"
+        "e1e595da8de22768ad65fd8ea4d4a9f1d2e4ebe33a5b3ce6058f9c2e7bd0c217",
+        "7cc03a1235a99a18513740e16f6ea76498c55e65eaf5437bd4b690883a78ba86"
       ]
     },
     ".rig/revalidation.json": {
@@ -922,7 +944,8 @@
         "ebf0ef61407944373c862d37e6a80d4965ece72304b931428c6b3fcc5d9527c4",
         "46b68f9130d16a96278e03d0ddb14d99b678c5a239e4667aa79733e632e67505",
         "5f6bd89f1ad57a080bb717595e0c31eb7fdbec593ea21aceaa4d69daa6647c37",
-        "58d4884cd737f7e019469422a704ff000439f1c237de0fa2a657f8233edc11ed"
+        "58d4884cd737f7e019469422a704ff000439f1c237de0fa2a657f8233edc11ed",
+        "c89ed6a771d7f25e72b942694d6fece643bf2a2afd219d431ba5468c3e6c8ee0"
       ]
     },
     "docs/decisions/content-blind-revalidation.md": {
