@@ -10,6 +10,12 @@ import { describe, expect, it } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
+// Per-case budgets (RP-319, the vitest-timeouts.test.ts convention): each of
+// these parametrised cases spawns several node and git children, so it gets
+// a named budget above the template lane's instead of a bare literal.
+const PREFLIGHT_CONTRACT_CASE_TIMEOUT_MS = 30_000;
+const ENTRY_BUDGET_CASE_TIMEOUT_MS = 30_000;
+
 /**
  * RP-50 — replacement semantics for the existing SELECT / BEFORE_PR /
  * BEFORE_CLOSE chain. `updatedAt` remains compatibility evidence, while these
@@ -1192,13 +1198,13 @@ describe('the v0.1 repository revalidation contract', () => {
     ],
   ])(
     'preflight hard-refuses a %s contract as no-detection-contract',
+    { timeout: PREFLIGHT_CONTRACT_CASE_TIMEOUT_MS },
     async (_label, contract) => {
       const output = await runPreflight(contract);
       expect(output.verdict).toBe('STOP');
       expect(JSON.stringify(output)).toContain('no-detection-contract');
       expect(valuesFor(output, 'detectionContract')[0]).toMatchObject({ ok: false });
     },
-    30_000,
   );
 
   it('accepts the default pull/run-state+journal/24h/no-push contract', async () => {
@@ -1740,6 +1746,7 @@ describe('UNVERIFIABLE detection identity is checkout-independent', () => {
 describe('an incomplete sibling-run search cannot authorize a first baseline', () => {
   it.each(['candidate cap', 'entry budget'] as const)(
     'returns UNVERIFIABLE when the %s truncates prior SELECT evidence',
+    { timeout: ENTRY_BUDGET_CASE_TIMEOUT_MS },
     async (limit) => {
       const p = await project();
       const runsRoot = path.dirname(p.runDir);
@@ -1778,7 +1785,6 @@ describe('an incomplete sibling-run search cannot authorize a first baseline', (
         await removeFixture(p.root);
       }
     },
-    30_000,
   );
 });
 
@@ -1963,10 +1969,9 @@ describe('a tracked claim must match the Git index', () => {
 
   it('does not copy malformed claim bytes into parse-error evidence', async () => {
     const p = await project();
-    expect((await next(p)).code).toBe(0);
-    if (!(await trackClaim(p))) return;
     const malformedSentinel = ['CLAIM', 'PARSE', 'BYTES', 'MUST', 'NOT', 'ECHO'].join('_');
     const leakedPrefix = malformedSentinel.slice(0, 10);
+    await mkdir(path.dirname(p.claimPath), { recursive: true });
     await writeFile(p.claimPath, `{"schemaVersion":1,"value":${malformedSentinel}}`);
     await git(['add', '.rig/claims/RP-50.json'], p.root);
     await git(['commit', '-q', '-m', 'malformed tracked claim fixture'], p.root);

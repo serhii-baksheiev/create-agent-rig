@@ -840,3 +840,196 @@ describe(
     });
   },
 );
+
+// RP-319. content-blind-revalidation.test.ts's "does not copy malformed claim
+// bytes into parse-error evidence" case (~line 1964) spends most of its own
+// work on fixture setup the detection under test does not need: a first
+// next(p) call just to let SELECT create a genuine claim, then trackClaim(p)
+// to commit that genuine claim, before the malformed bytes are written over
+// it and committed a second time. Committing the malformed claim directly —
+// never a genuine one first — and calling next(p) once reaches the identical
+// detection, because the parser never cares whether the bytes it rejects were
+// ever well-formed.
+const MALFORMED_CLAIM_CASE_NAME = 'does not copy malformed claim bytes into parse-error evidence';
+
+/**
+ * The exact body text of an `it('<name>', async (...) => { ... })` case in
+ * `source`, found by brace-matching from the first `{` after the case's
+ * arrow function to its balanced closing `}`. Textual, not a parse — sound
+ * here because this case's body contains no `{`/`}` inside a string or
+ * comment that would unbalance the scan.
+ */
+function extractItBody(source: string, name: string): string {
+  const opener = new RegExp(
+    `it\\(\\s*'${escapeRegExp(name)}'\\s*,\\s*async\\s*\\([^)]*\\)\\s*=>\\s*\\{`,
+  );
+  const match = source.match(opener);
+  expect(
+    match,
+    `the case "${name}" exists as an it('<name>', async (...) => { ... }) call`,
+  ).not.toBeNull();
+  const start = (match?.index ?? 0) + (match?.[0]?.length ?? 0);
+  let depth = 1;
+  let i = start;
+  while (i < source.length && depth > 0) {
+    if (source[i] === '{') depth += 1;
+    else if (source[i] === '}') depth -= 1;
+    i += 1;
+  }
+  return source.slice(start, i - 1);
+}
+
+describe('the malformed-claim-bytes case commits the malformed claim directly, with no genuine claim first (RP-319)', () => {
+  it('contains exactly one next(p) call and no trackClaim( call', async () => {
+    const source = await readContentBlindRevalidationTestSource();
+    const body = extractItBody(source, MALFORMED_CLAIM_CASE_NAME);
+
+    const nextCalls = body.match(/\bnext\(p\)/g) ?? [];
+    const trackClaimCalls = body.match(/\btrackClaim\(/g) ?? [];
+
+    expect(nextCalls, 'next(p) calls in the case body').toHaveLength(1);
+    expect(trackClaimCalls, 'trackClaim( calls in the case body').toHaveLength(0);
+  });
+});
+
+// RP-319. Two other cases in content-blind-revalidation.test.ts end with a
+// bare trailing `30_000` rather than the named-constant, per-case `{ timeout:
+// NAME }` options convention this file already pins above for
+// WINDOWS_POWERSHELL_CASE_TIMEOUT_MS, CODEX_WRAPPER_BOUNDS_CASE_TIMEOUT_MS,
+// PACKAGE_MANAGER_START_CASE_TIMEOUT_MS and
+// TRACKER_CREDENTIALS_MUTATION_CASE_TIMEOUT_MS: the entry-budget `it.each`
+// in "an incomplete sibling-run search cannot authorize a first baseline"
+// (~line 1741) and the no-detection-contract `it.each` in "the v0.1
+// repository revalidation contract" (~line 1201).
+const ENTRY_BUDGET_CASE_NAME = 'returns UNVERIFIABLE when the %s truncates prior SELECT evidence';
+const ENTRY_BUDGET_CASE_BUDGET_DECLARATION = /^const ENTRY_BUDGET_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+
+const PREFLIGHT_CONTRACT_CASE_NAME =
+  'preflight hard-refuses a %s contract as no-detection-contract';
+const PREFLIGHT_CONTRACT_CASE_BUDGET_DECLARATION =
+  /^const PREFLIGHT_CONTRACT_CASE_TIMEOUT_MS = (\d[\d_]*);/m;
+
+describe('the entry-budget and no-detection-contract it.each cases carry a named per-case budget, never a bare trailing literal (RP-319)', () => {
+  it.each([
+    [ENTRY_BUDGET_CASE_NAME, ENTRY_BUDGET_CASE_BUDGET_DECLARATION, 'ENTRY_BUDGET_CASE_TIMEOUT_MS'],
+    [
+      PREFLIGHT_CONTRACT_CASE_NAME,
+      PREFLIGHT_CONTRACT_CASE_BUDGET_DECLARATION,
+      'PREFLIGHT_CONTRACT_CASE_TIMEOUT_MS',
+    ],
+  ])(
+    "%s carries its own budget, declared once by name and passed as that case's options",
+    async (name, declaration, constantName) => {
+      const source = await readContentBlindRevalidationTestSource();
+
+      expect(source).toMatch(declaration);
+
+      const caseWithOptions = new RegExp(
+        `it\\.each\\([^)]*\\)\\(\\s*'${escapeRegExp(name)}'\\s*,\\s*\\{ timeout: ${constantName} \\}`,
+      );
+      expect(source).toMatch(caseWithOptions);
+    },
+  );
+
+  it.each([ENTRY_BUDGET_CASE_BUDGET_DECLARATION, PREFLIGHT_CONTRACT_CASE_BUDGET_DECLARATION])(
+    'is bounded above so a genuine hang still fails within a minute, and sits above the lane budget it replaces',
+    async (declaration) => {
+      const source = await readContentBlindRevalidationTestSource();
+      const declared = source.match(declaration);
+      expect(declared).not.toBeNull();
+
+      const budget = Number((declared?.[1] ?? '').replaceAll('_', ''));
+      expect(Number.isInteger(budget)).toBe(true);
+      expect(templateProject?.test.testTimeout).toBeDefined();
+      expect(budget).toBeGreaterThan(templateProject?.test.testTimeout ?? Number.POSITIVE_INFINITY);
+      expect(budget).toBeLessThanOrEqual(60_000);
+    },
+  );
+});
+
+/**
+ * Every top-level `it(...)` or `it.each(...)( ... )` call site in `source`,
+ * as the raw text of its real argument list — for `it.each`, that is the
+ * second, chained call's arguments (name, fn, and an optional trailing
+ * timeout), never the leading array of cases. Matched by the literal word
+ * `it`, so a call like `reply(...)` or `edit(...)` is never picked up.
+ * Textual, not a parse: sound here because this file nests no further
+ * `it(`/`it.each(` call inside another one's own argument list, and the
+ * comments have already been stripped by the caller.
+ */
+function extractTestCallArgLists(source: string): string[] {
+  const argLists: string[] = [];
+  const opener = /\bit(\.each)?\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = opener.exec(source)) !== null) {
+    let i = match.index + match[0].length;
+    let depth = 1;
+    while (i < source.length && depth > 0) {
+      if (source[i] === '(') depth += 1;
+      else if (source[i] === ')') depth -= 1;
+      i += 1;
+    }
+    if (match[1]) {
+      while (i < source.length && /\s/.test(source[i] ?? '')) i += 1;
+      if (source[i] !== '(') continue;
+      i += 1;
+      const start = i;
+      depth = 1;
+      while (i < source.length && depth > 0) {
+        if (source[i] === '(') depth += 1;
+        else if (source[i] === ')') depth -= 1;
+        i += 1;
+      }
+      argLists.push(source.slice(start, i - 1));
+    } else {
+      const start = match.index + match[0].length;
+      argLists.push(source.slice(start, i - 1));
+    }
+  }
+  return argLists;
+}
+
+/**
+ * `argsText` split on its top-level commas — depth tracked only through
+ * `()`, `[]` and `{}`, never through quotes or template literals. Sound here
+ * because no case's trailing-timeout argument sits after a top-level comma
+ * inside a string.
+ */
+function splitTopLevelArgs(argsText: string): string[] {
+  const args: string[] = [];
+  let depth = 0;
+  let current = '';
+  for (const char of argsText) {
+    if ('([{'.includes(char)) depth += 1;
+    else if (')]}'.includes(char)) depth -= 1;
+    if (char === ',' && depth === 0) {
+      args.push(current);
+      current = '';
+      continue;
+    }
+    current += char;
+  }
+  if (current.trim().length > 0) args.push(current);
+  return args;
+}
+
+function hasBareTrailingTimeout(argsText: string): boolean {
+  const args = splitTopLevelArgs(argsText).map((a) => a.trim());
+  if (args.length === 0) return false;
+  return /^\d[\d_]*$/.test(args[args.length - 1] ?? '');
+}
+
+describe('content-blind-revalidation.test.ts leaves no bare trailing-argument case timeout anywhere in the file (RP-319)', () => {
+  it('ends no it(/it.each( call with a bare numeric timeout as its last argument', async () => {
+    const source = await readContentBlindRevalidationTestSource();
+    const code = source.replace(/\/\/[^\n]*/g, '');
+    const argLists = extractTestCallArgLists(code);
+    expect(argLists.length, 'it(/it.each( call sites found in the file').toBeGreaterThan(0);
+
+    const offenders = argLists.filter(hasBareTrailingTimeout);
+    expect(
+      offenders,
+      'it(/it.each( call argument lists ending in a bare numeric timeout literal',
+    ).toHaveLength(0);
+  });
+});
