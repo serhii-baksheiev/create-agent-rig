@@ -372,13 +372,12 @@ function readCandidatesRecord() {
  * passed `candidateBaselineFindings`'s own shape check, so `--end-of-options`
  * before it in the `show` and `merge-base` calls is defense in depth rather
  * than the only thing standing between a malformed record entry and a live
- * git argument (git >= 2.24; this repository's CI matrix is newer).
+ * git argument.
  *
  * `mergeBaseError` is set, instead of `isAncestor` being guessed, when
  * `merge-base --is-ancestor` exits with neither 0 (ancestor) nor 1 (not an
- * ancestor) — a well-formed sha that names no object in the repository is
- * exactly this case, and reporting it as "not an ancestor" would claim a
- * comparison that never actually happened.
+ * ancestor): reporting that as "not an ancestor" would claim a comparison
+ * that never actually happened.
  */
 function gatherCandidateFacts(version, sha) {
   const refResult = spawnSync(

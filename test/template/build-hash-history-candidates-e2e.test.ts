@@ -368,13 +368,9 @@ describe('build-hash-history main() — frozen release-candidate baseline wiring
     expect(ledgerAfter).toBe(ledgerBefore);
   }, 30_000);
 
-  // (7) RP-349 round-1 blocker B1: the ref resolves to the recorded sha and
-  // that commit's package.json names the recorded version — exactly like
-  // case (1) — but the commit sits on a branch that was never merged into
-  // master, so it is NOT an ancestor of the commit being checked out. Only
-  // `gatherCandidateFacts`'s real `git merge-base --is-ancestor` call can
-  // produce this finding: mutating that mapping to `isAncestor = true` would
-  // turn this case green for the wrong reason.
+  // (7) The ref resolves to the recorded sha and that commit's package.json
+  // names the recorded version — exactly like case (1) — but the commit sits
+  // on a branch that was never merged into master.
   it('reports a recorded baseline that is not an ancestor of HEAD, naming the sha', async () => {
     const { work } = await makeOriginAndClone('master');
     await installScriptCopy(work);
@@ -411,12 +407,6 @@ describe('build-hash-history main() — frozen release-candidate baseline wiring
     expect(result.out, result.out).toContain('is not an ancestor of HEAD');
   }, 30_000);
 
-  // (8) RP-349 round-1 blocker B2: `main()` gathers git facts for every
-  // record entry (`gatherCandidateFacts`, which runs `git show
-  // <value>:package.json`) BEFORE `candidateBaselineFindings` ever checks
-  // that `value` is a 40-character commit sha. An option-shaped value
-  // (`--output=<path>`) reaches `git show` as a live argument and makes it
-  // write a file — this fixture's own directory is the proof of concept.
   it('never lets an option-shaped candidate value reach git show as a live argument', async () => {
     const { work } = await makeOriginAndClone('master');
     await installScriptCopy(work);
@@ -440,12 +430,6 @@ describe('build-hash-history main() — frozen release-candidate baseline wiring
     ).toBe(false);
   }, 30_000);
 
-  // (9) RP-349 round-1 blocker B2: a non-string record value (`5`) is passed
-  // straight into `spawnSync('git', ['merge-base', '--is-ancestor', sha,
-  // 'HEAD'])` as a positional argument before the shape check ever runs.
-  // Node's child_process rejects a non-string argument by throwing, and that
-  // throw is never caught — the process crashes with a raw stack trace
-  // instead of reporting the shape finding.
   it('never crashes with an uncaught stack trace on a non-string candidate value', async () => {
     const { work } = await makeOriginAndClone('master');
     await installScriptCopy(work);
@@ -469,11 +453,6 @@ describe('build-hash-history main() — frozen release-candidate baseline wiring
     expect(result.out, result.out).not.toContain('Error:');
   }, 30_000);
 
-  // (10) RP-349 round-1 blocker B2: a well-formed 40-hex sha that names no
-  // object in the repository makes `git merge-base --is-ancestor` exit with
-  // neither 0 nor 1 (a fatal error), and `gatherCandidateFacts` throws for
-  // that case — but the throw happens outside `main()`'s own try/catch, so it
-  // crashes the process instead of becoming a reported finding.
   it('reports a well-formed but nonexistent candidate sha as a finding, not a crash', async () => {
     const { work } = await makeOriginAndClone('master');
     await installScriptCopy(work);
