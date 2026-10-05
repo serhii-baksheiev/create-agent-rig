@@ -94,9 +94,11 @@ ever installed it. Nothing in the 1.1 contract is removed or renamed.
 
 - **A claim's remote default is resolved through unambiguous, fully-qualified
   refs instead of bare branch names.** `targetShaOf` resolves `origin/HEAD`
-  first, then falls back to exactly `origin/master` or `origin/main` — never
-  both at once. When a configured `origin` remote has no usable remote
-  default, `SELECT` now records an `UNVERIFIABLE` claim instead of
+  first, then falls back to `origin/master` or `origin/main`, refusing when
+  those two disagree; local `master`/`main` are used only when no `origin`
+  remote is configured at all. When a configured `origin` has no usable
+  remote default, `SELECT` now refuses with an `UNVERIFIABLE` revalidation
+  result before creating any claim — no claim record is written — instead of
   proceeding with no resolvable target (RP-358).
 
 ### Removed

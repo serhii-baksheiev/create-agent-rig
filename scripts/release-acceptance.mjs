@@ -366,6 +366,113 @@ export async function acceptPredecessorUpgrade({
   };
 }
 
+export async function runPredecessorPhase({
+  root,
+  scratch,
+  env,
+  candidateCli,
+  candidateVersion,
+  npm: npmRunner,
+  acceptUpgrade = acceptPredecessorUpgrade,
+}) {
+  const ledger = parseJson(
+    await readFile(path.join(root, 'templates', 'release-ledger.json'), 'utf8'),
+  );
+  const predecessorVersion = latestReleasedLedgerVersion(ledger);
+  assertVersionAdvances(predecessorVersion, candidateVersion);
+
+  // The expectation is the repo's own record, never the registry response —
+  // `acquirePredecessor` below treats `registryView` as an observation to
+  // check, not as the source of truth.
+  const integrityRecords = parseJson(
+    await readFile(path.join(root, 'scripts', 'release-predecessor-integrity.json'), 'utf8'),
+  );
+  const expectations = predecessorExpectations({
+    ledger,
+    integrityRecord: integrityRecords,
+    version: predecessorVersion,
+  });
+
+  const registryView = parseJson(
+    (
+      await npmRunner(['view', `create-agent-rig@${predecessorVersion}`, '--json'], {
+        cwd: scratch,
+        env,
+      })
+    ).stdout,
+  );
+  const predecessorPackDestination = path.join(scratch, 'predecessor-pack');
+  await mkdir(predecessorPackDestination, { recursive: true });
+  const predecessorPacked = parseJson(
+    (
+      await npmRunner(
+        [
+          'pack',
+          `create-agent-rig@${predecessorVersion}`,
+          '--json',
+          '--pack-destination',
+          predecessorPackDestination,
+        ],
+        { cwd: predecessorPackDestination, env },
+      )
+    ).stdout,
+  );
+  const predecessorItem = Array.isArray(predecessorPacked) ? predecessorPacked[0] : undefined;
+  if (!predecessorItem) abort('predecessor-pack-report-invalid');
+  assertPackFilename(predecessorItem.filename);
+  const predecessorTarball = path.join(predecessorPackDestination, predecessorItem.filename);
+  const predecessorHome = path.join(scratch, 'predecessor-home');
+
+  const predecessorCli = await acquirePredecessor({
+    ...expectations,
+    registryView,
+    tarballPath: predecessorTarball,
+    install: async (tarballPath) => {
+      await mkdir(predecessorHome, { recursive: true });
+      await npmRunner(
+        [
+          'install',
+          '--ignore-scripts',
+          '--no-audit',
+          '--no-fund',
+          '--prefix',
+          predecessorHome,
+          tarballPath,
+        ],
+        { cwd: predecessorHome, env },
+      );
+      return path.join(
+        predecessorHome,
+        'node_modules',
+        'create-agent-rig',
+        'packages',
+        'cli',
+        'dist',
+        'index.js',
+      );
+    },
+  });
+
+  const upgradeOutcome = await acceptUpgrade({
+    scratch: path.join(scratch, 'predecessor-upgrade'),
+    env,
+    predecessorCli,
+    candidateCli,
+    candidateVersion,
+  });
+  if (upgradeOutcome.manifestVersion !== candidateVersion) abort('upgrade-version-not-advanced');
+  assertUpgradeChangedTemplates(upgradeOutcome.firstUpgradeChangedFiles);
+  if (upgradeOutcome.secondUpgradeChangedFiles.length > 0)
+    abort('predecessor-upgrade-not-idempotent');
+
+  return {
+    predecessorVersion,
+    candidateVersion,
+    firstUpgradeChangedFiles: upgradeOutcome.firstUpgradeChangedFiles,
+    secondUpgradeChangedFiles: upgradeOutcome.secondUpgradeChangedFiles,
+  };
+}
+
 const executableName = (name) => `${name}${process.platform === 'win32' ? '.exe' : ''}`;
 
 async function provides(directory, name) {
@@ -910,107 +1017,14 @@ async function main() {
     // `main()` entry guard above already requires before this point, so this
     // phase runs unconditionally whenever that guard let execution through,
     // rather than spelling a second opt-in flag for the same dispatch.
-    let predecessorUpgrade;
-    {
-      const ledger = parseJson(
-        await readFile(path.join(checkout, 'templates', 'release-ledger.json'), 'utf8'),
-      );
-      const predecessorVersion = latestReleasedLedgerVersion(ledger);
-      assertVersionAdvances(predecessorVersion, item.version);
-
-      // The expectation is the repo's own record, never the registry
-      // response — `acquirePredecessor` below treats `registryView` as an
-      // observation to check, not as the source of truth.
-      const integrityRecords = parseJson(
-        await readFile(
-          path.join(checkout, 'scripts', 'release-predecessor-integrity.json'),
-          'utf8',
-        ),
-      );
-      const expectations = predecessorExpectations({
-        ledger,
-        integrityRecord: integrityRecords,
-        version: predecessorVersion,
-      });
-
-      const registryView = parseJson(
-        (
-          await npm(['view', `create-agent-rig@${predecessorVersion}`, '--json'], {
-            cwd: scratch,
-            env: environment,
-          })
-        ).stdout,
-      );
-      const predecessorPackDestination = path.join(scratch, 'predecessor-pack');
-      await mkdir(predecessorPackDestination, { recursive: true });
-      const predecessorPacked = parseJson(
-        (
-          await npm(
-            [
-              'pack',
-              `create-agent-rig@${predecessorVersion}`,
-              '--json',
-              '--pack-destination',
-              predecessorPackDestination,
-            ],
-            { cwd: predecessorPackDestination, env: environment },
-          )
-        ).stdout,
-      );
-      const predecessorItem = Array.isArray(predecessorPacked) ? predecessorPacked[0] : undefined;
-      if (!predecessorItem) abort('predecessor-pack-report-invalid');
-      assertPackFilename(predecessorItem.filename);
-      const predecessorTarball = path.join(predecessorPackDestination, predecessorItem.filename);
-      const predecessorHome = path.join(scratch, 'predecessor-home');
-
-      const predecessorCli = await acquirePredecessor({
-        ...expectations,
-        registryView,
-        tarballPath: predecessorTarball,
-        install: async (tarballPath) => {
-          await mkdir(predecessorHome, { recursive: true });
-          await npm(
-            [
-              'install',
-              '--ignore-scripts',
-              '--no-audit',
-              '--no-fund',
-              '--prefix',
-              predecessorHome,
-              tarballPath,
-            ],
-            { cwd: predecessorHome, env: environment },
-          );
-          return path.join(
-            predecessorHome,
-            'node_modules',
-            'create-agent-rig',
-            'packages',
-            'cli',
-            'dist',
-            'index.js',
-          );
-        },
-      });
-
-      const upgradeOutcome = await acceptPredecessorUpgrade({
-        scratch: path.join(scratch, 'predecessor-upgrade'),
-        env: environment,
-        predecessorCli,
-        candidateCli: cli,
-        candidateVersion: item.version,
-      });
-      if (upgradeOutcome.manifestVersion !== item.version) abort('upgrade-version-not-advanced');
-      assertUpgradeChangedTemplates(upgradeOutcome.firstUpgradeChangedFiles);
-      if (upgradeOutcome.secondUpgradeChangedFiles.length > 0)
-        abort('predecessor-upgrade-not-idempotent');
-      predecessorUpgrade = {
-        predecessorVersion,
-        candidateVersion: item.version,
-        firstUpgradeChangedFiles: upgradeOutcome.firstUpgradeChangedFiles,
-        secondUpgradeChangedFiles: upgradeOutcome.secondUpgradeChangedFiles,
-      };
-    }
+    const predecessorUpgrade = await runPredecessorPhase({
+      root: checkout,
+      scratch,
+      env: environment,
+      candidateCli: cli,
+      candidateVersion: item.version,
+      npm,
+    });
 
     const report = {
       sha: candidate,

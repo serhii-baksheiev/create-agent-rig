@@ -1,33 +1,6 @@
 /**
  * RP-374 — predecessor upgrade acceptance.
  *
- * Rounds 1 and 2 landed `scripts/release-acceptance.mjs`'s
- * `acquirePredecessor`, `acceptPredecessorUpgrade`,
- * `assertUserMutationsPreserved`, `latestReleasedLedgerVersion`,
- * `assertVersionAdvances`, `parseSemver`, `changedFiles` and
- * `assertPackFilename` — those functions exist today and the describe blocks
- * below that exercise them unchanged are GREEN. This file now pins round 3's
- * review blockers, neither of which production implements yet:
- *
- *   - `assertUpgradeChangedTemplates(changedPaths)`: a pure helper, not yet
- *     exported, that ignores `.claude/.rig-manifest.json` — its recorded
- *     `version` moves on every upgrade, so its presence alone proves nothing
- *     else was delivered — and throws
- *     `AcceptanceError('predecessor-upgrade-vacuous')` when no other path
- *     changed. `main()`'s vacuous-upgrade check is expected to call this
- *     helper on `firstUpgradeChangedFiles` instead of only testing the
- *     array's length, which the manifest bump alone always defeats.
- *   - `predecessorExpectations({ ledger, integrityRecord, version })`: not
- *     yet exported — binds `acquirePredecessor`'s three expected values to
- *     the repo's own records only (the ledger's recorded `gitHead` for
- *     `version`, and the integrity record's `shasum`/`integrity` for the
- *     same `version`), taking no registry input at all. Throws
- *     `AcceptanceError('predecessor-integrity-record-missing')` when the
- *     integrity record has no entry for `version`, or the entry lacks a
- *     string `integrity` or `shasum`, and
- *     `AcceptanceError('predecessor-githead-missing')` when the ledger has
- *     no recorded `gitHead` for `version`.
- *
  * The heavy, real-tarball case ("accepts an immutable published predecessor
  * upgrade with an exact packed candidate") lives in
  * `test/e2e/release-acceptance-upgrade.test.ts`: it used to run `npm pack`
@@ -103,6 +76,41 @@ type Module = {
     integrityRecord: Record<string, { integrity?: string; shasum?: string } | undefined>;
     version: string;
   }) => { expectedGitHead: string; expectedShasum: string; expectedIntegrity: string };
+  // Assumed extraction surface for the predecessor-phase wiring currently
+  // inlined in `main()` (release-acceptance.mjs, roughly lines 906-1013): one
+  // function taking the checkout `root` (to read the ledger and the
+  // integrity record — never the registry), a `scratch` directory, the
+  // environment, the candidate CLI path and version, an injected `npm`
+  // runner matching the script's own `npm(args, options)` helper, and an
+  // optional `acceptUpgrade` override of `acceptPredecessorUpgrade` so a test
+  // can exercise the surrounding checks without a real predecessor install.
+  runPredecessorPhase?: (options: {
+    root: string;
+    scratch: string;
+    env: NodeJS.ProcessEnv;
+    candidateCli: string;
+    candidateVersion: string;
+    npm: (
+      args: string[],
+      options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+    ) => Promise<{ stdout: string }>;
+    acceptUpgrade?: (options: {
+      scratch: string;
+      env: NodeJS.ProcessEnv;
+      predecessorCli: string;
+      candidateCli: string;
+      candidateVersion: string;
+    }) => Promise<{
+      manifestVersion: string;
+      firstUpgradeChangedFiles: string[];
+      secondUpgradeChangedFiles: string[];
+    }>;
+  }) => Promise<{
+    predecessorVersion: string;
+    candidateVersion: string;
+    firstUpgradeChangedFiles: string[];
+    secondUpgradeChangedFiles: string[];
+  }>;
 };
 
 async function importScript(): Promise<Module> {
@@ -526,6 +534,11 @@ describe('release acceptance vacuous-upgrade check', () => {
   it.each([
     ['only the manifest changed', ['.claude/.rig-manifest.json']],
     ['nothing changed at all', []],
+    // win32-separated: `assertUpgradeChangedTemplates` normalizes to posix
+    // before comparing against the ignored entry, so a manifest-only change
+    // recorded with backslashes is just as vacuous as one recorded with
+    // forward slashes.
+    ['only the manifest changed, recorded with win32 separators', ['.claude\\.rig-manifest.json']],
   ])('refuses an upgrade where %s', async (_label, changedPaths) => {
     const module = await importScript();
     expect(module.assertUpgradeChangedTemplates).toBeTypeOf('function');
@@ -643,5 +656,234 @@ describe('release acceptance predecessor expectations binding', () => {
     });
 
     expect(withRegistryShapedField).toEqual(withoutRegistry);
+  });
+});
+
+describe('release acceptance predecessor phase wiring', () => {
+  // Pins the wiring `main()` currently inlines (release-acceptance.mjs,
+  // roughly lines 906-1013): reading the ledger and the integrity record
+  // from `root`, verifying the predecessor's identity against those repo
+  // records (never the registry), running the upgrade, and gating on
+  // `assertUpgradeChangedTemplates` + idempotence. None of this is reachable
+  // from outside `main()` today — these cases exercise it only through the
+  // assumed `runPredecessorPhase` export documented on the `Module` type
+  // above.
+  const predecessorVersion = '1.1.1';
+  const candidateVersion = '1.2.0';
+
+  async function writeRepoRecords(
+    root: string,
+    options: { gitHead: string; shasum: string; integrity: string },
+  ): Promise<void> {
+    await mkdir(path.join(root, 'templates'), { recursive: true });
+    await writeFile(
+      path.join(root, 'templates', 'release-ledger.json'),
+      JSON.stringify({ [predecessorVersion]: options.gitHead }),
+    );
+    await mkdir(path.join(root, 'scripts'), { recursive: true });
+    await writeFile(
+      path.join(root, 'scripts', 'release-predecessor-integrity.json'),
+      JSON.stringify({
+        [predecessorVersion]: { shasum: options.shasum, integrity: options.integrity },
+      }),
+    );
+  }
+
+  type NpmFake = (
+    args: string[],
+    options?: { cwd?: string; env?: NodeJS.ProcessEnv },
+  ) => Promise<{ stdout: string }>;
+
+  // A registry stand-in: `view` and `pack` behave like the real commands
+  // closely enough for the wiring under test (pack writes a real tarball
+  // whose bytes are `tarballBytes`), but it is never consulted for the
+  // identity the code must trust — that is exactly what the first case
+  // below proves.
+  function makeNpmFake(
+    tarballBytes: string,
+    viewResponse: Record<string, unknown>,
+  ): { npm: NpmFake; calls: string[][] } {
+    const calls: string[][] = [];
+    const npm: NpmFake = async (args) => {
+      calls.push(args);
+      const sub = args[0];
+      if (sub === 'view') return { stdout: JSON.stringify(viewResponse) };
+      if (sub === 'pack') {
+        const destinationIndex = args.indexOf('--pack-destination');
+        const destination = args[destinationIndex + 1];
+        if (typeof destination !== 'string') throw new Error('missing --pack-destination');
+        const filename = `create-agent-rig-${predecessorVersion}.tgz`;
+        await writeFile(path.join(destination, filename), tarballBytes);
+        return { stdout: JSON.stringify([{ filename }]) };
+      }
+      if (sub === 'install') return { stdout: '' };
+      throw new Error(`unexpected npm invocation: ${args.join(' ')}`);
+    };
+    return { npm, calls };
+  }
+
+  it('takes the predecessor’s expected identity from the repo records, never from the registry', async () => {
+    const module = await importScript();
+    expect(module.runPredecessorPhase).toBeTypeOf('function');
+
+    const root = await mkdtemp(path.join(scratch, 'root-'));
+    const tarballBytes = 'real predecessor tarball bytes, identity case\n';
+    const referenceTarball = path.join(scratch, 'reference-identity.tgz');
+    await writeFile(referenceTarball, tarballBytes);
+    const realShasum = await sha1File(referenceTarball);
+    const realIntegrity = await sha512IntegrityOf(referenceTarball);
+
+    // The repo's own record is deliberately wrong (does not match the real
+    // tarball) — while the registry's `view` response claims the CORRECT
+    // shasum/integrity under `dist`. Production reads expectations only
+    // from `root`'s ledger/integrity-record, so it must still refuse: a
+    // mutation that sourced expectations from `registryView.dist` instead
+    // would see the matching values and let this through.
+    await writeRepoRecords(root, {
+      gitHead: REAL_1_1_1_GIT_HEAD,
+      shasum: 'a'.repeat(40),
+      integrity: `sha512-${createHash('sha512').update('not the real predecessor bytes').digest('base64')}`,
+    });
+
+    const { npm, calls } = makeNpmFake(tarballBytes, {
+      gitHead: REAL_1_1_1_GIT_HEAD,
+      dist: { shasum: realShasum, integrity: realIntegrity },
+    });
+
+    let caught: unknown;
+    try {
+      await module.runPredecessorPhase!({
+        root,
+        scratch: path.join(scratch, 'phase-identity'),
+        env: process.env,
+        candidateCli: 'unused-candidate-cli.js',
+        candidateVersion,
+        npm,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('predecessor-shasum-mismatch');
+    expect(calls.some((args) => args[0] === 'install')).toBe(false);
+  });
+
+  it('refuses a missing integrity record before any npm call', async () => {
+    const module = await importScript();
+    expect(module.runPredecessorPhase).toBeTypeOf('function');
+
+    const root = await mkdtemp(path.join(scratch, 'root-'));
+    await mkdir(path.join(root, 'templates'), { recursive: true });
+    await writeFile(
+      path.join(root, 'templates', 'release-ledger.json'),
+      JSON.stringify({ [predecessorVersion]: REAL_1_1_1_GIT_HEAD }),
+    );
+    await mkdir(path.join(root, 'scripts'), { recursive: true });
+    // No entry for `predecessorVersion` at all.
+    await writeFile(path.join(root, 'scripts', 'release-predecessor-integrity.json'), '{}');
+
+    const calls: string[][] = [];
+    const npm: NpmFake = async (args) => {
+      calls.push(args);
+      throw new Error('npm must not run before the integrity record is checked');
+    };
+
+    let caught: unknown;
+    try {
+      await module.runPredecessorPhase!({
+        root,
+        scratch: path.join(scratch, 'phase-missing-record'),
+        env: process.env,
+        candidateCli: 'unused-candidate-cli.js',
+        candidateVersion,
+        npm,
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('predecessor-integrity-record-missing');
+    expect(calls).toEqual([]);
+  });
+
+  describe('with a predecessor whose identity matches the repo records', () => {
+    async function setUp(): Promise<{ root: string; npm: NpmFake }> {
+      const root = await mkdtemp(path.join(scratch, 'root-'));
+      const tarballBytes = 'real predecessor tarball bytes, upgrade-phase case\n';
+      const referenceTarball = path.join(scratch, `reference-upgrade-${Math.random()}.tgz`);
+      await writeFile(referenceTarball, tarballBytes);
+      const shasum = await sha1File(referenceTarball);
+      const integrity = await sha512IntegrityOf(referenceTarball);
+      await writeRepoRecords(root, { gitHead: REAL_1_1_1_GIT_HEAD, shasum, integrity });
+      const { npm } = makeNpmFake(tarballBytes, { gitHead: REAL_1_1_1_GIT_HEAD });
+      return { root, npm };
+    }
+
+    it('fails a first upgrade that changed only the rig manifest', async () => {
+      const module = await importScript();
+      expect(module.runPredecessorPhase).toBeTypeOf('function');
+
+      const { root, npm } = await setUp();
+      let acceptUpgradeCalls = 0;
+      const acceptUpgrade = async () => {
+        acceptUpgradeCalls += 1;
+        // A length-only vacuity check (`firstUpgradeChangedFiles.length > 0`)
+        // would accept this — the manifest bump alone is never a real
+        // delivery, so the wiring must route this result through
+        // `assertUpgradeChangedTemplates` rather than just checking length.
+        return {
+          manifestVersion: candidateVersion,
+          firstUpgradeChangedFiles: ['.claude/.rig-manifest.json'],
+          secondUpgradeChangedFiles: [],
+        };
+      };
+
+      let caught: unknown;
+      try {
+        await module.runPredecessorPhase!({
+          root,
+          scratch: path.join(scratch, 'phase-vacuous'),
+          env: process.env,
+          candidateCli: 'unused-candidate-cli.js',
+          candidateVersion,
+          npm,
+          acceptUpgrade,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(errorCode(caught)).toBe('predecessor-upgrade-vacuous');
+      expect(acceptUpgradeCalls).toBe(1);
+    });
+
+    it('fails a second upgrade that changed anything', async () => {
+      const module = await importScript();
+      expect(module.runPredecessorPhase).toBeTypeOf('function');
+
+      const { root, npm } = await setUp();
+      const acceptUpgrade = async () => ({
+        manifestVersion: candidateVersion,
+        firstUpgradeChangedFiles: ['.claude/skills/loop/SKILL.md'],
+        secondUpgradeChangedFiles: ['.claude/.rig-manifest.json'],
+      });
+
+      let caught: unknown;
+      try {
+        await module.runPredecessorPhase!({
+          root,
+          scratch: path.join(scratch, 'phase-not-idempotent'),
+          env: process.env,
+          candidateCli: 'unused-candidate-cli.js',
+          candidateVersion,
+          npm,
+          acceptUpgrade,
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(errorCode(caught)).toBe('predecessor-upgrade-not-idempotent');
+    });
   });
 });

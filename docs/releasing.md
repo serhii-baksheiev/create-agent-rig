@@ -113,7 +113,8 @@ its identity checked against the repo's own ledger and integrity record,
 never trusted from the registry alone. See
 `test/template/release-acceptance-upgrade.test.ts` › "derives its result
 only from the ledger and the integrity record — a registry-shaped field
-changes nothing" for that binding, and
+changes nothing" and › "takes the predecessor’s expected identity from the
+repo records, never from the registry" for that binding, and
 `test/e2e/release-acceptance-upgrade.test.ts` › "accepts an immutable
 published predecessor upgrade with an exact packed candidate" for the
 upgrade itself.
