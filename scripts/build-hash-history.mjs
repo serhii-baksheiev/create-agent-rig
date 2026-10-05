@@ -230,8 +230,7 @@ export function assertCandidateHeadingsAreCurrent(
 
 /**
  * RP-349: the exact ref a frozen, unpublished release-candidate branch must
- * resolve through. Shared with `scripts/release-preflight.mjs`'s own frozen
- * mode so the spelling exists once.
+ * resolve through.
  */
 export function candidateRefName(version) {
   return `refs/remotes/origin/release/${version}-rc`;
@@ -281,7 +280,7 @@ export function candidateBaselineFindings(record, { ledger, currentVersion, fact
         fact && fact.refSha
           ? `${ref} is ${fact.refSha} but scripts/release-candidates.json records ${sha} for ` +
               version
-          : `${ref} could not be resolved — cannot verify the frozen baseline for ${version}`,
+          : `${ref} could not be resolved — cannot verify the frozen baseline ${sha} for ${version}`,
       );
       continue;
     }
@@ -289,6 +288,10 @@ export function candidateBaselineFindings(record, { ledger, currentVersion, fact
       findings.push(
         `${ref}'s package.json is version ${fact.packageVersion ?? 'unknown'}, not ${version}`,
       );
+      continue;
+    }
+    if (fact.mergeBaseError) {
+      findings.push(`${sha} (${version}): ${fact.mergeBaseError}`);
       continue;
     }
     if (!fact.isAncestor) {
@@ -362,10 +365,20 @@ function readCandidatesRecord() {
 }
 
 /**
- * The three git facts `candidateBaselineFindings` verifies a recorded baseline
+ * The git facts `candidateBaselineFindings` verifies a recorded baseline
  * against, for one `version`/`sha` pair. Each is read as git already has it
  * — no fetch — the same stance `release-preflight.mjs` takes for its own
- * frozen-candidate ref.
+ * frozen-candidate ref. `main()` calls this only once `sha` has already
+ * passed `candidateBaselineFindings`'s own shape check, so `--end-of-options`
+ * before it in the `show` and `merge-base` calls is defense in depth rather
+ * than the only thing standing between a malformed record entry and a live
+ * git argument (git >= 2.24; this repository's CI matrix is newer).
+ *
+ * `mergeBaseError` is set, instead of `isAncestor` being guessed, when
+ * `merge-base --is-ancestor` exits with neither 0 (ancestor) nor 1 (not an
+ * ancestor) — a well-formed sha that names no object in the repository is
+ * exactly this case, and reporting it as "not an ancestor" would claim a
+ * comparison that never actually happened.
  */
 function gatherCandidateFacts(version, sha) {
   const refResult = spawnSync(
@@ -377,7 +390,7 @@ function gatherCandidateFacts(version, sha) {
   );
   const refSha = refResult.status === 0 ? refResult.stdout.toString().trim() : null;
 
-  const pkgResult = spawnSync('git', ['show', `${sha}:package.json`], {
+  const pkgResult = spawnSync('git', ['show', '--end-of-options', `${sha}:package.json`], {
     cwd: root,
     maxBuffer: 256 * 1024 * 1024,
   });
@@ -390,17 +403,22 @@ function gatherCandidateFacts(version, sha) {
     }
   }
 
-  const ancestorResult = spawnSync('git', ['merge-base', '--is-ancestor', sha, 'HEAD'], {
-    cwd: root,
-  });
-  if (ancestorResult.status !== 0 && ancestorResult.status !== 1) {
-    throw new Error(
-      `git merge-base --is-ancestor ${sha} HEAD failed: ${ancestorResult.stderr?.toString() ?? ''}`,
-    );
+  const ancestorResult = spawnSync(
+    'git',
+    ['merge-base', '--is-ancestor', '--end-of-options', sha, 'HEAD'],
+    { cwd: root },
+  );
+  let isAncestor = false;
+  let mergeBaseError = null;
+  if (ancestorResult.status === 0) {
+    isAncestor = true;
+  } else if (ancestorResult.status !== 1) {
+    mergeBaseError =
+      `git merge-base --is-ancestor ${sha} HEAD failed: ` +
+      `${ancestorResult.stderr?.toString().trim() ?? ''}`;
   }
-  const isAncestor = ancestorResult.status === 0;
 
-  return { refSha, packageVersion, isAncestor };
+  return { refSha, packageVersion, isAncestor, mergeBaseError };
 }
 
 function main() {
@@ -420,9 +438,20 @@ function main() {
     return 1;
   }
 
+  // Facts are gathered only for an entry `candidateBaselineFindings` will
+  // actually consult from git: a well-formed `X.Y.Z` key, a 40-char
+  // lowercase-hex sha value, below the current version, with no ledger row
+  // yet. Anything else is reported by `candidateBaselineFindings` itself,
+  // from the record alone — gathering facts for it first would pass the
+  // record's own value (an option-shaped string, a number, anything) to
+  // `gatherCandidateFacts` as a live git argument before its shape was ever
+  // checked.
   const facts = {};
   for (const [version, sha] of Object.entries(candidates)) {
     if (version in ledger) continue; // historical; not re-checked
+    if (!VERSION.test(version)) continue;
+    if (typeof sha !== 'string' || !SHA.test(sha)) continue;
+    if (compareVersions(version, currentVersion) >= 0) continue;
     facts[version] = gatherCandidateFacts(version, sha);
   }
 

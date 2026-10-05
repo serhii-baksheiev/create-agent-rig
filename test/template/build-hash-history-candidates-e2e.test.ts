@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,11 +29,11 @@ import { withoutGitLocation } from '../../.claude/scripts/git-env.mjs';
 // needed because every case below either writes no released version at all,
 // or (case 6) stops before a release is ever resolved to a commit.
 //
-// Honest ordering note (worktree task brief): this wiring was written ahead of
-// this test, so "the wiring already exists" is the gap being closed here, not
-// news. Each case below was proven load-bearing by a temporary, restored
-// mutation of `scripts/build-hash-history.mjs` — see the session's final
-// report for which line, and the red output observed.
+// Each case spawns the real script as a child process and reads its real exit
+// code and output, so a bug in how `main()` wires the gathered git facts
+// together — including the order it gathers them in relative to validating
+// the record's own shape — is visible here even though it is invisible to
+// the pure-function tests above.
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 const GLOBAL_GIT_ARGS = [
@@ -366,5 +366,128 @@ describe('build-hash-history main() — frozen release-candidate baseline wiring
     const ledgerAfter = await readFile(ledgerPath, 'utf8');
     expect(historyAfter).toBe(placeholderHistory);
     expect(ledgerAfter).toBe(ledgerBefore);
+  }, 30_000);
+
+  // (7) RP-349 round-1 blocker B1: the ref resolves to the recorded sha and
+  // that commit's package.json names the recorded version — exactly like
+  // case (1) — but the commit sits on a branch that was never merged into
+  // master, so it is NOT an ancestor of the commit being checked out. Only
+  // `gatherCandidateFacts`'s real `git merge-base --is-ancestor` call can
+  // produce this finding: mutating that mapping to `isAncestor = true` would
+  // turn this case green for the wrong reason.
+  it('reports a recorded baseline that is not an ancestor of HEAD, naming the sha', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    const baseSha = await commitFixture(
+      work,
+      { version: '1.2.1', changelog: '' },
+      'base commit, before the candidate branch and the real 1.2.1 diverge',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    git(['checkout', '-b', 'side', baseSha], work);
+    const candidateSha = await commitFixture(
+      work,
+      { version: '1.2.0', changelog: '## 1.2.0 (release candidate)\n\nbody\n' },
+      'freeze 1.2.0 on a side branch that master never merges',
+    );
+    git(['branch', 'release/1.2.0-rc', candidateSha], work);
+    git(['push', 'origin', 'release/1.2.0-rc'], work);
+
+    git(['checkout', 'master'], work);
+    const masterSha = await commitFixture(
+      work,
+      { version: '1.2.1', changelog: DUAL_HEADING_1_2_1, candidates: { '1.2.0': candidateSha } },
+      'advance master to 1.2.1 without ever merging the frozen 1.2.0 branch',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    git(['fetch', 'origin'], work);
+    git(['checkout', masterSha], work);
+
+    const result = await runScript(work);
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out, result.out).toContain(candidateSha);
+    expect(result.out, result.out).toContain('is not an ancestor of HEAD');
+  }, 30_000);
+
+  // (8) RP-349 round-1 blocker B2: `main()` gathers git facts for every
+  // record entry (`gatherCandidateFacts`, which runs `git show
+  // <value>:package.json`) BEFORE `candidateBaselineFindings` ever checks
+  // that `value` is a 40-character commit sha. An option-shaped value
+  // (`--output=<path>`) reaches `git show` as a live argument and makes it
+  // write a file — this fixture's own directory is the proof of concept.
+  it('never lets an option-shaped candidate value reach git show as a live argument', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    const injectedValue = `--output=${path.join(work, 'pwned')}`;
+    await commitFixture(
+      work,
+      { version: '1.2.1', changelog: '', candidates: { '1.2.0': injectedValue } },
+      'record an option-shaped value instead of a commit sha',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    const result = await runScript(work);
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out, result.out).toContain(
+      'scripts/release-candidates.json: 1.2.0 must be a 40-character lowercase commit sha',
+    );
+    const entries = await readdir(work);
+    expect(
+      entries.some((entry) => entry.includes('pwned')),
+      entries.join(', '),
+    ).toBe(false);
+  }, 30_000);
+
+  // (9) RP-349 round-1 blocker B2: a non-string record value (`5`) is passed
+  // straight into `spawnSync('git', ['merge-base', '--is-ancestor', sha,
+  // 'HEAD'])` as a positional argument before the shape check ever runs.
+  // Node's child_process rejects a non-string argument by throwing, and that
+  // throw is never caught — the process crashes with a raw stack trace
+  // instead of reporting the shape finding.
+  it('never crashes with an uncaught stack trace on a non-string candidate value', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    await commitFixture(
+      work,
+      {
+        version: '1.2.1',
+        changelog: '',
+        candidates: { '1.2.0': 5 } as unknown as Record<string, string>,
+      },
+      'record a non-string value instead of a commit sha',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    const result = await runScript(work);
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out, result.out).toContain(
+      'scripts/release-candidates.json: 1.2.0 must be a 40-character lowercase commit sha',
+    );
+    expect(result.out, result.out).not.toMatch(/\n\s+at\s/);
+    expect(result.out, result.out).not.toContain('Error:');
+  }, 30_000);
+
+  // (10) RP-349 round-1 blocker B2: a well-formed 40-hex sha that names no
+  // object in the repository makes `git merge-base --is-ancestor` exit with
+  // neither 0 nor 1 (a fatal error), and `gatherCandidateFacts` throws for
+  // that case — but the throw happens outside `main()`'s own try/catch, so it
+  // crashes the process instead of becoming a reported finding.
+  it('reports a well-formed but nonexistent candidate sha as a finding, not a crash', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    const nonexistentSha = 'a'.repeat(40);
+    await commitFixture(
+      work,
+      { version: '1.2.1', changelog: '', candidates: { '1.2.0': nonexistentSha } },
+      'record a well-formed sha that names no object in the repository',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    const result = await runScript(work);
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out, result.out).toContain(nonexistentSha);
+    expect(result.out, result.out).not.toMatch(/\n\s+at\s/);
   }, 30_000);
 });
