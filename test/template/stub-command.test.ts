@@ -165,4 +165,49 @@ describe('test/helpers/stub-command', () => {
     expect(process.env['PATH']).toBe(before.PATH);
     expect(process.env['NODE_OPTIONS']).toBe(before.NODE_OPTIONS);
   });
+
+  it('restore removes the stub directory it created, including the Windows executable link, and nothing else', async () => {
+    // A sibling temp directory with a different, unique prefix: proves
+    // restore() deletes only the one directory it created, not everything
+    // under os.tmpdir() that looks like a stub.
+    const sentinelDir = await mkdtemp(path.join(tmpdir(), 'stub-rp348sentinel-'));
+    const sentinelFile = path.join(sentinelDir, 'keep.txt');
+    await writeFile(sentinelFile, 'keep');
+
+    const leftover: string[] = [];
+    try {
+      for (let lifetime = 0; lifetime < 3; lifetime += 1) {
+        const handle = await stubCommand('rp348stub', 'return { stdout: "ok" };');
+        leftover.push(handle.bin);
+        await expect(stat(handle.bin)).resolves.toBeTruthy();
+
+        // On win32 the executable inside the directory is the hard link (or
+        // the EXDEV copy) that used to outlive restore(). The running
+        // binary's nlink is not asserted: every concurrent stubCommand in a
+        // parallel worker moves the same host-wide counter, so only this
+        // lifetime's own link path is checked, through its directory.
+        const stubExecutable =
+          process.platform === 'win32' ? path.join(handle.bin, 'rp348stub.exe') : null;
+        if (stubExecutable !== null) await expect(stat(stubExecutable)).resolves.toBeTruthy();
+
+        handle.restore();
+        // The directory this lifetime created must be gone before the next
+        // one starts, or a leak here would just be masked by the next loop.
+        await expect(stat(handle.bin)).rejects.toMatchObject({ code: 'ENOENT' });
+        if (stubExecutable !== null) {
+          await expect(stat(stubExecutable)).rejects.toMatchObject({ code: 'ENOENT' });
+        }
+        leftover.pop();
+      }
+
+      // The sentinel, created before any stub existed, is untouched.
+      await expect(stat(sentinelDir)).resolves.toBeTruthy();
+      await expect(readFile(sentinelFile, 'utf8')).resolves.toBe('keep');
+    } finally {
+      await removeFixture(sentinelDir);
+      for (const bin of leftover) {
+        await removeFixture(bin);
+      }
+    }
+  });
 });

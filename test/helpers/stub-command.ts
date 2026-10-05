@@ -23,16 +23,23 @@
  * argv after the command name, and returning `{ stdout?, exitCode? }` or
  * writing to stdout itself), so one description serves both platforms.
  */
+import { rmSync } from 'node:fs';
 import { chmod, copyFile, link, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { FIXTURE_REMOVE_MAX_RETRIES, FIXTURE_REMOVE_RETRY_DELAY_MS } from './remove-fixture.js';
 
 export type StubHandle = {
   /** The directory to prepend to PATH. */
   bin: string;
   /** The environment additions the stub needs (PATH prefix, NODE_OPTIONS on win32). */
   env: Record<string, string>;
-  /** Restore process.env to what it was. */
+  /**
+   * Restore process.env to what it was, and remove the stub directory
+   * (`bin`) this call created, including the Windows executable link
+   * (RP-348: an unreleased `bin` per lifetime drove the shared node
+   * binary's link count to the filesystem's limit).
+   */
   restore: () => void;
 };
 
@@ -117,6 +124,15 @@ export const stubCommand = async (name: string, handlerBody: string): Promise<St
       process.env['PATH'] = savedPath;
       if (savedNodeOptions === undefined) delete process.env['NODE_OPTIONS'];
       else process.env['NODE_OPTIONS'] = savedNodeOptions;
+      // Synchronous because every caller restores from a `finally` without
+      // awaiting, so this cannot go through the async removeFixture; it takes
+      // the same retry bounds instead. force: a caller may restore() more than
+      // once, and the second call finds nothing left to remove.
+      const retries = {
+        maxRetries: FIXTURE_REMOVE_MAX_RETRIES,
+        retryDelay: FIXTURE_REMOVE_RETRY_DELAY_MS,
+      };
+      rmSync(bin, { recursive: true, force: true, ...retries });
     },
   };
 };

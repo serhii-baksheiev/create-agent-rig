@@ -923,6 +923,7 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
     );
 
     const stub = await stubCommand('gh', GH_STUB_HANDLER);
+    const envWithoutStub = p.env;
     p.env = { ...p.env, ...stub.env };
     try {
       const selection = await next(p);
@@ -939,6 +940,7 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
       expect(existsSync(claimPath)).toBe(false);
     } finally {
       stub.restore();
+      p.env = envWithoutStub;
     }
   });
 
@@ -953,11 +955,16 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
       }),
     );
     const stub = await stubCommand('gh', GH_STUB_HANDLER);
+    const envWithoutStub = p.env;
     p.env = { ...p.env, ...stub.env };
     try {
       expect((await next(p)).code).toBe(0);
     } finally {
       stub.restore();
+      // RP-348: restore() removes the stub's directory, so on win32 the
+      // NODE_OPTIONS preload in stub.env no longer exists — later node
+      // children in this test must not inherit it.
+      p.env = envWithoutStub;
     }
     const legacyClaim = JSON.parse(await readFile(claimPath, 'utf8'));
     const cappedIds = comments(100)
