@@ -4,11 +4,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CreateError, createProject } from '../src/commands/create.js';
+import { CreateError, createProject, GIT_STEP_TIMEOUT_MS } from '../src/commands/create.js';
 import { projectNameFor } from '../src/commands/init.js';
 import { planUpgrade } from '../src/commands/upgrade.js';
 import { gitEnv } from '../src/lib/git-env.js';
 import { readManifest, sha256, writeManifest } from '../src/lib/manifest.js';
+import { gitStubAvailable, skipUnless } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 import { commandFailureReport } from '../../../test/e2e/run.js';
 
@@ -439,5 +440,72 @@ describe('createProject', { timeout: 60_000 }, () => {
     const { projectDir } = await createProject('ungitted', { cwd: work, git: false });
     await expect(readFile(path.join(projectDir, '.git', 'HEAD'), 'utf8')).rejects.toThrow();
     await expect(readFile(path.join(projectDir, 'CLAUDE.md'), 'utf8')).resolves.toBeTruthy();
+  });
+
+  // RP-252: `initGitRepository` / `commitGitBaseline` run every git child
+  // through `execFile` with no bound at all — a stalled `git init`, `git add`
+  // or `git commit` hangs `createProject` forever with no message. The shim
+  // below stands in for `git`: it reads the subcommand name off argv and, for
+  // exactly the one step named by RP252_HANG_STEP, `exec`s into `sleep 30`
+  // (so killing the child kills the sleeper, never leaving an orphaned shell
+  // for `afterEach`'s `removeFixture` to race) — every other step, and every
+  // other invocation, exits 0 immediately. Real git is never invoked, which
+  // is fine: this test only checks that the hang is bounded and named, never
+  // that a real repository results.
+  it('names the git step and its bound when a git child hangs, instead of hanging create', async (context) => {
+    skipUnless(context, gitStubAvailable().ok, gitStubAvailable().reason);
+
+    // Pins the default bound this ticket introduces, independent of the
+    // per-call override exercised below.
+    expect(GIT_STEP_TIMEOUT_MS).toBe(60_000);
+
+    const bin = path.join(work, 'bin');
+    await mkdir(bin);
+    const git = path.join(bin, 'git');
+    await writeFile(
+      git,
+      '#!/bin/sh\n' +
+        'step=""\n' +
+        'for arg in "$@"; do\n' +
+        '  case "$arg" in\n' +
+        '    init|add|commit)\n' +
+        '      step="$arg"\n' +
+        '      break\n' +
+        '      ;;\n' +
+        '  esac\n' +
+        'done\n' +
+        'if [ "$step" = "$RP252_HANG_STEP" ] && [ -n "$step" ]; then\n' +
+        '  exec sleep 30\n' +
+        'fi\n' +
+        'exit 0\n',
+    );
+    await chmod(git, 0o755);
+
+    const previousPath = process.env['PATH'];
+    const previousHangStep = process.env['RP252_HANG_STEP'];
+    process.env['PATH'] = `${bin}:${previousPath ?? ''}`;
+    try {
+      for (const step of ['init', 'add', 'commit'] as const) {
+        process.env['RP252_HANG_STEP'] = step;
+        const started = performance.now();
+        let caught: unknown;
+        try {
+          await createProject(`hangs-on-git-${step}`, { cwd: work, gitTimeoutMs: 400 });
+        } catch (error) {
+          caught = error;
+        }
+        const elapsed = performance.now() - started;
+
+        expect(caught).toBeInstanceOf(CreateError);
+        expect((caught as Error).message).toContain(`git ${step}`);
+        expect((caught as Error).message).toContain('400 ms');
+        expect(elapsed).toBeLessThan(10_000); // well under the 30 s hang
+      }
+    } finally {
+      if (previousPath === undefined) delete process.env['PATH'];
+      else process.env['PATH'] = previousPath;
+      if (previousHangStep === undefined) delete process.env['RP252_HANG_STEP'];
+      else process.env['RP252_HANG_STEP'] = previousHangStep;
+    }
   });
 });

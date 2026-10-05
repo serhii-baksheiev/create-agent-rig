@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-252",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "8c55ecb26e60450c39614f0a1c4e409e66a30f7ed0807bf7866fc5b28ad4267f",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "packages/cli/test/create.test.ts",
+      "fullName": "createProject names the git step and its bound when a git child hangs, instead of hanging create"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "8c55ecb26e60450c39614f0a1c4e409e66a30f7ed0807bf7866fc5b28ad4267f",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "9a2e60870298d94b382a3667312b13b4762cc02142799c8310472befd2339249"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-252",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-252-green"
+      }
+    },
+    "baseline": {
+      "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "red": {
+      "test": {
+        "file": "packages/cli/test/create.test.ts",
+        "fullName": "createProject names the git step and its bound when a git child hangs, instead of hanging create",
+        "fileSha256": "28879027f177003fdf5f5eb5836d14d82d673cbf23f9db6e390eadd8b648ee90"
+      },
+      "source": {
+        "runId": "20261004-105221-rp252",
+        "seq": 4
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "eb90e8e8b88a2c51d5ce4b8750d1bff4f1823af6a23c755713dda3137ee9b037"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "1b96e81c35bb24fd06acf44ab9e431f17ce71b946b49c5e41f4c6d17eba7b9a2"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261004-105221-rp252",
+        "seq": 5
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "d7c1c9d5393aaa6a97c899ff9ba09a5276fe3d7a09f12ce203c3ff12d87fd412"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "1b96e81c35bb24fd06acf44ab9e431f17ce71b946b49c5e41f4c6d17eba7b9a2"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "53d41acdf074a041500f4c15473abea1281c63f61dc7bd9eb1fab6b17b24b596"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "packages/cli/test/create.test.ts",
+        "fullName": "createProject names the git step and its bound when a git child hangs, instead of hanging create",
+        "fileSha256": "28879027f177003fdf5f5eb5836d14d82d673cbf23f9db6e390eadd8b648ee90"
+      },
+      "source": {
+        "runId": "20261004-105221-rp252",
+        "seq": 6
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "23eb66fb12d54213af0d2c316e544a228193f7d7c9ddfb15e419ed629f904b46"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "53d41acdf074a041500f4c15473abea1281c63f61dc7bd9eb1fab6b17b24b596"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "dfbfb24b446805a0412634fe2bcc3d32e3c66e14a0b0e0017884899ec34819ae"
+      }
+    }
+  }
+}
