@@ -3,6 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
+import { describeProbeFailure, probeEnv } from '../helpers/native-vitest-probe.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -69,15 +70,20 @@ const sixCpuPreload = `data:text/javascript,${encodeURIComponent(String.raw`
   process.env.RP371_VITEST_WORKER_PROBE_CPU = String(os.availableParallelism());
 `)}`;
 
+// Unchanged from before RP-395: execFile's own default (no timeout kill),
+// spelled out so describeProbeFailure has a timeout to report if this ever
+// grows one.
+const CONFIG_PROBE_TIMEOUT_MS = 0;
+
 function resolveNativeVitestProjects(): Promise<NativeVitestProjects> {
   return new Promise((resolve, reject) => {
     execFile(
       process.execPath,
       ['--input-type=module', '--eval', nativeVitestProjectProbe, configPath],
-      { cwd: repoRoot },
+      { cwd: repoRoot, timeout: CONFIG_PROBE_TIMEOUT_MS },
       (error, stdout, stderr) => {
         if (error) {
-          reject(new Error(`native Vitest configuration probe failed: ${stdout}${stderr}`));
+          reject(new Error(describeProbeFailure(error, stdout, stderr, CONFIG_PROBE_TIMEOUT_MS)));
           return;
         }
 
@@ -86,9 +92,7 @@ function resolveNativeVitestProjects(): Promise<NativeVitestProjects> {
           .find((line) => line.startsWith(PROBE_MARKER))
           ?.slice(PROBE_MARKER.length);
         if (!payload) {
-          reject(
-            new Error(`native Vitest configuration probe produced no result: ${stdout}${stderr}`),
-          );
+          reject(new Error(describeProbeFailure(null, stdout, stderr, CONFIG_PROBE_TIMEOUT_MS)));
           return;
         }
 
@@ -124,15 +128,17 @@ it('records an overlapping native Vitest worker interval', async () => {
 `;
 }
 
+const WORKER_PROBE_TIMEOUT_MS = 12_000;
+
 function runNativeVitest(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile(
       process.execPath,
       ['--import', sixCpuPreload, vitestCli, 'run', ...args],
-      { cwd, env, maxBuffer: 1024 * 1024, timeout: 12_000 },
+      { cwd, env, maxBuffer: 1024 * 1024, timeout: WORKER_PROBE_TIMEOUT_MS },
       (error, stdout, stderr) => {
         if (error) {
-          reject(new Error(`native Vitest worker probe failed: ${stdout}${stderr}`));
+          reject(new Error(describeProbeFailure(error, stdout, stderr, WORKER_PROBE_TIMEOUT_MS)));
           return;
         }
         resolve(stdout + stderr);
@@ -162,8 +168,7 @@ async function observeEffectiveWorkers(maxWorkers?: number): Promise<number> {
   const fixtureDir = await mkdtemp(
     path.join(repoRoot, 'test', 'template', 'rp371-vitest-worker-probe-'),
   );
-  const env = { ...process.env };
-  delete env.VITEST_MAX_WORKERS;
+  const env = probeEnv(process.env);
 
   try {
     const resultPaths = await Promise.all(
