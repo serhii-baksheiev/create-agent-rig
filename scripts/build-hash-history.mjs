@@ -36,6 +36,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const OUTPUT = path.join(root, 'templates', 'hash-history.json');
 const LEDGER = path.join(root, 'templates', 'release-ledger.json');
 const CHANGELOG = path.join(root, 'CHANGELOG.md');
+const CANDIDATES = path.join(root, 'scripts', 'release-candidates.json');
 const AGENT_OS = 'templates/agent-os';
 
 /**
@@ -185,24 +186,136 @@ export function parseChangelogVersions(markdown) {
  * any version OTHER than `currentVersion` — exact only, the same spelling
  * `parseChangelogVersions` excludes. Such a heading is correct for exactly one
  * version: the one currently being prepared. For any other version it can only
- * mean that version published and nobody reconciled its heading back to the
- * plain `## X.Y.Z` form afterwards — left alone, `parseChangelogVersions`
- * quietly drops that version from "released" forever, and it never gets a
- * ledger row or a hash-history entry.
+ * mean either of two things:
+ *
+ *   - that version published and nobody reconciled its heading back to the
+ *     plain `## X.Y.Z` form afterwards — left alone, `parseChangelogVersions`
+ *     quietly drops that version from "released" forever, and it never gets a
+ *     ledger row or a hash-history entry; or
+ *   - (RP-349) it is a verified, still-frozen, unpublished release-candidate
+ *     baseline from `scripts/release-candidates.json` (`baselines`) — allowed
+ *     through only while `ledger` still has no row for it. Once a ledger row
+ *     exists the candidate has published and the heading is exactly the
+ *     forgotten-reconciliation case above.
  *
  * Silent for the current version's own pending candidate heading, and silent
  * when there is no candidate heading at all.
  */
-export function assertCandidateHeadingsAreCurrent(markdown, currentVersion) {
+export function assertCandidateHeadingsAreCurrent(
+  markdown,
+  currentVersion,
+  { baselines = {}, ledger = {} } = {},
+) {
   for (const match of String(markdown).matchAll(/^## (\d+\.\d+\.\d+) \(release candidate\)$/gm)) {
     const version = match[1];
     if (version === currentVersion) continue;
-    throw new Error(
+    const base =
       `CHANGELOG.md still has "## ${version} (release candidate)" but ${currentVersion} is ` +
-        `the version being prepared — ${version} has published, so reconcile its heading to ` +
-        `the plain "## ${version}" form`,
+      'the version being prepared';
+    if (version in baselines && !(version in ledger)) continue;
+    if (version in baselines) {
+      // recorded AND published — the baseline exemption no longer applies
+      throw new Error(
+        `${base} — ${version} has published, so reconcile its heading to the plain ` +
+          `"## ${version}" form`,
+      );
+    }
+    throw new Error(
+      `${base} — ${version} is not recorded in scripts/release-candidates.json. If it has ` +
+        `published, reconcile its heading to the plain "## ${version}" form; if it is a ` +
+        'still-frozen, unpublished release-candidate baseline, record its commit there instead.',
     );
   }
+}
+
+/**
+ * RP-349: the exact ref a frozen, unpublished release-candidate branch must
+ * resolve through.
+ */
+export function candidateRefName(version) {
+  return `refs/remotes/origin/release/${version}-rc`;
+}
+
+const SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * Pure findings (empty = ok) over a `scripts/release-candidates.json` record.
+ *
+ * Every entry is validated to be a well-formed `X.Y.Z` key below
+ * `currentVersion` with a 40-hex-lowercase sha value — regardless of ledger
+ * state. A version that already has a ledger row is historical: its facts are
+ * not consulted (the ledger is authoritative for it, see
+ * `candidateLedgerDisagreements`), which is also why `facts` need not carry an
+ * entry for it. Otherwise `facts[version]` — gathered from git by `main` —
+ * must show the exact `candidateRefName(version)` ref still resolving to the
+ * recorded sha, that commit's `package.json` carrying exactly `version`, and
+ * that commit being an ancestor of HEAD.
+ */
+export function candidateBaselineFindings(record, { ledger, currentVersion, facts }) {
+  const findings = [];
+  for (const [version, sha] of Object.entries(record)) {
+    if (!VERSION.test(version)) {
+      findings.push(`scripts/release-candidates.json: "${version}" is not a version (X.Y.Z)`);
+      continue;
+    }
+    if (typeof sha !== 'string' || !SHA.test(sha)) {
+      findings.push(
+        `scripts/release-candidates.json: ${version} must be a 40-character lowercase commit sha`,
+      );
+      continue;
+    }
+    if (compareVersions(version, currentVersion) >= 0) {
+      findings.push(
+        `scripts/release-candidates.json: ${version} is not below the version being prepared ` +
+          `(${currentVersion})`,
+      );
+      continue;
+    }
+    if (version in ledger) continue; // published — the candidate is historical, git unconsulted
+
+    const ref = candidateRefName(version);
+    const fact = facts[version];
+    if (!fact || fact.refSha !== sha) {
+      findings.push(
+        fact && fact.refSha
+          ? `${ref} is ${fact.refSha} but scripts/release-candidates.json records ${sha} for ` +
+              version
+          : `${ref} could not be resolved — cannot verify the frozen baseline ${sha} for ${version}`,
+      );
+      continue;
+    }
+    if (fact.packageVersion !== version) {
+      findings.push(
+        `${ref}'s package.json is version ${fact.packageVersion ?? 'unknown'}, not ${version}`,
+      );
+      continue;
+    }
+    if (fact.mergeBaseError) {
+      findings.push(`${sha} (${version}): ${fact.mergeBaseError}`);
+      continue;
+    }
+    if (!fact.isAncestor) {
+      findings.push(`${sha} (${version}) is not an ancestor of HEAD`);
+    }
+  }
+  return findings;
+}
+
+/**
+ * A recorded baseline whose ledger row (once the version actually publishes)
+ * disagrees with the frozen RC sha — `ledger: null` counts as a disagreement
+ * too, since "no gitHead recoverable" also disagrees with "this is the exact
+ * sha it was built from". A version with no ledger row yet is simply not
+ * published — not a disagreement, nothing to compare.
+ */
+export function candidateLedgerDisagreements(ledger, record) {
+  const out = [];
+  for (const [version, sha] of Object.entries(record)) {
+    if (!(version in ledger)) continue;
+    const ledgerValue = ledger[version];
+    if (ledgerValue !== sha) out.push({ version, ledger: ledgerValue, candidate: sha });
+  }
+  return out;
 }
 
 /** sha256 of every agent-os blob at one commit, keyed by install-relative path. */
@@ -241,13 +354,111 @@ function hashesAt(commit) {
   return files;
 }
 
+/** `{}` for a missing file — an unpopulated `scripts/release-candidates.json` is normal. */
+function readCandidatesRecord() {
+  try {
+    return JSON.parse(readFileSync(CANDIDATES, 'utf8'));
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return {};
+    throw error;
+  }
+}
+
+/**
+ * The git facts `candidateBaselineFindings` verifies a recorded baseline
+ * against, for one `version`/`sha` pair. Each is read as git already has it
+ * — no fetch — the same stance `release-preflight.mjs` takes for its own
+ * frozen-candidate ref. `main()` calls this only once `sha` has already
+ * passed `candidateBaselineFindings`'s own shape check, so `--end-of-options`
+ * before it in the `show` and `merge-base` calls is defense in depth rather
+ * than the only thing standing between a malformed record entry and a live
+ * git argument.
+ *
+ * `mergeBaseError` is set, instead of `isAncestor` being guessed, when
+ * `merge-base --is-ancestor` exits with neither 0 (ancestor) nor 1 (not an
+ * ancestor): reporting that as "not an ancestor" would claim a comparison
+ * that never actually happened.
+ */
+function gatherCandidateFacts(version, sha) {
+  const refResult = spawnSync(
+    'git',
+    ['show-ref', '--verify', '--hash', candidateRefName(version)],
+    {
+      cwd: root,
+    },
+  );
+  const refSha = refResult.status === 0 ? refResult.stdout.toString().trim() : null;
+
+  const pkgResult = spawnSync('git', ['show', '--end-of-options', `${sha}:package.json`], {
+    cwd: root,
+    maxBuffer: 256 * 1024 * 1024,
+  });
+  let packageVersion = null;
+  if (pkgResult.status === 0) {
+    try {
+      packageVersion = JSON.parse(pkgResult.stdout.toString()).version ?? null;
+    } catch {
+      packageVersion = null;
+    }
+  }
+
+  const ancestorResult = spawnSync(
+    'git',
+    ['merge-base', '--is-ancestor', '--end-of-options', sha, 'HEAD'],
+    { cwd: root },
+  );
+  let isAncestor = false;
+  let mergeBaseError = null;
+  if (ancestorResult.status === 0) {
+    isAncestor = true;
+  } else if (ancestorResult.status !== 1) {
+    mergeBaseError =
+      `git merge-base --is-ancestor ${sha} HEAD failed: ` +
+      `${ancestorResult.stderr?.toString().trim() ?? ''}`;
+  }
+
+  return { refSha, packageVersion, isAncestor, mergeBaseError };
+}
+
 function main() {
   const currentVersion = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8')).version;
   const ledger = JSON.parse(readFileSync(LEDGER, 'utf8'));
   const changelog = readFileSync(CHANGELOG, 'utf8');
+  const candidates = readCandidatesRecord();
+
+  const disagreements = candidateLedgerDisagreements(ledger, candidates);
+  if (disagreements.length > 0) {
+    for (const { version, ledger: ledgerSha, candidate } of disagreements) {
+      process.stderr.write(
+        `scripts/release-candidates.json: ${version} was frozen at ${candidate} but the ` +
+          `ledger's published commit is ${ledgerSha ?? 'null'} — reconcile before continuing\n`,
+      );
+    }
+    return 1;
+  }
+
+  // Facts are gathered only for an entry `candidateBaselineFindings` will
+  // actually consult from git: a well-formed `X.Y.Z` key, a 40-char
+  // lowercase-hex sha value, below the current version, with no ledger row
+  // yet. Anything else is reported by `candidateBaselineFindings` itself,
+  // from the record alone — gathering facts for it first would pass the
+  // record's own value (an option-shaped string, a number, anything) to
+  // `gatherCandidateFacts` as a live git argument before its shape was ever
+  // checked.
+  const facts = {};
+  for (const [version, sha] of Object.entries(candidates)) {
+    if (version in ledger) continue; // historical; not re-checked
+    if (!VERSION.test(version)) continue;
+    if (typeof sha !== 'string' || !SHA.test(sha)) continue;
+    if (compareVersions(version, currentVersion) >= 0) continue;
+    facts[version] = gatherCandidateFacts(version, sha);
+  }
+
   let released;
   try {
-    assertCandidateHeadingsAreCurrent(changelog, currentVersion);
+    const findings = candidateBaselineFindings(candidates, { ledger, currentVersion, facts });
+    if (findings.length > 0) throw new Error(findings.join('\n'));
+    assertCandidateHeadingsAreCurrent(changelog, currentVersion, { baselines: candidates, ledger });
     released = releasedFromLedger(ledger, currentVersion, parseChangelogVersions(changelog));
   } catch (error) {
     process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);

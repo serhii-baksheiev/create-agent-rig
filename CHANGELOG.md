@@ -2461,6 +2461,22 @@ sometimes earlier (step 6). Everything before that is mechanical:
    › "throws, naming the stale version, for a candidate heading on a version
    other than the one being prepared".
 
+   A heading on a version BELOW the one being prepared can also be a
+   still-frozen, accepted, unpublished predecessor RC rather than a forgotten
+   reconciliation (RP-349) — the case where the version now being prepared is
+   itself a later RC frozen on top of an earlier one that has not published
+   yet. Record that predecessor's exact frozen sha in
+   `scripts/release-candidates.json` instead of a ledger row, and leave its
+   `## X.Y.Z (release candidate)` heading as it is; the version gets no ledger
+   row, and no hash-history entry (`test/template/build-hash-history-candidates-e2e.test.ts`
+   › "exits 0 and does not list the frozen 1.2.0 baseline among released
+   versions"), until it actually publishes. Once it
+   does, add the ledger row from `npm view` as usual — a recorded sha that
+   disagrees with what the ledger says was actually published stops the build
+   rather than silently trusting either one. Pinned in
+   `test/template/hash-history.test.ts` › "flags a published ledger gitHead,
+   or null, that disagrees with the frozen RC sha".
+
 5. This file, and `PLAN.md` if the plan's claims changed.
 6. **`pnpm test` again — this run, not step 1, is the one that can catch a
    stale hash table.** The check compares the table against the versions this
