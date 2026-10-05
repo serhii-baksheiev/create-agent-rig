@@ -41,7 +41,20 @@ export type StubHandle = {
    * binary's link count to the filesystem's limit).
    */
   restore: () => void;
+  /**
+   * Set by `restore()` when the stub directory could not be removed because a
+   * file in it was busy (EBUSY/EPERM — on win32 a stub executable a process
+   * still holds); the directory is then left whole for the OS temp cleanup.
+   */
+  leftover?: string;
 };
+
+export type StubDependencies = {
+  /** Removes the stub directory; the default removes the win32 executable first. */
+  remove?: (dir: string) => void;
+};
+
+const BUSY_REMOVAL_CODES = new Set(['EBUSY', 'EPERM']);
 
 // See stub-command.test.ts: same-volume identity, EXDEV fallback, and other errors.
 export const materializeStubExecutable = async (
@@ -85,7 +98,11 @@ if (!isStub) {
  * written as a JS function body over `args`. Returns the handle; call
  * `restore()` in `finally`.
  */
-export const stubCommand = async (name: string, handlerBody: string): Promise<StubHandle> => {
+export const stubCommand = async (
+  name: string,
+  handlerBody: string,
+  dependencies: StubDependencies = {},
+): Promise<StubHandle> => {
   // The name reaches a shell line and NODE_OPTIONS unquoted; a word is all a
   // command name needs to be.
   if (!/^[A-Za-z0-9_-]+$/.test(name)) {
@@ -117,22 +134,42 @@ export const stubCommand = async (name: string, handlerBody: string): Promise<St
   }
   env['PATH'] = `${bin}${path.delimiter}${savedPath ?? ''}`;
   Object.assign(process.env, env);
-  return {
+  // Synchronous because every caller restores from a `finally` without
+  // awaiting, so this cannot go through the async removeFixture; it takes the
+  // same retry bounds instead. force: a caller may restore() more than once,
+  // and the second call finds nothing left to remove. On win32 the executable
+  // goes first, so a busy executable leaves the directory whole rather than
+  // without its preload.
+  const retries = {
+    maxRetries: FIXTURE_REMOVE_MAX_RETRIES,
+    retryDelay: FIXTURE_REMOVE_RETRY_DELAY_MS,
+  };
+  const removeDefault = (dir: string): void => {
+    if (process.platform === 'win32') {
+      rmSync(path.join(dir, `${name}.exe`), { force: true, ...retries });
+    }
+    rmSync(dir, { recursive: true, force: true, ...retries });
+  };
+  const remove = dependencies.remove ?? removeDefault;
+  const handle: StubHandle = {
     bin,
     env,
     restore: () => {
       process.env['PATH'] = savedPath;
       if (savedNodeOptions === undefined) delete process.env['NODE_OPTIONS'];
       else process.env['NODE_OPTIONS'] = savedNodeOptions;
-      // Synchronous because every caller restores from a `finally` without
-      // awaiting, so this cannot go through the async removeFixture; it takes
-      // the same retry bounds instead. force: a caller may restore() more than
-      // once, and the second call finds nothing left to remove.
-      const retries = {
-        maxRetries: FIXTURE_REMOVE_MAX_RETRIES,
-        retryDelay: FIXTURE_REMOVE_RETRY_DELAY_MS,
-      };
-      rmSync(bin, { recursive: true, force: true, ...retries });
+      try {
+        remove(bin);
+        handle.leftover = undefined;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (code !== undefined && BUSY_REMOVAL_CODES.has(code)) {
+          handle.leftover = bin;
+          return;
+        }
+        throw error;
+      }
     },
   };
+  return handle;
 };
