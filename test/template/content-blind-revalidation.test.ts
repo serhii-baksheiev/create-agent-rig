@@ -316,6 +316,71 @@ const claimThroughJiraAdapter = async (p: Project) => {
   await git(['commit', '-q', '--allow-empty', '-m', 'record Rig claim transition'], p.root);
 };
 
+/**
+ * RP-409 — posts a comment through the real `comment(ticket, body)` export
+ * of `queue/jira.mjs`, against a tiny stateful stub rather than through
+ * `p.setIssue()`, with the run directory set so the adapter's own
+ * post-write re-recording runs. The stub answers the POST with the comment id
+ * the caller then threads into `p.setIssue()`.
+ */
+const commentThroughJiraAdapter = async (
+  p: Project,
+  body: string,
+  commentId: string,
+): Promise<void> => {
+  const adapterUrl = pathToFileURL(path.join(scriptsDir, 'queue', 'jira.mjs')).href;
+  const resultPath = path.join(
+    await mkdtemp(path.join(tmpdir(), 'rp409-jira-comment-')),
+    'result.json',
+  );
+  const script = `
+    const fs = await import('node:fs/promises');
+    globalThis.fetch = async (input, init = {}) => {
+      const u = new URL(String(input));
+      const method = String(init.method || 'GET');
+      const reply = (json, status = 200) => ({
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: 'OK',
+        json: async () => json,
+      });
+      if (method === 'POST' && /\\/comment$/.test(u.pathname)) {
+        return reply({ id: ${JSON.stringify(commentId)} }, 201);
+      }
+      if (method === 'GET' && /\\/issue\\/[^/]+$/.test(u.pathname)) {
+        return reply({ fields: { updated: ${JSON.stringify(T2)} } });
+      }
+      return reply({});
+    };
+    const { comment } = await import(${JSON.stringify(adapterUrl)});
+    const result = await comment(
+      {
+        id: 'RP-50',
+        title: 'Replace marker authority with content-blind claims',
+        updatedAt: ${JSON.stringify(T2)},
+      },
+      ${JSON.stringify(body)},
+      {
+        env: {
+          JIRA_BASE_URL: 'https://example.invalid',
+          JIRA_EMAIL: 'a@b.c',
+          JIRA_API_TOKEN: 'x',
+          RIG_RUN_DIR: ${JSON.stringify(p.runDir)},
+        },
+      },
+    );
+    await fs.writeFile(${JSON.stringify(resultPath)}, JSON.stringify(result));
+  `;
+  const result = await run(
+    process.execPath,
+    ['--input-type=module', '--eval', script],
+    p.root,
+    p.env,
+  );
+  expect(result.code, result.out).toBe(0);
+  expect(JSON.parse(await readFile(resultPath, 'utf8'))).toEqual({ ok: true });
+};
+
 const claimAtSelect = async (p: Project, issue: Record<string, unknown>) => {
   const [claimRecords, jira] = await Promise.all([
     import(`${pathToFileURL(claimRecordsScript).href}?select-claim=${Date.now()}`),
@@ -817,6 +882,53 @@ describe('commentary fingerprints are ids/count and hold only at close', () => {
     expect(beforeClose.movedFingerprintSet).toEqual(expect.arrayContaining(['commentary']));
     expect(JSON.stringify(beforeClose)).not.toContain(COMMENT_SENTINEL);
     expect(JSON.stringify(beforeClose)).not.toContain('new commentary content is irrelevant');
+  });
+});
+
+describe('a comment the run posts through the adapter is not exempt from the commentary fingerprint', () => {
+  // RP-409 — `comment(ticket, body)` re-records only the run's own take-up
+  // marker (`rebaseline` → `recordTakeUp`); it never re-baselines
+  // `.rig/claims/<id>.json`. A write made through the adapter must therefore
+  // hold at BEFORE_CLOSE exactly like a comment from anyone else
+  // ("defers an added comment through SELECT and BEFORE_PR, then holds at
+  // BEFORE_CLOSE", above) — the adapter gets no special treatment.
+  it('holds at BEFORE_CLOSE with claim:commentary after the run’s own comment() write — the adapter does not re-baseline the claim', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+
+    await claimThroughJiraAdapter(p);
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      }),
+    );
+    const pr = await before(p, 'BEFORE_PR');
+    expect(pr.code, pr.out).toBe(0);
+    expect(jsonOf(pr)).toMatchObject({ result: 'CURRENT', action: 'continue' });
+
+    await commentThroughJiraAdapter(p, 'progress note', '10002');
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+        comment: {
+          total: 2,
+          comments: [
+            { id: '10001', body: description(COMMENT_SENTINEL) },
+            { id: '10002', body: description('progress note') },
+          ],
+        },
+      }),
+    );
+
+    const close = await before(p, 'BEFORE_CLOSE');
+    expect(close.code, close.out).toBe(2);
+    const beforeClose = jsonOf(close);
+    expect(beforeClose).toMatchObject({ result: 'CHANGED', action: 'hold' });
+    expect(beforeClose.movedFingerprintSet).toEqual(expect.arrayContaining(['commentary']));
+    expect(beforeClose.source).toEqual(expect.arrayContaining(['claim:commentary']));
   });
 });
 

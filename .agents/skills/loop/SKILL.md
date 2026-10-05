@@ -16,6 +16,11 @@ item → failing test first (`test-writer`) → implement (`implementation-agent
 → `pr-ship` → merge on the named criterion → verify the deployed surface if one
 changed.
 
+In a headless session (`claude -p`, `codex exec`) the session ends when you end
+a turn. Wait for CI and other long-running checks with a bounded foreground
+command — a poll loop with its own deadline — never by ending the turn and
+expecting to be woken.
+
 ## 0. The queue is behind an adapter
 
 Selection never reads a tracker directly. It goes through
@@ -1185,6 +1190,13 @@ three poisons the only channel by which this project learns.
   and › "the documented same-account limit: two same-account controllers can both come back
   claimed:true (not a claim of exclusivity)".
 
+  After a refusal, the uncommitted SELECT baseline `next` wrote for that item is
+  still in the checkout: delete it — it names an item you did not take — and
+  select a different item, because a later SELECT of the same item in this run
+  is refused rather than re-baselined. Pinned in the generator's
+  `test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
+  › "refuses to recreate a deleted untracked baseline with a %s".
+
   🔴 **The same reassignment gate runs again at claim time, before any
   mutating request.** Selection already checked the tracker's assignee; a
   human can still reassign the item in the window between selection and
@@ -1256,6 +1268,10 @@ three poisons the only channel by which this project learns.
   empty: a single `gh issue view` carries no cross-index, so `find` answers no
   `blocks` there (`test/template/close-transitioned.test.ts` (absent in a generated rig) › "github asks `gh
   issue view` with the full field list and maps CLOSED to closed"). A
+  comment added to the item after the claim — your own progress notes posted
+  through the adapter's `comment()` included — makes this point hold on
+  `claim:commentary` (`test/template/content-blind-revalidation.test.ts`
+  (absent in a generated rig) › "holds at BEFORE_CLOSE with claim:commentary after the run’s own comment() write — the adapter does not re-baseline the claim"). A
   hold (exit 2) stops the close: re-read the item, record the outcome with
   `node .claude/scripts/revalidate.mjs outcome --point BEFORE_CLOSE --ticket
   <item-id> --action-changed <true | false> --note '…'`, and close only if the
