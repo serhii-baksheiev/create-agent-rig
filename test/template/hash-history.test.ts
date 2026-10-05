@@ -21,7 +21,13 @@ import { withoutGitLocation } from '../../.claude/scripts/git-env.mjs';
 // @ts-expect-error — a plain .mjs release script, imported for its pure parts
 import * as hashHistory from '../../scripts/build-hash-history.mjs';
 
-const { parseChangelogVersions, assertCandidateHeadingsAreCurrent } = hashHistory as {
+const {
+  parseChangelogVersions,
+  assertCandidateHeadingsAreCurrent,
+  candidateRefName,
+  candidateBaselineFindings,
+  candidateLedgerDisagreements,
+} = hashHistory as {
   parseChangelogVersions: (markdown: string) => string[];
   // RP-353 review blocker D: a `## X.Y.Z (release candidate)` heading is only
   // ever correct for the version CURRENTLY being prepared (package.json's own
@@ -34,7 +40,44 @@ const { parseChangelogVersions, assertCandidateHeadingsAreCurrent } = hashHistor
   // returning findings — the same shape `releasedFromLedger` already uses in
   // this file for "the CHANGELOG and the ledger disagree about what has been
   // released", which this is a sibling check for.
-  assertCandidateHeadingsAreCurrent: (markdown: string, currentVersion: string) => void;
+  //
+  // RP-349 adds a third, optional argument: the verified frozen-baseline
+  // record (`baselines`, the contents of scripts/release-candidates.json) and
+  // the release ledger, both defaulting to `{}`. An older heading is allowed
+  // through only when its version is in `baselines` AND the ledger still has
+  // no row for it.
+  assertCandidateHeadingsAreCurrent: (
+    markdown: string,
+    currentVersion: string,
+    options?: { baselines?: Record<string, string>; ledger?: Record<string, string | null> },
+  ) => void;
+  // RP-349: the exact ref a frozen, unpublished release-candidate branch must
+  // resolve through — `refs/remotes/origin/release/<version>-rc`.
+  candidateRefName: (version: string) => string;
+  // RP-349: pure findings (empty = ok) over a scripts/release-candidates.json
+  // record. `facts` is gathered from git by `main` — per version, `{ refSha:
+  // string | null; packageVersion: string | null; isAncestor: boolean }` —
+  // and is consulted only for a version the ledger has no row for yet; once a
+  // ledger row exists the candidate is historical and git is not re-checked.
+  candidateBaselineFindings: (
+    record: Record<string, string>,
+    options: {
+      ledger: Record<string, string | null>;
+      currentVersion: string;
+      facts: Record<
+        string,
+        { refSha: string | null; packageVersion: string | null; isAncestor: boolean }
+      >;
+    },
+  ) => string[];
+  // RP-349: a recorded baseline whose ledger row (once the version actually
+  // publishes) disagrees with the frozen RC sha — `ledger: null` counts as a
+  // disagreement too, since "no gitHead recoverable" also disagrees with "this
+  // is the exact sha it was built from".
+  candidateLedgerDisagreements: (
+    ledger: Record<string, string | null>,
+    record: Record<string, string>,
+  ) => Array<{ version: string; ledger: string | null; candidate: string }>;
 };
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -57,6 +100,16 @@ type Ledger = Record<string, string | null>;
 
 const readLedger = async (): Promise<Ledger> =>
   JSON.parse(await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'));
+
+/**
+ * RP-349: `{ "X.Y.Z": "<40-hex sha>" }` — accepted, mechanically-frozen
+ * release-candidate baselines, append-only. Unlike the ledger, every entry
+ * here is unpublished by definition; this file is what lets a stale-looking
+ * CHANGELOG heading for such a version be told apart from one that was simply
+ * never reconciled after it published.
+ */
+const readCandidates = async (): Promise<Record<string, string>> =>
+  JSON.parse(await readFile(path.join(repoRoot, 'scripts', 'release-candidates.json'), 'utf8'));
 
 const readPkgVersion = async (): Promise<string> =>
   (JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as { version: string })
@@ -422,5 +475,209 @@ describe('the changelog heading history — a release-candidate heading left on 
   it('does not mistake a loosely-spelled heading for a candidate heading needing reconciliation', () => {
     const changelog = '## 1.1.0-rc\n\nbody\n';
     expect(() => assertCandidateHeadingsAreCurrent(changelog, '1.2.0')).not.toThrow();
+  });
+});
+
+// RP-349: master prepares 1.2.1 as the next frozen RC before 1.2.0 — itself an
+// accepted, frozen, unpublished RC at `release/1.2.0-rc` — has necessarily
+// published. The third argument of `assertCandidateHeadingsAreCurrent`
+// separates "forgot to reconcile after publishing" from "a verified,
+// still-frozen predecessor baseline", and `candidateBaselineFindings` /
+// `candidateLedgerDisagreements` let the baseline itself be verified from git
+// rather than asserted by hand.
+const RC_SHA = 'd'.repeat(40);
+const RC_SHA_OTHER = 'e'.repeat(40);
+
+describe('the frozen release-candidate baseline — verified from git, never guessed (RP-349)', () => {
+  it('names the exact ref a frozen candidate branch must resolve through', () => {
+    expect(candidateRefName('1.2.0')).toBe('refs/remotes/origin/release/1.2.0-rc');
+    expect(candidateRefName('1.2.1')).toBe('refs/remotes/origin/release/1.2.1-rc');
+  });
+
+  it('accepts a recorded baseline whose ref, package version and ancestry all verify, when the ledger has no row for it', () => {
+    const record = { '1.2.0': RC_SHA };
+    const facts = { '1.2.0': { refSha: RC_SHA, packageVersion: '1.2.0', isAncestor: true } };
+    expect(
+      candidateBaselineFindings(record, { ledger: {}, currentVersion: '1.2.1', facts }),
+    ).toEqual([]);
+  });
+
+  it('rejects a baseline whose exact ref is missing or names another sha', () => {
+    const record = { '1.2.0': RC_SHA };
+    const missingRef = { '1.2.0': { refSha: null, packageVersion: '1.2.0', isAncestor: true } };
+    const wrongRef = {
+      '1.2.0': { refSha: RC_SHA_OTHER, packageVersion: '1.2.0', isAncestor: true },
+    };
+    expect(
+      candidateBaselineFindings(record, {
+        ledger: {},
+        currentVersion: '1.2.1',
+        facts: missingRef,
+      }),
+    ).toEqual([expect.stringMatching(/1\.2\.0/)]);
+    expect(
+      candidateBaselineFindings(record, { ledger: {}, currentVersion: '1.2.1', facts: wrongRef }),
+    ).toEqual([expect.stringMatching(/1\.2\.0/)]);
+  });
+
+  it('rejects a baseline whose package.json version differs, or that is not an ancestor of HEAD', () => {
+    const record = { '1.2.0': RC_SHA };
+    const wrongPackageVersion = {
+      '1.2.0': { refSha: RC_SHA, packageVersion: '9.9.9', isAncestor: true },
+    };
+    const notAncestor = {
+      '1.2.0': { refSha: RC_SHA, packageVersion: '1.2.0', isAncestor: false },
+    };
+    expect(
+      candidateBaselineFindings(record, {
+        ledger: {},
+        currentVersion: '1.2.1',
+        facts: wrongPackageVersion,
+      }),
+    ).toEqual([expect.stringMatching(/1\.2\.0/)]);
+    expect(
+      candidateBaselineFindings(record, {
+        ledger: {},
+        currentVersion: '1.2.1',
+        facts: notAncestor,
+      }),
+    ).toEqual([expect.stringMatching(/1\.2\.0/)]);
+  });
+
+  it('stops checking the ref once the version has a ledger row', () => {
+    const record = { '1.2.0': RC_SHA };
+    // the ledger already carries a row for 1.2.0 — once that row exists the
+    // candidate is historical, and the (deliberately empty, unusable) facts
+    // below prove git is not consulted at all
+    expect(
+      candidateBaselineFindings(record, {
+        ledger: { '1.2.0': SHA_A },
+        currentVersion: '1.2.1',
+        facts: {},
+      }),
+    ).toEqual([]);
+  });
+
+  it('rejects a baseline version that is not below the current one, and malformed keys or values', () => {
+    expect(
+      candidateBaselineFindings(
+        { 'v1.2.0': RC_SHA },
+        { ledger: {}, currentVersion: '1.2.1', facts: {} },
+      ),
+      'key is not X.Y.Z',
+    ).toEqual([expect.stringMatching(/v1\.2\.0/)]);
+    expect(
+      candidateBaselineFindings(
+        { '1.2.0': 'not-a-sha' },
+        { ledger: {}, currentVersion: '1.2.1', facts: {} },
+      ),
+      'value is not a 40-char lowercase sha',
+    ).toEqual([expect.stringMatching(/1\.2\.0/)]);
+    expect(
+      candidateBaselineFindings(
+        { '1.2.1': RC_SHA },
+        {
+          ledger: {},
+          currentVersion: '1.2.1',
+          facts: { '1.2.1': { refSha: RC_SHA, packageVersion: '1.2.1', isAncestor: true } },
+        },
+      ),
+      'version equal to currentVersion',
+    ).toEqual([expect.stringMatching(/1\.2\.1/)]);
+    expect(
+      candidateBaselineFindings(
+        { '1.3.0': RC_SHA },
+        { ledger: {}, currentVersion: '1.2.1', facts: {} },
+      ),
+      'version above currentVersion',
+    ).toEqual([expect.stringMatching(/1\.3\.0/)]);
+  });
+
+  it('flags a published ledger gitHead, or null, that disagrees with the frozen RC sha', () => {
+    const record = { '1.2.0': RC_SHA };
+    expect(candidateLedgerDisagreements({ '1.2.0': SHA_A }, record)).toEqual([
+      { version: '1.2.0', ledger: SHA_A, candidate: RC_SHA },
+    ]);
+    expect(candidateLedgerDisagreements({ '1.2.0': null }, record)).toEqual([
+      { version: '1.2.0', ledger: null, candidate: RC_SHA },
+    ]);
+    expect(candidateLedgerDisagreements({ '1.2.0': RC_SHA }, record)).toEqual([]);
+    expect(candidateLedgerDisagreements({}, record)).toEqual([]);
+  });
+
+  // `releasedFromLedger` is unchanged by RP-349 — it takes no baseline input
+  // at all, so a recorded-but-unpublished candidate has no path into the
+  // hash table's released versions through it. Pinned by arity, the same way
+  // this file already pins `buildHistory`'s tag-free signature above, AND by
+  // the fact that `parseChangelogVersions` — the only producer of the
+  // `changelogVersions` argument `main` ever passes it — excludes a
+  // release-candidate heading entirely, baseline record or not.
+  it('never adds a candidate baseline to the released versions — releasedFromLedger takes no baseline input', () => {
+    expect(releasedFromLedger.length).toBe(3);
+    const changelog = [
+      '## 1.2.1 (release candidate)',
+      '',
+      'body',
+      '',
+      '## 1.2.0 (release candidate)',
+      '',
+      'body',
+      '',
+    ].join('\n');
+    const versions = parseChangelogVersions(changelog);
+    expect(versions, 'a candidate heading is never "released"').toEqual([]);
+    const ledger: Ledger = {};
+    expect(releasedFromLedger(ledger, '1.2.1', versions)).toEqual([]);
+  });
+});
+
+describe('the changelog heading history — an older candidate heading may be a verified unpublished RC baseline (RP-349)', () => {
+  const changelog = [
+    '## 1.2.1 (release candidate)',
+    '',
+    'body',
+    '',
+    '## 1.2.0 (release candidate)',
+    '',
+    'body',
+    '',
+  ].join('\n');
+
+  it('accepts an older candidate heading only for a version recorded as a verified frozen baseline', () => {
+    expect(() =>
+      assertCandidateHeadingsAreCurrent(changelog, '1.2.1', {
+        baselines: { '1.2.0': RC_SHA },
+        ledger: {},
+      }),
+    ).not.toThrow();
+  });
+
+  it('still throws for an unrecorded older candidate heading, naming both fixes', () => {
+    const call = () =>
+      assertCandidateHeadingsAreCurrent(changelog, '1.2.1', { baselines: {}, ledger: {} });
+    expect(call).toThrow(/1\.2\.0/);
+    expect(call).toThrow(/release-candidates\.json/);
+    expect(call).toThrow(/reconcil/i);
+  });
+
+  it("still throws 'reconcile' when the ledger already has a row for a recorded candidate", () => {
+    const call = () =>
+      assertCandidateHeadingsAreCurrent(changelog, '1.2.1', {
+        baselines: { '1.2.0': RC_SHA },
+        ledger: { '1.2.0': SHA_A },
+      });
+    expect(call).toThrow(/1\.2\.0/);
+    expect(call).toThrow(/reconcil/i);
+  });
+});
+
+describe('the committed scripts/release-candidates.json against this repository (RP-349)', () => {
+  it("every recorded frozen baseline names a 40-hex sha and a version below package.json's", async () => {
+    const record = await readCandidates();
+    const current = await readPkgVersion();
+    for (const [version, sha] of Object.entries(record)) {
+      expect(sha, version).toMatch(/^[0-9a-f]{40}$/);
+      expect(isBelow(version, current), version).toBe(true);
+    }
   });
 });

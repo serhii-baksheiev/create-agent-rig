@@ -82,6 +82,33 @@ npm", "reports a candidate that is not reachable from origin/master, and never
 reaches npm", and "reports origin/master as unresolvable rather than silently
 trusting a TAG that shadows its name".
 
+#### A frozen predecessor RC, while a later one is being prepared on top of it
+
+The scenario above is about preflighting the frozen candidate itself. A
+different situation (RP-349) is preparing the **next** candidate while the
+earlier one is still frozen and unpublished underneath it — e.g. 1.2.1 is
+being prepared while 1.2.0, itself an accepted, frozen RC, has not published
+yet. `templates/hash-history.json`'s builder would otherwise read 1.2.0's
+`## 1.2.0 (release candidate)` heading as a forgotten reconciliation (see
+CHANGELOG.md, "Releasing" step 4) and refuse to run.
+
+The fix is `scripts/release-candidates.json`: `{ "1.2.0": "<the frozen
+sha>" }`, verified against git rather than asserted by hand — the exact
+`release/1.2.0-rc` ref must still resolve to that sha, that commit's
+`package.json` must read `1.2.0`, and it must be an ancestor of HEAD (pinned
+in `test/template/hash-history.test.ts` › "rejects a baseline whose exact ref
+is missing or names another sha" and › "rejects a baseline whose package.json
+version differs, or that is not an ancestor of HEAD", and end to end in
+`test/template/build-hash-history-candidates-e2e.test.ts` › "reports the release
+ref missing, naming it, even when a TAG shadows its exact name"). While
+1.2.0 has no row in the ledger, its heading is left as the pending
+release-candidate form. Once 1.2.0 actually publishes, add its ledger row from
+`npm view` exactly as step 4 already describes, and reconcile the heading; a
+recorded sha that disagrees with what the ledger says was published stops the
+build rather than trusting either one silently — pinned in
+`test/template/hash-history.test.ts` › "flags a published ledger gitHead, or
+null, that disagrees with the frozen RC sha".
+
 ## Exact-SHA network acceptance
 
 The existing E2E workflow has an opt-in release lane. A dispatch with
