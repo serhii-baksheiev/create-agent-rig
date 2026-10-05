@@ -19,12 +19,9 @@ export function probeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 /**
  * Names the real exit identity execFile reported for a failed native vitest
- * probe, instead of only the child's stdout/stderr. `error.killed` is the
- * signal to read, not `error.signal`/`error.code`: a timed-out child is
- * reported with `signal: null`, `code: 143` by the time vitest's own CLI
- * maps its SIGTERM-driven exit — see `test/template/native-vitest-probe.test.ts`
- * › "names that the probe was killed and the configured timeout in ms when
- * execFile times it out" for the measurement this reads against.
+ * probe, instead of only the child's stdout/stderr — see
+ * `test/template/native-vitest-probe.test.ts` › "names that the probe was
+ * killed and the configured timeout in ms when execFile times it out".
  */
 export function describeProbeFailure(
   error: ExecFileException | null,

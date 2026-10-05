@@ -6,12 +6,6 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
 import { auditFor } from '../helpers/unattended-flag-leak-audit.js';
-// RP-395: this module does not exist yet. The two seams it is expected to
-// export — `probeEnv` and `describeProbeFailure` — are the ones
-// vitest-worker-concurrency.test.ts's `runNativeVitest`/`resolveNativeVitestProjects`
-// need: an env builder that always sets RIG_SCRUB_TEST_CHILD='1' (RP-296), and
-// a failure formatter that names the child's actual exit identity (timeout
-// kill, signal, exit code, maxBuffer) instead of only stdout+stderr.
 import { describeProbeFailure, probeEnv } from '../helpers/native-vitest-probe.js';
 
 /**
@@ -40,8 +34,6 @@ describe('describeProbeFailure', () => {
       timeout: timeoutMs,
     });
 
-    // Measured directly against a real execFile timeout kill (node docs):
-    // `error.killed === true`, `error.signal === 'SIGTERM'`, `error.code === null`.
     expect(error).not.toBeNull();
     expect(error?.killed).toBe(true);
 
@@ -53,8 +45,6 @@ describe('describeProbeFailure', () => {
   it('names the exit code when the child process exits non-zero without being killed', async () => {
     const { error, stdout, stderr } = await runChild(['-e', 'process.exit(3)'], {});
 
-    // Measured directly: `error.killed === false`, `error.signal === null`,
-    // `error.code === 3` — the literal exit code, not a timeout/signal kill.
     expect(error).not.toBeNull();
     expect(error?.killed).toBe(false);
     expect(error?.code).toBe(3);

@@ -70,20 +70,15 @@ const sixCpuPreload = `data:text/javascript,${encodeURIComponent(String.raw`
   process.env.RP371_VITEST_WORKER_PROBE_CPU = String(os.availableParallelism());
 `)}`;
 
-// Unchanged from before RP-395: execFile's own default (no timeout kill),
-// spelled out so describeProbeFailure has a timeout to report if this ever
-// grows one.
-const CONFIG_PROBE_TIMEOUT_MS = 0;
-
 function resolveNativeVitestProjects(): Promise<NativeVitestProjects> {
   return new Promise((resolve, reject) => {
     execFile(
       process.execPath,
       ['--input-type=module', '--eval', nativeVitestProjectProbe, configPath],
-      { cwd: repoRoot, timeout: CONFIG_PROBE_TIMEOUT_MS },
+      { cwd: repoRoot },
       (error, stdout, stderr) => {
         if (error) {
-          reject(new Error(describeProbeFailure(error, stdout, stderr, CONFIG_PROBE_TIMEOUT_MS)));
+          reject(new Error(`native Vitest configuration probe failed: ${stdout}${stderr}`));
           return;
         }
 
@@ -92,7 +87,9 @@ function resolveNativeVitestProjects(): Promise<NativeVitestProjects> {
           .find((line) => line.startsWith(PROBE_MARKER))
           ?.slice(PROBE_MARKER.length);
         if (!payload) {
-          reject(new Error(describeProbeFailure(null, stdout, stderr, CONFIG_PROBE_TIMEOUT_MS)));
+          reject(
+            new Error(`native Vitest configuration probe produced no result: ${stdout}${stderr}`),
+          );
           return;
         }
 
