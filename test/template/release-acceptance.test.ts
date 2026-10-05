@@ -274,3 +274,191 @@ describe('release acceptance packed Rig diagnostics', () => {
     }
   });
 });
+
+type DoctorCheckReport = {
+  id: string;
+  status: string;
+  detail?: string;
+  fix?: string;
+};
+type SafeDoctor = (value: unknown) => DoctorCheckReport[];
+
+async function safeDoctorFn(): Promise<SafeDoctor> {
+  const module = (await import(pathToFileURL(script).href)) as { safeDoctor?: SafeDoctor };
+  expect(module.safeDoctor).toBeTypeOf('function');
+  return module.safeDoctor!;
+}
+
+function errorCode(error: unknown): string | undefined {
+  return typeof error === 'object' && error !== null && 'code' in error
+    ? (error as { code?: string }).code
+    : undefined;
+}
+
+describe('release acceptance doctor report', () => {
+  it('maps an ok check to exactly id and status, dropping any other field', async () => {
+    const safeDoctor = await safeDoctorFn();
+
+    const result = safeDoctor({
+      schemaVersion: 1,
+      status: 'ok',
+      checks: [
+        {
+          id: 'rig-owned-files',
+          status: 'ok',
+          detail: 'clean (absent 0, content drift 0, line drift 0, unreadable 0)',
+          fix: '',
+          counts: { absent: 0, contentDrift: 0, lineDrift: 0, unreadable: 0 },
+        },
+      ],
+    });
+
+    expect(result).toEqual([{ id: 'rig-owned-files', status: 'ok' }]);
+  });
+
+  it.each(['warn', 'fail'])(
+    'keeps detail and fix as given on a %s check that is already clean and short',
+    async (status) => {
+      const safeDoctor = await safeDoctorFn();
+
+      const result = safeDoctor({
+        schemaVersion: 1,
+        status,
+        checks: [
+          {
+            id: 'rig-owned-files',
+            status,
+            detail: 'content drift (absent 0, content drift 2, line drift 0, unreadable 0)',
+            fix: 'Review the installation with create-agent-rig upgrade before accepting changes. Affected: .claude/hooks/guard-bash.mjs, .claude/rules/workflow.md.',
+          },
+        ],
+      });
+
+      expect(result).toEqual([
+        {
+          id: 'rig-owned-files',
+          status,
+          detail: 'content drift (absent 0, content drift 2, line drift 0, unreadable 0)',
+          fix: 'Review the installation with create-agent-rig upgrade before accepting changes. Affected: .claude/hooks/guard-bash.mjs, .claude/rules/workflow.md.',
+        },
+      ]);
+    },
+  );
+
+  it('strips control characters and whole ANSI escape sequences from detail and fix on a warn check', async () => {
+    const safeDoctor = await safeDoctorFn();
+
+    const result = safeDoctor({
+      schemaVersion: 1,
+      status: 'warn',
+      checks: [
+        {
+          id: 'rig-owned-files',
+          status: 'warn',
+          detail: 'warn\u0000reason\u001b[31m with color\u001b[0m and \u0007bell and \u007fdel end',
+          fix: '\u001b[2Jclear fix \u0001ctrl end',
+        },
+      ],
+    });
+
+    expect(result).toEqual([
+      {
+        id: 'rig-owned-files',
+        status: 'warn',
+        detail: 'warnreason with color and bell and del end',
+        fix: 'clear fix ctrl end',
+      },
+    ]);
+  });
+
+  it('truncates detail and fix to at most 512 characters on a warn check', async () => {
+    const safeDoctor = await safeDoctorFn();
+    const longDetail = 'a'.repeat(600);
+    const longFix = 'b'.repeat(600);
+
+    const result = safeDoctor({
+      schemaVersion: 1,
+      status: 'warn',
+      checks: [{ id: 'rig-owned-files', status: 'warn', detail: longDetail, fix: longFix }],
+    });
+
+    expect(result).toEqual([
+      {
+        id: 'rig-owned-files',
+        status: 'warn',
+        detail: 'a'.repeat(512),
+        fix: 'b'.repeat(512),
+      },
+    ]);
+  });
+
+  it('omits a non-string detail on a warn check instead of copying it', async () => {
+    const safeDoctor = await safeDoctorFn();
+
+    const result = safeDoctor({
+      schemaVersion: 1,
+      status: 'warn',
+      checks: [{ id: 'rig-owned-files', status: 'warn', detail: 42, fix: 'a usable fix' }],
+    });
+
+    expect(result).toEqual([{ id: 'rig-owned-files', status: 'warn', fix: 'a usable fix' }]);
+  });
+
+  it('omits a non-string fix on a warn check instead of copying it', async () => {
+    const safeDoctor = await safeDoctorFn();
+
+    const result = safeDoctor({
+      schemaVersion: 1,
+      status: 'warn',
+      checks: [{ id: 'rig-owned-files', status: 'warn', detail: 'a usable detail', fix: null }],
+    });
+
+    expect(result).toEqual([{ id: 'rig-owned-files', status: 'warn', detail: 'a usable detail' }]);
+  });
+
+  it.each([
+    ['a non-object summary', null],
+    ['an array summary', []],
+    ['a summary with the wrong schemaVersion', { schemaVersion: 2, status: 'ok', checks: [] }],
+    ['a summary with an invalid top-level status', { schemaVersion: 1, status: 'bad', checks: [] }],
+    [
+      'a summary with more than 128 checks',
+      {
+        schemaVersion: 1,
+        status: 'ok',
+        checks: Array.from({ length: 129 }, (_, index) => ({
+          id: `check-${index}`,
+          status: 'ok',
+        })),
+      },
+    ],
+  ])('aborts with doctor-summary-invalid for %s', async (_label, value) => {
+    const safeDoctor = await safeDoctorFn();
+
+    let caught: unknown;
+    try {
+      safeDoctor(value);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('doctor-summary-invalid');
+  });
+
+  it.each([
+    ['a check that is not an object', null],
+    ['a check with a non-string id', { id: 42, status: 'ok' }],
+    ['a check with an invalid status', { id: 'rig-owned-files', status: 'bad' }],
+  ])('aborts with doctor-check-invalid for %s', async (_label, check) => {
+    const safeDoctor = await safeDoctorFn();
+
+    let caught: unknown;
+    try {
+      safeDoctor({ schemaVersion: 1, status: 'ok', checks: [check] });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('doctor-check-invalid');
+  });
+});

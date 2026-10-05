@@ -517,7 +517,27 @@ export async function treeContains(root, needle) {
   return false;
 }
 
-function safeDoctor(value) {
+// A warn/fail check's detail/fix is printed verbatim into the CI log line, so
+// it is sanitized rather than trusted: control characters and CSI escape
+// sequences are stripped (the latter as whole sequences, not just their ESC
+// byte, so a stripped "\x1b[31m" cannot leave "[31m" behind as log text), and
+// the result is capped well under the report's own 512-character limit. The
+// input is capped first so neither pass can be handed an unbounded string.
+const DOCTOR_TEXT_LIMIT = 512;
+const DOCTOR_TEXT_INPUT_CAP = DOCTOR_TEXT_LIMIT * 8;
+
+function sanitizeDoctorText(value) {
+  const capped =
+    value.length > DOCTOR_TEXT_INPUT_CAP ? value.slice(0, DOCTOR_TEXT_INPUT_CAP) : value;
+  const stripped = capped
+    // eslint-disable-next-line no-control-regex -- the ESC byte is the subject: a whole CSI sequence, not just its lead byte
+    .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')
+    // eslint-disable-next-line no-control-regex -- the forbidden control range IS the subject of this strip
+    .replace(/[\x00-\x1f\x7f]/g, '');
+  return stripped.length > DOCTOR_TEXT_LIMIT ? stripped.slice(0, DOCTOR_TEXT_LIMIT) : stripped;
+}
+
+export function safeDoctor(value) {
   if (
     typeof value !== 'object' ||
     value === null ||
@@ -536,7 +556,11 @@ function safeDoctor(value) {
       !['ok', 'warn', 'fail'].includes(check.status)
     )
       abort('doctor-check-invalid');
-    return { id: check.id, status: check.status };
+    const report = { id: check.id, status: check.status };
+    if (check.status === 'ok') return report;
+    if (typeof check.detail === 'string') report.detail = sanitizeDoctorText(check.detail);
+    if (typeof check.fix === 'string') report.fix = sanitizeDoctorText(check.fix);
+    return report;
   });
 }
 
