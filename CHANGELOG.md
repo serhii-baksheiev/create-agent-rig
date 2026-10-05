@@ -74,12 +74,30 @@ ever installed it. Nothing in the 1.1 contract is removed or renamed.
   had invented — and every byte read, including bytes read before a
   mid-stream error, is charged to the shared budget exactly once (RP-368).
 
+- **The Jira queue adapter fails closed, rather than reporting a false empty
+  queue, when it cannot confirm it is allowed to see the configured
+  project.** A genuinely empty live search now also asks Jira for
+  `BROWSE_PROJECTS` permission on that project; an unconfirmed permission
+  refuses the read instead of being indistinguishable from "there is no
+  ready work" (RP-325).
+
+- **`plan-md` refuses a configured `options.scope` instead of silently
+  treating its label-less items as out-of-scope.** PLAN.md items carry no
+  release labels, so a tracker-backed scope can no longer select against an
+  adapter that cannot express one; a board's own `"scope": null` still
+  overrides a shared `options.scope` to select unscoped. PLAN.md also gains
+  two scheduling markers, `[frozen]` and `[later]`, read as `parked` without
+  setting a lifecycle, each keeping its own item-level deferral reason rather
+  than needing a human to un-park it the way `parked` does. The `loop`
+  skill's stop line now says to change the declared scope, not wait on a
+  human, when only out-of-scope items remain (RP-286, RP-326).
+
 ### Removed
 
 - **The experimental Mechanical TDD evidence contract is withdrawn before any
   published rig ever installed it.** `tdd-evidence.mjs`, `lib/tdd-evidence.mjs`,
   the git-diff fingerprinting and portable-claim verification built for it
-  (RP-305, RP-306, RP-336, RP-350, RP-352, RP-358, RP-360, RP-361, RP-362,
+  (RP-305, RP-306, RP-336, RP-350, RP-352, RP-360, RP-361, RP-362,
   RP-364, RP-370), and the `pr-ship` step that ran and held on it, all leave
   the shipped template and the workflow layer in this same release — they
   landed after 1.1.1 and reached no published version. `check-run.mjs` drops
@@ -2400,6 +2418,15 @@ sometimes earlier (step 6). Everything before that is mechanical:
    ```sh
    npm view create-agent-rig@<previous> gitHead   # → the sha for the ledger
    node scripts/build-hash-history.mjs             # rebuilds the table from it
+   ```
+
+   In the same change, record that release's published `dist.integrity` and
+   `dist.shasum` in `scripts/release-predecessor-integrity.json`, checked
+   against the downloaded tarball bytes rather than trusted from the registry
+   response alone:
+
+   ```sh
+   npm view create-agent-rig@<previous> dist.integrity dist.shasum
    ```
 
    The builder reads every `## X.Y.Z` this file lists below the version in

@@ -215,11 +215,10 @@ describe('the root manifest is publish-complete', () => {
     );
   });
 
-  it('records 1.1.0 as the published `latest`, and every overtaken version as neither', async () => {
+  it('records 1.1.1 as the published `latest`, and every overtaken version as neither', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
-    // Measured from the public registry on 29 Sep 2026. The release itself
-    // could not carry its own gitHead in the ledger; 1.1.1 work records it now.
-    const publishedSha = '3a52a0787c8648899ae5893c4e11b251802cae29';
+    // Measured from the public registry on 30 Sep 2026.
+    const publishedSha = 'd5eac957af3f8208d7ac06491ecf77eb7ec6a7ee';
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -246,23 +245,24 @@ describe('the root manifest is publish-complete', () => {
     // at a time, so only the just-shipped version needs guarding; accumulating
     // those would grow a list forever against a shape that cannot recur.
     //
-    // 1.1.0 shipped on 29 Sep 2026 and is the registry's current `latest`.
+    // 1.1.1 shipped on 30 Sep 2026 and is the registry's current `latest`.
     // These guards move with that fact instead of leaving the plan pending.
-    expect(plan).toMatch(/Status \(1\.1\.0 published/);
-    expect(plan).toMatch(/1\.1\.0 is `latest`/);
+    expect(plan).toMatch(/Status \(1\.1\.1 published/);
+    expect(plan).toMatch(/1\.1\.1 is `latest`/);
     // The published identity is recorded, not just the version number — and it
     // is asserted BESIDE `gitHead`, so a stray occurrence of those characters
     // elsewhere in the file cannot satisfy it.
     expect(plan).toMatch(new RegExp(`gitHead\`? \`?${publishedSha.slice(0, 8)}`));
-    // 1.1.0 is live, so it may not be described as pending anywhere — the
+    // 1.1.1 is live, so it may not be described as pending anywhere — the
     // 0.6.2 mistake, now pointed at the current release. This is the same fact
-    // the positive /`1\.1\.0` is prepared/ used to assert, inverted on the day
+    // the positive /`1\.1\.1` is prepared/ used to assert, inverted on the day
     // the release reached the registry rather than deleted.
     expect(plan).not.toMatch(
-      /`?1\.1\.0`? (?:is )?prepared|1\.1\.0 publish pending|owner publishes `?1\.1\.0`?|`?1\.1\.0`? is waiting on the owner/,
+      /`?1\.1\.1`? (?:is )?prepared|1\.1\.1 publish pending|owner publishes `?1\.1\.1`?|`?1\.1\.1`? is waiting on the owner/,
     );
     // and no superseded version may still be called `latest` — the 0.7.0
     // mistake, kept red for every version that has been overtaken.
+    expect(plan).not.toMatch(/`?1\.1\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.0\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.0\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.10\.1`? is `latest`/);
@@ -275,14 +275,17 @@ describe('the root manifest is publish-complete', () => {
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
     // the two places that carry it must agree: whatever §11 calls the
     // current `latest` is what the status line calls live.
-    expect(plan).toMatch(/done through `1\.1\.0`, the current `latest`/);
-    // 1.1.1 is prepared, not published: its `is prepared` positive, and every
+    expect(plan).toMatch(/done through `1\.1\.1`, the current `latest`/);
+    // 1.2.0 is prepared, not published: its `is prepared` positive, and every
     // voice that would announce it as shipped, until the registry says so.
-    expect(plan).toMatch(/`1\.1\.1` is prepared and waiting on the owner's publish/);
-    expect(plan).not.toMatch(/Status \(1\.1\.1 published/);
-    expect(plan).not.toMatch(/`?1\.1\.1`? is `latest`/);
-    expect(plan).not.toMatch(/through `?1\.1\.1`? are live/);
-    expect(plan).not.toMatch(/done through `1\.1\.1`/);
+    // It is a release candidate rather than a finished patch waiting on the
+    // owner's publish, so the positive is phrased the way PLAN.md phrases a
+    // candidate: "is the release candidate being prepared".
+    expect(plan).toMatch(/`1\.2\.0` is the release candidate being prepared/);
+    expect(plan).not.toMatch(/Status \(1\.2\.0 published/);
+    expect(plan).not.toMatch(/`?1\.2\.0`? is `latest`/);
+    expect(plan).not.toMatch(/through `?1\.2\.0`? are live/);
+    expect(plan).not.toMatch(/done through `1\.2\.0`/);
 
     // 🔴 What is deliberately NOT here any more, so the next reader does not
     // restore it: while 0.9.0 was prepared, an ENUMERATED negative forbade

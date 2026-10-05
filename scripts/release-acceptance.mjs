@@ -101,13 +101,19 @@ async function sha1File(file) {
   return sha1(await readFile(file));
 }
 
+async function sha512IntegrityOfFile(file) {
+  return `sha512-${createHash('sha512')
+    .update(await readFile(file))
+    .digest('base64')}`;
+}
+
 function isSha(value) {
   return /^[0-9a-f]{40}$/i.test(value);
 }
 
-/** `[major, minor, patch]` from a leading `X.Y.Z`; throws on anything else. */
+/** `[major, minor, patch]` from exactly `X.Y.Z`; throws on anything else, including trailing range syntax. */
 function parseSemver(version) {
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
   if (!match) abort('invalid-semver');
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
@@ -146,13 +152,15 @@ export function assertVersionAdvances(predecessorVersion, candidateVersion) {
 
 /**
  * Verifies the predecessor tarball's identity BEFORE running anything: the
- * real sha1 of the file at `tarballPath` must equal `expectedShasum`, and
- * `registryView.gitHead` must equal `expectedGitHead`. Only once both hold is
- * `install(tarballPath)` called — never on a failed identity check.
+ * real sha1 of the file at `tarballPath` must equal `expectedShasum`, its
+ * real sha512 integrity digest must equal `expectedIntegrity`, and
+ * `registryView.gitHead` must equal `expectedGitHead`. Only once all three
+ * hold is `install(tarballPath)` called — never on a failed identity check.
  */
 export async function acquirePredecessor({
   expectedGitHead,
   expectedShasum,
+  expectedIntegrity,
   registryView,
   tarballPath,
   install,
@@ -162,6 +170,8 @@ export async function acquirePredecessor({
     expectedGitHead.length === 0 ||
     typeof expectedShasum !== 'string' ||
     expectedShasum.length === 0 ||
+    typeof expectedIntegrity !== 'string' ||
+    expectedIntegrity.length === 0 ||
     typeof tarballPath !== 'string' ||
     tarballPath.length === 0 ||
     typeof install !== 'function' ||
@@ -174,6 +184,8 @@ export async function acquirePredecessor({
   const actualShasum = await sha1File(tarballPath);
   if (actualShasum !== expectedShasum) abort('predecessor-shasum-mismatch');
   if (registryView.gitHead !== expectedGitHead) abort('predecessor-githead-mismatch');
+  const actualIntegrity = await sha512IntegrityOfFile(tarballPath);
+  if (actualIntegrity !== expectedIntegrity) abort('predecessor-integrity-mismatch');
   return install(tarballPath);
 }
 
@@ -206,7 +218,10 @@ export async function assertUserMutationsPreserved({
     abort('user-delete-restored');
   } catch (error) {
     if (error instanceof AcceptanceError) throw error;
-    // ENOENT (or any other access failure) means the deletion held — correct.
+    // Only ENOENT means the deletion held — any other access failure (e.g. a
+    // parent segment that is not a directory) could not actually observe
+    // whether the file is gone, so it must not be misreported as success.
+    if (error?.code !== 'ENOENT') abort('user-delete-check-failed');
   }
 
   let added;
@@ -229,7 +244,8 @@ async function snapshotFiles(root, dir = root, map = new Map()) {
   return map;
 }
 
-function changedPaths(before, after) {
+/** The changed and added repo-relative paths between two `snapshotFiles` maps. */
+export function changedFiles(before, after) {
   const changed = new Set();
   for (const [rel, hash] of before) if (after.get(rel) !== hash) changed.add(rel);
   for (const rel of after.keys()) if (!before.has(rel)) changed.add(rel);
@@ -237,11 +253,29 @@ function changedPaths(before, after) {
 }
 
 /**
- * Generates a rig with `predecessorCli` in a fresh git repo under `scratch`,
- * edits one rig-managed file, deletes another, adds one user-owned file,
- * runs `candidateCli upgrade --yes`, asserts preservation and that the
- * written manifest's `version` advanced to `candidateVersion`, then runs
- * `candidateCli upgrade --yes` a second time and asserts no file changed.
+ * Refuses a pack-report filename that is not a plain basename ending in
+ * `.tgz` — before it is ever joined onto a directory and used as a path.
+ */
+export function assertPackFilename(name) {
+  if (
+    typeof name !== 'string' ||
+    name.length === 0 ||
+    path.basename(name) !== name ||
+    !name.endsWith('.tgz')
+  )
+    abort('pack-report-invalid');
+}
+
+/**
+ * Generates a rig with `predecessorCli init --layer workflow` in a fresh git
+ * repo under `scratch`, edits one rig-managed file, deletes another, adds
+ * one user-owned file, runs `candidateCli upgrade --yes`, asserts
+ * preservation and that the written manifest's `version` advanced to
+ * `candidateVersion`, then runs `candidateCli upgrade --yes` a second time
+ * and asserts no file changed. Reports both upgrades' changed paths via
+ * `firstUpgradeChangedFiles`/`secondUpgradeChangedFiles` so a vacuous first
+ * upgrade (nothing to deliver) is visible to the caller rather than silently
+ * indistinguishable from a real one.
  */
 export async function acceptPredecessorUpgrade({
   scratch,
@@ -261,7 +295,7 @@ export async function acceptPredecessorUpgrade({
 
   const runCli = async (cli, argv) => command(process.execPath, [cli, ...argv], { cwd: root, env });
 
-  await runCli(predecessorCli, ['init']);
+  await runCli(predecessorCli, ['init', '--layer', 'workflow']);
   await command('git', ['-c', 'core.fsmonitor=false', 'add', '-A'], { cwd: root, env });
   await command('git', ['commit', '--quiet', '-m', 'predecessor rig fixture'], { cwd: root, env });
 
@@ -275,7 +309,10 @@ export async function acceptPredecessorUpgrade({
   await rm(path.join(root, deletedPath));
   await writeFile(path.join(root, addedPath), addedContent);
 
+  const beforeFirstUpgrade = await snapshotFiles(root);
   await runCli(candidateCli, ['upgrade', '--yes']);
+  const afterFirstUpgrade = await snapshotFiles(root);
+  const firstUpgradeChangedFiles = changedFiles(beforeFirstUpgrade, afterFirstUpgrade);
 
   const manifestPath = path.join(root, '.claude', '.rig-manifest.json');
   const manifest = parseJson(await readFile(manifestPath, 'utf8'));
@@ -296,7 +333,8 @@ export async function acceptPredecessorUpgrade({
 
   return {
     manifestVersion: manifest.version,
-    secondUpgradeChangedFiles: changedPaths(before, after),
+    firstUpgradeChangedFiles,
+    secondUpgradeChangedFiles: changedFiles(before, after),
   };
 }
 
@@ -499,14 +537,8 @@ async function main() {
       ).stdout,
     );
     const item = Array.isArray(packed) ? packed[0] : undefined;
-    if (
-      !item ||
-      typeof item.filename !== 'string' ||
-      path.basename(item.filename) !== item.filename ||
-      !item.filename.endsWith('.tgz') ||
-      !Array.isArray(item.files)
-    )
-      abort('pack-report-invalid');
+    if (!item || !Array.isArray(item.files)) abort('pack-report-invalid');
+    assertPackFilename(item.filename);
     if (
       item.files.some(
         (file) =>
@@ -859,6 +891,23 @@ async function main() {
       const predecessorGitHead = ledger[predecessorVersion];
       assertVersionAdvances(predecessorVersion, item.version);
 
+      // The expectation is the repo's own record, never the registry
+      // response — `acquirePredecessor` below treats `registryView` as an
+      // observation to check, not as the source of truth.
+      const integrityRecords = parseJson(
+        await readFile(
+          path.join(checkout, 'scripts', 'release-predecessor-integrity.json'),
+          'utf8',
+        ),
+      );
+      const integrityRecord = integrityRecords?.[predecessorVersion];
+      if (
+        !integrityRecord ||
+        typeof integrityRecord.integrity !== 'string' ||
+        typeof integrityRecord.shasum !== 'string'
+      )
+        abort('predecessor-integrity-record-missing');
+
       const registryView = parseJson(
         (
           await npm(['view', `create-agent-rig@${predecessorVersion}`, '--json'], {
@@ -884,14 +933,15 @@ async function main() {
         ).stdout,
       );
       const predecessorItem = Array.isArray(predecessorPacked) ? predecessorPacked[0] : undefined;
-      if (!predecessorItem || typeof predecessorItem.filename !== 'string')
-        abort('predecessor-pack-report-invalid');
+      if (!predecessorItem) abort('predecessor-pack-report-invalid');
+      assertPackFilename(predecessorItem.filename);
       const predecessorTarball = path.join(predecessorPackDestination, predecessorItem.filename);
       const predecessorHome = path.join(scratch, 'predecessor-home');
 
       const predecessorCli = await acquirePredecessor({
         expectedGitHead: predecessorGitHead,
-        expectedShasum: registryView?.dist?.shasum,
+        expectedShasum: integrityRecord.shasum,
+        expectedIntegrity: integrityRecord.integrity,
         registryView,
         tarballPath: predecessorTarball,
         install: async (tarballPath) => {
@@ -927,14 +977,15 @@ async function main() {
         candidateCli: cli,
         candidateVersion: item.version,
       });
-      if (
-        upgradeOutcome.manifestVersion !== item.version ||
-        upgradeOutcome.secondUpgradeChangedFiles.length > 0
-      )
+      if (upgradeOutcome.manifestVersion !== item.version) abort('upgrade-version-not-advanced');
+      if (upgradeOutcome.firstUpgradeChangedFiles.length === 0)
+        abort('predecessor-upgrade-vacuous');
+      if (upgradeOutcome.secondUpgradeChangedFiles.length > 0)
         abort('predecessor-upgrade-not-idempotent');
       predecessorUpgrade = {
         predecessorVersion,
         candidateVersion: item.version,
+        firstUpgradeChangedFiles: upgradeOutcome.firstUpgradeChangedFiles,
         secondUpgradeChangedFiles: upgradeOutcome.secondUpgradeChangedFiles,
       };
     }
