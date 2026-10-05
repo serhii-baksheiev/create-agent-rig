@@ -19,7 +19,8 @@
     "1.0.0",
     "1.0.1",
     "1.1.0",
-    "1.1.1"
+    "1.1.1",
+    "1.2.0"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -50,7 +51,8 @@
         "e48766714f4bceb5113c7036c380dfdbe07229feaf9b57fe4168660c5c90feb2",
         "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261",
         "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a",
-        "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3"
+        "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3",
+        "5b6c6a3838c5b8ca82ac796ade24aa40e1091913759592881737eea76c94ba16"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -95,7 +97,8 @@
         "75a5bc3e1aa3fdef96b59edc90a3cb4b996708710fe16f65038e0e21853df4e8",
         "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3",
         "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97",
-        "c4b7be1c1a98a8bda06aafb2aaffd4fc2bd17a85647b91b9a92d51d7d199c8eb"
+        "c4b7be1c1a98a8bda06aafb2aaffd4fc2bd17a85647b91b9a92d51d7d199c8eb",
+        "dc0a607a222885794e509c86fbba18af1b0d4140122ff00e13942c6653e0d2fd"
       ]
     },
     ".agents/skills/release-propose/SKILL.md": {
@@ -451,7 +454,8 @@
       "since": "0.7.0",
       "hashes": [
         "acb1d5702a826832977e7eb01b76c50cab19292528901f1b33693e561dbb0a24",
-        "17101c99b7341dba7982570ac8b58bae6f97ddf346713c90d90e8ee484ff4c33"
+        "17101c99b7341dba7982570ac8b58bae6f97ddf346713c90d90e8ee484ff4c33",
+        "9fb6fd01031082db8c7e8196304d866af95f209ce26cfe1cb4abb8ff5ac8c189"
       ]
     },
     ".claude/scripts/lib/gate-coverage.mjs": {
@@ -504,7 +508,8 @@
         "bed44df40412a7edac96914de21edc796df604ddc275ff1a02764dfcc4d4ede7",
         "b3893c365de37ef6d9d04ab933296b9fcf09a0886197d7e12313fa63eacdbd89",
         "37eeb4bdb50d7f6b1427bd02ec9815f39ad9142f35691ffadd8c0b626c6cdb00",
-        "82018ddda2e6760b1659089ad60b83c68257e760a3e9bbba734c4ff8562501a2"
+        "82018ddda2e6760b1659089ad60b83c68257e760a3e9bbba734c4ff8562501a2",
+        "0d59154f89d299b4ea900e136ff3478b86391e74337d2b6544cdaba395bf82cf"
       ]
     },
     ".claude/scripts/queue/as-of.mjs": {
@@ -530,7 +535,8 @@
         "c9902da15d06de3e952352115db0288433520eae2caac1f70ee6e06753d1f444",
         "e31f9899d6edad127db7a2f43dafdfff2671c5c780209cccd3107e56b09c6042",
         "915f0e73fe0842196227c2bd56ba813ed0b7e358670eeabab456cc27fbc4bc9d",
-        "a6f82491ce744c23452b600c8566a6e2e6eb95e82e36a572ad6a2219f2068f63"
+        "a6f82491ce744c23452b600c8566a6e2e6eb95e82e36a572ad6a2219f2068f63",
+        "306fd56876cd90e3686abaddde6193c5fa4fb9a2e28d50775285066700e1e187"
       ]
     },
     ".claude/scripts/queue/gate-rounds.mjs": {
@@ -561,7 +567,8 @@
         "4cf917ac06708e1068dfe9f8bbebc9376c4748526bd669b9bea32929ba996d0a",
         "b4a0789be7ad4b401de872edb06665bca349048178b4dd6c5db848ca44f7c977",
         "19a04cdbdfd936213cea3a9a00a583a060a4a8d0356d6a6922ae1c2f593f16f1",
-        "f0de17b9531f658d31e7f1196a85782089bfb642691c37859622c7084478149e"
+        "f0de17b9531f658d31e7f1196a85782089bfb642691c37859622c7084478149e",
+        "4dece5e553b9061eddef7961c4bef3eac0b1eb75b09ddd2d47352a909de1c340"
       ]
     },
     ".claude/scripts/queue/jira.mjs": {
@@ -575,7 +582,8 @@
         "f44203af187e855b9f738f8dbedfd313abf9d6a5cc29182fb46cd58d70698d7a",
         "c2f2af8ac5eadd8d35a15bcdeffe585e32c6f99b4e6ab9ace0f9d7fd9d694943",
         "add45ea2bf2f96fbda0399afc1903bab75c251001f4d05fcbaa0b5958c8c1702",
-        "5b9690a98c289229949a5e69ea90703f3831ab7315a0d5c9faf96bc7827f50d2"
+        "5b9690a98c289229949a5e69ea90703f3831ab7315a0d5c9faf96bc7827f50d2",
+        "68c41a376cc7d5d7104668556313130bcf62d4f50d4685d52b91d9a66e6021ab"
       ]
     },
     ".claude/scripts/queue/plan-md.mjs": {
@@ -585,13 +593,20 @@
         "07eab69bd86b19b7a1f01eb14efe4f8c007481806cbe029d4014fe9bf0703000",
         "27d7ae3832a32219d5c0ab136bc542388eb686e9f34053c3058104cdeea1574d",
         "1320909605824b2cd1ff57878e463ef360463b2b175d2152638eda2dff72f5ea",
-        "816aec4cb84492370972f71813a9fec7c0309e5f501951a93620a37cb318ac39"
+        "816aec4cb84492370972f71813a9fec7c0309e5f501951a93620a37cb318ac39",
+        "a45373feb5605f6eea4d9a51318deb895986d2f9476596f25480dbf20c387676"
       ]
     },
     ".claude/scripts/queue/propose.mjs": {
       "since": "1.0.0",
       "hashes": [
         "13115b1cd4d40f8b2a618a5dbabd5c973118a71789db17d704ac8d0c478cb024"
+      ]
+    },
+    ".claude/scripts/queue/spec-kit-import.mjs": {
+      "since": "1.2.0",
+      "hashes": [
+        "ac2224556ecf58717dea8aaeb959a22f188093df08e49c5ae46c3abb2c2f3b17"
       ]
     },
     ".claude/scripts/queue/state.mjs": {
@@ -730,7 +745,8 @@
         "e48766714f4bceb5113c7036c380dfdbe07229feaf9b57fe4168660c5c90feb2",
         "b588ea0edfc953405bcad24ecbecd174da85dbc81b930aeeeb42b06a0307b261",
         "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a",
-        "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3"
+        "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3",
+        "5b6c6a3838c5b8ca82ac796ade24aa40e1091913759592881737eea76c94ba16"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -778,7 +794,8 @@
         "75a5bc3e1aa3fdef96b59edc90a3cb4b996708710fe16f65038e0e21853df4e8",
         "2c2545d327be19d685dd0b758fe72806369a383b90df56164224bbb3b6f61cd3",
         "d2dcb27fe183d241de6159522825d93fc175db80cd7876e0fa4fe14726c75a97",
-        "c4b7be1c1a98a8bda06aafb2aaffd4fc2bd17a85647b91b9a92d51d7d199c8eb"
+        "c4b7be1c1a98a8bda06aafb2aaffd4fc2bd17a85647b91b9a92d51d7d199c8eb",
+        "dc0a607a222885794e509c86fbba18af1b0d4140122ff00e13942c6653e0d2fd"
       ]
     },
     ".claude/skills/release-propose/SKILL.md": {
@@ -1012,7 +1029,8 @@
       "since": "0.5.0",
       "hashes": [
         "312cfccb609f35f4ba42f8aabc9ac939cfc01f5c109a123d3087fce5d248b636",
-        "e771888074498adc2d52e1f50f222056fd95433c4bb9c7e8aa0f3a730da449bd"
+        "e771888074498adc2d52e1f50f222056fd95433c4bb9c7e8aa0f3a730da449bd",
+        "b630bcaf950248720373f9087688a922c563f3621e46c90a40016ad1e45a9a41"
       ]
     },
     "docs/decisions/workflow-layer-split.md": {

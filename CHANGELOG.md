@@ -14,7 +14,84 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
-## 1.2.0 (release candidate)
+## 1.2.1 (release candidate)
+
+**1.2.1 is a reliability patch on the 1.2 line.** It fixes defects found while
+running the 1.2 release loop itself — `create` hanging on a stalled git,
+`doctor` leaving an unattended flag in the operator's real home, and PEM
+shapes that `check-run.mjs` let through to its log — and folds the 1.2
+pilot's findings into the `loop` skill. **It also carries one additive,
+opt-in workflow-layer command, the Spec Kit importer's Jira target: a
+departure from the numbering rule above, taken because the owner scoped the
+Jira projection follow-up into this patch (RP-267).** Nothing in the 1.2
+contract is removed or renamed.
+
+### Added
+
+- **Spec Kit's `tasks.md` can be projected into Jira as well as GitHub
+  Issues.**
+  `node .claude/scripts/queue/index.mjs import spec-kit --to jira --tasks <file>`
+  (workflow layer; `.claude/queue.json` must name the `jira` adapter and a
+  project) reuses the GitHub target's parsing, identities and dry-run report.
+  Each task becomes a Jira Task with the `rig-spec-kit` label and its
+  identity marker, and an explicit dependency becomes a native Blocks link,
+  so the Jira queue holds a dependent until its blocker is done. A re-import
+  adds a missing link and refuses, never deletes, a projected link that
+  `tasks.md` no longer lists; a failed write names the issues already
+  written, retries nothing and echoes no task text. See
+  `docs/parallel-workflows.md`, "Import into Jira" (RP-279).
+
+### Changed
+
+- **The `loop` skill carries the 1.2 pilot's findings.** A headless session
+  waits for CI with a bounded foreground command instead of ending its turn;
+  after a refused claim it deletes the uncommitted `SELECT` baseline and
+  selects a different item; and the skill states that the run's own progress
+  comments make `BEFORE_CLOSE` hold on `claim:commentary` (RP-409).
+
+### Fixed
+
+- **`create` no longer hangs forever on a stalled git.** Each `git init`,
+  `add` and `commit` child runs under a 60-second bound and is killed on
+  expiry; a step that exceeds it fails `create` with an error naming the step
+  and the bound. A missing or failing git still skips silently, as before
+  (RP-252).
+
+- **`doctor` no longer leaves an unattended flag in the operator's real
+  `~/.claude`.** Its guard fixtures arm a scoped unattended flag that is
+  mirrored into the real home, and only the fixture child cleared it, so a
+  batch killed at its 30-second bound left the flag behind for good. The
+  parent now creates the fixture root and, after every batch whatever its
+  status, clears the flag and removes the root; a cleanup that fails is
+  reported instead of swallowed (RP-310).
+
+- **`check-run.mjs` redacts private-key bodies in PEM shapes it used to let
+  through.** An OSC sequence (a terminal title or hyperlink) inside a
+  `-----BEGIN … PRIVATE KEY-----` header, a header split across the read edge
+  of an over-limit line, and a header that matches only after the working
+  directory is relativized each leaked the key body into the check log and
+  the journal tail. OSC sequences are now stripped, an over-limit line is
+  normalised the way a whole line is, and an open header is carried across
+  read edges (RP-323).
+
+### Generator repository (not a rig-facing change)
+
+- Release tooling: `scripts/release-candidates.json` records an accepted,
+  unpublished predecessor RC's frozen sha, which `build-hash-history.mjs`
+  verifies from git instead of needing a ledger row (RP-349); ordinary
+  `release-preflight.mjs` resolves `origin/master` as the exact
+  remote-tracking ref (RP-410); the acceptance report carries a non-ok
+  `doctor` check's detail and fix, sanitised and capped (RP-411).
+- `docs/command-contract.md` states two existing behaviours: an upgrade
+  conflict on an ordinary rig-owned file drops it from the manifest, while a
+  held-back `CLAUDE.md` keeps its claim; and `uninstall` prunes only the
+  directories its own removals emptied (RP-250).
+- Test reliability: command-stub teardown (RP-348, RP-412), e2e
+  descendant-process cleanup (RP-359), the nested vitest probe's scrubbed
+  environment (RP-395), platform-aware admin-share evidence (RP-365), and
+  smaller per-case budgets in the revalidation tests (RP-319).
+
+## 1.2.0
 
 **1.2.0 is additive on the 1.1 line.** It ships Parallel Workflows: Spec
 Kit's `tasks.md` projects into GitHub Issues as a dependency-aware queue, the
