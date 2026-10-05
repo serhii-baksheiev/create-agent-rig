@@ -508,6 +508,11 @@ describe('create-agent-rig uninstall', () => {
   // at 11: `canonical-path.mjs` did not exist before, so it moves from
   // "nothing to count" straight to the traced bucket, never through the
   // precaution one.
+  //
+  // RP-415: `.claude/settings.json` now wires an eighth direct hook,
+  // `probity-gate.mjs`; its one import, `lib/hook-input.mjs`, is already
+  // among the 7 real imports. 8 direct hooks + 7 real imports + 2
+  // non-dependency entries = 17. The precaution-only count stays 11.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -529,7 +534,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(16 genuinely referenced or imported; 11 kept only as a precaution',
+        '(17 genuinely referenced or imported; 11 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',
