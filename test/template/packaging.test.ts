@@ -43,32 +43,82 @@ describe('the inner package is locked against publication', () => {
 
 // Publish brief §4: the manifest is the npm landing page.
 describe('the root manifest is publish-complete', () => {
-  it('ships 1.1.1 as one release in both package manifests', async () => {
+  // RP-374: a literal-version mirror ("both manifests say 1.1.1") is
+  // tautological the moment the next release bumps the literal — it would
+  // keep passing on a manifest nobody bumped, as long as someone typed the
+  // same old string in both files. The relational form instead asks the one
+  // question that actually matters at release-prep time: is the version
+  // every manifest agrees on strictly ahead of the last version this
+  // project has confirmed shipped? The comparator below is written out by
+  // hand, independently of any production ordering helper, so this test
+  // cannot pass merely because production agrees with itself.
+  it('ships one version in both package manifests, strictly after the latest released ledger entry', async () => {
     const root = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
     const inner = JSON.parse(
       await readFile(path.join(repoRoot, 'packages', 'cli', 'package.json'), 'utf8'),
     ) as { version: string };
-    expect(root.version).toBe('1.1.1');
     expect(inner.version).toBe(root.version);
+
+    const ledger = JSON.parse(
+      await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
+    ) as Record<string, string | null>;
+
+    const parts = (version: string): [number, number, number] => {
+      const [major, minor, patch] = version.split('.').map(Number);
+      return [major ?? 0, minor ?? 0, patch ?? 0];
+    };
+    const compareSemver = (a: string, b: string): number => {
+      const [aMajor, aMinor, aPatch] = parts(a);
+      const [bMajor, bMinor, bPatch] = parts(b);
+      if (aMajor !== bMajor) return aMajor - bMajor;
+      if (aMinor !== bMinor) return aMinor - bMinor;
+      return aPatch - bPatch;
+    };
+
+    const releasedVersions = Object.entries(ledger)
+      .filter(([, gitHead]) => gitHead !== null)
+      .map(([version]) => version);
+    expect(releasedVersions.length).toBeGreaterThan(0);
+    const highestReleased = releasedVersions.sort(compareSemver).at(-1) as string;
+
+    expect(compareSemver(root.version, highestReleased)).toBeGreaterThan(0);
   });
 
-  it('puts the 1.1.1 corrective patch first in the changelog and preserves 1.1.0, 1.0.1 and 1.0.0 history', async () => {
+  it('puts the 1.2.0 release candidate first in the changelog and preserves 1.1.1, 1.1.0, 1.0.1 and 1.0.0 history', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
-    const first = changelog.match(/^## (\d+\.\d+\.\d+)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
-    expect(first?.[1]).toBe('1.1.1');
+    // RP-374: the previous form of this regex required the heading's digits
+    // to be followed immediately by a newline, so a "(release candidate)"
+    // suffix fell outside the match and the heading was skipped rather than
+    // read — the candidate suffix must be matched explicitly, not relied on
+    // to be absent.
+    const first = changelog.match(
+      /^## (\d+\.\d+\.\d+)(?: \(release candidate\))?\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m,
+    );
+    expect(first?.[1]).toBe('1.2.0');
     // The named subjects of THIS release, not words any release note would
-    // contain — so an entry copied forward from 1.1.0 fails here. Each pin
-    // pairs the fixed behavior with the ticket that owns it.
-    expect(first?.[2]).toMatch(/RP-309/);
-    expect(first?.[2]).toMatch(/RP-246/);
-    expect(first?.[2]).toMatch(/RP-292/);
-    expect(first?.[2]).toMatch(/RP-295/);
-    expect(first?.[2]).toMatch(/RP-300/);
-    // 🔴 the numbering call: fixes on the 1.1 line with no promise in the
-    // 1.1 contract moving — so a PATCH.
-    expect(first?.[2]).toMatch(/is a corrective hardening patch on the 1\.1 line/i);
+    // contain — so an entry copied forward from 1.1.1 fails here. Each pin
+    // pairs the shipped behavior with the ticket that owns it.
+    expect(first?.[2]).toMatch(/RP-275/);
+    expect(first?.[2]).toMatch(/RP-330/);
+    expect(first?.[2]).toMatch(/RP-353/);
+    expect(first?.[2]).toMatch(/RP-368/);
+    expect(first?.[2]).toMatch(/RP-398/);
+    // 🔴 the numbering call: additive on the 1.1 line with nothing in the
+    // 1.1 contract removed or renamed — so a MINOR.
+    expect(first?.[2]).toMatch(/is additive on the 1\.1 line/i);
+    const corrective = changelog.match(/^## 1\.1\.1\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    // The 1.1.1 pins carried forward unchanged, now one release further down.
+    expect(corrective?.[1]).toMatch(/RP-309/);
+    expect(corrective?.[1]).toMatch(/RP-246/);
+    expect(corrective?.[1]).toMatch(/RP-292/);
+    expect(corrective?.[1]).toMatch(/RP-295/);
+    expect(corrective?.[1]).toMatch(/RP-300/);
+    // 🔴 carried forward from when this was the "first" pin: 1.1.1 is still
+    // the corrective hardening patch it always was, one release further
+    // down now.
+    expect(corrective?.[1]).toMatch(/is a corrective hardening patch on the 1\.1 line/i);
     const minor = changelog.match(/^## 1\.1\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
     expect(minor?.[1]).toMatch(/RP-224/);
     expect(minor?.[1]).toMatch(/RP-297/);
@@ -150,6 +200,7 @@ describe('the root manifest is publish-complete', () => {
     // release that rewrites the previous release's note is describing bytes
     // that already shipped.
     expect(changelog).toMatch(/^## 0\.9\.0$/m);
+    expect(changelog.indexOf('## 1.2.0')).toBeLessThan(changelog.indexOf('## 1.1.1'));
     expect(changelog.indexOf('## 1.1.1')).toBeLessThan(changelog.indexOf('## 1.1.0'));
     expect(changelog.indexOf('## 1.1.0')).toBeLessThan(changelog.indexOf('## 1.0.1'));
     expect(changelog.indexOf('## 1.0.1')).toBeLessThan(changelog.indexOf('## 1.0.0'));

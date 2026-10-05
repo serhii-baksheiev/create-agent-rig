@@ -14,6 +14,82 @@ second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove.
 
+## 1.2.0 (release candidate)
+
+**1.2.0 is additive on the 1.1 line.** It ships Parallel Workflows: Spec
+Kit's `tasks.md` projects into GitHub Issues as a dependency-aware queue, the
+`loop` skill's claim/close lifecycle keeps a projected issue open through
+Rig's own `BEFORE_CLOSE` gate instead of letting a non-Rig close race it, the
+Jira queue adapter's comment-history hydration is bounded and scoped to the
+one ticket that fails rather than the whole board, and a frozen,
+unpublished release candidate can be preflighted against its own frozen refs
+independently of where `origin/master` has since moved. It also withdraws
+the experimental Mechanical TDD evidence contract before any published rig
+ever installed it. Nothing in the 1.1 contract is removed or renamed.
+
+### Added
+
+- **Parallel Workflows: Spec Kit's `tasks.md` projects into GitHub Issues as
+  a dependency-aware queue.**
+  `node .claude/scripts/queue/index.mjs import spec-kit --to github-issues --tasks <file>`
+  (workflow layer) recognises checklist tasks carrying an ID and title, reads
+  an explicit `(depends on T001)` suffix as a dependency, and writes each as
+  a `rig-spec-kit`-labelled issue with its own identity marker and
+  `Blocked by #<issue>` lines the GitHub Issues queue already understands;
+  `--dry-run` reports creates/updates/unchanged without writing anything.
+  Required lifecycle labels (`in-progress`, `escalated`, `triage`) are
+  provisioned on import when absent, idempotently, and an empty label list is
+  handled rather than refused. Malformed IDs, duplicate or unknown
+  dependencies, cycles and ambiguous existing projections are refused before
+  any issue write. See `docs/parallel-workflows.md` (RP-275, RP-277, RP-327,
+  RP-329).
+
+- **The `loop` skill references a projected GitHub issue non-closingly, so
+  Rig's own `BEFORE_CLOSE` gate — not a merge — is what closes it.** PR
+  descriptions and squash commits now say `Refs #<issue>` rather than
+  `Closes #<issue>`; GitHub no longer auto-closes the issue the moment the PR
+  merges, so the claim/close lifecycle and the adapter's own close ordering
+  remain the thing that actually closes it (RP-330).
+
+- **A frozen, unpublished release candidate can be preflighted against its
+  own frozen refs, independently of where `origin/master` has since
+  moved.** `node scripts/release-preflight.mjs --frozen-candidate <sha>`
+  requires HEAD to be exactly that sha, requires the fully-qualified
+  `refs/remotes/origin/release/<version>-rc` to resolve to that same sha, and
+  requires the sha to still be an ancestor of `origin/master`; any git finding
+  in this mode stops before `npm pack` is ever reached. See
+  `docs/releasing.md`, "Preflighting a frozen, unpublished release candidate"
+  (RP-353).
+
+### Fixed
+
+- **The Jira queue adapter's per-ticket comment hydration no longer fails
+  selection for the whole board over one ticket's bad read.** A comment-page
+  error, an oversized page, or the shared selection byte/time budget running
+  out now leaves only that ticket's comment window incomplete
+  (`UNVERIFIABLE` for that item alone) instead of throwing out of
+  `listEligible` and reporting `queue-unreadable` for every item. Hydration
+  also now finishes correctly against Jira Cloud's real comment-endpoint page
+  shape — it carries a declared `total`, never the `isLast` flag the fixtures
+  had invented — and every byte read, including bytes read before a
+  mid-stream error, is charged to the shared budget exactly once (RP-368).
+
+### Removed
+
+- **The experimental Mechanical TDD evidence contract is withdrawn before any
+  published rig ever installed it.** `tdd-evidence.mjs`, `lib/tdd-evidence.mjs`,
+  the git-diff fingerprinting and portable-claim verification built for it
+  (RP-305, RP-306, RP-336, RP-350, RP-352, RP-358, RP-360, RP-361, RP-362,
+  RP-364, RP-370), and the `pr-ship` step that ran and held on it, all leave
+  the shipped template and the workflow layer in this same release — they
+  landed after 1.1.1 and reached no published version. `check-run.mjs` drops
+  the `--vitest-json` structured result and git-diff capture that were this
+  gate's only consumer, returning to its 1.1.1 behaviour. Ordinary TDD
+  discipline (a failing test first, `test-writer` then
+  `implementation-agent`) is unchanged; specialised TDD enforcement is
+  expected to move to an upstream, opt-in provider in a later release
+  (RP-398).
+
 ## 1.1.1
 
 **1.1.1 is a corrective hardening patch on the 1.1 line.** It closes fail-open

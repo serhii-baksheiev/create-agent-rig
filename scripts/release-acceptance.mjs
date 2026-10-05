@@ -95,9 +95,209 @@ function parseJson(text) {
 }
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
+const sha1 = (value) => createHash('sha1').update(value).digest('hex');
+
+async function sha1File(file) {
+  return sha1(await readFile(file));
+}
 
 function isSha(value) {
   return /^[0-9a-f]{40}$/i.test(value);
+}
+
+/** `[major, minor, patch]` from a leading `X.Y.Z`; throws on anything else. */
+function parseSemver(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(version);
+  if (!match) abort('invalid-semver');
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+function compareSemver(a, b) {
+  const [aMajor, aMinor, aPatch] = parseSemver(a);
+  const [bMajor, bMinor, bPatch] = parseSemver(b);
+  if (aMajor !== bMajor) return aMajor - bMajor;
+  if (aMinor !== bMinor) return aMinor - bMinor;
+  return aPatch - bPatch;
+}
+
+/**
+ * The highest semver key in `ledger` (`templates/release-ledger.json`'s own
+ * shape: version -> gitHead | null) whose value is a recorded gitHead — "the
+ * ledger's latest released entry". Throws `AcceptanceError('ledger-empty')`
+ * when every entry is `null`.
+ */
+export function latestReleasedLedgerVersion(ledger) {
+  const released = Object.entries(ledger)
+    .filter(([, gitHead]) => typeof gitHead === 'string' && gitHead.length > 0)
+    .map(([version]) => version);
+  if (released.length === 0) abort('ledger-empty');
+  released.sort(compareSemver);
+  return released[released.length - 1];
+}
+
+/**
+ * Throws `AcceptanceError('candidate-version-not-advancing')` unless
+ * `candidateVersion` is strictly semver-greater than `predecessorVersion`.
+ */
+export function assertVersionAdvances(predecessorVersion, candidateVersion) {
+  if (compareSemver(candidateVersion, predecessorVersion) <= 0)
+    abort('candidate-version-not-advancing');
+}
+
+/**
+ * Verifies the predecessor tarball's identity BEFORE running anything: the
+ * real sha1 of the file at `tarballPath` must equal `expectedShasum`, and
+ * `registryView.gitHead` must equal `expectedGitHead`. Only once both hold is
+ * `install(tarballPath)` called — never on a failed identity check.
+ */
+export async function acquirePredecessor({
+  expectedGitHead,
+  expectedShasum,
+  registryView,
+  tarballPath,
+  install,
+}) {
+  if (
+    typeof expectedGitHead !== 'string' ||
+    expectedGitHead.length === 0 ||
+    typeof expectedShasum !== 'string' ||
+    expectedShasum.length === 0 ||
+    typeof tarballPath !== 'string' ||
+    tarballPath.length === 0 ||
+    typeof install !== 'function' ||
+    typeof registryView !== 'object' ||
+    registryView === null ||
+    typeof registryView.gitHead !== 'string' ||
+    registryView.gitHead.length === 0
+  )
+    abort('predecessor-identity-incomplete');
+  const actualShasum = await sha1File(tarballPath);
+  if (actualShasum !== expectedShasum) abort('predecessor-shasum-mismatch');
+  if (registryView.gitHead !== expectedGitHead) abort('predecessor-githead-mismatch');
+  return install(tarballPath);
+}
+
+/**
+ * Reads the three paths an upgrade is supposed to have preserved under
+ * `root`, throwing the moment one does not match what the caller recorded
+ * before upgrading: an edited rig-owned file whose content changed back
+ * (`user-edit-lost`), a deleted rig-owned file that came back
+ * (`user-delete-restored`), and a user-owned addition that vanished
+ * (`user-add-removed`) or was altered (`user-add-corrupted`).
+ */
+export async function assertUserMutationsPreserved({
+  root,
+  editedPath,
+  editedContent,
+  deletedPath,
+  addedPath,
+  addedContent,
+}) {
+  let edited;
+  try {
+    edited = await readFile(path.join(root, editedPath), 'utf8');
+  } catch {
+    abort('user-edit-lost');
+  }
+  if (edited !== editedContent) abort('user-edit-lost');
+
+  try {
+    await access(path.join(root, deletedPath));
+    abort('user-delete-restored');
+  } catch (error) {
+    if (error instanceof AcceptanceError) throw error;
+    // ENOENT (or any other access failure) means the deletion held — correct.
+  }
+
+  let added;
+  try {
+    added = await readFile(path.join(root, addedPath), 'utf8');
+  } catch {
+    abort('user-add-removed');
+  }
+  if (added !== addedContent) abort('user-add-corrupted');
+}
+
+/** Content hash per repo-relative path, skipping `.git` — for idempotence diffs. */
+async function snapshotFiles(root, dir = root, map = new Map()) {
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.name === '.git') continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) await snapshotFiles(root, full, map);
+    else if (entry.isFile()) map.set(path.relative(root, full), sha256(await readFile(full)));
+  }
+  return map;
+}
+
+function changedPaths(before, after) {
+  const changed = new Set();
+  for (const [rel, hash] of before) if (after.get(rel) !== hash) changed.add(rel);
+  for (const rel of after.keys()) if (!before.has(rel)) changed.add(rel);
+  return [...changed].sort();
+}
+
+/**
+ * Generates a rig with `predecessorCli` in a fresh git repo under `scratch`,
+ * edits one rig-managed file, deletes another, adds one user-owned file,
+ * runs `candidateCli upgrade --yes`, asserts preservation and that the
+ * written manifest's `version` advanced to `candidateVersion`, then runs
+ * `candidateCli upgrade --yes` a second time and asserts no file changed.
+ */
+export async function acceptPredecessorUpgrade({
+  scratch,
+  env,
+  predecessorCli,
+  candidateCli,
+  candidateVersion,
+}) {
+  const root = path.join(scratch, 'rig');
+  await mkdir(root, { recursive: true });
+  await command('git', ['init', '--quiet', root], { env });
+  await command('git', ['config', 'user.name', 'Release acceptance'], { cwd: root, env });
+  await command('git', ['config', 'user.email', 'release-acceptance@example.test'], {
+    cwd: root,
+    env,
+  });
+
+  const runCli = async (cli, argv) => command(process.execPath, [cli, ...argv], { cwd: root, env });
+
+  await runCli(predecessorCli, ['init']);
+  await command('git', ['-c', 'core.fsmonitor=false', 'add', '-A'], { cwd: root, env });
+  await command('git', ['commit', '--quiet', '-m', 'predecessor rig fixture'], { cwd: root, env });
+
+  const editedPath = '.claude/rules/workflow.md';
+  const deletedPath = '.claude/rules/autonomy.md';
+  const addedPath = 'user-notes.md';
+  const addedContent = 'release acceptance user note\n';
+
+  const editedContent = `${await readFile(path.join(root, editedPath), 'utf8')}\n# release acceptance edit marker\n`;
+  await writeFile(path.join(root, editedPath), editedContent);
+  await rm(path.join(root, deletedPath));
+  await writeFile(path.join(root, addedPath), addedContent);
+
+  await runCli(candidateCli, ['upgrade', '--yes']);
+
+  const manifestPath = path.join(root, '.claude', '.rig-manifest.json');
+  const manifest = parseJson(await readFile(manifestPath, 'utf8'));
+  if (manifest.version !== candidateVersion) abort('upgrade-version-not-advanced');
+
+  await assertUserMutationsPreserved({
+    root,
+    editedPath,
+    editedContent,
+    deletedPath,
+    addedPath,
+    addedContent,
+  });
+
+  const before = await snapshotFiles(root);
+  await runCli(candidateCli, ['upgrade', '--yes']);
+  const after = await snapshotFiles(root);
+
+  return {
+    manifestVersion: manifest.version,
+    secondUpgradeChangedFiles: changedPaths(before, after),
+  };
 }
 
 const executableName = (name) => `${name}${process.platform === 'win32' ? '.exe' : ''}`;
@@ -643,6 +843,102 @@ async function main() {
     if (credentialOutput.includes(sentinel) || (await treeContains(credentialProject, sentinel)))
       abort('credential-leaked-into-output-or-state');
 
+    // Real predecessor-to-candidate upgrade acceptance: the published,
+    // immutable predecessor from the registry, upgraded by this exact packed
+    // candidate. It reaches the real npm registry (`npm view`/`npm pack` of
+    // an ALREADY-published version, read-only) — the same network trust the
+    // `main()` entry guard above already requires before this point, so this
+    // phase runs unconditionally whenever that guard let execution through,
+    // rather than spelling a second opt-in flag for the same dispatch.
+    let predecessorUpgrade;
+    {
+      const ledger = parseJson(
+        await readFile(path.join(checkout, 'templates', 'release-ledger.json'), 'utf8'),
+      );
+      const predecessorVersion = latestReleasedLedgerVersion(ledger);
+      const predecessorGitHead = ledger[predecessorVersion];
+      assertVersionAdvances(predecessorVersion, item.version);
+
+      const registryView = parseJson(
+        (
+          await npm(['view', `create-agent-rig@${predecessorVersion}`, '--json'], {
+            cwd: scratch,
+            env: environment,
+          })
+        ).stdout,
+      );
+      const predecessorPackDestination = path.join(scratch, 'predecessor-pack');
+      await mkdir(predecessorPackDestination, { recursive: true });
+      const predecessorPacked = parseJson(
+        (
+          await npm(
+            [
+              'pack',
+              `create-agent-rig@${predecessorVersion}`,
+              '--json',
+              '--pack-destination',
+              predecessorPackDestination,
+            ],
+            { cwd: predecessorPackDestination, env: environment },
+          )
+        ).stdout,
+      );
+      const predecessorItem = Array.isArray(predecessorPacked) ? predecessorPacked[0] : undefined;
+      if (!predecessorItem || typeof predecessorItem.filename !== 'string')
+        abort('predecessor-pack-report-invalid');
+      const predecessorTarball = path.join(predecessorPackDestination, predecessorItem.filename);
+      const predecessorHome = path.join(scratch, 'predecessor-home');
+
+      const predecessorCli = await acquirePredecessor({
+        expectedGitHead: predecessorGitHead,
+        expectedShasum: registryView?.dist?.shasum,
+        registryView,
+        tarballPath: predecessorTarball,
+        install: async (tarballPath) => {
+          await mkdir(predecessorHome, { recursive: true });
+          await npm(
+            [
+              'install',
+              '--ignore-scripts',
+              '--no-audit',
+              '--no-fund',
+              '--prefix',
+              predecessorHome,
+              tarballPath,
+            ],
+            { cwd: predecessorHome, env: environment },
+          );
+          return path.join(
+            predecessorHome,
+            'node_modules',
+            'create-agent-rig',
+            'packages',
+            'cli',
+            'dist',
+            'index.js',
+          );
+        },
+      });
+
+      const upgradeOutcome = await acceptPredecessorUpgrade({
+        scratch: path.join(scratch, 'predecessor-upgrade'),
+        env: environment,
+        predecessorCli,
+        candidateCli: cli,
+        candidateVersion: item.version,
+      });
+      if (
+        upgradeOutcome.manifestVersion !== item.version ||
+        upgradeOutcome.secondUpgradeChangedFiles.length > 0
+      )
+        abort('predecessor-upgrade-not-idempotent');
+      predecessorUpgrade = {
+        predecessorVersion,
+        candidateVersion: item.version,
+        secondUpgradeChangedFiles: upgradeOutcome.secondUpgradeChangedFiles,
+      };
+    }
+
     const report = {
       sha: candidate,
       version: item.version,
@@ -657,6 +953,7 @@ async function main() {
         status: doctor.status,
         specKit: { connectivity: 'not-observed', trust: 'not-observed' },
       },
+      ...(predecessorUpgrade ? { predecessorUpgrade } : {}),
     };
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } catch (error) {
