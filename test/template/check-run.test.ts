@@ -1,5 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -109,10 +110,41 @@ const hermeticEnv = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => {
   return env;
 };
 
+// Windows refuses a command line over 32,767 characters (spawn
+// ENAMETOOLONG), so no single argument this harness passes may approach it;
+// 8 KiB per argument keeps a whole command line far below that limit.
+const ARGV_ENTRY_MAX_CHARS = 8 * 1024;
+
 const runCheckRun = (
   args: string[],
   { cwd, env = hermeticEnv() }: { cwd: string; env?: NodeJS.ProcessEnv },
-): Promise<RunResult> => run(process.execPath, [CHECK_RUN, ...args], cwd, env);
+): Promise<RunResult> => {
+  const passed = args.map((arg, index) => {
+    if (arg.length <= ARGV_ENTRY_MAX_CHARS) return arg;
+    // A fixture runner's JSON config: written beside the runner and passed as
+    // `@<path>`, which `READ_RUNNER_CONFIG` below reads back unchanged.
+    const file = path.join(cwd, `runner-config-${index}-${process.hrtime.bigint()}.json`);
+    writeFileSync(file, arg);
+    return `@${file}`;
+  });
+  for (const arg of passed) {
+    if (arg.length > ARGV_ENTRY_MAX_CHARS) {
+      throw new Error(
+        `runCheckRun: an argument of ${arg.length} characters exceeds ${ARGV_ENTRY_MAX_CHARS}; ` +
+          'pass large fixture data through a file',
+      );
+    }
+  }
+  return run(process.execPath, [CHECK_RUN, ...passed], cwd, env);
+};
+
+// The config line every JSON-configured fixture runner below starts with:
+// argv[2] is either the JSON itself or `@<path>` to a file holding it.
+const READ_RUNNER_CONFIG = `const config = JSON.parse(
+  String(process.argv[2] ?? '{}').startsWith('@')
+    ? (await import('node:fs')).readFileSync(String(process.argv[2]).slice(1), 'utf8')
+    : (process.argv[2] ?? '{}'),
+);`;
 
 // --- fixture runners --------------------------------------------------------
 
@@ -125,7 +157,7 @@ const runCheckRun = (
  * checked against.
  */
 const RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const noise = Number(config.noise ?? 0);
 const pad = typeof config.noisePad === 'number' ? ' '.repeat(config.noisePad) : '';
 for (let i = 0; i < noise; i += 1) {
@@ -160,7 +192,7 @@ process.exit(0);
  * an OS argument-length limit the test has no business tripping.
  */
 const LONG_LINE_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const bytes = Number(config.longLineBytes ?? 0);
 const suffix = config.longLineSuffix ?? '';
 const prefixLen = Math.max(0, bytes - Buffer.byteLength(suffix, 'utf8'));
@@ -807,7 +839,7 @@ describe('recording a check-result event when RIG_RUN_DIR is declared', () => {
    * assembled lines through argv here hits `E2BIG`).
    */
   const DEEP_PATH_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const segments = Number(config.segments ?? 0);
 const lineCount = Number(config.lineCount ?? 0);
 const deepPath = '/' + Array.from({ length: segments }, () => 'a').join('/') + '/b.test.ts';
@@ -873,7 +905,7 @@ process.exit(Number(config.exitCode ?? 0));
    * the `FAILED_TESTS_MAX` cap never gets a chance to bound the cost.
    */
   const WHITESPACE_RUN_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const padLength = Number(config.padLength ?? 0);
 const count = Number(config.count ?? 0);
 const pad = ' '.repeat(padLength);
@@ -2035,7 +2067,7 @@ describe('a PEM private-key block spans multiple lines and must be redacted as a
 
 /** One line of `prefixBytes` 'x' immediately followed by `header` (no newline between them), then each of `afterLines` as its own line. */
 const PEM_AT_LINE_END_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const prefixBytes = Number(config.prefixBytes ?? 0);
 process.stdout.write('x'.repeat(prefixBytes) + config.header + '\\n');
 for (const line of config.afterLines ?? []) {
@@ -2202,7 +2234,7 @@ describe('a line carries END followed by a NEW BEGIN — the block must stay arm
 // out completely unredacted.
 
 const PEM_HEADER_THEN_OVERFLOW_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 process.stdout.write(config.header + 'z'.repeat(Number(config.suffixBytes ?? 0)) + '\\n');
 for (const line of config.afterLines ?? []) {
   process.stdout.write(\`\${line}\\n\`);
@@ -2276,7 +2308,7 @@ describe('a BEGIN header followed by more than 256 characters on the SAME over-l
 // tail-carrying design closes together.
 
 const PEM_STRADDLE_CHUNK_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 process.stdout.write(
   'z'.repeat(Number(config.prefixBytes ?? 0)) +
     config.header +
@@ -2411,7 +2443,7 @@ describe('a BEGIN header carrying an embedded ANSI code, followed by more than 2
 // rest of a key that already ended.
 
 const PEM_COMPLETE_THEN_OVERFLOW_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 process.stdout.write(
   config.header + (config.body ?? '') + config.end + 'z'.repeat(Number(config.suffixBytes ?? 0)) + '\\n',
 );
@@ -2477,7 +2509,7 @@ describe('a complete BEGIN..END pair sits early inside a single over-limit line,
 // that same pin.
 
 const PEM_OVERLIMIT_END_THEN_BEGIN_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 process.stdout.write(
   'z'.repeat(Number(config.prefixBytes ?? 0)) + config.end + ' ' + config.header + '\\n',
 );
@@ -2567,7 +2599,7 @@ describe('a line carries END followed by a NEW BEGIN, both within the tail windo
 
 /** A short filler line, then a header (+ small suffix) on its OWN line, then each of `afterLines` — built INSIDE the child, never passed through argv, so a multi-KB header/filler pair never risks an OS argument-length limit. */
 const PEM_NORMAL_LINE_STRADDLE_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 process.stdout.write('F'.repeat(Number(config.priorLineBytes ?? 0)) + '\\n');
 process.stdout.write(config.header + (config.suffix ?? '') + '\\n');
 for (const line of config.afterLines ?? []) {
@@ -3779,7 +3811,7 @@ describe('a CSI sequence sits between the first dash and the remaining dashes of
  * prints a per-offset unique FAIL line.
  */
 const SWEEP_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const LINE_MAX = 65536;
 let pos = 0;
 const write = (text) => {
@@ -4354,7 +4386,7 @@ describe('RP-323 round 4 — a split END marker still closes the block, swept at
 // `LONG_LINE_RUNNER_SOURCE` is — see that fixture's own comment.
 
 const OSC_NOISE_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const bytes = Number(config.lineBytes ?? 0);
 const opener = '\\u001b]';
 const repeats = Math.ceil(bytes / opener.length);
@@ -4392,7 +4424,7 @@ describe('a 20 MB single line of OSC-like noise (many unterminated ESC ] openers
 // `LONG_LINE_RUNNER_SOURCE` is — see that fixture's own comment.
 
 const BEGIN_THEN_PADDING_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const bytes = Number(config.lineBytes ?? 0);
 const opener = '-----BEGIN ';
 const paddingBytes = Math.max(bytes - opener.length, 0);
@@ -4401,7 +4433,7 @@ process.exit(Number(config.exitCode ?? 0));
 `;
 
 const REPEATED_BEGIN_RUNNER_SOURCE = `
-const config = JSON.parse(process.argv[2] ?? '{}');
+${READ_RUNNER_CONFIG}
 const bytes = Number(config.lineBytes ?? 0);
 const unit = '-----BEGIN ' + 'A'.repeat(4090);
 const repeats = Math.ceil(bytes / unit.length);
