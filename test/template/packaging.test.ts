@@ -110,6 +110,10 @@ describe('the root manifest is publish-complete', () => {
     // departure is stated in the entry itself, not left to be inferred.
     expect(first?.[2]).toMatch(/is a reliability patch on the 1\.2 line/i);
     expect(first?.[2]).toMatch(/RP-267/);
+    // ...and the numbering paragraph, which names every recorded departure by
+    // version, names this one too — or it reads as if there were only two.
+    const numbering = changelog.slice(0, changelog.search(/^## \d/m));
+    expect(numbering).toMatch(/1\.2\.1 is the\s+third/);
     // 1.2.0 is published, so its heading is reconciled to the plain form —
     // a leftover "(release candidate)" suffix does not match here.
     const additiveMinor = changelog.match(/^## 1\.2\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);

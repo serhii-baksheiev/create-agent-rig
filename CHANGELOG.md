@@ -12,7 +12,8 @@ that "I only take minors" remains a usable policy; 0.3.2 shipped additive
 content as a patch by the owner's call and stays recorded as one. 0.8.0 is the
 second recorded departure; its own entry states the direction and the reason,
 and this paragraph deliberately does not restate them — a numbering rule with
-two copies of its exceptions is the shape 0.8.0 exists to remove.
+two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
+third, recorded the same way.
 
 ## 1.2.1 (release candidate)
 
@@ -89,7 +90,8 @@ contract is removed or renamed.
 - Test reliability: command-stub teardown (RP-348, RP-412), e2e
   descendant-process cleanup (RP-359), the nested vitest probe's scrubbed
   environment (RP-395), platform-aware admin-share evidence (RP-365), and
-  smaller per-case budgets in the revalidation tests (RP-319).
+  about half the spawns in one revalidation test case, with two case budgets
+  named rather than changed (RP-319).
 
 ## 1.2.0
 
