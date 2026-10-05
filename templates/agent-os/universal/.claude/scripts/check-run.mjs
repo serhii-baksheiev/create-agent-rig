@@ -538,7 +538,7 @@ const OVERFLOW_TAIL_CHARS = 256;
 // immediately) still breaks a literal, RAW `-----BEGIN ` substring search
 // even though the marker is already whole once stripped. An escape sequence
 // `normalize` cannot yet resolve — split mid-OSC by the read-chunk boundary
-// itself — is instead carried forward raw (together with up to
+// itself — is instead carried forward (together with up to
 // `OPEN_HEADER_START`'s own length of marker-prefix characters ahead of it)
 // so the next segment's `normalize` call completes it exactly as if both had
 // arrived together. A header closes at its OWN closing dashes (`-----`), not
@@ -546,36 +546,25 @@ const OVERFLOW_TAIL_CHARS = 256;
 // private key (`CERTIFICATE`, `PUBLIC KEY`) closes there instead of reading
 // as open for the rest of the run.
 //
-// RP-323 round 4 (owner-authorised, reviewer-validated) — an exhaustive sweep
-// across EVERY read-chunk split offset, not just the hand-picked ones above,
-// found four further gaps `decideOpenHeaderCarry` below now closes:
-//   - a header's own `-----` sitting INSIDE a still-unresolved escape (an
-//     OSC title's own payload, say) no longer counts as the header's closing
-//     dashes — the escape must resolve (BEL/ST) before any `-----` inside it
-//     is read as a close;
-//   - the escape rule is now evaluated BEFORE the marker-prefix rule below,
-//     and carries from the FIRST unresolved escape, not the last — carrying
-//     from a LATER, already-irrelevant escape (an OSC hyperlink's own split
-//     `ESC \` terminator, say) could drop the marker's own leading dashes
-//     that sat ahead of an earlier one;
-//   - a marker prefix (`-----BEG`, say) immediately followed by a run of
-//     characters that is itself a proper (not yet complete) prefix of one of
-//     `runCheck`'s own relativize candidates — the check's cwd, its
-//     realpath, ... — is carried forward too, and ARMED outright once that
-//     candidate's own full text arrives without the separator `relativize`
-//     needs to ever strip it, so the check's own cwd sitting inside the
-//     marker, past a long OSC title, is never silently read as harmless
-//     padding; `relativizeCandidates` carries this in from `runCheck` via
-//     `makeLineFeeder`'s own options, alongside `normalize`, so this
-//     otherwise harness-neutral feeder never hard-codes cwd/relativize
-//     knowledge of its own; and
-//   - the SAME open-marker carry now also covers `-----END `, whichever of
-//     `-----BEGIN `/`-----END ` starts LATEST in `evalText`, so an END
-//     marker's own closing dashes straddling the boundary are carried
-//     forward too — without it, the marker-prefix rule's own dash-prefix
-//     ambiguity (an END's closing `-----` reads exactly like a NEW BEGIN's
-//     opening one) throws away everything carried so far, and the block
-//     never closes.
+// Four further rules hold at every read-chunk split offset (RP-323 round 4):
+//   - a `-----` sitting inside a still-unresolved escape (an OSC title's own
+//     payload, say) is not the header's closing dashes — the escape must
+//     resolve (BEL/ST) before any `-----` inside it reads as a close;
+//   - the escape rule is evaluated before the marker-prefix rule below, and
+//     carries from the FIRST unresolved escape, not the last — carrying from
+//     a later escape (an OSC hyperlink's own split `ESC \` terminator, say)
+//     would drop the marker's leading dashes ahead of an earlier one;
+//   - a marker prefix (`-----BEG`, say) immediately followed by a proper
+//     prefix of one of `runCheck`'s relativize candidates (the check's cwd,
+//     its realpath, ...) is carried forward too, and armed outright once that
+//     candidate's full text arrives without the separator `relativize` needs
+//     to strip it; `relativizeCandidates` reaches the feeder through
+//     `makeLineFeeder`'s options, alongside `normalize`, so the feeder holds
+//     no cwd knowledge of its own; and
+//   - the same open-marker carry covers `-----END `, whichever of
+//     `-----BEGIN `/`-----END ` starts latest in `evalText`, so an END whose
+//     closing dashes straddle the boundary still closes the block — an END's
+//     closing `-----` otherwise reads like a new BEGIN's opening one.
 //
 // See `check-run.test.ts` (absent in a generated rig) › "still arms the
 // block, even though the CSI sequence splits BEGIN itself and the padding is
