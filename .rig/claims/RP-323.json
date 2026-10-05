@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-323",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "032243acb86b78f8c73e8f8a133fc5aeadcad8e37653fcaf217693102a229763",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "b35ea0cb33c853ca3a8bc91d6090c208ed58ea5ea8046ae0b43fdb41a8d7ebab",
+      "count": 1
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/check-run.test.ts",
+      "fullName": "an OSC escape sequence inside a PEM BEGIN header still arms the block — OSC title and hyperlink sequences are stripped before the header is matched"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "032243acb86b78f8c73e8f8a133fc5aeadcad8e37653fcaf217693102a229763",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "4486ad48161706f1a58ce87028ab3c930b49bb0ed059a92b74918ee491f3bdf7"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-323",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-323-green"
+      }
+    },
+    "baseline": {
+      "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/check-run.test.ts",
+        "fullName": "an OSC escape sequence inside a PEM BEGIN header still arms the block — OSC title and hyperlink sequences are stripped before the header is matched",
+        "fileSha256": "faab23f96f484a7361a5b3caf8217a9398b28102dfffd3303e3c6725b8940368"
+      },
+      "source": {
+        "runId": "20261004-125906-rp323",
+        "seq": 4
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "65cccb9c374f5d5d10ae4f2e04ccbada77df42c87851e40301b395dfe0a5de1a"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "e21fe4f0bc41ab229a6732955e7740e5c2db08670c0bb8ee6410dae1032c9985"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261004-125906-rp323",
+        "seq": 5
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "91b17180e9467faeec89252f294e5339566c5b070ad9e6e6c2b3fcefe875a08a"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "e21fe4f0bc41ab229a6732955e7740e5c2db08670c0bb8ee6410dae1032c9985"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "ff6d4169ea64ad1962d533f53257f4e522325eb36699792d4a0c818b4a1a8c04"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/check-run.test.ts",
+        "fullName": "an OSC escape sequence inside a PEM BEGIN header still arms the block — OSC title and hyperlink sequences are stripped before the header is matched",
+        "fileSha256": "faab23f96f484a7361a5b3caf8217a9398b28102dfffd3303e3c6725b8940368"
+      },
+      "source": {
+        "runId": "20261004-125906-rp323",
+        "seq": 6
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "3dcaa3cd29e34a24f7ac63a19f7fcb751c1ce9d995e139384ed72c469bdb9b2c"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "ff6d4169ea64ad1962d533f53257f4e522325eb36699792d4a0c818b4a1a8c04"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "718ffe7ddcfb99af23f8854cb26d595a2eff2182d1407b6fc7b00522c1ef1344"
+      }
+    }
+  }
+}

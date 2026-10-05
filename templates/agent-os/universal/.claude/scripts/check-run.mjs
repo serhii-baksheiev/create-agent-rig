@@ -300,7 +300,22 @@ const DARWIN = process.platform === 'darwin';
 
 // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
 const ANSI_PATTERN = /\x1b\[[0-9;]*[a-zA-Z]/g;
-const stripAnsi = (text) => text.replace(ANSI_PATTERN, '');
+// RP-323 (security-scanner battery, shapes s28/s29) — `ANSI_PATTERN` above
+// matches only a CSI sequence (`ESC [ … letter`); an OSC sequence (a
+// terminal TITLE, `ESC ] 0 ; text BEL`, or HYPERLINK, `ESC ] 8 ; ; url ST`
+// where ST is `ESC \`) starts with `ESC ]` instead and was left untouched,
+// so its own bytes could sit inside a PEM BEGIN header and break the
+// `private-key-block` pattern's match. `[^\x07\x1b]*` followed by the
+// literal terminator alternation cannot backtrack catastrophically (the
+// negated class excludes both terminator bytes, so there is exactly one way
+// to split it from what follows) — see check-run.test.ts
+// (absent in a generated rig) › "finishes within a bounded time" (many UNTERMINATED
+// `ESC ]` openers). An unterminated `ESC ]` (no BEL, no ST ever arrives) is
+// left exactly as it is — a stated limit, not a gap this pattern tries to
+// close.
+// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+const OSC_PATTERN = /\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g;
+const stripAnsi = (text) => text.replace(ANSI_PATTERN, '').replace(OSC_PATTERN, '');
 
 // RP-290 review round 3 (security-scanner, reproduced on Linux/WSL) — these
 // three used to be `/^\s*FAIL\s+(.+?)\s*$/`-shaped: a non-greedy capture
@@ -399,7 +414,7 @@ const stopAtCarriageReturn = (text) => {
  * leave the STORED (cut) entry ending in whitespace anyway, whenever the cut
  * landed on interior whitespace `trimEnd()` never touched at capture time.
  * See › "trims trailing whitespace exposed by the 300-character cut, not
- * only the identity's own true end".
+ * only the identity’s own true end".
  */
 const extractFailedTestId = (line) => {
   const fail = FAIL_PATTERN.exec(line);
@@ -509,6 +524,224 @@ const parseArgs = (argv) => {
 // O(line length).
 const OVERFLOW_TAIL_CHARS = 256;
 
+// RP-323 (security-scanner battery, shape s27) — `private-key-block`'s own
+// padding class (`[A-Z0-9 ]*`, between `-----BEGIN ` and `PRIVATE KEY-----`)
+// is unbounded, so no FIXED-size `tail` can contain every header: a header
+// long enough to straddle a read-chunk boundary more than `OVERFLOW_TAIL_CHARS`
+// characters from either end pushes its own `-----BEGIN ` prefix out of that
+// small window before the rest of the header ever arrives.
+//
+// `appendSegment` below decides the open/closed carry on `evalText` —
+// `normalize(context + segment)`, the SAME normalized text already computed
+// for the marker scan just above it — never on the raw bytes: a CSI sequence
+// sitting entirely inside one segment (so `normalize` resolves it
+// immediately) still breaks a literal, RAW `-----BEGIN ` substring search
+// even though the marker is already whole once stripped. An escape sequence
+// `normalize` cannot yet resolve — split mid-OSC by the read-chunk boundary
+// itself — is instead carried forward (together with up to
+// `OPEN_HEADER_START`'s own length of marker-prefix characters ahead of it)
+// so the next segment's `normalize` call completes it exactly as if both had
+// arrived together. A header closes at its OWN closing dashes (`-----`), not
+// at the key-specific `PRIVATE KEY-----`, so a header that is never a
+// private key (`CERTIFICATE`, `PUBLIC KEY`) closes there instead of reading
+// as open for the rest of the run.
+//
+// Four further rules hold at every read-chunk split offset (RP-323 round 4):
+//   - a `-----` sitting inside a still-unresolved escape (an OSC title's own
+//     payload, say) is not the header's closing dashes — the escape must
+//     resolve (BEL/ST) before any `-----` inside it reads as a close;
+//   - the escape rule is evaluated before the marker-prefix rule below, and
+//     carries from the FIRST unresolved escape, not the last — carrying from
+//     a later escape (an OSC hyperlink's own split `ESC \` terminator, say)
+//     would drop the marker's leading dashes ahead of an earlier one;
+//   - a marker prefix (`-----BEG`, say) immediately followed by a proper
+//     prefix of one of `runCheck`'s relativize candidates (the check's cwd,
+//     its realpath, ...) is carried forward too; `relativizeCandidates`
+//     reaches the feeder through
+//     `makeLineFeeder`'s options, alongside `normalize`, so the feeder holds
+//     no cwd knowledge of its own; and
+//   - the same open-marker carry covers `-----END `, whichever of
+//     `-----BEGIN `/`-----END ` starts latest in `evalText`, so an END whose
+//     closing dashes straddle the boundary still closes the block — an END's
+//     closing `-----` otherwise reads like a new BEGIN's opening one.
+//
+// See `check-run.test.ts` (absent in a generated rig) › "still arms the
+// block, even though the CSI sequence splits BEGIN itself and the padding is
+// split across the boundary", › "still arms the block, even though the CSI
+// sequence splits the opening dashes and the padding is split across the
+// boundary", › "still arms the block, even though the hyperlink wrapping
+// BEGIN itself is split across the boundary", › "still arms the block, even
+// though the title sits inside the dashes and is split across the boundary",
+// › "still records the later FAIL line and after-ok, for a CERTIFICATE
+// header", its `PUBLIC KEY` sibling, › "RP-323 round 4 — an edge sweep
+// across EVERY read-chunk split offset inside a BEGIN header, one run per
+// shape", › "RP-323 round 4 — a BEGIN marker split by a >256-character OSC
+// title with the check’s own cwd and its own path separator after it, swept
+// at every offset", and ›
+// "RP-323 round 4 — a split END marker still closes the block, swept at
+// every offset".
+const OPEN_HEADER_START = '-----BEGIN ';
+// RP-323 round 4 — the END marker's own opening literal, read by
+// `decideOpenHeaderCarry` the same way `OPEN_HEADER_START` is: whichever of
+// the two starts LATEST in `evalText` is the one the carry tracks.
+const OPEN_END_START = '-----END ';
+// A cap on how large that carried-forward open suffix may grow across
+// segments before this feeder fails CLOSED instead of growing it without
+// bound (`invariants.md`'s bounded-work rule): past this many characters of
+// padding with no closing dashes seen, an unresolved BEGIN is armed outright
+// (`lastLineMarker = 'begin'`) and the carry is dropped, falling back to the
+// ordinary `OVERFLOW_TAIL_CHARS` tail for whatever follows. An unresolved
+// END past the same cap is never armed this way (RP-323 round 4) — the safe
+// direction for an END this module cannot finish reading is to leave
+// `lastLineMarker` exactly as it already was, never to disarm on a guess.
+// See `check-run.test.ts` (absent in a generated rig) › "still arms the block
+// once the carried-forward header text crosses the cap".
+const OPEN_HEADER_MAX_CHARS = 4096;
+
+/**
+ * The length of the longest proper (1..`marker.length - 1` characters)
+ * prefix of `marker` that `text` ends with, or 0 when none does. `marker`'s
+ * length is fixed (`OPEN_HEADER_START`), so this is a handful of `endsWith`
+ * checks, never a scan sized by `text`.
+ */
+const properPrefixSuffixLength = (text, marker) => {
+  for (let length = marker.length - 1; length >= 1; length -= 1) {
+    if (text.endsWith(marker.slice(0, length))) return length;
+  }
+  return 0;
+};
+
+/**
+ * Whether `evalText`, from `markerStart` onward (the index right after a
+ * found marker's own literal text — `-----BEGIN ` or `-----END `), has
+ * already closed with its own `-----`. A `-----` sitting INSIDE a
+ * still-unresolved escape (an OSC title's own payload, say) does not count —
+ * the escape must resolve (BEL/ST) first, or its own `-----` is never read
+ * as the header's close (RP-323 round 4, the reviewer-validated fix for
+ * `decideOpenHeaderCarry`'s own case 1, below).
+ */
+const hasOwnClosingDashes = (evalText, markerStart) => {
+  const after = evalText.slice(markerStart);
+  const escapeIndex = after.indexOf('\x1b');
+  const dashIndex = after.indexOf('-----');
+  return dashIndex !== -1 && (escapeIndex === -1 || dashIndex < escapeIndex);
+};
+
+/**
+ * Whether `remainder` — the text right after a `-----BEGIN ` prefix found at
+ * the END of `evalText` (RP-323 round 4) — is itself a not-yet-complete
+ * arrival of one of `relativizeCandidates` (`runCheck`'s own cwd/cwdReal/PWD
+ * spellings, each with its own trailing separator — see
+ * `buildPrefixCandidates`): `'growing'` while `remainder` is still a proper
+ * prefix of some candidate (too short to say either way yet), or `null`
+ * otherwise. `relativize` only ever strips a candidate TOGETHER WITH its own
+ * trailing separator (`buildPrefixCandidates` — every candidate carries a
+ * `/` or `\` of its own), so `remainder` containing a candidate's own text
+ * in full but with no separator after it is never text a key header can
+ * resolve to — ordinary log output naming the check's own cwd, with no
+ * separator following it, reads as harmless padding rather than arming the
+ * block. Bounded by `relativizeCandidates`' own size (a handful of entries)
+ * and by `remainder`'s own length — never by anything the checked command
+ * prints beyond this one marker's own trailing text.
+ */
+const pendingCandidateStatus = (remainder, relativizeCandidates) => {
+  for (const candidate of relativizeCandidates) {
+    if (remainder.length < candidate.length && candidate.startsWith(remainder)) return 'growing';
+  }
+  return null;
+};
+
+/**
+ * The open-marker carry for the NEXT `appendSegment` call, decided on
+ * `evalText` (never on raw bytes — see `OPEN_HEADER_START`'s own comment,
+ * above). `arm` is `'begin'` only for a fail-CLOSED case — an unresolved
+ * BEGIN (or a marker-prefix-plus-candidate) this module cannot finish
+ * reading before `OPEN_HEADER_MAX_CHARS`; the caller ORs it into
+ * `lastLineMarker` rather than overwriting, exactly as the marker-scan
+ * branch above it does. An unresolved END never arms this way — see
+ * `OPEN_HEADER_MAX_CHARS`'s own comment.
+ */
+const decideOpenHeaderCarry = (evalText, relativizeCandidates) => {
+  const beginIndex = evalText.lastIndexOf(OPEN_HEADER_START);
+  const endIndex = evalText.lastIndexOf(OPEN_END_START);
+  const isEnd = endIndex > beginIndex;
+  const markerIndex = isEnd ? endIndex : beginIndex;
+  const markerLength = isEnd ? OPEN_END_START.length : OPEN_HEADER_START.length;
+
+  if (markerIndex !== -1 && !hasOwnClosingDashes(evalText, markerIndex + markerLength)) {
+    if (evalText.length - markerIndex <= OPEN_HEADER_MAX_CHARS) {
+      return { carry: evalText.slice(markerIndex), arm: null };
+    }
+    // Fail CLOSED rather than growing the carry without bound
+    // (`OPEN_HEADER_MAX_CHARS`'s own comment) — only an unresolved BEGIN
+    // arms outright; the safe direction for an END past the cap is to leave
+    // `lastLineMarker` untouched.
+    return { carry: null, arm: isEnd ? null : 'begin' };
+  }
+
+  // Evaluate the escape rule BEFORE the marker-prefix rule below (RP-323
+  // round 4): carries from the FIRST unresolved escape in `evalText`, not
+  // the last — UNLESS that first escape sits more than
+  // `OPEN_HEADER_MAX_CHARS` characters (minus the marker-prefix lookback)
+  // before the end AND is not itself a marker's own continuation (RP-323
+  // round 5): a stray escape this module can never resolve, planted far
+  // ahead of the header, would otherwise permanently shadow a
+  // legitimately open header's own (later, still-unresolved) escape. In
+  // that one case, re-evaluate from the first escape at or after
+  // `windowStart` — the earliest point this module would still carry from
+  // — instead of the stray one; finding none there falls through to the
+  // marker-prefix rule below as if no escape existed at all.
+  const firstEscapeIndex = evalText.indexOf('\x1b');
+  if (firstEscapeIndex !== -1) {
+    const windowStart = evalText.length - OPEN_HEADER_MAX_CHARS + OPEN_HEADER_START.length;
+    const precededByMarkerPrefix = (index) => {
+      const before = evalText.slice(Math.max(0, index - OPEN_HEADER_START.length), index);
+      return properPrefixSuffixLength(before, OPEN_HEADER_START) > 0;
+    };
+    const isStray = firstEscapeIndex < windowStart && !precededByMarkerPrefix(firstEscapeIndex);
+    const escapeIndex = isStray ? evalText.indexOf('\x1b', windowStart) : firstEscapeIndex;
+
+    if (escapeIndex !== -1) {
+      if (evalText.length - escapeIndex <= OPEN_HEADER_MAX_CHARS) {
+        return {
+          carry: evalText.slice(Math.max(0, escapeIndex - OPEN_HEADER_START.length)),
+          arm: null,
+        };
+      }
+      return {
+        carry: null,
+        arm: precededByMarkerPrefix(escapeIndex) ? 'begin' : null,
+      };
+    }
+    // No escape at or after `windowStart` — fall through to the
+    // marker-prefix rule below as if no escape existed at all.
+  }
+
+  // The marker-prefix rule: `evalText` ends with a proper prefix of
+  // `-----BEGIN ` directly, OR that prefix sits in `evalText` immediately
+  // followed by a not-yet-resolved relativize candidate (RP-323 round 4,
+  // `pendingCandidateStatus` above) — tried longest marker-prefix first, so
+  // a more specific match wins.
+  for (let length = OPEN_HEADER_START.length - 1; length >= 1; length -= 1) {
+    const prefix = OPEN_HEADER_START.slice(0, length);
+    const idx = evalText.lastIndexOf(prefix);
+    if (idx === -1) continue;
+    const remainder = evalText.slice(idx + length);
+    if (remainder.length === 0) {
+      return { carry: evalText.slice(idx), arm: null };
+    }
+    const status = pendingCandidateStatus(remainder, relativizeCandidates);
+    if (status === 'growing') {
+      if (evalText.length - idx <= OPEN_HEADER_MAX_CHARS) {
+        return { carry: evalText.slice(idx), arm: null };
+      }
+      return { carry: null, arm: 'begin' };
+    }
+  }
+
+  return { carry: null, arm: null };
+};
+
 /**
  * A streaming line splitter: feed chunks, get complete lines as they close.
  * Bounded per the module header — at most `LINE_MAX_BYTES` of a PENDING
@@ -555,13 +788,43 @@ const OVERFLOW_TAIL_CHARS = 256;
  * the header shape must be checked after stripping ANSI, not on the raw
  * segment", and › "closes the block on that same line, so a normal FAIL
  * line and the line after it are not swallowed".
+ *
+ * `normalize` (RP-323) is the same text transform the non-overLimit path in
+ * `runCheck` applies before matching — `relativize(stripAnsi(...))` — passed
+ * in rather than hard-coded, so this incremental scan sees a header shaped
+ * only after cwd is stripped out of it exactly like the whole-line path
+ * does; it defaults to `stripAnsi` alone so a caller that never relativizes
+ * (none in this module) still gets ANSI/OSC stripped. See ›
+ * "still arms the block — the over-limit incremental marker scan must
+ * relativize before matching, the same as the per-line scan already does".
+ * `relativizeCandidates` (RP-323 round 4) is forwarded the same way, to the
+ * SAME `decideOpenHeaderCarry` call the `OPEN_HEADER_START` carry below
+ * drives — see `pendingCandidateStatus`'s own comment, above — and defaults
+ * to `[]` so a caller with no relativize step of its own (none in this
+ * module) never needs to pass it. `OPEN_HEADER_START` (RP-323) additionally
+ * carries an open (unterminated) BEGIN — or, since round 4, END — header's
+ * own suffix forward across segments — see its own comment, above — in
+ * place of the plain `OVERFLOW_TAIL_CHARS` tail, for exactly the case the
+ * normal-length straddle tests above already cover for a line that never
+ * goes over the per-line cap at all: see ›
+ * "still arms the block, even though the line itself is over the 64 KiB
+ * per-line cap".
  */
-const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
+const makeLineFeeder = (
+  onLine,
+  { lineMaxBytes = LINE_MAX_BYTES, normalize = stripAnsi, relativizeCandidates = [] } = {},
+) => {
   let pending = '';
   let pendingBytes = 0;
   let overLimit = false;
   let tail = '';
   let lastLineMarker = null;
+  // RP-323 — the open (unterminated) BEGIN/END header's own NORMALIZED
+  // suffix (`normalize(context + segment)`, never the raw bytes — see
+  // `OPEN_HEADER_START`'s own comment) carried forward in place of `tail`,
+  // once this line's evaluated text ends mid-header; `null` when this line
+  // is not currently inside one.
+  let openHeaderCarry = null;
 
   const resetLine = () => {
     pending = '';
@@ -569,16 +832,23 @@ const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
     overLimit = false;
     tail = '';
     lastLineMarker = null;
+    openHeaderCarry = null;
   };
 
   const appendSegment = (segment) => {
     if (segment.length > 0) {
-      const evalText = stripAnsi(tail + segment);
+      const context = openHeaderCarry !== null ? openHeaderCarry : tail;
+      const evalText = normalize(context + segment);
       const beginIndex = lastMatchIndex(evalText, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
       const endIndex = lastMatchIndex(evalText, PRIVATE_KEY_END_PATTERN_GLOBAL);
       if (beginIndex !== -1 || endIndex !== -1) {
         lastLineMarker = beginIndex > endIndex ? 'begin' : 'end';
       }
+
+      const decision = decideOpenHeaderCarry(evalText, relativizeCandidates);
+      openHeaderCarry = decision.carry;
+      if (decision.arm === 'begin') lastLineMarker = 'begin';
+
       tail = (tail + segment).slice(-OVERFLOW_TAIL_CHARS);
     }
     if (overLimit) return;
@@ -624,11 +894,13 @@ const makeLineFeeder = (onLine, lineMaxBytes = LINE_MAX_BYTES) => {
  * Stream one capture file to `dest` (raw bytes, unmodified) and through
  * `onLine` (decoded, line by line) — a bounded chunk at a time, never the
  * whole file at once. See the module header for why the child's own output
- * is captured through a file rather than read live from a pipe.
+ * is captured through a file rather than read live from a pipe. `normalize`
+ * (RP-323) and `relativizeCandidates` (RP-323 round 4) are forwarded to
+ * `makeLineFeeder` unchanged — see its own comment.
  */
-const passThroughAndProcess = (filePath, dest, onLine) =>
+const passThroughAndProcess = (filePath, dest, onLine, normalize, relativizeCandidates) =>
   new Promise((resolve, reject) => {
-    const feeder = makeLineFeeder(onLine);
+    const feeder = makeLineFeeder(onLine, { normalize, relativizeCandidates });
     const readStream = createReadStream(filePath);
     readStream.on('data', (chunk) => {
       dest.write(chunk);
@@ -1287,8 +1559,30 @@ const runCheck = async ({ name, timeoutSeconds, command }) => {
     }
 
     if (!spawnError) {
-      await passThroughAndProcess(stdoutCapturePath, process.stdout, makeProcessLine());
-      await passThroughAndProcess(stderrCapturePath, process.stderr, makeProcessLine());
+      // RP-323 — the SAME normalisation the non-overLimit branch below
+      // applies (`relativize(stripAnsi(...))`) is handed to the over-limit
+      // incremental scan too, so a header shaped only after cwd is
+      // relativized out of it is not missed on that path either.
+      const normalizeForLineFeeder = (text) => relativize(stripAnsi(text));
+      // RP-323 round 4 — the SAME candidates `relativize` itself tries
+      // (above) are handed to the incremental scan too, so a marker prefix
+      // immediately followed by one of them, still arriving, is recognised
+      // by `decideOpenHeaderCarry` the same way `relativize` would resolve
+      // it once it is complete. See `pendingCandidateStatus`'s own comment.
+      await passThroughAndProcess(
+        stdoutCapturePath,
+        process.stdout,
+        makeProcessLine(),
+        normalizeForLineFeeder,
+        prefixCandidates,
+      );
+      await passThroughAndProcess(
+        stderrCapturePath,
+        process.stderr,
+        makeProcessLine(),
+        normalizeForLineFeeder,
+        prefixCandidates,
+      );
     }
   } finally {
     if (stdoutFd !== null) {
