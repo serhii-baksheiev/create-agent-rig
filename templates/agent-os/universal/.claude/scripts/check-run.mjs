@@ -530,18 +530,32 @@ const OVERFLOW_TAIL_CHARS = 256;
 // long enough to straddle a read-chunk boundary more than `OVERFLOW_TAIL_CHARS`
 // characters from either end pushes its own `-----BEGIN ` prefix out of that
 // small window before the segment carrying `PRIVATE KEY-----` ever arrives.
-// This pattern recognises evaluated text that ends MID-header — a
-// `-----BEGIN ` not yet followed by `PRIVATE KEY-----` — so `appendSegment`
-// can carry the open prefix itself forward as next segment's context,
-// instead of only the last `OVERFLOW_TAIL_CHARS` raw characters.
-const OPEN_HEADER_PATTERN = /-----BEGIN [A-Z0-9 ]*$/;
-// A cap on how large that carried-forward open prefix may grow across
+// These two literals are plain ASCII, never produced or consumed by
+// `stripAnsi`/`relativize`, so whether a header has closed is legible
+// straight off the RAW (pre-`normalize`) text: `appendSegment` below finds
+// the LAST `OPEN_HEADER_START` in the raw `context + segment` and, while the
+// text from there to the end of that raw text has no `OPEN_HEADER_CLOSE` in
+// it, carries that raw suffix forward as next segment's context — in place
+// of the plain `OVERFLOW_TAIL_CHARS` tail — so the next segment's own
+// `normalize` call resolves whatever was split mid-escape, mid-path or
+// mid-dash exactly as if both segments had arrived together. Reading the
+// open/closed decision off the RAW text rather than the text `normalize`
+// produces is what makes that carry survive a read-chunk boundary landing
+// inside an escape opener, a long hyperlink URL, the header's own closing
+// dashes, or the raw `cwd` text a header matches only after relativize —
+// none of those leave `OPEN_HEADER_START`/`OPEN_HEADER_CLOSE` themselves any
+// less literal, even though each one defeats a check run against the
+// normalized text instead.
+const OPEN_HEADER_START = '-----BEGIN ';
+const OPEN_HEADER_CLOSE = 'PRIVATE KEY-----';
+// A cap on how large that carried-forward open suffix may grow across
 // segments before this feeder fails CLOSED instead of growing it without
 // bound (`invariants.md`'s bounded-work rule): past this many characters of
-// padding with no closing `PRIVATE KEY-----` yet seen, the block is armed
+// padding with no closing `PRIVATE KEY-----` seen, the block is armed
 // outright (`lastLineMarker = 'begin'`) and the carry is dropped, falling
-// back to the ordinary `OVERFLOW_TAIL_CHARS` tail for whatever follows. No
-// test drives the carry past this cap — untested design limit.
+// back to the ordinary `OVERFLOW_TAIL_CHARS` tail for whatever follows. See
+// `check-run.test.ts` (absent in a generated rig) › "still arms the block
+// once the carried-forward header text crosses the cap".
 const OPEN_HEADER_MAX_CHARS = 4096;
 
 /**
@@ -599,12 +613,13 @@ const OPEN_HEADER_MAX_CHARS = 4096;
  * (none in this module) still gets ANSI/OSC stripped. See ›
  * "still arms the block — the over-limit incremental marker scan must
  * relativize before matching, the same as the per-line scan already does".
- * `OPEN_HEADER_PATTERN` (RP-323) additionally carries an unterminated BEGIN
- * header's own open prefix forward across segments — see its own comment,
- * above — in place of the plain `OVERFLOW_TAIL_CHARS` tail, for exactly the
- * case the normal-length straddle tests above already cover for a line that
- * never goes over the per-line cap at all: see › "still arms the block,
- * even though the line itself is over the 64 KiB per-line cap".
+ * `OPEN_HEADER_START`/`OPEN_HEADER_CLOSE` (RP-323) additionally carry an
+ * unterminated BEGIN header's own open suffix forward across segments — see
+ * their own comment, above — in place of the plain `OVERFLOW_TAIL_CHARS`
+ * tail, for exactly the case the normal-length straddle tests above already
+ * cover for a line that never goes over the per-line cap at all: see ›
+ * "still arms the block, even though the line itself is over the 64 KiB
+ * per-line cap".
  */
 const makeLineFeeder = (onLine, { lineMaxBytes = LINE_MAX_BYTES, normalize = stripAnsi } = {}) => {
   let pending = '';
@@ -612,10 +627,10 @@ const makeLineFeeder = (onLine, { lineMaxBytes = LINE_MAX_BYTES, normalize = str
   let overLimit = false;
   let tail = '';
   let lastLineMarker = null;
-  // RP-323 — the open (unterminated) BEGIN header prefix carried forward in
-  // place of `tail`, once this line's evaluated text ends mid-header; `null`
-  // when this line is not currently inside one. See `OPEN_HEADER_PATTERN`'s
-  // own comment, above.
+  // RP-323 — the open (unterminated) BEGIN header's own RAW suffix carried
+  // forward in place of `tail`, once this line's raw text ends mid-header;
+  // `null` when this line is not currently inside one. See
+  // `OPEN_HEADER_START`'s own comment, above.
   let openHeaderCarry = null;
 
   const resetLine = () => {
@@ -630,28 +645,28 @@ const makeLineFeeder = (onLine, { lineMaxBytes = LINE_MAX_BYTES, normalize = str
   const appendSegment = (segment) => {
     if (segment.length > 0) {
       const context = openHeaderCarry !== null ? openHeaderCarry : tail;
-      const evalText = normalize(context + segment);
+      const rawText = context + segment;
+      const evalText = normalize(rawText);
       const beginIndex = lastMatchIndex(evalText, PRIVATE_KEY_HEADER_PATTERN_GLOBAL);
       const endIndex = lastMatchIndex(evalText, PRIVATE_KEY_END_PATTERN_GLOBAL);
       if (beginIndex !== -1 || endIndex !== -1) {
         lastLineMarker = beginIndex > endIndex ? 'begin' : 'end';
       }
       // A cheap `includes` check first (RP-323): the overwhelming majority
-      // of segments carry no BEGIN at all, and skipping straight past the
-      // regex for them keeps this feeder's per-chunk cost close to the
-      // single linear scan the module header promises, rather than paying
-      // for `OPEN_HEADER_PATTERN`'s own (bounded, but non-zero) backtracking
-      // on text that could never match it.
+      // of segments carry no BEGIN at all, and skipping straight past
+      // `lastIndexOf` for them keeps this feeder's per-chunk cost close to
+      // the single linear scan the module header promises.
       openHeaderCarry = null;
-      if (evalText.includes('-----BEGIN ')) {
-        const openMatch = OPEN_HEADER_PATTERN.exec(evalText);
-        if (openMatch !== null) {
-          if (openMatch[0].length <= OPEN_HEADER_MAX_CHARS) {
-            openHeaderCarry = openMatch[0];
+      if (rawText.includes(OPEN_HEADER_START)) {
+        const openIndex = rawText.lastIndexOf(OPEN_HEADER_START);
+        const remainder = rawText.slice(openIndex);
+        if (!remainder.includes(OPEN_HEADER_CLOSE)) {
+          if (remainder.length <= OPEN_HEADER_MAX_CHARS) {
+            openHeaderCarry = remainder;
           } else {
             // Fail CLOSED rather than growing the carry without bound
             // (`OPEN_HEADER_MAX_CHARS`'s own comment): a BEGIN header padded
-            // this far with no closing `PRIVATE KEY-----` yet seen is armed
+            // this far with no closing `PRIVATE KEY-----` seen is armed
             // outright instead.
             lastLineMarker = 'begin';
           }
