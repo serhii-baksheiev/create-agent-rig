@@ -8,7 +8,11 @@ import { join, relative, resolve } from 'node:path';
 const MAX_TASKS_BYTES = 1024 * 1024;
 const MAX_TASKS = 1000;
 const MAX_TASK_DESCRIPTION_BYTES = 64 * 1024;
-const PROJECTED_LABEL = 'rig-spec-kit';
+// Exported — RP-279's `spec-kit-jira.mjs` writes the identical label on its
+// own projected issues, so the two targets cannot drift onto two different
+// spellings of "this is managed by Rig Spec Kit import" (`invariants.md`: one
+// mechanism, one implementation).
+export const PROJECTED_LABEL = 'rig-spec-kit';
 // The GitHub queue adapter writes these labels during normal lifecycle
 // transitions. A fresh Spec Kit projection must provision them before it
 // creates work that a controller can claim, escalate, or route to triage.
@@ -153,7 +157,12 @@ export const parseTasks = ({ projectRoot = process.cwd(), tasksPath = null } = {
   return { slug, path, tasks };
 };
 
-const dependenciesFor = (task) => task.dependencies.map((id) => `${task.identity.split(':')[0]}:${id}`);
+// Exported — the Jira target projects the identical dependency graph onto
+// native "Blocks" links rather than a body line, and must read it from the
+// same place the GitHub target does (`invariants.md`: one mechanism, one
+// implementation — the dependency MODEL stays here regardless of target).
+export const dependenciesFor = (task) =>
+  task.dependencies.map((id) => `${task.identity.split(':')[0]}:${id}`);
 
 // GitHub's queue recognises dependency phrases at the start of a line.
 // Prefix matching task prose so it cannot create a false blocker.
@@ -218,7 +227,10 @@ const changeFor = (task, issue, numbers) => {
   return { identity: task.identity, action, dependencies: dependenciesFor(task), body };
 };
 
-const creationOrder = (tasks) => {
+// Exported — the Jira target creates issues in the identical topological
+// order, so a dependent's Blocks link can always name an already-existing
+// blocker key.
+export const creationOrder = (tasks) => {
   const byId = new Map(tasks.map((task) => [task.id, task]));
   const remaining = new Map(tasks.map((task) => [task.id, new Set(task.dependencies)]));
   const ordered = [];
@@ -250,13 +262,18 @@ const ensureLabels = (projectRoot) => {
   }
 };
 
-const reportFor = (dryRun, tasks, changes) => {
+// Exported — the Jira target reports the identical shape. Pinned in
+// `test/template/spec-kit-import-jira.test.ts` (absent in a generated rig) › "dry-run
+// report matches the github-issues target's shape and identities for the
+// same tasks.md", with its own `target` rather than a second copy of this
+// aggregation.
+export const reportFor = (dryRun, tasks, changes, target = 'github-issues') => {
   const counts = { create: 0, update: 0, unchanged: 0 };
   for (const change of changes) counts[change.action] += 1;
   return {
     dryRun,
     source: 'spec-kit',
-    target: 'github-issues',
+    target,
     taskCount: tasks.length,
     dependencyCount: tasks.reduce((count, task) => count + task.dependencies.length, 0),
     counts,
@@ -266,8 +283,30 @@ const reportFor = (dryRun, tasks, changes) => {
   };
 };
 
-export const importSpecKit = ({ projectRoot = process.cwd(), tasksPath = null, dryRun = false } = {}) => {
+// A dynamic import, not a static one: `spec-kit-jira.mjs` imports
+// `parseTasks`/`creationOrder`/`dependenciesFor`/`reportFor`/`PROJECTED_LABEL`
+// from THIS module (they are the identity/dependency compilation it reuses
+// unchanged), so a static import back here would be a circular module
+// dependency. Resolved only when a caller actually asks for `target: 'jira'`.
+const importSpecKitToJira = async (options) => {
+  const { importSpecKitToJira: run } = await import('./spec-kit-jira.mjs');
+  return run(options);
+};
+
+export const importSpecKit = ({
+  projectRoot = process.cwd(),
+  tasksPath = null,
+  dryRun = false,
+  target = 'github-issues',
+} = {}) => {
   const root = resolve(projectRoot);
+  if (target === 'jira') return importSpecKitToJira({ projectRoot: root, tasksPath, dryRun });
+  if (target !== 'github-issues') {
+    throw new Error(
+      `spec-kit import: unknown target ${JSON.stringify(target)}. Known targets: ` +
+        'github-issues, jira.',
+    );
+  }
   const { tasks } = parseTasks({ projectRoot: root, tasksPath });
   // Validate graph topology before label or issue creation. Existing issue
   // numbers are irrelevant to whether a source cycle is a valid projection.

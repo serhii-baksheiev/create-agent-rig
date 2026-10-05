@@ -38,8 +38,13 @@ const PRIORITY = { highest: 1, high: 2, medium: 3, low: 4, lowest: 5 };
  * The link types that express a dependency. "relates to" and "duplicates" are
  * neither, and treating them as blockers would stall the queue on commentary.
  */
-const BLOCKED_BY = /^(is blocked by|blocked by)$/i;
-const BLOCKS = /^blocks$/i;
+// Exported for RP-279's `spec-kit-jira.mjs`, which reuses the same two
+// patterns to confirm the project's own "Blocks" link type before trusting it
+// to carry a projected dependency (`invariants.md`: one mechanism, one
+// implementation — the selection reader and the importer's writer must agree
+// on what counts as a blocking link).
+export const BLOCKED_BY = /^(is blocked by|blocked by)$/i;
+export const BLOCKS = /^blocks$/i;
 
 const statusCategory = (fields) => String(fields?.status?.statusCategory?.key ?? '').toLowerCase();
 
@@ -451,7 +456,12 @@ const retryDelayMs = (response, attempt) => {
  * milliseconds", › "gives up after four consecutive 503s, naming the status and
  * the attempts" and › "does not retry a 401 — a bad credential is not transient".
  */
-const request = async (
+// Exported for RP-279's `spec-kit-jira.mjs`, which needs the same timeout,
+// retry and credential handling for its preflight reads and its issue/link
+// writes — a second copy of this transport would drift from this one the
+// first time either is edited (`invariants.md`: one mechanism, one
+// implementation).
+export const request = async (
   route,
   {
     method = 'GET',
@@ -803,9 +813,31 @@ export const search = async ({
   deadlineAt = null,
   hardCap = 1000,
   maxPages = 100,
+  // Opt-in, and defaulted OFF for every existing caller: a repeated page
+  // token is ambiguous on its own — a genuinely empty tail can repeat a
+  // token exactly like a stalled one can — so `truncated` is left
+  // `undefined` on that stop UNLESS a caller says it would rather treat the
+  // ambiguity as truncation. `test/template/queue-jira.test.ts` (absent in a
+  // generated rig) › "stops paging when a page brings no issues, even if
+  // the token repeats" asserts the exact `{ issues: [] }` shape with no
+  // `truncated` key at all on that path — predating this field, and
+  // `toEqual` treats an `undefined` property as absent, which is what keeps
+  // that assertion true with the default here. RP-279's spec-kit importer,
+  // about to WRITE from what it reads, opts in explicitly
+  // (`spec-kit-jira.mjs`'s own `searchProjected`) because for a write path
+  // the ambiguity itself is the reason to refuse.
+  reportRepeatedTokenTruncation = false,
 } = {}) => {
   const query = buildJql({ project, jql });
   const issues = [];
+  // Additive to the `{ issues }` shape every existing caller destructures: a
+  // caller that only reads `.issues` is unaffected. `true` when `hardCap` or
+  // `maxPages` stopped the walk with more pages available, `false` when the
+  // walk read every page through `isLast`. Pinned in the same file › "reports
+  // truncated: true when hardCap stops the walk with more pages available,
+  // and false when every page is read".
+  let truncated;
+  let stoppedOnRepeatedToken = false;
   // Bounds beside hardCap, because a cap on issues alone is no bound at all
   // against a server that repeats a token: a token equal to the one just sent
   // ends the walk, and so does `maxPages` (default 100 requests), each with a
@@ -842,6 +874,8 @@ export const search = async ({
         `jira search: the server repeated page token ${JSON.stringify(sent)} — ` +
           'stopping the walk; the tail of this board may not have been read\n',
       );
+      stoppedOnRepeatedToken = true;
+      if (reportRepeatedTokenTruncation) truncated = true;
       break;
     }
     if (nextPageToken && pages >= maxPages) {
@@ -849,6 +883,7 @@ export const search = async ({
         `jira search: capped at ${maxPages} requests with more pages available — ` +
           'the tail of this board was not read; raise maxPages or narrow the JQL\n',
       );
+      truncated = true;
       break;
     }
     if (issues.length >= hardCap && nextPageToken) {
@@ -856,10 +891,12 @@ export const search = async ({
         `jira search: capped at ${hardCap} issues with more pages available — ` +
           'the tail of this board was not read; raise hardCap or narrow the JQL\n',
       );
+      truncated = true;
       break;
     }
   } while (nextPageToken);
-  return { issues };
+  if (!stoppedOnRepeatedToken) truncated = truncated ?? false;
+  return { issues, truncated };
 };
 
 /**
@@ -1243,7 +1280,10 @@ export const escalate = async (ticket, diagnosis, { env = process.env } = {}) =>
  */
 const MAX_SUMMARY_LENGTH = 255;
 
-const boundedSummary = (text) => {
+// Exported for RP-279's `spec-kit-jira.mjs`, which needs the same 255-byte
+// summary cut for a projected task title that `triageItemFor` already applies
+// to a proposal — one rule, one implementation.
+export const boundedSummary = (text) => {
   if (text.length <= MAX_SUMMARY_LENGTH) return text;
   const cut = text.slice(0, MAX_SUMMARY_LENGTH);
   return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;

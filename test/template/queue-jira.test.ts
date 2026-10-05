@@ -786,6 +786,34 @@ describe('hardening beyond the endpoint (AR-54)', () => {
       expect(response.issues.map((i) => i.key)).toEqual(['AR-1']);
       expect(stderr.join(''), 'nothing announced the cap').toMatch(/capped/i);
     });
+
+    // RP-279: the Jira spec-kit importer (`spec-kit-import-jira.test.ts`) needs
+    // to tell a genuinely empty tail apart from one `hardCap`, `maxPages` or a
+    // repeated page token cut short — additive to the existing `{ issues }`
+    // shape, so every caller above that destructures only `issues` is
+    // unaffected.
+    it('reports truncated: true when hardCap stops the walk with more pages available, and false when every page is read', async () => {
+      scriptFetch(twoPages());
+      const { search } = await load('jira.mjs');
+      const capped = (await search({ project: 'AR', env: CREDENTIALS, hardCap: 1 })) as {
+        issues: Array<{ key: string }>;
+        truncated: boolean;
+      };
+      expect(
+        capped.truncated,
+        'a hardCap stop with more pages available must report truncated',
+      ).toBe(true);
+
+      scriptFetch(twoPages());
+      const complete = (await search({ project: 'AR', env: CREDENTIALS })) as {
+        issues: Array<{ key: string }>;
+        truncated: boolean;
+      };
+      expect(
+        complete.truncated,
+        'a search that reads every page through isLast must report truncated: false',
+      ).toBe(false);
+    });
   });
 
   describe('liveness bounds — no header or page shape may hold the loop indefinitely', () => {
