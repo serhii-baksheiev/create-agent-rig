@@ -96,6 +96,22 @@ describe('package-manager transport', () => {
     expect(invocation).toEqual({ file: nodeExecutable, prefix: [currentCli] });
   });
 
+  // RP-414: pnpm 11 points npm_execpath at bin/pnpm.mjs. Missing that shape sent
+  // the hosted Windows run through Corepack, which downloads the latest pnpm on
+  // every run — the case above uses pnpm.cjs and never saw it.
+  it('prefers a pnpm 11 npm_execpath ending pnpm/bin/pnpm.mjs over Corepack', () => {
+    const nodeExecutable = windowsNodeExecutable(work);
+    const currentCli = path.join(work, 'setup-pnpm', 'node_modules', 'pnpm', 'bin', 'pnpm.mjs');
+    const corepackPnpm = cliBesideNode(nodeExecutable, 'corepack', 'dist', 'pnpm.js');
+
+    const invocation = packageManagerInvocation('pnpm', { npm_execpath: currentCli }, 'win32', {
+      nodeExecutable,
+      exists: (candidate) => [currentCli, corepackPnpm].includes(candidate),
+    });
+
+    expect(invocation).toEqual({ file: nodeExecutable, prefix: [currentCli] });
+  });
+
   it('prefers installed pnpm over Corepack when no current pnpm CLI is usable', () => {
     const nodeExecutable = windowsNodeExecutable(work);
     const installedPnpm = cliBesideNode(nodeExecutable, 'pnpm', 'bin', 'pnpm.cjs');

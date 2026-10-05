@@ -20,7 +20,7 @@ const cliNameFor = (manager: PackageManager): RegExp => {
     case 'npx':
       return /^npx-cli\.js$/i;
     case 'pnpm':
-      return /^pnpm(?:-cli)?\.(?:cjs|js)$/i;
+      return /^pnpm(?:-cli)?\.(?:cjs|mjs|js)$/i;
   }
 };
 
