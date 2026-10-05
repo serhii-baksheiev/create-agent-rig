@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runDoctor } from '../src/commands/doctor.js';
 import { initProject } from '../src/commands/init.js';
 import { runIntegrationsCommand } from '../src/commands/integrations.js';
+import { applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import { readManifest, writeManifest } from '../src/lib/manifest.js';
 import type { ProviderProcessResult } from '../src/integrations/spawn.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -638,6 +639,40 @@ describe('aggregated doctor (RP-21)', () => {
       // exactly one drifted path — the rig script; the PLAN.md edit next to
       // it is the user's own queue and never counts as drift at all
       expect(check?.counts).toEqual({ absent: 0, contentDrift: 1, lineDrift: 0, unreadable: 0 });
+    });
+  });
+
+  // RP-250: an upgrade conflict (the user edited a rig-owned file, then a
+  // release changed its template) drops the manifest's `files` claim on that
+  // path — `upgrade.test.ts`'s own "never overwrites a file the user edited"
+  // test already pins `readManifest(repo)?.files[WORKFLOW]` as `undefined`
+  // after `applyUpgrade`. `rig-owned-files` only ever walks `manifest.files`
+  // (RP-256 slice 1's own fixture, above, already establishes this for a
+  // path recorded under `kept` instead), so a path no longer named there is a
+  // path this check no longer compares at all — the file is the project's
+  // own from that point on, exactly like the nested-rig CLAUDE.md case.
+  describe('rig-owned-files after an upgrade conflict drops the manifest claim (RP-250)', () => {
+    it("after an upgrade conflict the file is the project's own: doctor does not count it as rig-owned drift", async () => {
+      await initProject(repo, {});
+      const workflowPath = path.join(repo, '.claude', 'rules', 'workflow.md');
+      const edited = `${await readFile(workflowPath, 'utf8')} `;
+      await writeFile(workflowPath, edited);
+
+      const upgradePlan = await planUpgrade(repo);
+      await applyUpgrade(repo, upgradePlan);
+      // Fixture sanity: the upgrade really dropped the manifest claim on the
+      // edited file, and the user's own bytes are what is left on disk.
+      const manifestAfterUpgrade = await readManifest(repo);
+      expect(manifestAfterUpgrade?.files['.claude/rules/workflow.md']).toBeUndefined();
+      expect(await readFile(workflowPath, 'utf8')).toBe(edited);
+
+      const result = await doctor();
+      const body = report(result.stdout);
+      const check = body.checks.find((c) => c.id === 'rig-owned-files');
+
+      expect(result.exitCode, result.stderr).toBe(0);
+      expect(check).toMatchObject({ status: 'ok', reason: 'pristine' });
+      expect(check?.counts).toEqual({ absent: 0, contentDrift: 0, lineDrift: 0, unreadable: 0 });
     });
   });
 

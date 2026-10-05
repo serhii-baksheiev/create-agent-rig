@@ -1126,6 +1126,61 @@ describe('applyUninstall — the happy path', () => {
     // `.claude`, so its own removal is what can finally empty the directory.
     await expect(stat(abs('.claude'))).rejects.toMatchObject({ code: 'ENOENT' });
   });
+
+  // RP-250: a real `upgrade` conflict (the user edited a rig-owned file, then
+  // a release changed its template) drops the manifest's `files` claim on
+  // that path — `upgrade.test.ts`'s own "never overwrites a file the user
+  // edited" test already pins `readManifest(repo)?.files[WORKFLOW]` as
+  // `undefined` after `applyUpgrade`. `planUninstall`'s per-file loop only
+  // ever iterates `Object.keys(manifest.files)`, so a path no longer named
+  // there produces no action at all — the file is the project's own from
+  // that point on, and uninstall must neither remove it nor report any
+  // rig-owned verdict (`remove` or `preserved`) for it.
+  it('after an upgrade conflict uninstall neither removes nor lists the file', async () => {
+    await installRig();
+    const edited = `${await read(WORKFLOW)} `;
+    await write(WORKFLOW, edited);
+
+    const upgradePlan = await planUpgrade(repo);
+    await applyUpgrade(repo, upgradePlan);
+    // Fixture sanity: the upgrade really dropped the manifest claim.
+    const manifestAfterUpgrade = await readManifest(repo);
+    expect(manifestAfterUpgrade?.files[WORKFLOW]).toBeUndefined();
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, WORKFLOW)).toBeUndefined();
+
+    await applyUninstall(repo, plan);
+    expect(await read(WORKFLOW)).toBe(edited);
+  });
+
+  // RP-250: `removeEmptyParents` (uninstall.ts) is only ever called on a
+  // `rel` this very run just removed — a path the user had already deleted
+  // by hand before uninstall ran is reported `absent`, never `remove`, so
+  // its parent directory is never walked by this run at all and is left
+  // exactly as the user left it. `.claude/skills/diagnose/` holds only
+  // `SKILL.md` (Core layer; unlike `.claude/skills/loop/` and its siblings,
+  // which ship only with the opt-in workflow layer and so are absent from a
+  // plain `installRig()` fixture here), so deleting that one file by hand
+  // empties the directory before uninstall ever sees it. `.claude/skills/worktree-task/`
+  // is the control: left untouched, its own `SKILL.md` is removed by this
+  // run, and the directory that removal empties is still pruned exactly as
+  // the test above already pins for `.claude/hooks`.
+  it('uninstall leaves the directory of an owned file the user had already deleted, while a directory emptied by its own removals is still pruned', async () => {
+    await installRig();
+    const deletedByHand = '.claude/skills/diagnose/SKILL.md';
+    const deletedByHandDir = abs('.claude/skills/diagnose');
+    const prunedSiblingDir = abs('.claude/skills/worktree-task');
+    await rm(abs(deletedByHand));
+
+    const plan = await planUninstall(repo);
+    expect(actionFor(plan, deletedByHand)?.verdict).toBe('absent');
+
+    await applyUninstall(repo, plan);
+
+    expect((await stat(deletedByHandDir)).isDirectory()).toBe(true);
+    await expect(stat(prunedSiblingDir)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });
 
 // Creating a symlink needs a privilege on Windows an ordinary CI account

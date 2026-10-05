@@ -1477,7 +1477,11 @@ reported in `preserved`, which under `--detach` doubles as the handover list
 — what the rig is leaving for the user to own from here.
 
 Removing a manifest-owned file also removes any parent directory that becomes
-empty as a result, walking up from that file and never past `dir` itself — with
+empty as a result of that removal; the directory of an owned file the user had
+already deleted before the run is left in place (`packages/cli/test/uninstall.test.ts`
+› "uninstall leaves the directory of an owned file the user had already deleted,
+while a directory emptied by its own removals is still pruned"). The walk goes up
+from the removed file and never past `dir` itself — with
 one named exception: `.rig/` is never removed, empty or not, because it holds
 evidence (claims, run state) this command has no ownership evidence for and
 therefore never inspects. The one manifest-owned path this repository's own
@@ -2040,6 +2044,14 @@ added, and does not resurrect one the user deleted" (`new` and `deleted`
 together), › "never overwrites a file the user edited — one byte is enough"
 (`conflict`), and › "never claims a file it kept rather than wrote" (a
 `kept` path stays outside every verdict here — it is not Rig's).
+
+A `conflict` also ends the rig's claim on the path: the edit wins, the manifest
+drops the file, and from then on it is the project's own — `doctor` does not
+count it as rig-owned drift and `uninstall` neither removes nor lists it
+(`packages/cli/test/doctor.test.ts` › "after an upgrade conflict the file is the
+project's own: doctor does not count it as rig-owned drift" and
+`packages/cli/test/uninstall.test.ts` › "after an upgrade conflict uninstall
+neither removes nor lists the file").
 
 ## Harness delivery and provider ownership
 
