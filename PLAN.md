@@ -1,16 +1,14 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 1.1.0. Live work, status, dependencies and acceptance
+> **Current release:** 1.1.1. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Status (1.1.0 published 29 Sep 2026):** 1.1.0 is `latest`, published from
-> `gitHead` `3a52a0787c8648899ae5893c4e11b251802cae29`. Versions 0.1.0 through
-> 1.1.0 are live; delivery is done through `1.1.0`, the current `latest`.
-> `1.1.1` is prepared and waiting on the owner's publish: it is a corrective
-> hardening patch on the 1.1 line — fail-open gaps closed in `guard-bash` and
-> `guard-rulebook`, and review-flagged corners of the workflow layer's own
-> scripts fixed — with the 1.1 contract unchanged.
+> **Status (1.1.1 published 30 Sep 2026):** 1.1.1 is `latest`, published from
+> `gitHead` `d5eac957af3f8208d7ac06491ecf77eb7ec6a7ee`. Versions 0.1.0 through
+> 1.1.1 are live; delivery is done through `1.1.1`, the current `latest`.
+> `1.2.0` is the release candidate being prepared — Parallel Workflows on the
+> 1.1 contract — and is not published.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,

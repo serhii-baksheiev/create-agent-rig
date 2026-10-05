@@ -1,8 +1,11 @@
 import { execFile } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { mkdtemp, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stubCommand } from '../helpers/stub-command.js';
 import {
   expectedTarballName,
   formatReport,
@@ -21,16 +24,52 @@ import {
   isCredentialPath,
   // @ts-expect-error — the rulebook scripts are .mjs without type declarations
 } from '../../.claude/scripts/lib/secrets.mjs';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // The parts of the script that do not exist yet are taken off the NAMESPACE
 // rather than by name. A named import of an absent export is a link-time error
 // that fails the whole file, which would hide every guarantee below it behind
 // one red line; off the namespace, a missing export fails exactly the tests that
 // use it and leaves the rest readable.
-const { exitCodeFor, gitFindings, tarballNameFindings } = preflight as {
+const {
+  exitCodeFor,
+  gitFindings,
+  tarballNameFindings,
+  parseReleasePreflightArgs,
+  frozenCandidateGitFindings,
+  changelogHeadingFindings,
+} = preflight as {
   exitCodeFor: (findings: readonly string[]) => number;
   gitFindings: (state: { status: string; head: string; remote: string }) => string[];
   tarballNameFindings: (filename: string | undefined, version: string) => string[];
+  // RP-353: a narrow, explicit mode for preflighting a release candidate that
+  // master has since moved past. Chosen CLI shape: a single
+  // `--frozen-candidate <40-char-lowercase-hex-sha>` flag; no flag at all means
+  // ordinary mode, unchanged. `parseReleasePreflightArgs` is pure argv-in,
+  // decision-out — it touches neither git nor `npm pack`, which is what lets an
+  // invalid argument fail BEFORE either runs.
+  parseReleasePreflightArgs: (argv: readonly string[]) => {
+    mode: 'normal' | 'frozen-candidate' | 'invalid';
+    sha?: string;
+    error?: string;
+  };
+  // The three git facts a frozen candidate must satisfy, mirroring the shape of
+  // `gitFindings` above but never conflated with it: ordinary mode keeps asking
+  // "is HEAD origin/master's current tip", frozen mode asks "is HEAD the exact
+  // candidate, does the release ref still name it, and does master's history
+  // still contain it".
+  frozenCandidateGitFindings: (state: {
+    status: string;
+    head: string;
+    sha: string;
+    releaseRefName: string;
+    releaseRefSha: string | null;
+    isAncestorOfMaster: boolean;
+  }) => string[];
+  // Whether `changelog` documents `version` under one of the two sanctioned
+  // headings — exactly `## X.Y.Z` or exactly `## X.Y.Z (release candidate)` —
+  // and nothing looser than either.
+  changelogHeadingFindings: (changelog: string, version: string) => string[];
 };
 
 // `npm publish` here needs 2FA and cannot be undone, so the last check before it
@@ -536,6 +575,57 @@ describe('release preflight — the artifact the owner is about to publish', () 
   });
 });
 
+// RP-353: a frozen, accepted-but-unpublished release candidate (1.2.0, frozen
+// at `release/1.2.0-rc`) must not be forced into the ledger / hash-history
+// machinery that only applies to a version that has actually been published.
+// The declared syntax for that state is the heading `## X.Y.Z (release
+// candidate)` — exactly that string, nothing looser — and this is the function
+// that tells the two apart. `toContain('## X.Y.Z')` would also accept
+// `## X.Y.Z.1` or `## X.Y.Z-rc`, because each one carries that substring; this
+// pins the strict form both `test/template/packaging.test.ts` and
+// `scripts/build-hash-history.mjs`'s own heading parsing depend on.
+describe('release preflight — the changelog heading that counts as "documents this version"', () => {
+  it('clears the exact published heading', () => {
+    expect(changelogHeadingFindings('## 1.2.0\n\nbody\n', '1.2.0')).toEqual([]);
+  });
+
+  it('clears the exact, still-unpublished candidate heading', () => {
+    expect(changelogHeadingFindings('## 1.2.0 (release candidate)\n\nbody\n', '1.2.0')).toEqual([]);
+  });
+
+  it('reports a version the changelog never mentions', () => {
+    const findings = changelogHeadingFindings('## 1.1.0\n\nbody\n', '1.2.0');
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain('1.2.0');
+  });
+
+  // 🔴 The direction this exists for. A loose match (`.includes` / `toContain`)
+  // would read every one of these as "documents 1.2.0", because each one
+  // carries the literal substring "## 1.2.0" — and publishing on the strength
+  // of one would be a release going out under a heading that does not actually
+  // say what the owner thinks it says.
+  it('rejects every spelling that is not the declared syntax, however close', () => {
+    for (const heading of [
+      '## 1.2.0.1',
+      '## 1.2.0-rc',
+      '## 1.2.0 rc1',
+      '## 1.2.0beta',
+      '## 1.2.0 (candidate)',
+      '## 1.2.0 (RELEASE CANDIDATE)',
+      '## 1.2.0  (release candidate)', // two spaces — not the declared syntax
+    ]) {
+      const findings = changelogHeadingFindings(`${heading}\n\nbody\n`, '1.2.0');
+      expect(findings, heading).toHaveLength(1);
+    }
+  });
+
+  it('is exact about which version the candidate heading names, not just that one exists somewhere', () => {
+    // 1.1.0's candidate heading must not satisfy a check for 1.2.0.
+    const findings = changelogHeadingFindings('## 1.1.0 (release candidate)\n\nbody\n', '1.2.0');
+    expect(findings).toHaveLength(1);
+  });
+});
+
 const HEAD_SHA = '1f0c9a4b2d3e5f60718293a4b5c6d7e8f9012345';
 const MASTER_SHA = 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678';
 
@@ -596,6 +686,242 @@ describe('release preflight — the checkout the bytes would be published from',
     expect(findings).toHaveLength(2);
     expect(new Set(findings).size, 'two findings read identically').toBe(2);
   });
+});
+
+// RP-353: `release/1.2.0-rc` is frozen while master moves on to 1.2.1, so
+// `gitFindings` above — "HEAD must be the CURRENT origin/master tip" — can
+// never pass for the frozen candidate, and must not be made to. The chosen
+// shape is a narrow, explicit flag: `--frozen-candidate <40-char-lowercase-hex-
+// sha>`. No flag at all is ordinary mode, entirely unchanged.
+const CANDIDATE_SHA = 'c0ffee0011223344556677889900aabbccddeeff';
+
+describe('release preflight — the --frozen-candidate flag is parsed before anything else runs', () => {
+  it('reads no arguments as ordinary mode', () => {
+    expect(parseReleasePreflightArgs([])).toEqual({ mode: 'normal' });
+  });
+
+  it('reads a well-formed --frozen-candidate sha', () => {
+    expect(parseReleasePreflightArgs(['--frozen-candidate', CANDIDATE_SHA])).toEqual({
+      mode: 'frozen-candidate',
+      sha: CANDIDATE_SHA,
+    });
+  });
+
+  it('refuses the flag given with no value', () => {
+    const result = parseReleasePreflightArgs(['--frozen-candidate']);
+    expect(result.mode).toBe('invalid');
+    expect(result.error).toMatch(/--frozen-candidate/);
+  });
+
+  it('refuses a sha that is one character short of 40', () => {
+    const result = parseReleasePreflightArgs(['--frozen-candidate', CANDIDATE_SHA.slice(0, 39)]);
+    expect(result.mode).toBe('invalid');
+    expect(result.error).toMatch(/40.character/);
+  });
+
+  it('refuses a sha spelled in uppercase hex', () => {
+    const result = parseReleasePreflightArgs(['--frozen-candidate', CANDIDATE_SHA.toUpperCase()]);
+    expect(result.mode).toBe('invalid');
+    expect(result.error).toMatch(/lowercase/);
+  });
+
+  it('refuses a sha carrying a non-hex character', () => {
+    const result = parseReleasePreflightArgs([
+      '--frozen-candidate',
+      `${CANDIDATE_SHA.slice(0, 39)}g`,
+    ]);
+    expect(result.mode).toBe('invalid');
+  });
+
+  it('refuses the flag given twice — ambiguous, not "last one wins"', () => {
+    const result = parseReleasePreflightArgs([
+      '--frozen-candidate',
+      CANDIDATE_SHA,
+      '--frozen-candidate',
+      CANDIDATE_SHA,
+    ]);
+    expect(result.mode).toBe('invalid');
+  });
+
+  it('refuses an extra, unexplained argument alongside a well-formed flag', () => {
+    const result = parseReleasePreflightArgs(['--frozen-candidate', CANDIDATE_SHA, 'extra']);
+    expect(result.mode).toBe('invalid');
+  });
+
+  it('refuses an argument nothing recognizes', () => {
+    const result = parseReleasePreflightArgs(['--not-a-real-flag']);
+    expect(result.mode).toBe('invalid');
+  });
+
+  // The property that matters most, proven by construction rather than by
+  // observation: this function is pure argv-in, decision-out. It never shells
+  // out and never touches the filesystem, so none of the invalid cases above —
+  // nor the valid one — can have invoked `npm pack`.
+  it('is pure: the same argv always answers the same way', () => {
+    const once = parseReleasePreflightArgs(['--frozen-candidate', CANDIDATE_SHA]);
+    const twice = parseReleasePreflightArgs(['--frozen-candidate', CANDIDATE_SHA]);
+    expect(once).toEqual(twice);
+  });
+});
+
+// The git facts specific to frozen-candidate mode. Every existing
+// clean-checkout, manifest, ledger, payload and tarball check still runs in
+// this mode (unchanged, elsewhere in this file) — this is the part that
+// replaces "HEAD is origin/master's tip" with the three checks a frozen
+// candidate actually needs.
+const RELEASE_REF = 'refs/remotes/origin/release/1.2.0-rc';
+
+describe('release preflight — frozen-candidate mode checks the exact candidate, not just any commit', () => {
+  it('clears a clean checkout sitting exactly on the frozen candidate, ref and ancestry both confirmed', () => {
+    expect(
+      frozenCandidateGitFindings({
+        status: '',
+        head: CANDIDATE_SHA,
+        sha: CANDIDATE_SHA,
+        releaseRefName: RELEASE_REF,
+        releaseRefSha: CANDIDATE_SHA,
+        isAncestorOfMaster: true,
+      }),
+    ).toEqual([]);
+  });
+
+  it('reports a working tree carrying uncommitted bytes, same rule as ordinary mode', () => {
+    const findings = frozenCandidateGitFindings({
+      status: ' M package.json',
+      head: CANDIDATE_SHA,
+      sha: CANDIDATE_SHA,
+      releaseRefName: RELEASE_REF,
+      releaseRefSha: CANDIDATE_SHA,
+      isAncestorOfMaster: true,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatch(/clean/i);
+  });
+
+  it('reports a checkout that is not sitting on the candidate itself, naming both shas', () => {
+    const findings = frozenCandidateGitFindings({
+      status: '',
+      head: HEAD_SHA,
+      sha: CANDIDATE_SHA,
+      releaseRefName: RELEASE_REF,
+      releaseRefSha: CANDIDATE_SHA,
+      isAncestorOfMaster: true,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain(HEAD_SHA);
+    expect(findings[0]).toContain(CANDIDATE_SHA);
+  });
+
+  it('reports a release ref that could not be resolved, naming the exact ref', () => {
+    const findings = frozenCandidateGitFindings({
+      status: '',
+      head: CANDIDATE_SHA,
+      sha: CANDIDATE_SHA,
+      releaseRefName: RELEASE_REF,
+      releaseRefSha: null,
+      isAncestorOfMaster: true,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain(RELEASE_REF);
+  });
+
+  it('reports a release ref that resolves to a different commit than the candidate', () => {
+    const findings = frozenCandidateGitFindings({
+      status: '',
+      head: CANDIDATE_SHA,
+      sha: CANDIDATE_SHA,
+      releaseRefName: RELEASE_REF,
+      releaseRefSha: MASTER_SHA,
+      isAncestorOfMaster: true,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain(RELEASE_REF);
+    expect(findings[0]).toContain(MASTER_SHA);
+    expect(findings[0]).toContain(CANDIDATE_SHA);
+  });
+
+  it('reports a candidate that is not reachable from origin/master', () => {
+    const findings = frozenCandidateGitFindings({
+      status: '',
+      head: CANDIDATE_SHA,
+      sha: CANDIDATE_SHA,
+      releaseRefName: RELEASE_REF,
+      releaseRefSha: CANDIDATE_SHA,
+      isAncestorOfMaster: false,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatch(/ancestor/i);
+  });
+
+  it('names each fault separately when every check fails at once', () => {
+    const findings = frozenCandidateGitFindings({
+      status: ' M x',
+      head: HEAD_SHA,
+      sha: CANDIDATE_SHA,
+      releaseRefName: RELEASE_REF,
+      releaseRefSha: null,
+      isAncestorOfMaster: false,
+    });
+    // Dirty tree, wrong HEAD, unresolved ref — three independent faults. The
+    // ancestry question cannot be asked at all without a resolved ref, so it is
+    // not counted as a fourth: an unresolved ref already says everything the
+    // ancestry check could add.
+    expect(findings).toHaveLength(3);
+    expect(new Set(findings).size, 'two findings read identically').toBe(3);
+  });
+});
+
+// The property the whole feature exists to guarantee: an invalid argument (or
+// a candidate that fails any of the git checks above) must be refused BEFORE
+// `npm pack` ever runs. `parseReleasePreflightArgs` is proven pure above, which
+// already rules out a side effect from argument parsing itself; this proves
+// the BEHAVIOUR end to end — the real script, spawned as a child process, with
+// a stand-in `npm` on PATH that does nothing but prove whether it was asked to
+// run at all. Reading the source for call order would be brittle and is not
+// what "fail closed before packing" means; this is the observable version.
+describe('release preflight — an invalid --frozen-candidate argument is refused before npm pack runs', () => {
+  it('refuses an invalid --frozen-candidate argument before npm pack is ever invoked', async () => {
+    for (const badSha of [
+      'NOT-A-SHA',
+      // 40 hex characters, but uppercase — the shape is right, the case is not.
+      'C0FFEE0011223344556677889900AABBCCDDEEFF',
+    ]) {
+      const markerDir = await mkdtemp(path.join(tmpdir(), 'rp353-npm-marker-'));
+      const marker = path.join(markerDir, 'npm-was-invoked');
+      // The stand-in does the one thing a real `npm pack` could never do
+      // cheaply: prove it ran, by leaving a file behind, then exits clean —
+      // so a script that DID call it reads as "ran to pack" rather than
+      // crashing on a missing executable and being misread as "refused".
+      const stub = await stubCommand(
+        'npm',
+        `require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'invoked'); return { stdout: '[{"filename":"x","files":[]}]' };`,
+      );
+      try {
+        const result = await new Promise<{ code: number; out: string }>((resolve) => {
+          execFile(
+            process.execPath,
+            [script, '--frozen-candidate', badSha],
+            { cwd: repoRoot, env: process.env },
+            (error, stdout, stderr) => {
+              resolve({
+                code: error ? ((error as { code?: number }).code ?? 1) : 0,
+                out: stdout + stderr,
+              });
+            },
+          );
+        });
+        expect(result.code, `argv ${badSha}:\n${result.out}`).not.toBe(0);
+        expect(result.out, `argv ${badSha}: no finding named the bad argument`).toContain(badSha);
+        expect(
+          existsSync(marker),
+          `argv ${badSha}: npm pack ran before the argument was refused:\n${result.out}`,
+        ).toBe(false);
+      } finally {
+        stub.restore();
+        await removeFixture(markerDir);
+      }
+    }
+  }, 30_000);
 });
 
 // The contract the owner's shell reads, and the only part of `main` that decides

@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-370",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "0b25121f57fe4450f11f3d19d255a81ba5e5ac022899c5e4f429ca8fd91037f9",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "5c3ca564f50e7601d6cb4b96c28988c76999739f3152245c95a302e3e4e0c0d6",
+      "count": 15
+    }
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/tdd-green-same-baseline-refinement.test.ts",
+      "fullName": "records a fresh same-baseline GREEN after an owned source refinement while retaining the prior evidence"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "0b25121f57fe4450f11f3d19d255a81ba5e5ac022899c5e4f429ca8fd91037f9",
+      "targetSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "ce7d9f06f95f1e6a88af418751229c32575a7d05b9c4df20e8fe189ed41fbb19"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-370",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-370-bootstrap-green"
+      }
+    },
+    "baseline": {
+      "headSha": "45ff3e276ecb5dd67293b878888f194008e7270e"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/tdd-green-same-baseline-refinement.test.ts",
+        "fullName": "records a fresh same-baseline GREEN after an owned source refinement while retaining the prior evidence",
+        "fileSha256": "a1080b5aa175c37c932608f5fda191a18ae201fc4781da50c0529c3cd7d08369"
+      },
+      "source": {
+        "runId": "20261004-133647-rp370b",
+        "seq": 5
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "62c77ce061fb76346964199b648775464d411f9d868084d0b8ef8d1c689a30f6"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "43da8e97e7145b11667273215e1968e30d2ea53db452a14faec49f23815c9b68"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261004-133647-rp370b",
+        "seq": 12
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "1bfb7939638f243e6301a33ec9dcede2734eb116d0001a99d32cfd5a5c552e71"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "43da8e97e7145b11667273215e1968e30d2ea53db452a14faec49f23815c9b68"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "fcb879b341745d220077754d6a4fcface51db91d98dc8cf77246226e27289512"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/tdd-green-same-baseline-refinement.test.ts",
+        "fullName": "records a fresh same-baseline GREEN after an owned source refinement while retaining the prior evidence",
+        "fileSha256": "a1080b5aa175c37c932608f5fda191a18ae201fc4781da50c0529c3cd7d08369"
+      },
+      "source": {
+        "runId": "20261004-133647-rp370b",
+        "seq": 13
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "6f63a828767c73ded4b047f4aaf261131bf3edaaadce92728297551ef8069045"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "fcb879b341745d220077754d6a4fcface51db91d98dc8cf77246226e27289512"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "6afc3848cf895986afd913f4395b4c91b625b528f3083be2e02629e4235561a7"
+      }
+    }
+  }
+}

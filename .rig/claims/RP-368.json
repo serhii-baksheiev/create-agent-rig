@@ -1,0 +1,639 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-368",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "f593ae7cc71f47dee7b5126201316cf20af138f564b09d4d0c89b95c02706542",
+      "targetSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "24259b1eaa49e16e300398cb2186ffe54b4b159a2a59930ec362fcf72ccd954d",
+      "count": 1
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  },
+  "tddScope": {
+    "test": {
+      "file": "test/template/jira-commentary-hydration.test.ts",
+      "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness"
+    },
+    "selectedScopeFingerprint": {
+      "algorithm": "sha256",
+      "value": "f593ae7cc71f47dee7b5126201316cf20af138f564b09d4d0c89b95c02706542",
+      "targetSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "fingerprint": {
+      "algorithm": "sha256",
+      "value": "cf924c7d617cc13f05f6336ee3fa8f57653a7eb235d301891d4cbb4267001d78"
+    }
+  },
+  "tddEvidence": {
+    "schemaVersion": 1,
+    "ticket": "RP-368",
+    "applicability": {
+      "level": "TDD-2",
+      "authority": {
+        "kind": "check-run",
+        "id": "RP-368-green-r1e"
+      }
+    },
+    "baseline": {
+      "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+    },
+    "red": {
+      "test": {
+        "file": "test/template/jira-commentary-hydration.test.ts",
+        "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+        "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+      },
+      "source": {
+        "runId": "rp368-20261003",
+        "seq": 72
+      },
+      "observation": {
+        "outcome": "fail",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "2d18af8b388d84681fc0bff84db552375d96605b832fc08da8e4f121d2a857b9"
+        }
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+      }
+    },
+    "implementationBoundary": {
+      "source": {
+        "runId": "20261004-215853-rp368c",
+        "seq": 18
+      },
+      "implementationDeltaFingerprint": {
+        "algorithm": "sha256",
+        "value": "1d1b1f21309b9449ccedfa0df7a81bc3e950b1f8b8447c8cb5eda1c456158558"
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "545295a0aebad5a8c5b5f2eb611f58f41862597da0742f31f000dfcc8013dc8f"
+      }
+    },
+    "green": {
+      "test": {
+        "file": "test/template/jira-commentary-hydration.test.ts",
+        "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+        "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+      },
+      "source": {
+        "runId": "20261004-215853-rp368c",
+        "seq": 19
+      },
+      "observation": {
+        "outcome": "pass",
+        "checkFingerprint": {
+          "algorithm": "sha256",
+          "value": "66b0485578b04a58308f401b4b74071574ca2d12f9c390d61c3b261b96198993"
+        }
+      },
+      "predecessorFingerprint": {
+        "algorithm": "sha256",
+        "value": "545295a0aebad5a8c5b5f2eb611f58f41862597da0742f31f000dfcc8013dc8f"
+      },
+      "fingerprint": {
+        "algorithm": "sha256",
+        "value": "d247f55efb85abaf955e8dd01afe3ecf0adfdb9203c5c9f4634ae70942a2d6e0"
+      }
+    }
+  },
+  "tddEvidenceHistory": [
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-368",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp368-jira-commentary-hydration-red-native9"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "5aa8abf696a6da67e8c86cc0474054e2050ea6c3528dc717b40335069721a346"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 13
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "cbf0d739af4872b4ff70a6eff1fefc570284a942878265b3e510cbe79fd277b5"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "a88131f5db1dbc9a80cbdbb542fb5af2af69f3ca792c251c467ba974ea4a97e1"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "a88131f5db1dbc9a80cbdbb542fb5af2af69f3ca792c251c467ba974ea4a97e1"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "30039216fa85add5bffedd7f166406c7f4b6439fb5925824556e1fd85c43a03b"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "09b8822b7300cfe55a9ef3f1d803e23c01caed452a35b426b2a1e8668d39554b"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-368",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp368-stream-bound-primary-red-native-02"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "a9dd0faa3e984fa8812f898e2e302eb6376bfc9421a3434fd55bf6195ec78459"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 18
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "f0373acfe9c2a3c8afc2f13580506a36628f9cd20797a74f6e10205980bd403a"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "30039216fa85add5bffedd7f166406c7f4b6439fb5925824556e1fd85c43a03b"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "30039216fa85add5bffedd7f166406c7f4b6439fb5925824556e1fd85c43a03b"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "a6a9b1ee3ff0b834812368c8cc6ec96e4ab3a0fb0a81008adf64bb15deb04821"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "17485d4e7de310cfb60cc9a48db965d87ad1e2d28676a6e609dbeb783fce6617"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-368",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp368-stream-bound-primary-red-native-03"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "ce4e26219b38cbe1770916d494e8bdf15f84c1c24f29516eba515ccb7041e220"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 21
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "9e94e748a08db514b6b9e2ddb79a62d3c3789b15fdbd97f6584fa5191f46ee7f"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "a6a9b1ee3ff0b834812368c8cc6ec96e4ab3a0fb0a81008adf64bb15deb04821"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "a6a9b1ee3ff0b834812368c8cc6ec96e4ab3a0fb0a81008adf64bb15deb04821"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "3eece2ac3eb2aecbe4bbe3d4ccb4a502066abac0b088eae81a1ef2b5ce9c3e64"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "d7b5f4f66a910dfddbd06879731b43a593d40fdd31fbda43c2c39783d249f6f7"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-368",
+        "applicability": {
+          "level": "TDD-1",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp368-oversized-chunk-primary-red-native-05"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "80e95d61080a0e43b40ed0dc36d32bf00c7ab7d484963ce9d79e5cb590d5b3f4"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 50
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "6a984f9d92a487ecdc16270547e65c9491d4183fbab55fb528c05733cc7b7bdf"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "3eece2ac3eb2aecbe4bbe3d4ccb4a502066abac0b088eae81a1ef2b5ce9c3e64"
+          }
+        }
+      },
+      "transition": {
+        "priorRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "3eece2ac3eb2aecbe4bbe3d4ccb4a502066abac0b088eae81a1ef2b5ce9c3e64"
+        },
+        "replacementRedFingerprint": {
+          "algorithm": "sha256",
+          "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+        },
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "749313131580669f736f4a6713e5700cf5b73596fdc66afbdc6f806fb4afd038"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-368",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "rp368-search-budget-primary-green-native-07"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 72
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "2d18af8b388d84681fc0bff84db552375d96605b832fc08da8e4f121d2a857b9"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 73
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "3204a4ad93515179b8de5e69a575643adb7cdba507b35a68fc0d1c98983c28d0"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "96e8e49d460e57971ddff266d1f112adba026baffa141312512bbdd17782359f"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 74
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "c79437ad4a5860801a535aa68eb1d7b2c70b065befee4a4f8c2bb2984e79a30d"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "96e8e49d460e57971ddff266d1f112adba026baffa141312512bbdd17782359f"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "bc8bfbf6168fe79a254626ca1232bd086c6439c570f199bb24b7189678c1c940"
+          }
+        }
+      },
+      "transition": {
+        "priorGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "bc8bfbf6168fe79a254626ca1232bd086c6439c570f199bb24b7189678c1c940"
+        },
+        "replacementGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "a4e263689420034bd575016ac32d836dc89f63ff43d7ef93b56b4db6db99e927"
+        },
+        "priorImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "96e8e49d460e57971ddff266d1f112adba026baffa141312512bbdd17782359f"
+        },
+        "replacementImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "67886d1e50a46208c43b6e83f202fa46abe41384b10d6de804fd3af5f666b6c4"
+        },
+        "sameBaselineRefinement": true,
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "62244cf4202830583a1c9c0b6f029a4346ccc2eebe2acc1c650d000209e4d0a8"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-368",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-368-green-r1"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 72
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "2d18af8b388d84681fc0bff84db552375d96605b832fc08da8e4f121d2a857b9"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261004-215853-rp368c",
+            "seq": 1
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "3f5a4b739c9ebcb6e9a26dbce48e8446eac797975134cd7864d64de7f00e050f"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "67886d1e50a46208c43b6e83f202fa46abe41384b10d6de804fd3af5f666b6c4"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+          },
+          "source": {
+            "runId": "20261004-215853-rp368c",
+            "seq": 2
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "a1e9e1031b2d75576daab32a371356eef7caac973fdd18455a4ec79631546462"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "67886d1e50a46208c43b6e83f202fa46abe41384b10d6de804fd3af5f666b6c4"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "a4e263689420034bd575016ac32d836dc89f63ff43d7ef93b56b4db6db99e927"
+          }
+        }
+      },
+      "transition": {
+        "priorGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "a4e263689420034bd575016ac32d836dc89f63ff43d7ef93b56b4db6db99e927"
+        },
+        "replacementGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "2ff5346a18b247a2b86a1ec6e60356566209232b562278de9eb6e1a56b6d56f6"
+        },
+        "priorImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "67886d1e50a46208c43b6e83f202fa46abe41384b10d6de804fd3af5f666b6c4"
+        },
+        "replacementImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "943018c750c7c9a9b5f016c9fa6a6d3d667b5190e97eac6450960657ba5c1ee3"
+        },
+        "mergedDefaultSha": "0eefe01c9315e4957abc1747365c1b0bc78b8f8a",
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "cadca66742ce66d6540e96b5036f9ba9d0e78dc0d413b6f928db9ac11dc16671"
+        }
+      }
+    },
+    {
+      "evidence": {
+        "schemaVersion": 1,
+        "ticket": "RP-368",
+        "applicability": {
+          "level": "TDD-2",
+          "authority": {
+            "kind": "check-run",
+            "id": "RP-368-green-refresh"
+          }
+        },
+        "baseline": {
+          "headSha": "d03f6dea63a6311b168f15c815645a7a73af2e0d"
+        },
+        "red": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+          },
+          "source": {
+            "runId": "rp368-20261003",
+            "seq": 72
+          },
+          "observation": {
+            "outcome": "fail",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "2d18af8b388d84681fc0bff84db552375d96605b832fc08da8e4f121d2a857b9"
+            }
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+          }
+        },
+        "implementationBoundary": {
+          "source": {
+            "runId": "20261004-215853-rp368c",
+            "seq": 3
+          },
+          "implementationDeltaFingerprint": {
+            "algorithm": "sha256",
+            "value": "3f5a4b739c9ebcb6e9a26dbce48e8446eac797975134cd7864d64de7f00e050f"
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "6a3fbc75ff47d94d2d0d46210c5e646fbf8db4447bb7c5cd7f8963289cd4f88d"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "943018c750c7c9a9b5f016c9fa6a6d3d667b5190e97eac6450960657ba5c1ee3"
+          }
+        },
+        "green": {
+          "test": {
+            "file": "test/template/jira-commentary-hydration.test.ts",
+            "fullName": "hydrates every comment before mapping a listed Jira issue while preserving authoritative completeness",
+            "fileSha256": "ac6d9063ca5856175f3a27d68ca7f97ffb4c11ec20a416db548cac3153990bdb"
+          },
+          "source": {
+            "runId": "20261004-215853-rp368c",
+            "seq": 4
+          },
+          "observation": {
+            "outcome": "pass",
+            "checkFingerprint": {
+              "algorithm": "sha256",
+              "value": "3c740db55ccce6a136c2546e7137c9abfa8aebc450ca7e2eb0dfaefb32207f68"
+            }
+          },
+          "predecessorFingerprint": {
+            "algorithm": "sha256",
+            "value": "943018c750c7c9a9b5f016c9fa6a6d3d667b5190e97eac6450960657ba5c1ee3"
+          },
+          "fingerprint": {
+            "algorithm": "sha256",
+            "value": "2ff5346a18b247a2b86a1ec6e60356566209232b562278de9eb6e1a56b6d56f6"
+          }
+        }
+      },
+      "transition": {
+        "priorGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "2ff5346a18b247a2b86a1ec6e60356566209232b562278de9eb6e1a56b6d56f6"
+        },
+        "replacementGreenFingerprint": {
+          "algorithm": "sha256",
+          "value": "d247f55efb85abaf955e8dd01afe3ecf0adfdb9203c5c9f4634ae70942a2d6e0"
+        },
+        "priorImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "943018c750c7c9a9b5f016c9fa6a6d3d667b5190e97eac6450960657ba5c1ee3"
+        },
+        "replacementImplementationBoundaryFingerprint": {
+          "algorithm": "sha256",
+          "value": "545295a0aebad5a8c5b5f2eb611f58f41862597da0742f31f000dfcc8013dc8f"
+        },
+        "sameBaselineRefinement": true,
+        "fingerprint": {
+          "algorithm": "sha256",
+          "value": "1c2e14f12612f244e03aea68d012eb3c2ea75d9d708376a985665f412b512dd7"
+        }
+      }
+    }
+  ]
+}
