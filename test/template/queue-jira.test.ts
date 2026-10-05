@@ -786,6 +786,63 @@ describe('hardening beyond the endpoint (AR-54)', () => {
       expect(response.issues.map((i) => i.key)).toEqual(['AR-1']);
       expect(stderr.join(''), 'nothing announced the cap').toMatch(/capped/i);
     });
+
+    // RP-279: the Jira spec-kit importer (`spec-kit-import-jira.test.ts`) needs
+    // to tell a genuinely empty tail apart from one `hardCap`, `maxPages` or a
+    // repeated page token cut short — additive to the existing `{ issues }`
+    // shape, so every caller above that destructures only `issues` is
+    // unaffected.
+    it('reports truncated: true when hardCap stops the walk with more pages available, and false when every page is read', async () => {
+      scriptFetch(twoPages());
+      const { search } = await load('jira.mjs');
+      const capped = (await search({ project: 'AR', env: CREDENTIALS, hardCap: 1 })) as {
+        issues: Array<{ key: string }>;
+        truncated: boolean;
+      };
+      expect(
+        capped.truncated,
+        'a hardCap stop with more pages available must report truncated',
+      ).toBe(true);
+
+      scriptFetch(twoPages());
+      const complete = (await search({ project: 'AR', env: CREDENTIALS })) as {
+        issues: Array<{ key: string }>;
+        truncated: boolean;
+      };
+      expect(
+        complete.truncated,
+        'a search that reads every page through isLast must report truncated: false',
+      ).toBe(false);
+    });
+
+    // RP-279 round 1: a final page marked isLast can still carry more issues
+    // than the room left under hardCap — `issues.push(...received.slice(0,
+    // hardCap - issues.length))` drops the overflow silently, and because
+    // `nextPageToken` is already null (isLast), the walk never reaches the
+    // hardCap branch that sets `truncated`. The drop and the missing flag are
+    // the same defect: a caller that only reads `.issues` believes it has
+    // every issue the final page carried.
+    it('reports truncated: true when a final page marked isLast carries more issues than the room left under hardCap', async () => {
+      scriptFetch([
+        {
+          status: 200,
+          json: {
+            issues: [issue({ key: 'AR-1' }), issue({ key: 'AR-2' }), issue({ key: 'AR-3' })],
+            isLast: true,
+          },
+        },
+      ]);
+      const { search } = await load('jira.mjs');
+      const response = (await search({ project: 'AR', env: CREDENTIALS, hardCap: 2 })) as {
+        issues: Array<{ key: string }>;
+        truncated: boolean;
+      };
+      expect(response.issues.map((i) => i.key)).toEqual(['AR-1', 'AR-2']);
+      expect(
+        response.truncated,
+        'an issue dropped off the final isLast page must still be reported as truncated',
+      ).toBe(true);
+    });
   });
 
   describe('liveness bounds — no header or page shape may hold the loop indefinitely', () => {

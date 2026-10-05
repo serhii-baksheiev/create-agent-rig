@@ -524,6 +524,31 @@ describe('queue import spec-kit --to github-issues (RP-275)', () => {
     }
   });
 
+  // RP-279: `--to jira` is a second valid projection target, not an unknown
+  // option — the CLI's usage gate must let it through exactly as it already
+  // does `--to github-issues`, and the run must then fail for a JIRA-specific
+  // reason (missing credentials, here), never the generic "usage:" refusal
+  // `--to nonsense` still gets. The full Jira projection behaviour is pinned
+  // in `spec-kit-import-jira.test.ts`; this is only the CLI's own gate.
+  it('accepts --to jira past the CLI usage gate, refusing only for a missing Jira credential', async () => {
+    const { dir, scriptPath } = await scratchProject();
+    const github = await installGh();
+    try {
+      const result = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'jira', '--dry-run', '--json'],
+        dir,
+      );
+
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).not.toMatch(/usage:/i);
+      expect(result.out).toMatch(/JIRA_BASE_URL|JIRA_EMAIL|JIRA_API_TOKEN/i);
+      expect(await github.calls()).toEqual([]);
+    } finally {
+      github.stub.restore();
+    }
+  });
+
   it('uses only the canonical first body line when a task title contains another task marker', async () => {
     const tasks = [
       '# Tasks: Export',

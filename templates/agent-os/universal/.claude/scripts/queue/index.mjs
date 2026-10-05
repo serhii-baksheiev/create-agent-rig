@@ -13,7 +13,7 @@
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
 import { execFileSync } from 'node:child_process';
-import { lstatSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
 import {
@@ -55,116 +55,14 @@ export const resolveAdapter = async (adapterName) => {
 
 export const COMMANDS = ['next', 'list', 'hygiene', 'gate-round', 'board', 'import'];
 
-/**
- * A missing config is the normal state of a fresh project. A config that exists
- * and does not parse is NOT — it used to fall back to `plan-md` silently, so a
- * trailing comma in `queue.json` made the loop read a different queue than the one
- * configured, which is the exact failure this file's header refuses for adapters.
- */
-export const loadConfig = (configPath, { strictRead = false } = {}) => {
-  let raw;
-  try {
-    raw = readFileSync(configPath, 'utf8');
-  } catch (error) {
-    if (
-      strictRead &&
-      (error?.code !== 'ENOENT' || lstatSync(configPath, { throwIfNoEntry: false }) !== undefined)
-    ) {
-      throw new Error(`${configPath} could not be read (${error?.code ?? 'unknown error'})`, {
-        cause: error,
-      });
-    }
-    return {};
-  }
-  let parsed;
-  try {
-    parsed = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(
-      `${configPath} exists but is not valid JSON, so the configured queue cannot be ` +
-        'read. Fix the file — ' +
-        'silently reading a different queue is worse than refusing to start.',
-      { cause: error },
-    );
-  }
-  return resolveBoard(parsed, configPath);
-};
-
-/**
- * The selector that travels with a config: `<name>.json` → `<name>.board`.
- *
- * A plain-text file holding one board name. Same class as the state file — a
- * per-checkout runtime value that must never be committed, because the config it
- * sits beside is composed and tracked. Derived from the config path for the same
- * reason `statePathFor` is: a run pointed at a temp config must not switch on
- * this checkout's real selector.
- */
-export const boardPathFor = (configPath) => configPath.replace(/(\.json)?$/, '.board');
-
-const isTerminalControl = (char) => {
-  const code = char.codePointAt(0);
-  return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
-};
-
-const assertSafeBoardName = (name, source) => {
-  if (typeof name === 'string' && [...name].some(isTerminalControl)) {
-    throw new Error(`${source}: board names must not contain terminal control characters.`);
-  }
-};
-
-const boardNamesOf = (boards, configPath) => {
-  const names = Object.keys(boards);
-  for (const name of names) assertSafeBoardName(name, configPath);
-  return names;
-};
-
-/**
- * A config may declare several boards and one default:
- *
- *   { "adapter": "jira", "board": "AR",
- *     "boards": { "AR": { "project": "AR", "owner": "x" }, "RP": { … } },
- *     "options": { "maxGateRounds": 3 } }
- *
- * The active board is the selector file if present, else `board`; its entry is
- * laid over `options`, so a key every board shares stays in `options` and only
- * what differs is per board. A config with no `boards` is returned exactly as it
- * was. A name nobody declared — in the selector or as the default — is refused,
- * never read as "no board": the loop would otherwise run on the shared options
- * alone, and for `jira` that is a different (or no) project.
- */
-export const resolveBoard = (config, configPath) => {
-  if (config?.boards === undefined) return config;
-  const boards = config.boards;
-  if (boards === null || typeof boards !== 'object' || Array.isArray(boards)) {
-    throw new Error(`${configPath}: "boards" must be an object of <name> → options.`);
-  }
-  const known = boardNamesOf(boards, configPath);
-  let selected = null;
-  let source = 'the "board" key';
-  try {
-    selected = readFileSync(boardPathFor(configPath), 'utf8').trim();
-    source = boardPathFor(configPath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT' && error?.code !== 'ENOTDIR') throw error;
-  }
-  // A selector that exists but is empty is refused, not read as "no selector":
-  // a truncated write would otherwise switch the run to the default board while
-  // the file still looks like a choice somebody made.
-  const active = selected === null ? config.board : selected;
-  assertSafeBoardName(active, source);
-  if (!active || !known.includes(active)) {
-    throw new Error(
-      `${source} names board ${JSON.stringify(active ?? null)}, which ${configPath} does not ` +
-        `declare. Declared boards: ${known.join(', ')}. Refusing rather than running on the ` +
-        'shared options alone — that would be a different queue than the one configured.',
-    );
-  }
-  const entry = boards[active];
-  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
-    throw new Error(`${configPath}: boards.${active} must be an object of adapter options.`);
-  }
-  return { ...config, board: active, options: { ...(config.options ?? {}), ...entry } };
-};
+// Config loading and board resolution live in `queue-config.mjs` now
+// (RP-279): see that file's header for why — `spec-kit-jira.mjs` needs the
+// identical resolution, including the board selector, without statically
+// importing this CLI entry module itself. Imported (for the `board` command
+// below) and re-exported (so every existing import of these names from this
+// file is unaffected).
+import { assertSafeBoardName, boardNamesOf, boardPathFor, loadConfig } from './queue-config.mjs';
+export { boardPathFor, loadConfig, resolveBoard } from './queue-config.mjs';
 
 /**
  * The state file that travels with a config: `<name>.json` → `<name>.state.json`.
@@ -397,18 +295,25 @@ if (invokedDirectly()) {
   if (args.command === 'import') {
     if (
       args.source !== 'spec-kit' ||
-      args.target !== 'github-issues' ||
+      (args.target !== 'github-issues' && args.target !== 'jira') ||
       args.unknownOptions.length > 0 ||
       args.name !== null ||
       args.config !== null ||
       args.branch !== null
     ) {
-      process.stderr.write('usage: queue import spec-kit --to github-issues [--tasks specs/<feature>/tasks.md] [--dry-run] [--json]\n');
+      process.stderr.write(
+        'usage: queue import spec-kit --to <github-issues|jira> [--tasks specs/<feature>/tasks.md] [--dry-run] [--json]\n',
+      );
       process.exit(1);
     }
     try {
       const { importSpecKit } = await import('./spec-kit-import.mjs');
-      const report = importSpecKit({ projectRoot, tasksPath: args.tasksPath, dryRun: args.dryRun });
+      const report = await importSpecKit({
+        projectRoot,
+        tasksPath: args.tasksPath,
+        dryRun: args.dryRun,
+        target: args.target,
+      });
       process.stdout.write(args.json ? `${JSON.stringify(report)}\n` : `${JSON.stringify(report, null, 2)}\n`);
       process.exit(0);
     } catch (error) {

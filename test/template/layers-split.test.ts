@@ -86,6 +86,8 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/queue/plan-md.mjs',
   '.claude/scripts/queue/github-issues.mjs',
   '.claude/scripts/queue/spec-kit-import.mjs',
+  '.claude/scripts/queue/spec-kit-jira.mjs', // RP-279: the importer's Jira target
+  '.claude/scripts/queue/queue-config.mjs', // RP-279: queue.json reading shared with it
   '.claude/scripts/queue/jira.mjs',
   '.claude/scripts/queue/index.mjs',
   '.claude/scripts/queue/propose.mjs', // RP-209: root-safe entry point for filing proposals
