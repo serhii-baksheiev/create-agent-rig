@@ -75,8 +75,9 @@ const fixture = async (config: Record<string, unknown> | null = null): Promise<F
 let stubs: StubHandle[] = [];
 
 afterEach(async () => {
-  for (const stub of stubs.reverse()) stub.restore();
+  const restoring = [...stubs].reverse();
   stubs = [];
+  for (const stub of restoring) stub.restore();
 });
 
 const stubProbes = async () => {

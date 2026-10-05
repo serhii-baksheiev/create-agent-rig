@@ -2,7 +2,7 @@ import { execFileSync, spawn } from 'node:child_process';
 import { copyFile, link, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { stubCommand } from '../helpers/stub-command.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
@@ -241,7 +241,7 @@ describe('test/helpers/stub-command', () => {
       }
     });
 
-    it('restore() leaves a busy stub directory in place, reports it as leftover, and still restores PATH and NODE_OPTIONS (EPERM)', async () => {
+    it('restore() treats EPERM as a busy file on win32 only, and as a real error elsewhere', async () => {
       const before = { PATH: process.env['PATH'], NODE_OPTIONS: process.env['NODE_OPTIONS'] };
       const denied = Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
       const stub = await stubCommand('ghstub', 'return {};', {
@@ -250,8 +250,13 @@ describe('test/helpers/stub-command', () => {
         },
       });
       try {
-        expect(() => stub.restore()).not.toThrow();
-        expect(stub.leftover).toBe(stub.bin);
+        if (process.platform === 'win32') {
+          expect(() => stub.restore()).not.toThrow();
+          expect(stub.leftover).toBe(stub.bin);
+        } else {
+          expect(() => stub.restore()).toThrow(/operation not permitted/);
+          expect(stub.leftover).toBeUndefined();
+        }
         expect(process.env['PATH']).toBe(before.PATH);
         expect(process.env['NODE_OPTIONS']).toBe(before.NODE_OPTIONS);
       } finally {
@@ -295,6 +300,50 @@ describe('test/helpers/stub-command', () => {
       }
     });
 
+    it('the default remover removes the stub executable before anything else, and a busy executable leaves the directory whole', async () => {
+      const calls: string[] = [];
+      const stub = await stubCommand('ghstub', 'return {};', {
+        rmSync: (target: string) => {
+          calls.push(target);
+          const busy = Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' });
+          throw busy;
+        },
+      });
+      const executable = path.join(
+        stub.bin,
+        process.platform === 'win32' ? 'ghstub.exe' : 'ghstub',
+      );
+      try {
+        stub.restore();
+        expect(calls).toEqual([executable]);
+        expect(stub.leftover).toBe(stub.bin);
+        await expect(stat(executable)).resolves.toBeTruthy();
+        await expect(stat(path.join(stub.bin, 'ghstub.preload.cjs'))).resolves.toBeTruthy();
+      } finally {
+        await removeFixture(stub.bin);
+      }
+    });
+
+    it('a busy restore reports the directory it left on stderr', async () => {
+      const writes: string[] = [];
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => {
+        writes.push(String(chunk));
+        return true;
+      });
+      const stub = await stubCommand('ghstub', 'return {};', {
+        remove: () => {
+          throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' });
+        },
+      });
+      try {
+        stub.restore();
+        expect(writes.join('')).toContain(stub.bin);
+      } finally {
+        spy.mockRestore();
+        await removeFixture(stub.bin);
+      }
+    });
+
     it('restore() does not throw while the stub executable is still held open by a running child (win32)', async (ctx) => {
       skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
 
@@ -322,9 +371,22 @@ describe('test/helpers/stub-command', () => {
         });
 
         expect(() => stub.restore()).not.toThrow();
+        if (stub.leftover === undefined) {
+          await expect(stat(stub.bin)).rejects.toMatchObject({ code: 'ENOENT' });
+        } else {
+          expect(stub.leftover).toBe(stub.bin);
+          await expect(stat(path.join(stub.bin, 'ghstub.exe'))).resolves.toBeTruthy();
+          await expect(stat(path.join(stub.bin, 'ghstub.preload.cjs'))).resolves.toBeTruthy();
+        }
       } finally {
-        child.kill();
-        await new Promise((resolve) => child.once('exit', resolve));
+        if (child.exitCode === null && child.signalCode === null) {
+          const exited = new Promise((resolve) => {
+            child.once('exit', resolve);
+            child.once('error', resolve);
+          });
+          child.kill();
+          await exited;
+        }
         await removeFixture(stub.bin);
       }
     });
