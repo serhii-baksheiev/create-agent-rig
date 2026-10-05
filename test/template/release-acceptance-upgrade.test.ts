@@ -76,14 +76,6 @@ type Module = {
     integrityRecord: Record<string, { integrity?: string; shasum?: string } | undefined>;
     version: string;
   }) => { expectedGitHead: string; expectedShasum: string; expectedIntegrity: string };
-  // Assumed extraction surface for the predecessor-phase wiring currently
-  // inlined in `main()` (release-acceptance.mjs, roughly lines 906-1013): one
-  // function taking the checkout `root` (to read the ledger and the
-  // integrity record — never the registry), a `scratch` directory, the
-  // environment, the candidate CLI path and version, an injected `npm`
-  // runner matching the script's own `npm(args, options)` helper, and an
-  // optional `acceptUpgrade` override of `acceptPredecessorUpgrade` so a test
-  // can exercise the surrounding checks without a real predecessor install.
   runPredecessorPhase?: (options: {
     root: string;
     scratch: string;
@@ -660,14 +652,6 @@ describe('release acceptance predecessor expectations binding', () => {
 });
 
 describe('release acceptance predecessor phase wiring', () => {
-  // Pins the wiring `main()` currently inlines (release-acceptance.mjs,
-  // roughly lines 906-1013): reading the ledger and the integrity record
-  // from `root`, verifying the predecessor's identity against those repo
-  // records (never the registry), running the upgrade, and gating on
-  // `assertUpgradeChangedTemplates` + idempotence. None of this is reachable
-  // from outside `main()` today — these cases exercise it only through the
-  // assumed `runPredecessorPhase` export documented on the `Module` type
-  // above.
   const predecessorVersion = '1.1.1';
   const candidateVersion = '1.2.0';
 
