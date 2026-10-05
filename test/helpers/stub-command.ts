@@ -23,7 +23,7 @@
  * argv after the command name, and returning `{ stdout?, exitCode? }` or
  * writing to stdout itself), so one description serves both platforms.
  */
-import { rmSync } from 'node:fs';
+import { rmSync as nodeRmSync } from 'node:fs';
 import { chmod, copyFile, link, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -35,13 +35,30 @@ export type StubHandle = {
   /** The environment additions the stub needs (PATH prefix, NODE_OPTIONS on win32). */
   env: Record<string, string>;
   /**
-   * Restore process.env to what it was, and remove the stub directory
+   * Restore process.env to what it was, then remove the stub directory
    * (`bin`) this call created, including the Windows executable link
    * (RP-348: an unreleased `bin` per lifetime drove the shared node
-   * binary's link count to the filesystem's limit).
+   * binary's link count to the filesystem's limit). A busy executable leaves
+   * the directory whole instead — see `leftover`.
    */
   restore: () => void;
+  /**
+   * Set by `restore()` when the stub directory could not be removed because
+   * its executable was busy (EBUSY, or EPERM on win32); the directory is left
+   * whole for the OS temp cleanup and named on stderr.
+   */
+  leftover?: string;
 };
+
+export type StubDependencies = {
+  /** Replaces the whole removal of the stub directory. */
+  remove?: (dir: string) => void;
+  /** The `rmSync` the default removal calls. */
+  rmSync?: (target: string, options: Parameters<typeof nodeRmSync>[1]) => void;
+};
+
+const isBusyRemoval = (code: string | undefined): boolean =>
+  code === 'EBUSY' || (code === 'EPERM' && process.platform === 'win32');
 
 // See stub-command.test.ts: same-volume identity, EXDEV fallback, and other errors.
 export const materializeStubExecutable = async (
@@ -85,7 +102,11 @@ if (!isStub) {
  * written as a JS function body over `args`. Returns the handle; call
  * `restore()` in `finally`.
  */
-export const stubCommand = async (name: string, handlerBody: string): Promise<StubHandle> => {
+export const stubCommand = async (
+  name: string,
+  handlerBody: string,
+  dependencies: StubDependencies = {},
+): Promise<StubHandle> => {
   // The name reaches a shell line and NODE_OPTIONS unquoted; a word is all a
   // command name needs to be.
   if (!/^[A-Za-z0-9_-]+$/.test(name)) {
@@ -117,22 +138,43 @@ export const stubCommand = async (name: string, handlerBody: string): Promise<St
   }
   env['PATH'] = `${bin}${path.delimiter}${savedPath ?? ''}`;
   Object.assign(process.env, env);
-  return {
+  // Synchronous because every caller restores from a `finally` without
+  // awaiting, so this cannot go through the async removeFixture; it takes the
+  // same retry bounds instead. force: a caller may restore() more than once,
+  // and the second call finds nothing left to remove. The stub executable
+  // goes first, so a busy executable leaves the directory whole rather than
+  // without its preload.
+  const retries = {
+    maxRetries: FIXTURE_REMOVE_MAX_RETRIES,
+    retryDelay: FIXTURE_REMOVE_RETRY_DELAY_MS,
+  };
+  const rmSync = dependencies.rmSync ?? nodeRmSync;
+  const executable = path.join(bin, process.platform === 'win32' ? `${name}.exe` : name);
+  const removeDefault = (dir: string): void => {
+    rmSync(executable, { force: true, ...retries });
+    rmSync(dir, { recursive: true, force: true, ...retries });
+  };
+  const remove = dependencies.remove ?? removeDefault;
+  const handle: StubHandle = {
     bin,
     env,
     restore: () => {
       process.env['PATH'] = savedPath;
       if (savedNodeOptions === undefined) delete process.env['NODE_OPTIONS'];
       else process.env['NODE_OPTIONS'] = savedNodeOptions;
-      // Synchronous because every caller restores from a `finally` without
-      // awaiting, so this cannot go through the async removeFixture; it takes
-      // the same retry bounds instead. force: a caller may restore() more than
-      // once, and the second call finds nothing left to remove.
-      const retries = {
-        maxRetries: FIXTURE_REMOVE_MAX_RETRIES,
-        retryDelay: FIXTURE_REMOVE_RETRY_DELAY_MS,
-      };
-      rmSync(bin, { recursive: true, force: true, ...retries });
+      try {
+        remove(bin);
+        handle.leftover = undefined;
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException | undefined)?.code;
+        if (isBusyRemoval(code)) {
+          handle.leftover = bin;
+          process.stderr.write(`stub-command: left ${bin} in place (${code} removing it)\n`);
+          return;
+        }
+        throw error;
+      }
     },
   };
+  return handle;
 };
