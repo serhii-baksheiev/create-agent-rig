@@ -460,3 +460,106 @@ describe('release preflight (real git, real child process) — ordinary mode als
     }
   }, 30_000);
 });
+
+// RP-410: a TAG or BRANCH literally named `origin/master`
+// (refs/tags/origin/master, refs/heads/origin/master) outranks the
+// remote-tracking ref in gitrevisions(7)'s short-name lookup, so only the
+// exact `refs/remotes/origin/master` may answer "is HEAD origin/master's tip".
+// Each case runs the real script end to end, because the ref is resolved in
+// `main()`, upstream of `gitFindings`.
+describe('release preflight (real git, real child process) — ordinary mode resolves origin/master exactly', () => {
+  const REMOTE_REF = 'refs/remotes/origin/master';
+
+  async function releaseOnMaster(
+    version: string,
+    changelogHeading: string,
+  ): Promise<{ work: string; sha: string }> {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    await writeManifests(work, version, changelogHeading);
+    git(['add', '-A'], work);
+    git(['commit', '-m', `release ${version}`], work);
+    const sha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+    git(['fetch', 'origin'], work);
+    return { work, sha };
+  }
+
+  // (1) The real remote-tracking ref is deleted and a TAG named
+  // `origin/master` points at HEAD: the shadow would match HEAD exactly.
+  it('reports origin/master unresolvable rather than trusting a TAG that shadows its name, when the real remote-tracking ref is missing', async () => {
+    const { work, sha } = await releaseOnMaster('1.2.0', '## 1.2.0');
+    git(['update-ref', '-d', REMOTE_REF], work);
+    git(['tag', 'origin/master', sha], work);
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(work, [], stub.env);
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out, result.out).toMatch(/origin\/master could not be resolved/);
+      expect(result.out, result.out).not.toMatch(/HEAD is .* but origin\/master is/);
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+
+  // (2) The real remote-tracking ref names a DIFFERENT commit than HEAD,
+  // while a TAG named `origin/master` points at HEAD itself.
+  it('reports HEAD against the real remote-tracking ref, naming its sha, not a TAG that shadows its name', async () => {
+    const { work, candidateSha, masterSha } = await freezeThenAdvanceMaster();
+    git(['fetch', 'origin'], work);
+    git(['checkout', candidateSha], work);
+    git(['tag', 'origin/master', candidateSha], work);
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(work, [], stub.env);
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out, result.out).toMatch(/HEAD is .* but origin\/master is/);
+      expect(result.out, result.out).toContain(candidateSha);
+      expect(result.out, result.out).toContain(masterSha);
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+
+  // (3) The other DWIM fallback: a local BRANCH literally named
+  // `origin/master` (full path `refs/heads/origin/master`), with the real
+  // remote-tracking ref deleted.
+  it('reports origin/master unresolvable rather than trusting a BRANCH that shadows its name, when the real remote-tracking ref is missing', async () => {
+    const { work, sha } = await releaseOnMaster('1.2.0', '## 1.2.0');
+    git(['update-ref', '-d', REMOTE_REF], work);
+    git(['branch', 'origin/master', sha], work);
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(work, [], stub.env);
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out, result.out).toMatch(/origin\/master could not be resolved/);
+      expect(result.out, result.out).not.toMatch(/HEAD is .* but origin\/master is/);
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+
+  // Control: the real remote-tracking ref equals HEAD, no shadow of any kind.
+  it('clears the git check on the real remote-tracking ref equal to HEAD, with no shadow present', async () => {
+    const { work } = await releaseOnMaster('1.2.0', '## 1.2.0');
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(work, [], stub.env);
+      expect(result.out, result.out).not.toMatch(/origin\/master could not be resolved/);
+      expect(result.out, result.out).not.toMatch(/HEAD is .* but origin\/master is/);
+      expect(existsSync(stub.marker), 'npm should have been reached on the clean control').toBe(
+        true,
+      );
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+});

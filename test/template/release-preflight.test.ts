@@ -45,7 +45,7 @@ const {
   // RP-353: a narrow, explicit mode for preflighting a release candidate that
   // master has since moved past. Chosen CLI shape: a single
   // `--frozen-candidate <40-char-lowercase-hex-sha>` flag; no flag at all means
-  // ordinary mode, unchanged. `parseReleasePreflightArgs` is pure argv-in,
+  // ordinary mode. `parseReleasePreflightArgs` is pure argv-in,
   // decision-out — it touches neither git nor `npm pack`, which is what lets an
   // invalid argument fail BEFORE either runs.
   parseReleasePreflightArgs: (argv: readonly string[]) => {
@@ -692,7 +692,7 @@ describe('release preflight — the checkout the bytes would be published from',
 // `gitFindings` above — "HEAD must be the CURRENT origin/master tip" — can
 // never pass for the frozen candidate, and must not be made to. The chosen
 // shape is a narrow, explicit flag: `--frozen-candidate <40-char-lowercase-hex-
-// sha>`. No flag at all is ordinary mode, entirely unchanged.
+// sha>`. No flag at all is ordinary mode.
 const CANDIDATE_SHA = 'c0ffee0011223344556677889900aabbccddeeff';
 
 describe('release preflight — the --frozen-candidate flag is parsed before anything else runs', () => {
@@ -764,9 +764,7 @@ describe('release preflight — the --frozen-candidate flag is parsed before any
   });
 });
 
-// The git facts specific to frozen-candidate mode. Every existing
-// clean-checkout, manifest, ledger, payload and tarball check still runs in
-// this mode (unchanged, elsewhere in this file) — this is the part that
+// The git facts specific to frozen-candidate mode — the part that
 // replaces "HEAD is origin/master's tip" with the three checks a frozen
 // candidate actually needs.
 const RELEASE_REF = 'refs/remotes/origin/release/1.2.0-rc';
