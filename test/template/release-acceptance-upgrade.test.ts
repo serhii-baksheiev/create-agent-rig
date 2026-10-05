@@ -1,38 +1,35 @@
 /**
  * RP-374 — predecessor upgrade acceptance.
  *
- * Round 1 landed `scripts/release-acceptance.mjs`'s `acquirePredecessor`,
- * `acceptPredecessorUpgrade`, `assertUserMutationsPreserved`,
- * `latestReleasedLedgerVersion`, `assertVersionAdvances` and `parseSemver` —
- * those functions exist today and the describe blocks below that exercise
- * them unchanged are GREEN. This file now pins round 2's review blockers,
- * none of which production implements yet:
+ * Rounds 1 and 2 landed `scripts/release-acceptance.mjs`'s
+ * `acquirePredecessor`, `acceptPredecessorUpgrade`,
+ * `assertUserMutationsPreserved`, `latestReleasedLedgerVersion`,
+ * `assertVersionAdvances`, `parseSemver`, `changedFiles` and
+ * `assertPackFilename` — those functions exist today and the describe blocks
+ * below that exercise them unchanged are GREEN. This file now pins round 3's
+ * review blockers, neither of which production implements yet:
  *
- *   - integrity bound to the repo, not the registry: `acquirePredecessor`
- *     must take a new `expectedIntegrity` option (a `sha512-…` base64
- *     digest) and refuse a mismatch BEFORE calling `install`, exactly like
- *     the existing `expectedShasum`/`expectedGitHead` checks
- *     ('predecessor-integrity-mismatch'). Production will also add
- *     `scripts/release-predecessor-integrity.json` (released version ->
- *     `{ integrity, shasum }`) as the in-repo source of that expectation —
- *     this file pins that the record exists and is shaped correctly for the
- *     ledger's latest released version.
- *   - `changedFiles(beforeSnapshot, afterSnapshot)`: a small pure helper,
- *     not yet exported, mirroring the module's existing internal
- *     `changedPaths` — the diff `acceptPredecessorUpgrade` is expected to
- *     report for both the first and the second upgrade.
- *   - `assertPackFilename(name)`: not yet exported — refuses a pack-report
- *     filename that is not a plain basename ending in `.tgz` before it is
- *     ever joined onto a directory and used as a path.
- *   - `parseSemver`'s regex is anchored only at the start
- *     (`/^(\d+)\.(\d+)\.(\d+)/`), so a version string carrying extra range
- *     syntax after a valid-looking prefix is accepted rather than refused.
- *   - `assertUserMutationsPreserved`'s deletion check treats ANY `access()`
- *     failure, not only `ENOENT`, as "the deletion held" — a different I/O
- *     failure on that path is misreported as success.
+ *   - `assertUpgradeChangedTemplates(changedPaths)`: a pure helper, not yet
+ *     exported, that ignores `.claude/.rig-manifest.json` — its recorded
+ *     `version` moves on every upgrade, so its presence alone proves nothing
+ *     else was delivered — and throws
+ *     `AcceptanceError('predecessor-upgrade-vacuous')` when no other path
+ *     changed. `main()`'s vacuous-upgrade check is expected to call this
+ *     helper on `firstUpgradeChangedFiles` instead of only testing the
+ *     array's length, which the manifest bump alone always defeats.
+ *   - `predecessorExpectations({ ledger, integrityRecord, version })`: not
+ *     yet exported — binds `acquirePredecessor`'s three expected values to
+ *     the repo's own records only (the ledger's recorded `gitHead` for
+ *     `version`, and the integrity record's `shasum`/`integrity` for the
+ *     same `version`), taking no registry input at all. Throws
+ *     `AcceptanceError('predecessor-integrity-record-missing')` when the
+ *     integrity record has no entry for `version`, or the entry lacks a
+ *     string `integrity` or `shasum`, and
+ *     `AcceptanceError('predecessor-githead-missing')` when the ledger has
+ *     no recorded `gitHead` for `version`.
  *
  * The heavy, real-tarball case ("accepts an immutable published predecessor
- * upgrade with an exact packed candidate") moved to
+ * upgrade with an exact packed candidate") lives in
  * `test/e2e/release-acceptance-upgrade.test.ts`: it used to run `npm pack`
  * at the repo root directly, which also runs the `prepare` lifecycle and
  * rebuilds `packages/cli/dist` mid-suite — exactly the race
@@ -100,6 +97,12 @@ type Module = {
   }>;
   changedFiles?: (before: Map<string, string>, after: Map<string, string>) => string[];
   assertPackFilename?: (name: string) => void;
+  assertUpgradeChangedTemplates?: (changedPaths: string[]) => void;
+  predecessorExpectations?: (options: {
+    ledger: Record<string, string | null>;
+    integrityRecord: Record<string, { integrity?: string; shasum?: string } | undefined>;
+    version: string;
+  }) => { expectedGitHead: string; expectedShasum: string; expectedIntegrity: string };
 };
 
 async function importScript(): Promise<Module> {
@@ -516,5 +519,129 @@ describe('release acceptance semver parsing hardening', () => {
     }
 
     expect(errorCode(caught)).toBe('invalid-semver');
+  });
+});
+
+describe('release acceptance vacuous-upgrade check', () => {
+  it.each([
+    ['only the manifest changed', ['.claude/.rig-manifest.json']],
+    ['nothing changed at all', []],
+  ])('refuses an upgrade where %s', async (_label, changedPaths) => {
+    const module = await importScript();
+    expect(module.assertUpgradeChangedTemplates).toBeTypeOf('function');
+
+    let caught: unknown;
+    try {
+      module.assertUpgradeChangedTemplates!(changedPaths);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('predecessor-upgrade-vacuous');
+  });
+
+  it('accepts an upgrade that changed a template file, even alongside the manifest bump', async () => {
+    const module = await importScript();
+    expect(module.assertUpgradeChangedTemplates).toBeTypeOf('function');
+
+    expect(() =>
+      module.assertUpgradeChangedTemplates!([
+        '.claude/skills/loop/SKILL.md',
+        '.claude/.rig-manifest.json',
+      ]),
+    ).not.toThrow();
+  });
+});
+
+describe('release acceptance predecessor expectations binding', () => {
+  const ledger = { '1.1.1': REAL_1_1_1_GIT_HEAD };
+  const integrityRecord = {
+    '1.1.1': { integrity: 'sha512-fixture-integrity-digest==', shasum: 'f'.repeat(40) },
+  };
+
+  it('takes the gitHead, shasum and integrity from the ledger and the integrity record exactly', async () => {
+    const module = await importScript();
+    expect(module.predecessorExpectations).toBeTypeOf('function');
+
+    expect(module.predecessorExpectations!({ ledger, integrityRecord, version: '1.1.1' })).toEqual({
+      expectedGitHead: REAL_1_1_1_GIT_HEAD,
+      expectedShasum: 'f'.repeat(40),
+      expectedIntegrity: 'sha512-fixture-integrity-digest==',
+    });
+  });
+
+  it('refuses a version absent from the integrity record', async () => {
+    const module = await importScript();
+    expect(module.predecessorExpectations).toBeTypeOf('function');
+
+    let caught: unknown;
+    try {
+      module.predecessorExpectations!({ ledger, integrityRecord: {}, version: '1.1.1' });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('predecessor-integrity-record-missing');
+  });
+
+  it.each([
+    ['integrity', { shasum: 'f'.repeat(40) }],
+    ['shasum', { integrity: 'sha512-fixture-integrity-digest==' }],
+  ])('refuses an integrity record entry with no string %s', async (_field, entry) => {
+    const module = await importScript();
+    expect(module.predecessorExpectations).toBeTypeOf('function');
+
+    let caught: unknown;
+    try {
+      module.predecessorExpectations!({
+        ledger,
+        integrityRecord: { '1.1.1': entry },
+        version: '1.1.1',
+      });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('predecessor-integrity-record-missing');
+  });
+
+  it.each([
+    ['absent entirely', { '1.0.0': REAL_1_1_1_GIT_HEAD }],
+    ['recorded as null (never released)', { '1.1.1': null }],
+  ])('refuses a ledger with no gitHead for the version, %s', async (_label, brokenLedger) => {
+    const module = await importScript();
+    expect(module.predecessorExpectations).toBeTypeOf('function');
+
+    let caught: unknown;
+    try {
+      module.predecessorExpectations!({ ledger: brokenLedger, integrityRecord, version: '1.1.1' });
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(errorCode(caught)).toBe('predecessor-githead-missing');
+  });
+
+  it('derives its result only from the ledger and the integrity record — a registry-shaped field changes nothing', async () => {
+    const module = await importScript();
+    expect(module.predecessorExpectations).toBeTypeOf('function');
+    // A single destructured options object — no separate registry parameter.
+    expect(module.predecessorExpectations!.length).toBe(1);
+
+    const withoutRegistry = module.predecessorExpectations!({
+      ledger,
+      integrityRecord,
+      version: '1.1.1',
+    });
+    const withRegistryShapedField = module.predecessorExpectations!({
+      ledger,
+      integrityRecord,
+      version: '1.1.1',
+      // A registry-shaped field the function must ignore entirely — it is
+      // not part of the documented options shape.
+      ...({ registryView: { gitHead: '0'.repeat(40) } } as Record<string, unknown>),
+    });
+
+    expect(withRegistryShapedField).toEqual(withoutRegistry);
   });
 });

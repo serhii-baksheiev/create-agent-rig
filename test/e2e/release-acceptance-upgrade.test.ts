@@ -1,6 +1,5 @@
 /**
- * RP-374 round 2 — predecessor-to-candidate upgrade acceptance, the heavy
- * case (e2e).
+ * RP-374 — predecessor-to-candidate upgrade acceptance, the heavy case (e2e).
  *
  * Moved out of `test/template/release-acceptance-upgrade.test.ts`: that copy
  * used to run `npm pack` at the repo root directly, which also runs the
@@ -11,18 +10,17 @@
  * the repo's win32-safe package-manager helper (`runPackageManager`) instead
  * of a bare `exec('npm', …)`.
  *
- * It also pins two round-2 review blockers on top of round 1's already-
- * landed `acceptPredecessorUpgrade`, both of which FAIL against current
- * production:
- *   - the predecessor rig must be generated with `init --layer workflow`,
- *     not plain `init` — proven here by a workflow-layer-only file
- *     (`.claude/skills/loop/SKILL.md`, from
- *     `templates/agent-os/universal/layers.json`'s `workflow` array)
- *     existing in the generated predecessor tree after the call;
- *   - the first `upgrade --yes` must be non-vacuous — it must replace at
- *     least one rig-managed file, and `acceptPredecessorUpgrade`'s result
- *     must report which ones via `firstUpgradeChangedFiles`, a field
- *     current production does not return at all.
+ * Rounds 1 and 2 landed `acceptPredecessorUpgrade`, the workflow-layer
+ * predecessor generation and `firstUpgradeChangedFiles` — the single case
+ * below passes against current production. Round 3 strengthens that same
+ * case's assertion on `firstUpgradeChangedFiles`, as a mutation guard on the
+ * vacuous-upgrade check landing in `test/template/release-acceptance-upgrade.test.ts`
+ * (`assertUpgradeChangedTemplates`): it is not enough for the array to be
+ * merely non-empty — this pins that it names the exact workflow-layer
+ * template path (`WORKFLOW_ONLY_FILE`) the stand-in predecessor altered, so
+ * removing that alteration from `buildPredecessorTarball` turns this
+ * assertion red rather than leaving it vacuously green on the manifest bump
+ * alone.
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -218,9 +216,17 @@ describe('release acceptance predecessor-to-candidate upgrade (e2e)', () => {
       access(path.join(scratch, 'acceptance', 'rig', ...WORKFLOW_ONLY_FILE.split('/'))),
     ).resolves.toBeUndefined();
 
-    // Round 2: the first upgrade actually changed something non-vacuous,
-    // and the result says what.
+    // Round 3: the first upgrade changed something non-vacuous, and the
+    // result names the specific workflow-layer template the stand-in
+    // predecessor altered (`buildPredecessorTarball` above) — not merely
+    // some path or other. A mutation that removed that alteration (leaving
+    // only `.claude/.rig-manifest.json`'s version bump) would still pass a
+    // bare length check; it must not pass this one.
+    // `firstUpgradeChangedFiles` entries are produced by `path.relative`
+    // (native separator), while `WORKFLOW_ONLY_FILE` is POSIX-joined for the
+    // tar-member paths above — rejoin natively before comparing.
+    const workflowOnlyFileNative = path.join(...WORKFLOW_ONLY_FILE.split('/'));
     expect(Array.isArray(result.firstUpgradeChangedFiles)).toBe(true);
-    expect(result.firstUpgradeChangedFiles.length).toBeGreaterThan(0);
+    expect(result.firstUpgradeChangedFiles).toContain(workflowOnlyFileNative);
   }, 120_000);
 });

@@ -253,6 +253,34 @@ export function changedFiles(before, after) {
 }
 
 /**
+ * Throws `AcceptanceError('predecessor-upgrade-vacuous')` unless at least one
+ * path other than `.claude/.rig-manifest.json` changed — its recorded
+ * `version` moves on every upgrade, so its presence alone proves nothing
+ * else was delivered. Compares on the normalized posix form, so a path
+ * recorded with native win32 separators still matches the ignored entry.
+ */
+export function assertUpgradeChangedTemplates(changedPaths) {
+  const ignored = '.claude/.rig-manifest.json';
+  const other = changedPaths.filter((changedPath) => changedPath.replaceAll('\\', '/') !== ignored);
+  if (other.length === 0) abort('predecessor-upgrade-vacuous');
+}
+
+/**
+ * Binds `acquirePredecessor`'s three expected values to the repo's own
+ * records for `version` only — the ledger's recorded `gitHead`, and the
+ * integrity record's `shasum`/`integrity` — never a registry response.
+ */
+export function predecessorExpectations({ ledger, integrityRecord, version }) {
+  const entry = integrityRecord?.[version];
+  if (!entry || typeof entry.integrity !== 'string' || typeof entry.shasum !== 'string')
+    abort('predecessor-integrity-record-missing');
+  const expectedGitHead = ledger?.[version];
+  if (typeof expectedGitHead !== 'string' || expectedGitHead.length === 0)
+    abort('predecessor-githead-missing');
+  return { expectedGitHead, expectedShasum: entry.shasum, expectedIntegrity: entry.integrity };
+}
+
+/**
  * Refuses a pack-report filename that is not a plain basename ending in
  * `.tgz` — before it is ever joined onto a directory and used as a path.
  */
@@ -888,7 +916,6 @@ async function main() {
         await readFile(path.join(checkout, 'templates', 'release-ledger.json'), 'utf8'),
       );
       const predecessorVersion = latestReleasedLedgerVersion(ledger);
-      const predecessorGitHead = ledger[predecessorVersion];
       assertVersionAdvances(predecessorVersion, item.version);
 
       // The expectation is the repo's own record, never the registry
@@ -900,13 +927,11 @@ async function main() {
           'utf8',
         ),
       );
-      const integrityRecord = integrityRecords?.[predecessorVersion];
-      if (
-        !integrityRecord ||
-        typeof integrityRecord.integrity !== 'string' ||
-        typeof integrityRecord.shasum !== 'string'
-      )
-        abort('predecessor-integrity-record-missing');
+      const expectations = predecessorExpectations({
+        ledger,
+        integrityRecord: integrityRecords,
+        version: predecessorVersion,
+      });
 
       const registryView = parseJson(
         (
@@ -939,9 +964,7 @@ async function main() {
       const predecessorHome = path.join(scratch, 'predecessor-home');
 
       const predecessorCli = await acquirePredecessor({
-        expectedGitHead: predecessorGitHead,
-        expectedShasum: integrityRecord.shasum,
-        expectedIntegrity: integrityRecord.integrity,
+        ...expectations,
         registryView,
         tarballPath: predecessorTarball,
         install: async (tarballPath) => {
@@ -978,8 +1001,7 @@ async function main() {
         candidateVersion: item.version,
       });
       if (upgradeOutcome.manifestVersion !== item.version) abort('upgrade-version-not-advanced');
-      if (upgradeOutcome.firstUpgradeChangedFiles.length === 0)
-        abort('predecessor-upgrade-vacuous');
+      assertUpgradeChangedTemplates(upgradeOutcome.firstUpgradeChangedFiles);
       if (upgradeOutcome.secondUpgradeChangedFiles.length > 0)
         abort('predecessor-upgrade-not-idempotent');
       predecessorUpgrade = {

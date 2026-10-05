@@ -92,6 +92,13 @@ ever installed it. Nothing in the 1.1 contract is removed or renamed.
   skill's stop line now says to change the declared scope, not wait on a
   human, when only out-of-scope items remain (RP-286, RP-326).
 
+- **A claim's remote default is resolved through unambiguous, fully-qualified
+  refs instead of bare branch names.** `targetShaOf` resolves `origin/HEAD`
+  first, then falls back to exactly `origin/master` or `origin/main` — never
+  both at once. When a configured `origin` remote has no usable remote
+  default, `SELECT` now records an `UNVERIFIABLE` claim instead of
+  proceeding with no resolvable target (RP-358).
+
 ### Removed
 
 - **The experimental Mechanical TDD evidence contract is withdrawn before any
