@@ -329,14 +329,15 @@ attempted pre-commit bypass.
 
 ## Documentation
 
-| Document                                                   | Covers                                                                |
-| ---------------------------------------------------------- | --------------------------------------------------------------------- |
-| [`docs/command-contract.md`](docs/command-contract.md)     | Every command's options, output, exit codes and ownership rules       |
-| [`CHANGELOG.md`](CHANGELOG.md)                             | What changed in each release, and the release checklist               |
-| [`docs/decisions/`](docs/decisions/)                       | Design decisions: ownership, `AGENTS.md`, Codex adapter, integrations |
-| [`docs/compatibility.md`](docs/compatibility.md)           | What each capability does per harness and platform                    |
-| [`docs/releasing.md`](docs/releasing.md)                   | How a release is prepared and accepted                                |
-| [`docs/parallel-workflows.md`](docs/parallel-workflows.md) | Spec Kit task import, tracker dependencies and controller boundaries  |
+| Document                                                       | Covers                                                                         |
+| -------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| [`docs/command-contract.md`](docs/command-contract.md)         | Every command's options, output, exit codes and ownership rules                |
+| [`CHANGELOG.md`](CHANGELOG.md)                                 | What changed in each release, and the release checklist                        |
+| [`docs/decisions/`](docs/decisions/)                           | Design decisions: ownership, `AGENTS.md`, Codex adapter, integrations          |
+| [`docs/compatibility.md`](docs/compatibility.md)               | What each capability does per harness and platform                             |
+| [`docs/releasing.md`](docs/releasing.md)                       | How a release is prepared and accepted                                         |
+| [`docs/parallel-workflows.md`](docs/parallel-workflows.md)     | Spec Kit task import, tracker dependencies and controller boundaries           |
+| [`docs/unattended-execution.md`](docs/unattended-execution.md) | What Rig enforces, verifies and leaves to the harness when a run is unattended |
 
 ## Development
 
