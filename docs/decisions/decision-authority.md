@@ -70,11 +70,24 @@ authority, because the run-level stops take no authority input at all — ›
 decisionAuthority alongside a systemic/external input is ignored — the
 result is deep-equal to the call without it, and the stop still fires".
 
+## Delegated decisions are durable evidence
+
+A decision a delegated run resolves is recorded where a replacement
+controller can read it without this session's memory: the opt-in workflow
+layer appends it to a per-item file under `.rig/decisions/`, which travels
+with the item's branch like the claim records do. Only a run whose declared
+authority is delegated can record one, and only of a delegable kind — pinned
+in the generator's `test/template/delegated-decision.test.ts` (absent in a
+generated rig) › "refuses when the run authority is absent (reads as owner),
+naming owner". A recorded decision is made; no record means the decision is
+still open — › "a FRESH run directory (a different controller session) still
+reads the made decision". The gates read their own inputs and never this
+record, so a recorded decision bypasses none of them.
+
 ## Consequences
 
-Where a run records the authority it was started with, how a delegated
-decision becomes durable evidence a later controller can read, and how preflight
-and doctor report the posture are separate pieces of work. Each consumes
+How preflight and doctor report the posture, and how the loop starts and
+resumes under a declared authority, are separate pieces of work. Each consumes
 this module instead of restating it.
 
 Adding, renaming or moving a decision kind between the two lists is a

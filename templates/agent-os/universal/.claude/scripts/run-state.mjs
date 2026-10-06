@@ -70,6 +70,8 @@ import {
 import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { DECISION_AUTHORITIES } from './lib/authority.mjs';
+
 const STATE = 'state.json';
 const MAX_STATE_BYTES = 256 * 1024;
 
@@ -584,11 +586,23 @@ const invokedDirectly = () => {
 /**
  * What each command writes, and what it refuses first.
  *
- * Two shapes share this table: `deploy` and `budget` take a word from a closed
- * vocabulary, `trigger` takes an item id, which is whatever the tracker calls
- * it — so it validates presence instead of membership (`words: null`). That
- * sentinel leaks into three places below, which is the price of one table over
- * two handlers; a fourth command is where that stops being worth it.
+ * Three shapes share this table: `deploy`, `budget` and `authority` each take a
+ * word from a closed vocabulary; `trigger` takes an item id, which is whatever
+ * the tracker calls it — so it validates presence instead of membership
+ * (`words: null`). That sentinel leaks into three places below, which is the
+ * price of one table over separate handlers.
+ *
+ * RP-340 added the fourth command, `authority`, and that is where the
+ * vocabulary-case assumption stopped being free: `deploy`/`budget` store their
+ * word UPPER case (`stopConditionOf` compares `'REGRESSION'` literally), but
+ * `authority` mirrors `lib/authority.mjs`'s `DECISION_AUTHORITIES`
+ * (`'owner'`/`'delegated'`), which is lower case — storing anything else would
+ * make every reader of `decisionAuthority` fold case before
+ * `parseDecisionAuthority` could read it back. One per-command flag
+ * (`lowerCase`), read by the dispatcher below instead of a hard-coded
+ * `.toUpperCase()`, was enough to keep that difference local to the table; a
+ * fifth command needing a THIRD case convention is where a flag stops being
+ * the right shape.
  */
 const COMMANDS = Object.freeze({
   deploy: {
@@ -628,6 +642,21 @@ const COMMANDS = Object.freeze({
       'particular would either do nothing or arm every gated item at once, and ' +
       'both are worse than refusing.',
   },
+  // RP-340: the run's own authority mode, read back by `delegated-decision.mjs`
+  // before it records anything under its own authority. Lower case, the
+  // opposite direction from `deploy`/`budget` — see the table's own header
+  // comment for why.
+  authority: {
+    words: DECISION_AUTHORITIES,
+    field: 'decisionAuthority',
+    lowerCase: true,
+    valueOf: (word) => word,
+    missingDir:
+      'there is no run whose decision authority this would record. ' +
+      '`delegated-decision.mjs` reads this from the SAME run directory before ' +
+      'resolving anything on its own authority, and a declaration written ' +
+      'nowhere would leave it reading the default (owner).',
+  },
 });
 
 // The CLI the post-deploy step and the budget check call. It exists because both
@@ -664,9 +693,13 @@ if (invokedDirectly()) {
   // meaning, while `REGRESSED` is — it matches nothing in `stopConditionOf` and
   // would sit in the file looking recorded and stopping nothing. An item id is
   // not a vocabulary, so it is taken as given and only checked for presence.
+  // `spec.lowerCase` picks the direction a command's own vocabulary is
+  // canonically spelled in — see the table's own header comment for why
+  // `authority` needs the opposite of `deploy`/`budget`.
   const given = String(word ?? '');
+  const normalise = (value) => (spec.lowerCase ? value.toLowerCase() : value.toUpperCase());
   if (spec.words) {
-    const normalised = given.toUpperCase();
+    const normalised = normalise(given);
     if (!spec.words.includes(normalised)) {
       process.stderr.write(
         `unknown ${command} word: ${word ?? '(none)'}. It must be one of ` +
@@ -680,7 +713,7 @@ if (invokedDirectly()) {
     process.exit(1);
   }
 
-  const argument = spec.words ? given.toUpperCase() : given;
+  const argument = spec.words ? normalise(given) : given;
   const value = spec.valueOf(argument, readState(runDir));
   updateState(runDir, { [spec.field]: value });
   process.stdout.write(`run state: ${spec.field} = ${JSON.stringify(value)}\n`);

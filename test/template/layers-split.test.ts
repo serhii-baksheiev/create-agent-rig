@@ -66,6 +66,11 @@ const EXPECTED_WORKFLOW = new Set([
   // stop (escalation/blocker/pause/terminated), so a second controller can
   // resume from durable, shared evidence alone
   '.claude/scripts/continuation.mjs',
+  // RP-340: the durable evidence a `delegated` authority's resolution of an
+  // owner-gated decision leaves behind — `.rig/decisions/<ticket>.jsonl` —
+  // so a replacement controller can tell an already-made delegated decision
+  // from an unresolved owner one without depending on conversational memory
+  '.claude/scripts/delegated-decision.mjs',
   // the unattended run's own preflight, and the deploy verdict it reads
   '.claude/scripts/preflight.mjs',
   '.claude/scripts/run-state.mjs',

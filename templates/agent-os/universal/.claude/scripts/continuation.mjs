@@ -763,8 +763,13 @@ const truncateField = (value) => {
  * structured path shapes — never the coarser free-text pass below, which is
  * for typed prose, not a value this module or its caller constructs.
  * `undefined`/`null` render `unknown` rather than being guessed or omitted.
+ *
+ * Exported for `delegated-decision.mjs` (RP-340) to reuse for its own
+ * structured fields (`ticket`, `branch`, `head`) — one redaction pipeline,
+ * imported, per `invariants.md`'s "one mechanism, one implementation", never
+ * a second copy of this logic.
  */
-const composeTextField = (value) => {
+export const composeTextField = (value) => {
   if (value === undefined || value === null) return 'unknown';
   const raw = String(value);
   if (hasSecret(raw)) return REDACTED_MARKER;
@@ -784,8 +789,14 @@ const composeFreeTextField = (value) => {
   return scrubFreeText(scrubPaths(collapseNewlines(capRawField(raw))));
 };
 
-/** `composeFreeTextField`, plus the per-field 500-character cap `diagnosis`/`remaining` carry. */
-const composeCappedTextField = (value) => truncateField(composeFreeTextField(value));
+/**
+ * `composeFreeTextField`, plus the per-field 500-character cap
+ * `diagnosis`/`remaining` carry.
+ *
+ * Exported for `delegated-decision.mjs` (RP-340) to reuse for its own free-text
+ * `summary`/`evidence` fields — same reason as {@link composeTextField}.
+ */
+export const composeCappedTextField = (value) => truncateField(composeFreeTextField(value));
 
 /**
  * Cap the WHOLE note — a backstop for a field this module does not cap on
