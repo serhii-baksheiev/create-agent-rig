@@ -404,6 +404,15 @@ describe('authority.killSwitch (RP-343 slice B)', () => {
     const body = await doctorJson();
     expect(body.authority?.killSwitch).toEqual({ wired: 'unknown', armed: 'unknown' });
   });
+
+  // Round 2 (code-reviewer): without a manifest there is no project name to
+  // find this checkout's flag by, so neither mode can be measured — unknown,
+  // never the owner default a measured "no armed run" would give.
+  it('reports execution mode and decision authority unknown when there is no rig manifest to name the flag', async () => {
+    const body = await doctorJson();
+    expect(body.authority?.executionMode).toBe('unknown');
+    expect(body.authority?.decisionAuthority).toBe('unknown');
+  });
 });
 
 describe('authority flag scoping is the inspected repo, not CLAUDE_PROJECT_DIR (RP-343 slice B round 1)', () => {

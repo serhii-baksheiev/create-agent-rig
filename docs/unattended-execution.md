@@ -94,6 +94,9 @@ readable; otherwise it reads `unknown`, never `attended`. Decision authority
 then comes from that run's `state.json`. With no armed run it reads `owner`,
 the contract's default, which is not a measurement of any session:
 › "is owner when no unattended flag is armed — no run declared any authority".
+Without a rig manifest there is no project name to find the flag by, and both
+read `unknown`: › "reports execution mode and decision authority unknown when
+there is no rig manifest to name the flag".
 
 ## Kill switch and stopping
 
