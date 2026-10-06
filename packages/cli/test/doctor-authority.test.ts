@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -6,7 +7,6 @@ import { pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runDoctor } from '../src/commands/doctor.js';
 import { initProject } from '../src/commands/init.js';
-import { agentOsUniversalDir } from '../src/templates.js';
 import type { ProviderProcessResult } from '../src/integrations/spawn.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
@@ -25,11 +25,20 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 // brake file, rather than by calling `writeUnattended` — `writeUnattended`
 // mirrors into BOTH `env.HOME` and the real OS home
 // (`unattended-flag.mjs`'s `homesOf`), and this file must never read or write
-// the real `~/.claude`. `unattendedFlags(env)` is a pure path computation (no
-// I/O), and its first entry is always the `env.HOME`-derived path — the
-// module's own header: "Every checkout-scoped path that arms unattended mode.
-// The env-derived home is first." Writing only to that one path, under this
-// test's own fixture `home`, never touches the real one.
+// the real `~/.claude`. Writing only to the `env.HOME`-derived path, under
+// this test's own fixture `home`, never touches the real one.
+//
+// RP-343 slice B round 1 (independent-oracle invariant,
+// `.claude/rules/invariants.md`): the flag path is no longer derived by
+// importing the GENERATOR's own unsubstituted template copy of
+// `unattended-flag.mjs` (whose basename is the literal, never-substituted
+// `__PROJECT_NAME__-loop-UNATTENDED`, and whose `checkoutId` this file used
+// to scope with the very same `env.CLAUDE_PROJECT_DIR` the production code
+// under test also reads) — doing so made this fixture agree with production's
+// bug by construction. `checkoutIdFor`/`plantedFlagPath` below are a
+// deliberately separate, hand-written reimplementation of that module's own
+// `checkoutId`/`scopedBasename` derivation, and the project name comes from
+// the INSTALLED rig's own manifest, never from the template.
 
 const passingGuardRunner = async (): Promise<ProviderProcessResult> => ({
   status: 'ok',
@@ -79,19 +88,42 @@ function authorityEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
   };
 }
 
-async function loadUnattendedFlagsFn(): Promise<(env: NodeJS.ProcessEnv) => string[]> {
-  const modulePath = path.join(agentOsUniversalDir(), '.claude', 'scripts', 'unattended-flag.mjs');
-  const mod = (await import(pathToFileURL(modulePath).href)) as {
-    unattendedFlags: (env: NodeJS.ProcessEnv) => string[];
-  };
-  return mod.unattendedFlags;
+/**
+ * Deliberately a second copy of the installed `unattended-flag.mjs`'s own
+ * `checkoutId` — `sha256(realpath-or-resolve(checkout)).hex().slice(0, 16)`
+ * — rather than an import of production's own function, so this fixture's
+ * expected flag path can never be satisfied merely by asking production (or
+ * its template copy) what path it would compute
+ * (`.claude/rules/invariants.md`, "the independent-oracle invariant").
+ */
+function checkoutIdFor(dir: string): string {
+  let canonical: string;
+  try {
+    canonical = realpathSync.native(dir);
+  } catch {
+    canonical = path.resolve(dir);
+  }
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 16);
 }
 
-/** Writes `body` straight to the env.HOME-derived candidate path — never the real home. */
-async function plantUnattendedFlag(body: string): Promise<string> {
-  const unattendedFlags = await loadUnattendedFlagsFn();
-  const [flagPath] = unattendedFlags(authorityEnv());
-  if (!flagPath) throw new Error('unattendedFlags produced no candidate path for this fixture');
+/**
+ * The real, substituted flag name the INSTALLED rig at `repo` computes for
+ * itself — `<project>-<checkoutId>-loop-UNATTENDED` — never the generator's
+ * own unsubstituted template copy (`__PROJECT_NAME__-loop-UNATTENDED`),
+ * which is the RP-343 slice B round 1 bug this file pins. `project` always
+ * comes from the INSPECTED repo's (`repo`) own manifest; `forRepo` is the
+ * directory whose checkout identity is hashed — `repo` for every ordinary
+ * case, and a different directory only for the scoping tests below.
+ */
+async function plantedFlagPath(forRepo: string = repo): Promise<string> {
+  const project = await projectName();
+  const id = checkoutIdFor(forRepo);
+  return path.join(home, '.claude', `${project}-${id}-loop-UNATTENDED`);
+}
+
+/** Writes `body` straight to the real-name candidate path — never the real home. */
+async function plantUnattendedFlag(body: string, forRepo: string = repo): Promise<string> {
+  const flagPath = await plantedFlagPath(forRepo);
   await mkdir(path.dirname(flagPath), { recursive: true });
   await writeFile(flagPath, body);
   return flagPath;
@@ -164,6 +196,22 @@ async function snapshotTree(root: string): Promise<string> {
   }
   return `${files.length} files / ${hash.digest('hex')}`;
 }
+
+describe('the planted flag path is the one the installed rig itself writes/reads (RP-343 slice B round 1, independent oracle)', () => {
+  it('readUnattended, read through the INSTALLED copy of unattended-flag.mjs inside the fixture repo, reports on:true for the path this file plants', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const runDir = await makeRunDir(JSON.stringify({ decisionAuthority: 'delegated' }));
+    await plantUnattendedFlag(flagBody(runDir));
+
+    const installedModulePath = path.join(repo, '.claude', 'scripts', 'unattended-flag.mjs');
+    const { readUnattended } = (await import(pathToFileURL(installedModulePath).href)) as {
+      readUnattended: (env: NodeJS.ProcessEnv) => { on: boolean; unreadable?: true };
+    };
+    const state = readUnattended({ ...authorityEnv(), CLAUDE_PROJECT_DIR: repo });
+    expect(state.on).toBe(true);
+    expect(state.unreadable).not.toBe(true);
+  });
+});
 
 describe('doctor --json gains a top-level authority object (RP-343 slice B)', () => {
   it('reports exactly schemaVersion, executionMode, decisionAuthority, publicationAuthority, safetyGates, killSwitch, in that order', async () => {
@@ -261,6 +309,39 @@ describe('authority.decisionAuthority (RP-343 slice B)', () => {
       expect(authority?.decisionAuthority).not.toBe('delegated');
     },
   );
+
+  // RP-343 slice B round 1: an armed flag that cannot be read at all is a
+  // run that tried to declare something, not a run that declared nothing —
+  // it must never collapse to the same `owner` default an entirely absent
+  // flag reports.
+  it('is unknown, never owner, when the armed flag itself is unreadable (corrupt JSON) — not just when its run directory’s state.json is', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await plantUnattendedFlag('{ not json');
+    const authority = (await doctorJson()).authority;
+    expect(authority?.decisionAuthority).toBe('unknown');
+    expect(authority?.decisionAuthority).not.toBe('owner');
+  });
+
+  // RP-343 slice B round 1: `runDir` is resolved as a root passed straight
+  // to a bounded file read — a relative value must never be resolved
+  // against whatever directory the doctor process happens to be running
+  // from.
+  it('is unknown when the armed flag’s runDir is a relative path — never resolved against the doctor’s own cwd', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await plantUnattendedFlag(
+      `${JSON.stringify({ item: 'rp343b-fixture', runDir: 'runs/x', allow: [] })}\n`,
+    );
+    expect((await doctorJson()).authority?.decisionAuthority).toBe('unknown');
+  });
+
+  // RP-343 slice B round 1: a flag with no `runDir` field at all names no
+  // run to read authority from — this must read the same as a flag whose
+  // run directory carries no state.json, not as the no-flag-armed default.
+  it('is unknown when the armed flag carries no runDir field at all', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await plantUnattendedFlag(`${JSON.stringify({ item: 'rp343b-fixture', allow: [] })}\n`);
+    expect((await doctorJson()).authority?.decisionAuthority).toBe('unknown');
+  });
 });
 
 describe('authority.publicationAuthority (RP-343 slice B)', () => {
@@ -322,6 +403,36 @@ describe('authority.killSwitch (RP-343 slice B)', () => {
   it('reports wired unknown and armed unknown when there is no rig manifest at all', async () => {
     const body = await doctorJson();
     expect(body.authority?.killSwitch).toEqual({ wired: 'unknown', armed: 'unknown' });
+  });
+});
+
+describe('authority flag scoping is the inspected repo, not CLAUDE_PROJECT_DIR (RP-343 slice B round 1)', () => {
+  it('finds the flag armed for the inspected repo even when CLAUDE_PROJECT_DIR names a different directory', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const otherDir = await mkdtemp(path.join(tmpdir(), 'caf-doctor-authority-other-'));
+    try {
+      const runDir = await makeRunDir(JSON.stringify({ decisionAuthority: 'delegated' }));
+      await plantUnattendedFlag(flagBody(runDir));
+      const body = await doctorJson({ CLAUDE_PROJECT_DIR: otherDir });
+      expect(body.authority?.executionMode).toBe('unattended');
+      expect(body.authority?.decisionAuthority).toBe('delegated');
+    } finally {
+      await removeFixture(otherDir);
+    }
+  });
+
+  it('reports unknown/owner when the only armed flag is scoped to a different directory than the inspected repo', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const otherDir = await mkdtemp(path.join(tmpdir(), 'caf-doctor-authority-other-'));
+    try {
+      const runDir = await makeRunDir(JSON.stringify({ decisionAuthority: 'delegated' }));
+      await plantUnattendedFlag(flagBody(runDir), otherDir);
+      const body = await doctorJson();
+      expect(body.authority?.executionMode).toBe('unknown');
+      expect(body.authority?.decisionAuthority).toBe('owner');
+    } finally {
+      await removeFixture(otherDir);
+    }
   });
 });
 
