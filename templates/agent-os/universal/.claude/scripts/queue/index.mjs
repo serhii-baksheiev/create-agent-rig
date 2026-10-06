@@ -26,6 +26,7 @@ import {
   staleInProgressOf,
   stopConditionOf,
 } from './core.mjs';
+import { RUN_STOP_CLASS } from './stop-class.mjs';
 import { changedSinceOf, headShaOf } from './as-of.mjs';
 // One resolver, imported rather than re-derived: writer and reader disagreeing
 // about which checkout they are in is the whole of the worktree defect. It lives
@@ -569,6 +570,7 @@ if (invokedDirectly()) {
       kind: 'run-state-unreadable',
       success: false,
       why: `${error.message}; the run may contain a stop condition, so selection is refused.`,
+      stopClass: RUN_STOP_CLASS['run-state-unreadable'],
     };
     process.stdout.write(
       args.json

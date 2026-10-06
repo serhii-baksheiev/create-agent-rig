@@ -60,6 +60,11 @@
 // and the adapter maps it onto a named field. The rule is: a label is never
 // read in place of a source that says the same thing better.
 
+// RP-341: the stop-class each run-level stop below carries. `core.mjs` stays
+// pure — `stop-class.mjs` imports only `../lib/authority.mjs` and is itself
+// read-only here.
+import { RUN_STOP_CLASS } from './stop-class.mjs';
+
 /**
  * The operations every adapter provides. A second tracker is an adapter, not a
  * rewrite — and this list is what "an adapter" means, mechanically.
@@ -1162,6 +1167,7 @@ export const stopConditionOf = ({
     return {
       kind: 'queue-unreadable',
       success: false,
+      stopClass: RUN_STOP_CLASS['queue-unreadable'],
       why:
         'the queue could not be read. Stop and say so — never fall back to memory ' +
         'or to a stale copy for a queue; a remembered queue is how a loop works on ' +
@@ -1172,6 +1178,7 @@ export const stopConditionOf = ({
     return {
       kind: 'runtime-regression',
       success: false,
+      stopClass: RUN_STOP_CLASS['runtime-regression'],
       why:
         'the deployed surface came back unhealthy. Deploy the revert first, ' +
         'diagnose second, and start no new work on top of it — a regression ' +
@@ -1182,6 +1189,7 @@ export const stopConditionOf = ({
     return {
       kind: 'kill-switch',
       success: true,
+      stopClass: RUN_STOP_CLASS['kill-switch'],
       why:
         'the kill switch is set. Stop at the current task boundary: finish it, ' +
         'push the branch, open the PR, write the journal entry, exit. Losing ' +
@@ -1192,6 +1200,7 @@ export const stopConditionOf = ({
     return {
       kind: 'revalidation-hold',
       success: false,
+      stopClass: RUN_STOP_CLASS['revalidation-hold'],
       why:
         `${revalidationHold.ticket} stopped at ${revalidationHold.checkpoint}: ` +
         `${revalidationHold.result} (${revalidationHold.detectionId}). Resolve that ` +
@@ -1202,6 +1211,7 @@ export const stopConditionOf = ({
     return {
       kind: 'repeated-escalation',
       success: false,
+      stopClass: RUN_STOP_CLASS['repeated-escalation'],
       why:
         'two tasks in a row hit a wall, so the third likely will too — the wall is ' +
         'systemic rather than task-local. This is the main guard against grinding a ' +
@@ -1212,6 +1222,7 @@ export const stopConditionOf = ({
     return {
       kind: 'budget',
       success: true,
+      stopClass: RUN_STOP_CLASS.budget,
       why:
         'the declared budget cannot plausibly fit another task. Stop now rather ' +
         'than starting something that will be abandoned half-done.',
@@ -1223,6 +1234,7 @@ export const stopConditionOf = ({
       return {
         kind: 'nothing-selectable',
         success: true,
+        stopClass: null,
         why:
           `${held.length} item(s) are takeable work held back right now — ` +
           `${heldBreakdown(held)}.${parkedNote(parked)}${scopeNote(parked)} This is NOT an empty queue, ` +
@@ -1237,6 +1249,7 @@ export const stopConditionOf = ({
       return {
         kind: 'queue-empty',
         success: true,
+        stopClass: null,
         why:
           `no item is selectable within the configured scope.${scopeNote(parked)}` +
           `${parkedNote(parked)} This is a legitimate end of session for this scope; ` +
@@ -1246,6 +1259,7 @@ export const stopConditionOf = ({
     return {
       kind: 'queue-empty',
       success: true,
+      stopClass: null,
       why:
         'no item survives the filters and nothing is merely held back — the queue ' +
         `is genuinely out of work.${parkedNote(parked)}${scopeNote(parked)} This is a legitimate end of ` +
