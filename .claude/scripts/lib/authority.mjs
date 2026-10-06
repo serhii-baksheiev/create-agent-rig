@@ -36,7 +36,7 @@ export const DELEGABLE_DECISIONS = Object.freeze([
   ),
   decision(
     'scope-correction',
-    'Narrow, split or re-scope an item, filing what is left as a tracked follow-up.',
+    'Narrow or split an item within its stated intent, filing what is left as a tracked follow-up.',
   ),
   decision('work-sequencing', 'Choose which eligible item to take next and in what order.'),
   decision(
@@ -53,7 +53,7 @@ export const DELEGABLE_DECISIONS = Object.freeze([
   ),
   decision(
     'elevated-change-acceptance',
-    'Accept a Tier-2 change to the repository that went through the full review and check flow.',
+    'Accept a Tier-2 change confined to the repository — no new dependency or outbound integration, no public API, auth, schema or data change — that went through the full review and check flow.',
   ),
   decision('merge', 'Merge a change whose required reviews and required checks passed for its exact head.'),
   decision(

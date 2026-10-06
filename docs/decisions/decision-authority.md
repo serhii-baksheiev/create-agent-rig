@@ -43,8 +43,8 @@ posture contract beside it.
   as the owner and builds the posture object from that constant, ignoring
   any value a caller passes for it.
 
-The machine-readable form that loop, preflight and doctor read is the
-object `authorityPosture` returns. Its shape is pinned in the generator's
+The machine-readable form of the contract is the object `authorityPosture`
+returns. Its shape is pinned in the generator's
 `test/template/authority.test.ts` (absent in a generated rig) › "is
 deterministic — two calls with equal input serialise byte-identically to
 the exact expected string".
