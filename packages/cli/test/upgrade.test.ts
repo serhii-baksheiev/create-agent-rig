@@ -2147,11 +2147,15 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // (`.claude/scripts/delegated-decision.mjs`) to the WORKFLOW layer, so only
   // the full-install figure moves again (115→116); the core-only figure
   // stays 68 because that file is workflow-only.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 116 manifest entries to 68', async () => {
+  // RP-312 slice (a) extracts the item-owned record append/read mechanism
+  // shared by `delegated-decision.mjs` into
+  // `.claude/scripts/lib/item-records.mjs`, also WORKFLOW-only, so only the
+  // full-install figure moves again (116→117); the core-only figure stays 68.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 117 manifest entries to 68', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(116);
+    expect(Object.keys(before!.files).length).toBe(117);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });

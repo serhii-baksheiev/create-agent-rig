@@ -67,7 +67,8 @@
 // writes NOTHING to decisions.jsonl" and › "a refused call journals nothing
 // into the run directory either".
 //
-// `record` never follows a symlink out of the project. `.rig` and
+// `record` never follows a symlink out of the project; the mechanism is
+// `lib/item-records.mjs`, shared with every item record kind. `.rig` and
 // `.rig/decisions` are each `lstat`-checked (refusing a symlink or a
 // non-directory) before use, created one path segment at a time when
 // missing, and the resulting directory's realpath is checked against
@@ -110,8 +111,8 @@
 // --- Limits -------------------------------------------------------------
 //
 // - A ticket id is accepted only by SHAPE: 1-64 characters, starting with a
-//   letter or digit, the rest letters/digits/`_`/`-` (`decisionsPathFor`'s
-//   own `SAFE_TICKET` pattern) — this value becomes a FILENAME, not merely
+//   letter or digit, the rest letters/digits/`_`/`-` (`lib/item-records.mjs`'s
+//   `SAFE_TICKET` pattern) — this value becomes a FILENAME, not merely
 //   an interpolated string, so a path separator or a `..` segment is refused
 //   outright rather than scrubbed. On top of the shape check,
 //   `decisionsPathFor` also refuses a Windows reserved device name (`CON`,
@@ -182,17 +183,7 @@
 // See `test/template/delegated-decision.test.ts` (absent in a generated rig)
 // for every case above, by name, next to the assertion that proves it.
 import { execFileSync } from 'node:child_process';
-import {
-  closeSync,
-  constants,
-  fstatSync,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  realpathSync,
-  writeSync,
-} from 'node:fs';
+import { realpathSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -202,50 +193,25 @@ import { readState } from './run-state.mjs';
 import { DECISION_AUTHORITIES, mayResolve, parseDecisionAuthority } from './lib/authority.mjs';
 import { recordEvent } from './run-journal.mjs';
 import { ITEM_STOPS, resolutionOf } from './queue/stop-class.mjs';
+import {
+  appendItemRecordLine,
+  ensureItemRecordDir,
+  itemRecordPathFor,
+  readItemRecordFile,
+} from './lib/item-records.mjs';
 
-const DECISIONS_ROOT = ['.rig', 'decisions'];
 const MAX_DECISIONS_BYTES = 256 * 1024;
-
-/** 1-64 characters; starts with a letter or digit; the rest letters, digits, `_` or `-`. */
-const SAFE_TICKET = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
-
-/** Windows reserved device names — never safe as a filename stem on any platform here. */
-const WINDOWS_DEVICE_NAME = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
 
 /** 1-64 characters; starts with a letter or digit; the rest letters, digits, `_`, `-` or `.`. */
 const RELEASE_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /**
- * `<projectRoot>/.rig/decisions/<ticket>.jsonl`. Throws when `ticket` is not
- * a string matching {@link SAFE_TICKET} — this value becomes a filename, so
- * a path separator or a `..` segment is refused outright rather than
- * scrubbed, unlike the free-text fields below — or when it is a Windows
- * reserved device name, or when it is credential-shaped
- * (`composeTextField(ticket) !== ticket` — the same whole-field secret check
- * every other structured field in this module goes through). See the module
- * header's "Limits" section for the exact tests pinning each refusal.
+ * `<projectRoot>/.rig/decisions/<ticket>.jsonl` — `lib/item-records.mjs`'s
+ * `itemRecordPathFor` for the `decisions` kind, which owns every refusal of an
+ * unsafe ticket id.
  */
-export const decisionsPathFor = (projectRoot, ticket) => {
-  if (typeof ticket !== 'string' || !SAFE_TICKET.test(ticket)) {
-    throw new Error(
-      `delegated-decision: ${JSON.stringify(ticket)} is not a safe ticket id — expected 1-64 ` +
-        'characters, starting with a letter or digit, and only letters, digits, "_" or "-" after that.',
-    );
-  }
-  if (WINDOWS_DEVICE_NAME.test(ticket)) {
-    throw new Error(
-      `delegated-decision: ${JSON.stringify(ticket)} is a Windows reserved device name and unsafe ` +
-        'to use as a ticket id / filename stem.',
-    );
-  }
-  if (composeTextField(ticket) !== ticket) {
-    throw new Error(
-      'delegated-decision: this ticket id looks like a credential and will not be used as a ' +
-        'filename or stored anywhere.',
-    );
-  }
-  return join(projectRoot, ...DECISIONS_ROOT, `${ticket}.jsonl`);
-};
+export const decisionsPathFor = (projectRoot, ticket) =>
+  itemRecordPathFor(projectRoot, 'decisions', ticket);
 
 const REQUIRED_KEYS = Object.freeze([
   'schemaVersion',
@@ -338,161 +304,6 @@ export const parseDecisions = (text, { ticket } = {}) => {
   }
 
   return { ok: true, records: parsed };
-};
-
-// --- filesystem safety: never follow a symlink out of the project --------
-
-/**
- * One path segment under `parentDir`: refuse a symlink or a non-directory,
- * create it (one segment, non-recursive — `parentDir` must already exist)
- * when missing, then re-`lstat` the result before trusting it. Mirrors
- * `run-state.mjs`'s `readStateForSelection` lstat-before-trust posture,
- * applied to a directory rather than a file.
- */
-const ensureDirSegment = (parentDir, name) => {
-  const target = join(parentDir, name);
-  let stat;
-  try {
-    stat = lstatSync(target);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      throw new Error(`${target} is unreadable — ${error.message}`, { cause: error });
-    }
-    mkdirSync(target);
-    stat = lstatSync(target);
-  }
-  if (stat.isSymbolicLink()) {
-    throw new Error(`${target} is a symlink; refusing to follow it out of the project.`);
-  }
-  if (!stat.isDirectory()) {
-    throw new Error(`${target} is not a directory.`);
-  }
-  return target;
-};
-
-/**
- * `<projectRoot>/.rig/decisions`, safe to write into: neither `.rig` nor
- * `.rig/decisions` is a symlink, both are directories, and the resulting
- * directory's REALPATH is exactly `<realpath of projectRoot>/.rig/decisions`
- * — closing the gap a bind mount or a race between the lstat checks above
- * and this one could otherwise leave open.
- */
-const ensureDecisionsDir = (projectRoot) => {
-  const rigDir = ensureDirSegment(projectRoot, '.rig');
-  const decisionsDir = ensureDirSegment(rigDir, 'decisions');
-  const expected = join(realpathSync(projectRoot), '.rig', 'decisions');
-  if (realpathSync(decisionsDir) !== expected) {
-    throw new Error(`${decisionsDir} resolves outside the project root; refusing to write.`);
-  }
-  return decisionsDir;
-};
-
-/**
- * Append one already-serialised line to the decisions file at `decisionsPath`,
- * never following a link out of the project — see the comments inside.
- */
-const appendDecisionRecord = (decisionsPath, line) => {
-  // The path is checked BEFORE any open, because `O_NOFOLLOW` does not exist
-  // on Windows: an open-flag defence alone would follow a link there. A path
-  // that does not exist yet is created with `O_EXCL`, which refuses anything
-  // already at the name on every platform; an existing one must be a regular
-  // file with exactly one name, and the opened handle must be that same file.
-  let pathStat = null;
-  try {
-    pathStat = lstatSync(decisionsPath);
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      throw new Error(`${decisionsPath} is unreadable — ${error.message}`, { cause: error });
-    }
-  }
-  if (pathStat?.isSymbolicLink()) {
-    throw new Error(`${decisionsPath} is a symlink; refusing to follow it out of the project.`);
-  }
-  if (pathStat && (!pathStat.isFile() || pathStat.nlink !== 1)) {
-    throw new Error(
-      `${decisionsPath} is not a regular file with a single name; refusing to write.`,
-    );
-  }
-  const flags =
-    constants.O_WRONLY |
-    constants.O_APPEND |
-    (pathStat ? 0 : constants.O_CREAT | constants.O_EXCL) |
-    // Undefined on Windows; the lstat above and the identity check below are
-    // what hold there.
-    (constants.O_NOFOLLOW ?? 0);
-  let fd;
-  try {
-    fd = openSync(decisionsPath, flags, 0o644);
-  } catch (error) {
-    if (error?.code === 'ELOOP' || error?.code === 'EEXIST') {
-      throw new Error(`${decisionsPath} changed under the check; refusing to write.`, {
-        cause: error,
-      });
-    }
-    throw new Error(`${decisionsPath} is unreadable — ${error.message}`, { cause: error });
-  }
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile() || stat.nlink !== 1) {
-      throw new Error(`${decisionsPath} is not a regular file with a single name; refusing to write.`);
-    }
-    if (pathStat && (stat.dev !== pathStat.dev || stat.ino !== pathStat.ino)) {
-      throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
-    }
-    writeSync(fd, line);
-  } finally {
-    closeSync(fd);
-  }
-};
-
-/**
- * Read the decisions file at `decisionsPath` for `list`, never following a
- * symlink and never blocking on a non-regular file. `{ exists: false }` for
- * an absent file — the honest "no decision made yet" answer. Mirrors
- * `run-state.mjs`'s `readStateForSelection` lstat-before-open posture: the
- * path is `lstat`-checked FIRST (refusing a symlink or anything that is not
- * a regular file — a FIFO included, so a FIFO with no writer is refused
- * before any `open()` and can never block inside one), the file is then
- * opened `O_NOFOLLOW`, and the open handle is `fstat`-checked again, with
- * the 256 KiB bound, before any byte is read.
- */
-const readDecisionsFile = (decisionsPath) => {
-  let pathStat;
-  try {
-    pathStat = lstatSync(decisionsPath);
-  } catch (error) {
-    if (error?.code === 'ENOENT') return { exists: false };
-    throw new Error(error.message, { cause: error });
-  }
-  if (pathStat.isSymbolicLink()) {
-    throw new Error('is a symlink; refusing to follow it.');
-  }
-  if (!pathStat.isFile()) {
-    throw new Error('is not a regular file.');
-  }
-
-  let fd;
-  try {
-    fd = openSync(decisionsPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-  } catch (error) {
-    throw new Error(error.message, { cause: error });
-  }
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) {
-      throw new Error('is not a regular file.');
-    }
-    // Checked on the OPEN HANDLE, before any read, never partially: see the
-    // module header's "Limits" section.
-    if (stat.size > MAX_DECISIONS_BYTES) {
-      throw new Error(
-        `exceeds ${MAX_DECISIONS_BYTES} bytes and is refused whole rather than partially read.`,
-      );
-    }
-    return { exists: true, text: readFileSync(fd, 'utf8') };
-  } finally {
-    closeSync(fd);
-  }
 };
 
 // --- CLI -----------------------------------------------------------------
@@ -693,8 +504,8 @@ const runRecord = async (argv, cwd) => {
   // Only now does the durable evidence file get touched — never following a
   // symlink out of the project (see the module header's "Limits" section).
   try {
-    ensureDecisionsDir(projectRoot);
-    appendDecisionRecord(decisionsPath, `${JSON.stringify(record)}\n`);
+    ensureItemRecordDir(projectRoot, 'decisions');
+    appendItemRecordLine(decisionsPath, `${JSON.stringify(record)}\n`);
   } catch (error) {
     return refuse(
       'delegated-decision: the decision above was journalled but the evidence was NOT written — ' +
@@ -762,7 +573,7 @@ const runList = (argv, cwd) => {
 
   let fileResult;
   try {
-    fileResult = readDecisionsFile(decisionsPath);
+    fileResult = readItemRecordFile(decisionsPath, { maxBytes: MAX_DECISIONS_BYTES });
   } catch (error) {
     process.stderr.write(`delegated-decision: ${decisionsPath} is unreadable — ${error.message}\n`);
     process.exit(2);
