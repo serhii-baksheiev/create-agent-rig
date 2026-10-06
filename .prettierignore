@@ -20,3 +20,7 @@ AGENTS.md
 # own next to the second yet, so the whole directory is the synced payload.
 journal/README.md
 docs/decisions/
+# written by `create-agent-rig setup` (RP-418 dogfood): its formatting is the
+# CLI's own serialisation, and reformatting it here would be undone by the
+# next setup run
+.rig/integrations.json
