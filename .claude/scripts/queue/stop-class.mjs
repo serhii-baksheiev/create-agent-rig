@@ -29,15 +29,20 @@ export const ITEM_STOPS = Object.freeze([
   itemStop('three-strikes', 'work-blocked'),
   itemStop('attempt-budget', 'work-blocked'),
   itemStop('blocking-verdict', 'work-blocked'),
-  itemStop('gate-round-cap', 'decision-needed', 'extra-gate-round'),
-  itemStop('premise-false', 'decision-needed', 'scope-correction'),
+  // No delegable decision yet: pr-ship's round counter has no delegated
+  // override (RP-432), and check-premises leaves re-aiming a false premise
+  // to a human — RP-342 round 1.
+  itemStop('gate-round-cap', 'decision-needed'),
+  itemStop('premise-false', 'decision-needed'),
   // A declared elevated path that is none of the Tier-2 change kinds is
   // delegable; an unplanned Tier-2 change kind (autonomy.md, "Surprise
   // scope") names no delegable decision, so it stays the owner's.
   itemStop('elevated-path-scope', 'decision-needed', 'elevated-change-acceptance'),
   itemStop('surprise-scope', 'decision-needed'),
   itemStop('invariant-conflict', 'decision-needed'),
-  itemStop('external-blocker', 'hard-external-boundary'),
+  // One item waiting on something outside the run parks; independent work
+  // continues. A wall that stops the whole run is a run-level stop instead.
+  itemStop('external-blocker', 'work-blocked'),
 ]);
 
 /** Every run-level stop `core.mjs`'s `stopConditionOf` can return, except the two clean ends, mapped to its class. */

@@ -86,9 +86,9 @@ record, so a recorded decision bypasses none of them.
 
 ## Consequences
 
-How preflight and doctor report the posture, and how the loop starts and
-resumes under a declared authority, are separate pieces of work. Each consumes
-this module instead of restating it.
+Preflight and doctor report the posture, and the loop declares the authority
+at launch and resolves each stop through it. Each of them consumes this
+module instead of restating it.
 
 Adding, renaming or moving a decision kind between the two lists is a
 contract change. It edits one file, and the test that pins the lists has to
