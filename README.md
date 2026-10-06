@@ -245,9 +245,9 @@ adopted with `setup add spec-kit --adopt`.
 **Probity is owned by Probity.** Install `@nizos/probity` 1.10.1 as a dev
 dependency yourself; Rig never installs it, and `setup` and `doctor` never run
 it. `setup add probity` writes a `probity.config.mjs` only when you have none
-(use `--adopt` to keep yours). Rig's `probity-gate` hook then starts the
-project's Probity launcher for each write the config covers, and Probity
-decides whether it follows test-first. `doctor` reports the wiring but cannot
+(use `--adopt` to keep yours). Once Probity is selected, Rig's
+`probity-gate` hook starts the project's Probity launcher for each write, and
+Probity's config decides which writes must follow test-first. `doctor` reports the wiring but cannot
 see whether Probity is answering.
 
 **Plugins are not managed.** Rig 0.10.0 has no plugin manager or marketplace.

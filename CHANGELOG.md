@@ -60,9 +60,6 @@ the 1.2 contract is removed or renamed.
   enforcement was not observed for this release. Probity 1.10.1 bundles Codex
   CLI 0.154, which rejected a current configured model in discovery; a
   package-manager override of `@openai/codex` to 0.160 cleared it (RP-399).
-- Each gated write is sent by Probity, with recent session events and the
-  file's content, to the model provider the agent already uses; Probity adds
-  tokens and a few seconds per gated write (RP-417, RP-418).
 
 ### Generator repository (not a rig-facing change)
 
