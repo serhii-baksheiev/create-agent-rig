@@ -857,12 +857,8 @@ describe('editFragments: a plain POSIX absolute path with a huge component count
  * RP-366 — in the `*** Move to:` flush (`edit-input.mjs`, the second
  * `repositoryPatchPath` call just below the `current.moveTo` check), the
  * destination resolves first and then the move SOURCE is resolved a second
- * time to produce the removal fragment for the vacated path. When that
- * second resolution returns `null`, the pushed refusal reuses the
- * DESTINATION wording verbatim — "patch destination is outside the
- * repository or cannot be resolved safely" — even though the destination
- * already resolved fine and it is the source that failed. The fragment this
- * names is the `removes: true` one pushed for the source path, not the
+ * time to produce the removal fragment for the vacated path. The fragment
+ * this names is the `removes: true` one pushed for the source path, not the
  * earlier content fragment pushed under the destination's own `filePath`
  * (that one is worded correctly already, via `movedFragment`'s own "move
  * source is outside the repository root").
