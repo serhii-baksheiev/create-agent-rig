@@ -103,6 +103,7 @@ describe('the root manifest is publish-complete', () => {
     expect(first?.[2]).toMatch(/RP-415/);
     expect(first?.[2]).toMatch(/RP-416/);
     expect(first?.[2]).toMatch(/RP-417/);
+    expect(first?.[2]).toMatch(/RP-418/);
     expect(first?.[2]).toMatch(/@nizos\/probity/);
     // 🔴 the numbering call: additive and opt-in on the 1.2 line — a MINOR.
     expect(first?.[2]).toMatch(/is additive on the 1\.2 line/i);

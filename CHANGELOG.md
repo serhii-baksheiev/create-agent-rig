@@ -22,8 +22,9 @@ third, recorded the same way.
 opt-in TDD-enforcement provider for Claude Code and Codex, behind a thin
 Rig-owned boundary: Rig owns the setup, the hook that hands write actions to
 Probity, the diagnostics and owned-only removal; Probity owns the methodology
-and every allow/deny decision. Nothing changes for a project that does not
-opt in. Nothing in the 1.2 contract is removed or renamed.
+and every allow/deny decision. Every rig gains the `probity-gate` hook in its
+write-tool wiring; until Probity is selected it makes no decision. Nothing in
+the 1.2 contract is removed or renamed.
 
 ### Added
 
@@ -31,9 +32,9 @@ opt in. Nothing in the 1.2 contract is removed or renamed.
   `--dry-run`, `--yes`, `--adopt`) records the integration in
   `.rig/integrations.json` at the pinned version 1.10.1 and, when the project
   has no Probity config yet, writes a `probity.config.mjs` that scopes
-  `enforceTdd()` to `src/**`, `lib/**`, `test/**` and `tests/**`. Rig never
-  installs the package or runs Probity; the plan names the dev-dependency
-  install as a manual step. An existing config is used only with `--adopt`
+  `enforceTdd()` to `src/**`, `lib/**`, `test/**` and `tests/**`. `setup`
+  never installs the package or runs Probity; the plan names the
+  dev-dependency install as a manual step. An existing config is used only with `--adopt`
   and is never rewritten. `setup remove probity` deletes the generated config
   only while it is still Rig's own bytes; an edited or adopted config is kept
   and named in the result (RP-416).
@@ -58,10 +59,10 @@ opt in. Nothing in the 1.2 contract is removed or renamed.
 - Codex is wired and covered by tests with a stand-in launcher; live Codex
   enforcement was not observed for this release. Probity 1.10.1 bundles Codex
   CLI 0.154, which rejected a current configured model in discovery; a
-  package-manager override of `@openai/codex` to 0.160 cleared it.
+  package-manager override of `@openai/codex` to 0.160 cleared it (RP-399).
 - Each gated write is sent by Probity, with recent session events and the
   file's content, to the model provider the agent already uses; Probity adds
-  tokens and a few seconds per gated write.
+  tokens and a few seconds per gated write (RP-417, RP-418).
 
 ### Generator repository (not a rig-facing change)
 

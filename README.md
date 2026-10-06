@@ -243,12 +243,12 @@ deletes them. The first setup needs a clean working tree and never re-runs
 adopted with `setup add spec-kit --adopt`.
 
 **Probity is owned by Probity.** Install `@nizos/probity` 1.10.1 as a dev
-dependency yourself; Rig never installs or runs it. `setup add probity` writes
-a `probity.config.mjs` only when you have none (use `--adopt` to keep yours),
-and Rig's `probity-gate` hook then hands each write to Probity, which decides
-whether it follows test-first. Each such check is a call to your agent's own
-model. `doctor` reports the wiring but cannot see whether Probity is
-answering.
+dependency yourself; Rig never installs it, and `setup` and `doctor` never run
+it. `setup add probity` writes a `probity.config.mjs` only when you have none
+(use `--adopt` to keep yours). Rig's `probity-gate` hook then starts the
+project's Probity launcher for each write the config covers, and Probity
+decides whether it follows test-first. `doctor` reports the wiring but cannot
+see whether Probity is answering.
 
 **Plugins are not managed.** Rig 0.10.0 has no plugin manager or marketplace.
 Claude Code and Codex plugins can be used alongside Rig as usual.
