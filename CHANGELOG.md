@@ -20,9 +20,8 @@ third, recorded the same way.
 **1.5.0 is additive on the 1.4 line.** It separates two questions a run used
 to answer with one word: whether anyone is watching (execution mode), and who
 may decide when the rules route a choice to a human (decision authority).
-Authority is declared once per run and read by every surface, instead of
-living in a prompt. The default is the owner, so a rig that declares nothing
-behaves exactly as 1.4.0 did. Publication stays with the owner under every
+Authority is declared once per run instead of living in a prompt. An absent
+declaration reads as owner. Publication stays with the owner under every
 authority.
 [`docs/decisions/decision-authority.md`](docs/decisions/decision-authority.md)
 records the decision and its consequences.
@@ -38,9 +37,9 @@ records the decision and its consequences.
   - `run-state.mjs authority <owner|delegated>` declares the run's authority.
   - `delegated-decision.mjs record` refuses unless the run is delegated and
     the decision is delegable. An accepted decision is journaled to the run
-    and appended to `.rig/decisions/<ticket>.jsonl`, which is committed with
-    the branch, so a later session or another clone can read it with
-    `delegated-decision.mjs list` (RP-340).
+    and appended to `.rig/decisions/<ticket>.jsonl`, which the `loop` skill
+    commits with the branch, so a later session or another clone can read it
+    with `delegated-decision.mjs list` (RP-340).
 - **Stop classes** (opt-in workflow layer). `.claude/scripts/queue/stop-class.mjs`
   separates a stop that needs a decision from one where the work is blocked,
   a systemic wall, and a hard external boundary. `queue/index.mjs next`
@@ -54,11 +53,12 @@ records the decision and its consequences.
   continues where the contract allows it, escalates the item otherwise, and
   on resume applies the decisions already recorded for the item instead of
   asking again (RP-342).
-- **Preflight and `create-agent-rig doctor` report the authority posture.**
-  Preflight takes `--unattended` and `--decision-authority <owner|delegated>`
-  and adds an `authority` object to `--json`. Doctor's `authority` section is
-  read from observed state — the unattended flag and the run it names — and
-  never changes doctor's status or exit code (RP-343).
+- **Preflight reports the authority posture** (opt-in workflow layer). It
+  takes `--unattended` and `--decision-authority <owner|delegated>` and adds
+  an `authority` object to `--json` (RP-343).
+- **`create-agent-rig doctor` reports the authority posture.** Its
+  `authority` section is read from observed state — the unattended flag and
+  the run it names — and never changes doctor's status or exit code (RP-343).
 
 ### Verification and limits
 
