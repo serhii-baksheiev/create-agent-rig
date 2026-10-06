@@ -274,13 +274,8 @@ function windowsHookCommand(command) {
         // git's own "fatal: not a git repository" stays out of the block
         // reason; the wrapper reports the failure in its own words below.
         '$gitInfo.RedirectStandardError = $true',
-        // PR #353 round 3 SECURITY blocker (code-reviewer, security-scanner):
-        // cmd.exe resolves a bare command name (`git`) in the CURRENT
-        // DIRECTORY first, ahead of PATH, unless this is set — so a text
-        // `git.cmd` planted at the wrapper's own cwd could replace `git`
-        // itself and, through it, `$repoRoot`. This governs the CHILD
-        // cmd.exe's own environment, so it is set on ProcessStartInfo,
-        // before that child starts.
+        // PR #353 round 3: kept on the git child's environment; git itself is
+        // started by the absolute path Get-Command returned above.
         "$gitInfo.EnvironmentVariables['NoDefaultCurrentDirectoryInExePath'] = '1'",
         '$gitProc = [System.Diagnostics.Process]::Start($gitInfo)',
         '$gitOk = $gitProc.WaitForExit($gitBoundMs)',

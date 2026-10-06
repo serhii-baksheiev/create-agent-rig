@@ -346,6 +346,9 @@ describe('the Windows Codex wrapper resists a hijacked $repoRoot and a faulted s
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
         expect(oversized.code, oversized.stderr).toBe(2);
+        // RP-321: the wrapper's own failures also exit 2 now, so the 2 above
+        // is the guard's only if the wrapper reported nothing of its own.
+        expect(oversized.stderr).not.toContain('codex wrapper:');
       } finally {
         await removeFixture(largeScratch);
       }
