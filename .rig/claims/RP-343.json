@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-343",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "0cfd433d1292ec5939af6f23231f643cfe6c3154b6d609270c8dfc1ea96f5c5b",
+      "targetSha": "f30990dae27210ced03611a090c0ee91030664a9"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "5028564794a1bde56cb7e8e1cdfe7d58405efdfc6a2c282ee6b8cc274d2c885c",
+      "count": 1
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  }
+}
