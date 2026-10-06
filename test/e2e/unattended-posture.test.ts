@@ -110,6 +110,7 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
     let pre = await preflight();
     expect(pre.verdict).toBe('STOP');
     expect(pre.checks.detectionContract?.outcome).toBe('fail');
+    expect(pre.checks.detectionContract?.id).toBe('detection-contract-invalid');
     let doc = await doctor();
     expect(doctorOutcome(doc, 'detection-contract-invalid')).toBe('fail');
 
@@ -117,6 +118,7 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
     pre = await preflight();
     expect(pre.verdict).toBe('STOP');
     expect(pre.checks.detectionContract?.outcome).toBe('fail');
+    expect(pre.checks.detectionContract?.id).toBe('detection-contract-invalid');
     doc = await doctor();
     expect(doctorOutcome(doc, 'detection-contract-invalid')).toBe('fail');
   }, 120_000);
@@ -172,6 +174,13 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
     expect(doctorOutcome(doc, 'codex-hook-trust')).toBe('unknown');
   }, 120_000);
 
+  it('changed Codex hook wiring is reported by doctor too', async () => {
+    await writeFile(path.join(repo, '.codex', 'hooks.json'), '{}\n');
+
+    const doc = await doctor();
+    expect(doctorOutcome(doc, 'hook-wiring-missing')).toBe('fail');
+  }, 120_000);
+
   it('unobservable native state is never reported as verified', async () => {
     const NOT_OBSERVABLE = [
       'harness-hooks-loaded',
@@ -185,6 +194,10 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
     }
 
     const result = await run([path.join(repo, '.claude', 'scripts', 'preflight.mjs'), '--json']);
+    // Parse first, so a crash with empty stdout cannot pass the "ids are
+    // absent" checks below by vacuously containing none of them.
+    const parsedPre = JSON.parse(result.stdout) as Preflight;
+    expect(typeof parsedPre.verdict).toBe('string');
     for (const id of NOT_OBSERVABLE) {
       expect(result.stdout).not.toContain(id);
     }
@@ -198,14 +211,16 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
       tool_input: { file_path: path.join(repo, '.claude', 'rules', 'x.md'), content: 'x' },
       cwd: repo,
     };
-    const guardEnv = { ...env(), CLAUDE_PROJECT_DIR: repo };
 
-    /** Invoke the hook exactly the way both harnesses do: JSON on stdin, env only. */
-    const runGuard = (args: string[]): Promise<{ code: number; stdout: string }> =>
+    const withStdin = (
+      executable: string,
+      args: string[],
+      options: Parameters<typeof execFile>[2],
+    ): Promise<{ code: number; stdout: string }> =>
       new Promise((resolve, reject) => {
-        const child = execFile(process.execPath, args, { env: guardEnv }, (error, stdout) => {
+        const child = execFile(executable, args, options, (error, stdout) => {
           const code = error ? ((error as { code?: number }).code ?? 1) : 0;
-          resolve({ code, stdout });
+          resolve({ code, stdout: String(stdout) });
         });
         if (!child.stdin) {
           reject(new Error('no stdin'));
@@ -215,12 +230,59 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
         child.stdin.end();
       });
 
+    /** Invoke the hook exactly the way Claude Code does: a direct node call with
+     * CLAUDE_PROJECT_DIR set by the harness itself. */
+    const runClaudeGuard = (): Promise<{ code: number; stdout: string }> =>
+      withStdin(process.execPath, [guardPath], { env: { ...env(), CLAUDE_PROJECT_DIR: repo } });
+
+    type CodexHookEntry = { command: string; commandWindows?: string };
+
+    async function findCodexGuardEntry(): Promise<CodexHookEntry> {
+      const raw = await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8');
+      const parsed = JSON.parse(raw) as {
+        hooks?: { PreToolUse?: { hooks?: CodexHookEntry[] }[] };
+      };
+      for (const matcher of parsed.hooks?.PreToolUse ?? []) {
+        for (const hook of matcher.hooks ?? []) {
+          if (hook.command.includes('guard-rulebook.mjs')) return hook;
+        }
+      }
+      throw new Error('no Codex PreToolUse hook entry found for guard-rulebook.mjs');
+    }
+
+    /** Invoke the hook exactly the way Codex runs it: the literal `command` /
+     * `commandWindows` wired in repo/.codex/hooks.json, never a direct node call.
+     * On POSIX the command derives CLAUDE_PROJECT_DIR itself from
+     * `git rev-parse --show-toplevel`, so CLAUDE_PROJECT_DIR is left unset here
+     * the same way Codex leaves it unset — on macOS that spells the fixture
+     * root under /private/var while mkdtemp hands this test /var, the spelling
+     * a past bypass hid behind. On win32 the wired command is already the
+     * `powershell.exe -EncodedCommand <b64>` form Codex itself runs. */
+    const runCodexGuard = async (): Promise<{ code: number; stdout: string }> => {
+      const entry = await findCodexGuardEntry();
+      const guardEnv = { ...env() };
+      if (process.platform === 'win32') {
+        if (entry.commandWindows === undefined)
+          throw new Error('no commandWindows on the Codex hook entry');
+        const parts = entry.commandWindows.trim().split(/\s+/);
+        const encoded = parts[parts.length - 1];
+        delete guardEnv.NoDefaultCurrentDirectoryInExePath;
+        return withStdin(
+          'powershell.exe',
+          ['-NoProfile', '-NonInteractive', '-EncodedCommand', String(encoded)],
+          { cwd: repo, env: guardEnv },
+        );
+      }
+      delete guardEnv.CLAUDE_PROJECT_DIR;
+      return withStdin('/bin/sh', ['-c', entry.command], { cwd: repo, env: guardEnv });
+    };
+
     // Attended (no unattended flag on disk anywhere under HOME): guard-rulebook.mjs's
     // own header, point 1, reads an absent flag as an attended session and exits 0
-    // for every edit, without ever consulting argv — grep confirms the file has no
-    // `argv` reference at all, so a `--harness=codex` argument changes nothing here.
-    expect((await runGuard([guardPath])).code).toBe(0);
-    expect((await runGuard([guardPath, '--harness=codex'])).code).toBe(0);
+    // for every edit — for both the direct Claude invocation and the real Codex
+    // wiring read out of repo/.codex/hooks.json.
+    expect((await runClaudeGuard()).code).toBe(0);
+    expect((await runCodexGuard()).code).toBe(0);
 
     const { unattendedFlags } = (await import(
       pathToFileURL(path.join(repo, '.claude', 'scripts', 'unattended-flag.mjs')).href
@@ -238,9 +300,10 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
     // Armed: guard-rulebook.mjs's blocking contract (its final refusal branch,
     // "part of the rulebook … never edits the rulebook outside its item's
     // allow-list") is `process.exit(2)` with a BLOCKED reason on stderr — never a
-    // JSON decision on stdout — so the assertion here is the exit code.
-    expect((await runGuard([guardPath])).code).toBe(2);
-    expect((await runGuard([guardPath, '--harness=codex'])).code).toBe(2);
+    // JSON decision on stdout — so the assertion here is the exit code, for both
+    // invocations.
+    expect((await runClaudeGuard()).code).toBe(2);
+    expect((await runCodexGuard()).code).toBe(2);
   }, 120_000);
 
   it('preflight and doctor change nothing in the repository', async () => {
