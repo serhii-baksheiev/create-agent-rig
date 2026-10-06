@@ -1,0 +1,8 @@
+{
+  "name": "@create-agent-rig/dogfood",
+  "private": true,
+  "description": "Developer-only tools this repository dogfoods. A workspace package rather than root devDependencies, so the npx github: install path (npm, root package.json only) never downloads them.",
+  "devDependencies": {
+    "@nizos/probity": "1.10.1"
+  }
+}

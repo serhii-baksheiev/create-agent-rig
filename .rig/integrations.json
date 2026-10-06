@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "integrations": [
+    {
+      "id": "probity",
+      "version": "1.10.1",
+      "harnesses": [
+        "claude-code",
+        "codex"
+      ],
+      "selected": true
+    }
+  ]
+}
