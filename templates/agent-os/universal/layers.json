@@ -52,6 +52,7 @@
     ".claude/scripts/lib/verdict.mjs",
     ".claude/scripts/lib/secrets.mjs",
     ".claude/scripts/lib/shell-tools.mjs",
+    ".claude/scripts/lib/posture.mjs",
     "PLAN.md",
     "docs/decisions/fail-open-guards.md",
     "docs/decisions/codex-adapter.md",
@@ -59,7 +60,8 @@
     "docs/decisions/review-lanes.md",
     "docs/decisions/workflow-layer-split.md",
     "docs/decisions/session-start-wire-format.md",
-    "docs/decisions/agents-md-canonical.md"
+    "docs/decisions/agents-md-canonical.md",
+    "docs/decisions/unattended-posture.md"
   ],
   "workflow": [
     ".claude/skills/pr-ship/SKILL.md",
