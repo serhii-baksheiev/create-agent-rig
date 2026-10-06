@@ -71,6 +71,8 @@ const EXPECTED_WORKFLOW = new Set([
   // so a replacement controller can tell an already-made delegated decision
   // from an unresolved owner one without depending on conversational memory
   '.claude/scripts/delegated-decision.mjs',
+  // RP-312: shared item-owned record append/read
+  '.claude/scripts/lib/item-records.mjs',
   // the unattended run's own preflight, and the deploy verdict it reads
   '.claude/scripts/preflight.mjs',
   '.claude/scripts/run-state.mjs',
