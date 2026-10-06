@@ -92,6 +92,7 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/queue/index.mjs',
   '.claude/scripts/queue/propose.mjs', // RP-209: root-safe entry point for filing proposals
   '.claude/scripts/queue/as-of.mjs',
+  '.claude/scripts/queue/stop-class.mjs', // RP-341: the stop-class vocabulary loop resolution reads
   '.claude/scripts/queue/checkout.mjs',
   '.claude/scripts/queue/state.mjs',
   '.claude/scripts/queue/gate-rounds.mjs',

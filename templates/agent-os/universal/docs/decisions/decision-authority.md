@@ -54,11 +54,25 @@ re-lists its decision or boundary ids — pinned in the same file › "does not
 re-list any decision or boundary id — it points at the module instead of
 duplicating it".
 
+## Stop classes
+
+The opt-in workflow layer sorts every stop the loop can reach into an owner
+decision, a blocked item or a run-level wall, and turns a stop, the run's
+authority and the decision it needs into one answer. Only an owner decision of a delegable kind resolves without
+a human, and only under delegated authority — pinned in the generator's
+`test/template/stop-class.test.ts` (absent in a generated rig) ›
+"table-driven: every ITEM_STOPS entry resolves, under delegated authority,
+to the independently declared expected resolution — and none of them is
+decide-and-continue under owner". A run-level wall stops the run under every
+authority, because the run-level stops take no authority input at all — ›
+"takes no authority input:
+decisionAuthority alongside a systemic/external input is ignored — the
+result is deep-equal to the call without it, and the stop still fires".
+
 ## Consequences
 
 Where a run records the authority it was started with, how a delegated
-decision becomes durable evidence a later controller can read, how stop
-classes tell an owner decision apart from a real wall, and how preflight
+decision becomes durable evidence a later controller can read, and how preflight
 and doctor report the posture are separate pieces of work. Each consumes
 this module instead of restating it.
 

@@ -98,6 +98,7 @@
     ".claude/scripts/queue/queue-config.mjs",
     ".claude/scripts/queue/propose.mjs",
     ".claude/scripts/queue/as-of.mjs",
+    ".claude/scripts/queue/stop-class.mjs",
     ".claude/scripts/queue/checkout.mjs",
     ".claude/scripts/queue/state.mjs",
     ".claude/scripts/queue/gate-rounds.mjs",

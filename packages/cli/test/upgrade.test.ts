@@ -2139,11 +2139,15 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // and its decision record (`docs/decisions/decision-authority.md`) to the
   // PROCESS layer the same way, so both figures move by two again
   // (112→114, 66→68).
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 114 manifest entries to 68', async () => {
+  // RP-341 adds the stop-class vocabulary
+  // (`.claude/scripts/queue/stop-class.mjs`) to the WORKFLOW layer only, so
+  // the full-install figure moves by one (114→115); the core-only figure
+  // stays 68 — stop-class.mjs is workflow-layer only.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 115 manifest entries to 68', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(114);
+    expect(Object.keys(before!.files).length).toBe(115);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
