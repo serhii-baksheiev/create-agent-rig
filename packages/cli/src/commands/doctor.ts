@@ -14,8 +14,9 @@ import {
 } from '../integrations/spec-kit.js';
 import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
-import { inspectGuards } from '../integrations/doctor-guards.js';
+import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
+import { inspectUnattended, type Outcome } from '../integrations/doctor-unattended.js';
 import { packageVersion } from '../lib/version.js';
 import type { runProviderProcess } from '../integrations/spawn.js';
 import { locateRegion, MAX_AGENTS_MD_REGION_BYTES } from '../lib/agents-md-region.js';
@@ -188,19 +189,26 @@ const TRACKER_REQUIRED_ENV: Record<string, string[]> = {
  * know). Never inspects a credential VALUE, only whether its env var NAME is
  * set.
  */
-async function personalTrackerCheck(
-  root: string,
-  env: NodeJS.ProcessEnv,
-): Promise<Check | undefined> {
+/**
+ * What `.claude/queue.json` asks of this machine's tracker credentials:
+ * `unreadable` when the file exists but cannot be read or parsed, `none` when
+ * nothing is required (no file, or an adapter with no required names),
+ * otherwise the required names still missing from the environment.
+ */
+type TrackerState =
+  { kind: 'unreadable' } | { kind: 'none' } | { kind: 'required'; missing: string[] };
+
+async function readTrackerState(root: string, env: NodeJS.ProcessEnv): Promise<TrackerState> {
   const source = await readBounded(root, QUEUE_CONFIG_REL, MAX_PERSONAL_CHECK_BYTES);
-  if (source.status !== 'ok') return undefined;
+  if (source.status === 'absent') return { kind: 'none' };
+  if (source.status !== 'ok') return { kind: 'unreadable' };
   const decoded = text(source.bytes);
-  if (decoded === undefined) return undefined;
+  if (decoded === undefined) return { kind: 'unreadable' };
   let config: unknown;
   try {
     config = JSON.parse(decoded);
   } catch {
-    return undefined;
+    return { kind: 'unreadable' };
   }
   const adapter =
     config !== null &&
@@ -218,17 +226,27 @@ async function personalTrackerCheck(
   const required = Object.hasOwn(TRACKER_REQUIRED_ENV, adapter)
     ? TRACKER_REQUIRED_ENV[adapter]
     : undefined;
-  if (required === undefined || required.length === 0) return undefined;
-  const missing = required.filter((name) => !env[name]);
-  if (missing.length === 0) {
+  if (required === undefined || required.length === 0) return { kind: 'none' };
+  return { kind: 'required', missing: required.filter((name) => !env[name]) };
+}
+
+function personalTrackerCheck(state: TrackerState): Check | undefined {
+  if (state.kind !== 'required') return undefined;
+  if (state.missing.length === 0) {
     return { id: 'personal-tracker', status: 'pass', reason: 'tracker-credentials-present' };
   }
   return {
     id: 'personal-tracker',
     status: 'warn',
     reason: 'tracker-credentials-missing',
-    trackerMissingVars: missing,
+    trackerMissingVars: state.missing,
   };
+}
+
+/** The same state, as the posture contract's `tracker-credentials-missing` reads it. */
+function trackerOutcome(state: TrackerState): Outcome {
+  if (state.kind === 'unreadable') return 'unknown';
+  return state.kind === 'required' && state.missing.length > 0 ? 'fail' : 'pass';
 }
 
 /**
@@ -386,19 +404,22 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const intent =
     declaration?.status === 'ok' && declaration.rejected.length === 0 ? declaration : undefined;
   const checks = await rigChecks(options.cwd, intent?.targets?.codex?.fileHash);
+  let guards: GuardInspection | undefined;
   if (checks.some((check) => check.id === 'rig-manifest' && check.status === 'pass')) {
-    const [guards, workflow] = await Promise.all([
+    const [inspected, workflow] = await Promise.all([
       inspectGuards({ repoDir: options.cwd, runner: options.guardRunner }),
       inspectWorkflow({ repoDir: options.cwd }),
     ]);
-    checks.push({ id: 'guards', ...guards }, { id: 'workflow', ...workflow });
+    guards = inspected;
+    checks.push({ id: 'guards', ...inspected }, { id: 'workflow', ...workflow });
   }
   const memory = await inspectMemory({ repoDir: options.cwd, env: options.env ?? process.env });
   checks.push({ id: 'custom-memory', status: memory.status, reason: memory.reason });
   // RP-230: personal-machine onboarding diagnostics. Neither check depends
   // on the manifest, and neither can push doctor's own exit status past
   // `warn` — both are personal setup guidance, not installation failures.
-  const personalTracker = await personalTrackerCheck(options.cwd, options.env ?? process.env);
+  const trackerState = await readTrackerState(options.cwd, options.env ?? process.env);
+  const personalTracker = personalTrackerCheck(trackerState);
   if (personalTracker) checks.push(personalTracker);
   const codexHookTrust = await codexHookTrustCheck(options.cwd);
   if (codexHookTrust) checks.push(codexHookTrust);
@@ -534,6 +555,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                           : 'Review create-agent-rig setup list and the intended provider wiring.',
     })),
     integrations,
+    unattended: await inspectUnattended({
+      repoDir: options.cwd,
+      env: options.env ?? process.env,
+      guards,
+      tracker: trackerOutcome(trackerState),
+    }),
     memory: { ...memory, status: memory.status === 'pass' ? 'ok' : memory.status },
     probity: intent?.entries.some((entry) => entry.id === 'probity')
       ? {
@@ -560,7 +587,16 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     exitCode: status === 'fail' ? 1 : 0,
     stdout: json
       ? `${JSON.stringify(report)}\n`
-      : `${report.checks.map((check) => `${check.status}: ${check.id}: ${check.detail}${check.fix ? ` — ${check.fix}` : ''}`).join('\n')}\n`,
+      : `${[
+          ...report.checks.map(
+            (check) =>
+              `${check.status}: ${check.id}: ${check.detail}${check.fix ? ` — ${check.fix}` : ''}`,
+          ),
+          `unattended readiness: ${report.unattended.status}`,
+          ...report.unattended.conditions.map(
+            (condition) => `${condition.status}: unattended:${condition.id}: ${condition.outcome}`,
+          ),
+        ].join('\n')}\n`,
     stderr: '',
   };
 }

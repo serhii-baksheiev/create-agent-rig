@@ -573,6 +573,22 @@ unobserved in the report. `packages/cli/test/doctor-guards.test.ts` pins
 `packages/cli/test/doctor-workflow.test.ts` pins "passes an intact selected
 workflow layer and preserves its frozen mechanism bytes".
 
+Unattended readiness (RP-282) is a separate `unattended` object beside
+`checks`. It holds one entry per condition that the posture contract
+(`.claude/scripts/lib/posture.mjs`, read from this package's own copy) puts on
+the doctor surface, each with its `outcome` and the contract's status for it,
+plus the worst of those statuses. It changes neither the top-level `status` nor
+the exit code. Doctor names the native state it cannot observe, but only as
+`unknown`. The kill switch and the detection contract are read through the same
+modules preflight reads them through. `packages/cli/test/doctor-unattended.test.ts`
+pins these tests:
+
+- "names exactly the conditions the contract puts on the doctor surface"
+- "is additive: a rig not ready to run unattended still gets doctor’s own status and exit code"
+- "names the native harness state it cannot observe, only as unknown, never as ok"
+- "answers kill-switch-armed exactly as the brake preflight reads does, including an AGENT_LOOP_STOP path"
+- "answers detection-contract-invalid exactly as preflight does, valid, malformed and absent"
+
 The aggregate command also inspects the machine-scoped custom Memory manifest.
 It checks the child's version handshake before requesting its doctor response.
 An incompatible child is unusable and its doctor is never invoked. This is a

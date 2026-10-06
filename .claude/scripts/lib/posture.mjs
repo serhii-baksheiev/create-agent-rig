@@ -125,7 +125,7 @@ export const POSTURE_CONDITIONS = Object.freeze([
   condition(
     'harness-hooks-loaded',
     'not-observable',
-    [],
+    ['doctor'],
     'both',
     'Whether the harness actually loaded these hooks in this session.',
   ),
@@ -139,14 +139,14 @@ export const POSTURE_CONDITIONS = Object.freeze([
   condition(
     'workspace-trust',
     'not-observable',
-    [],
+    ['doctor'],
     'both',
     "Whether the harness's own project or workspace trust was granted for this checkout.",
   ),
   condition(
     'native-sandbox-mode',
     'not-observable',
-    [],
+    ['doctor'],
     'both',
     'Which native sandbox and permission mode the session runs under.',
   ),
