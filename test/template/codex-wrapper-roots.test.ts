@@ -100,3 +100,107 @@ describe('the Windows Codex wrapper runs the guard from a non-ASCII or UNC root 
     },
   );
 });
+
+// RP-321: a wrapper-internal failure that means the guard never ran must
+// block (exit 2), never pass the guard's own exit code through — there is no
+// guard exit code in that case, only the wrapper's own failure to reach it.
+// Today the bounded script exits 1 (an uncaught node error, or PowerShell's
+// own terminating error under `$ErrorActionPreference = 'Stop'`) or passes
+// git's own non-zero exit through unchanged, both of which Codex reads as
+// non-blocking.
+describe('the Windows Codex wrapper blocks when it cannot run the guard (RP-321)', () => {
+  it(
+    'blocks when the guard file is missing from the repository',
+    { timeout: CODEX_WRAPPER_ROOTS_CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const scratch = await mkdtemp(path.join(tmpdir(), 'codex-wrapper-missing-guard-'));
+      try {
+        await rigAt(scratch);
+        await removeFixture(path.join(scratch, '.claude', 'hooks', 'guard-bash.mjs'));
+        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
+        expect(encoded).toBeDefined();
+        const result = await runWindowsWrapper(
+          encoded!,
+          { ...FORCE_PUSH, cwd: scratch },
+          scratch,
+          {},
+          WRAPPER_SAFETY_NET_TIMEOUT_MS,
+        );
+        expect(result.code, result.stderr).toBe(2);
+        expect(result.stderr.startsWith('codex wrapper:')).toBe(true);
+        expect(result.stderr).toMatch(/codex wrapper: .*guard did not run/i);
+      } finally {
+        await removeFixture(scratch);
+      }
+    },
+  );
+
+  it(
+    'blocks when git rev-parse cannot find a repository',
+    { timeout: CODEX_WRAPPER_ROOTS_CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      // Deliberately not `rigAt`: this scratch directory is never `git init`'d,
+      // so `git rev-parse --show-toplevel` itself fails before the wrapper
+      // can even look for the guard.
+      const scratch = await mkdtemp(path.join(tmpdir(), 'codex-wrapper-no-repo-'));
+      try {
+        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
+        expect(encoded).toBeDefined();
+        const result = await runWindowsWrapper(
+          encoded!,
+          { ...FORCE_PUSH, cwd: scratch },
+          scratch,
+          {},
+          WRAPPER_SAFETY_NET_TIMEOUT_MS,
+        );
+        expect(result.code, result.stderr).toBe(2);
+        expect(result.stderr.startsWith('codex wrapper:')).toBe(true);
+        expect(result.stderr).toMatch(/codex wrapper: .*guard did not run/i);
+      } finally {
+        await removeFixture(scratch);
+      }
+    },
+  );
+
+  it(
+    'blocks when git is not on PATH',
+    { timeout: CODEX_WRAPPER_ROOTS_CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const scratch = await mkdtemp(path.join(tmpdir(), 'codex-wrapper-no-git-'));
+      try {
+        await rigAt(scratch);
+        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
+        expect(encoded).toBeDefined();
+        // Only what powershell.exe and node.exe themselves need to start —
+        // no git. Windows env lookups are case-insensitive but Node's env
+        // object is not, so both spellings carry the same restricted value;
+        // `runWindowsWrapper` merges this object OVER `process.env`.
+        const restrictedPath = [
+          path.dirname(process.execPath),
+          path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32'),
+          path.join(
+            process.env.SystemRoot ?? 'C:\\Windows',
+            'System32',
+            'WindowsPowerShell',
+            'v1.0',
+          ),
+        ].join(';');
+        const result = await runWindowsWrapper(
+          encoded!,
+          { ...FORCE_PUSH, cwd: scratch },
+          scratch,
+          { PATH: restrictedPath, Path: restrictedPath },
+          WRAPPER_SAFETY_NET_TIMEOUT_MS,
+        );
+        expect(result.code, result.stderr).toBe(2);
+        expect(result.stderr.startsWith('codex wrapper:')).toBe(true);
+        expect(result.stderr).toMatch(/codex wrapper: .*guard did not run/i);
+      } finally {
+        await removeFixture(scratch);
+      }
+    },
+  );
+});
