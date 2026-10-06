@@ -98,15 +98,21 @@ state-vs-queue split exists to prevent.
 node .claude/scripts/preflight.mjs
 ```
 
-Scripted checks cover the kill switch, inherited `RIG_RUN_DIR`, the versioned
+Scripted checks cover the kill switch, inherited `RIG_RUN_DIR`, an unattended
+flag an earlier run left on disk for this checkout, the versioned
 revalidation detection contract, queue readability through its configured adapter,
 default-branch freshness, and the last deploy result,
 and the script **prints the ones it did not check, every time**. Paste the block into the journal: a checklist that
-leaves no record cannot tell you it was skipped.
+leaves no record cannot tell you it was skipped. Each item carries its id from
+the posture contract, `.claude/scripts/lib/posture.mjs`, and the verdict is
+that module's.
 
 Verdicts: **STOP** → do not start, deal with the cause. **CAUTION** → start,
-knowing which ground is soft. **GO** → the scripted checks are clean; the rest are
-still yours.
+knowing which ground is soft. **GO** → every item preflight names passed. The
+items it cannot check are named as `unknown`, so while any remain a clean
+scripted run reads CAUTION — see the generator's
+`test/template/preflight-posture.test.ts` (absent in a generated rig) ›
+"names every condition it does not check by id and only as unknown, so a clean scripted run cautions rather than reporting GO".
 
 The queue probe reads one adapter listing without selecting or claiming an item.
 A readable empty queue passes this probe; a configuration, adapter, or queue-read
