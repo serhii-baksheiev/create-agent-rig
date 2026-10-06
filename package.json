@@ -1,7 +1,7 @@
 {
   "name": "create-agent-rig",
   "version": "1.2.1",
-  "description": "Configure an agent operating system (rules, gates, hooks) for Claude Code and Codex in a new or existing repository — no application scaffolding",
+  "description": "Configure an agent operating system (rules, gates, hooks) for Claude Code and Codex in a new or existing repository \u2014 no application scaffolding",
   "keywords": [
     "agent",
     "claude-code",
@@ -45,7 +45,6 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
-    "@nizos/probity": "1.10.1",
     "@types/node": "^26.1.1",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",

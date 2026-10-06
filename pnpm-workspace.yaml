@@ -1,5 +1,10 @@
 packages:
   - packages/*
+  - tools/*
+# @nizos/probity is installed by tools/dogfood and hoisted to the root
+# node_modules, where the probity-gate hook looks for the project-local launcher.
+publicHoistPattern:
+  - '@nizos/probity'
 minimumReleaseAgeExclude:
   - '@vitest/mocker@5.0.0'
   - '@vitest/spy@5.0.0'
