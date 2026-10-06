@@ -229,7 +229,7 @@ prompt, and write only with `--yes`. Intent and ownership are recorded in `.rig/
 | Atlassian MCP   | `atlassian-mcp` | Same, for Atlassian's hosted MCP                                                            |
 | Basic Memory    | `basic-memory`  | Preview. Wires `uvx basic-memory mcp`; never installs, reads or removes Basic Memory's data |
 | GitHub Spec Kit | `spec-kit`      | Runs Spec Kit's own pinned CLI (1.0.8) to set up Claude Code and Codex                      |
-| Probity         | `probity`       | Opt-in TDD enforcement: routes Claude Code and Codex writes to `@nizos/probity` 1.10.1      |
+| Probity         | `probity`       | Opt-in TDD enforcement: hands file-edit tool calls to `@nizos/probity` 1.10.1               |
 
 **MCP wiring is owned by Rig.** Rig writes the entries and removes only the ones
 it can prove it wrote; your own MCP entries are preserved. Signing in to a
@@ -246,8 +246,10 @@ adopted with `setup add spec-kit --adopt`.
 dependency yourself; Rig never installs it, and `setup` and `doctor` never run
 it. `setup add probity` writes a `probity.config.mjs` only when you have none
 (use `--adopt` to keep yours). Once Probity is selected, Rig's
-`probity-gate` hook starts the project's Probity launcher for each write, and
-Probity's config decides which writes must follow test-first. `doctor` reports the wiring but cannot
+`probity-gate` hook hands Claude Code's `Write`, `Edit` and `NotebookEdit`
+calls and Codex's `apply_patch`, `Edit` and `Write` calls to the project's
+Probity launcher; `MultiEdit` and shell commands are not handed over.
+Probity's config decides which of those writes must follow test-first. `doctor` reports the wiring but cannot
 see whether Probity is answering.
 
 **Plugins are not managed.** Rig 0.10.0 has no plugin manager or marketplace.
