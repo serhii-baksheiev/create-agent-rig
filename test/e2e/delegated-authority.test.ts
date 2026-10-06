@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -33,9 +33,9 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * (session A), because the brief is a journey — a cold start, an ordinary
  * decision, a non-delegable stop, the kill switch, the publication boundary —
  * ending in a SECOND, independent session (session B) reading session A's
- * durable evidence back. They therefore run in file order, intentionally, the
- * same way `unattended-posture.test.ts`'s own fixtures build on `beforeEach`
- * rather than isolating every assertion.
+ * durable evidence back. They therefore run in file order, intentionally —
+ * one shared fixture across every scenario in this file, never isolated per
+ * assertion.
  *
  * `checkoutIdFor`/`plantedFlagPath` below are a deliberately separate,
  * hand-written reimplementation of `unattended-flag.mjs`'s own
@@ -49,18 +49,21 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * Every flag, brake and run-authority file this test plants is written under
  * the FAKE `home` fixture only — `.claude/scripts/unattended-flag.mjs on` is
  * never invoked, because that command mirrors into the real OS home via its
- * own `homesOf` lookup, and this file must never read or write the real
- * `~/.claude`. Two independent checks hold that: every planted path is
+ * own `homesOf` lookup, and this file must never WRITE to the real
+ * `~/.claude`, nor read any file's CONTENT there. Every planted path is
  * asserted, at the point it is built, to start with the fake `home` and never
- * with the real `os.homedir()` (scenarios 4 and 5); and scenario 7, the last
- * test in the file, snapshots the FAKE home's own `.claude` directory before
- * anything plants a file there and again after every scenario has cleaned up
- * after itself, so a script that wrote somewhere this file never asked it to
- * would show up as a leftover. The real home is deliberately never read at
- * all — not even to diff it — because this process runs inside a live Claude
- * Code session whose own tool use writes to the real `~/.claude` for reasons
- * that have nothing to do with the code under test, which would make a
- * real-home diff flicker red on unrelated activity.
+ * with the real home a planted path could otherwise land in (scenarios 4 and
+ * 5). Scenario 7, the last test in the file, snapshots the FAKE home's own
+ * `.claude` directory before anything plants a file there and again after
+ * every scenario has cleaned up after itself, so a script that wrote
+ * somewhere this file never asked it to would show up as a leftover there.
+ * It also lists the REAL home's own `.claude` directory — top-level entry
+ * NAMES only, never a file's content, never a write — because
+ * `stop-flag.mjs`'s own `homesOf` always adds `os.userInfo().homedir`
+ * regardless of `HOME`, so a regression writing there would otherwise go
+ * undetected by the fake-home snapshot alone; the check looks only for this
+ * fixture's own unique project name and checkout id, so it cannot flicker on
+ * unrelated Claude Code session activity using other names.
  */
 
 const exec = promisify(execFile);
@@ -81,6 +84,8 @@ const delegatedDecisionPath = (): string =>
   path.join(repo, '.claude', 'scripts', 'delegated-decision.mjs');
 const queueIndexPath = (): string => path.join(repo, '.claude', 'scripts', 'queue', 'index.mjs');
 const guardBashPath = (): string => path.join(repo, '.claude', 'hooks', 'guard-bash.mjs');
+const gateStopDodPath = (): string => path.join(repo, '.claude', 'hooks', 'gate-stop-dod.mjs');
+const dodChecksPath = (): string => path.join(repo, '.claude', 'hooks', 'dod-checks.json');
 const decisionsFilePath = (ticket: string): string =>
   path.join(repo, '.rig', 'decisions', `${ticket}.jsonl`);
 
@@ -106,6 +111,32 @@ async function run(
     const e = error as { code?: number; stdout?: string; stderr?: string };
     return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
   }
+}
+
+/** Like {@link run}, but for a hook that reads its payload from stdin rather than argv. */
+function runWithStdin(
+  args: string[],
+  stdin: string,
+  extraEnv: NodeJS.ProcessEnv = {},
+  cwd: string = repo,
+): Promise<RunResult> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      process.execPath,
+      args,
+      { cwd, env: { ...baseEnv(), ...extraEnv } },
+      (error, stdout, stderr) => {
+        const e = error as { code?: number } | null;
+        resolve({ code: e ? (e.code ?? 1) : 0, stdout, stderr });
+      },
+    );
+    if (!child.stdin) {
+      reject(new Error('no stdin'));
+      return;
+    }
+    child.stdin.write(stdin);
+    child.stdin.end();
+  });
 }
 
 async function runJson(
@@ -153,6 +184,15 @@ async function plantedFlagPath(forRepo: string = repo): Promise<string> {
 }
 
 /**
+ * Whether any entry in `entries` contains one of `markers` as a substring —
+ * kept separate from the real directory read in scenario 7 so it can be
+ * exercised directly against a synthetic listing.
+ */
+function containsAnyMarker(entries: string[], markers: string[]): boolean {
+  return entries.some((entry) => markers.some((marker) => entry.includes(marker)));
+}
+
+/**
  * A metadata-only listing of every file under `<root>/.claude` — never file
  * CONTENT, so this stays cheap to call for the fake home's own directory.
  * Path + size + mtime is already enough to detect any write, addition or
@@ -183,10 +223,8 @@ beforeAll(async () => {
   repo = await mkdtemp(path.join(tmpdir(), 'caf-delegated-authority-'));
   home = await mkdtemp(path.join(tmpdir(), 'caf-delegated-authority-home-'));
 
-  // Scenario 7's baseline: read BEFORE anything in this file plants a single
-  // byte under the fake home, so a later mismatch cannot be blamed on
-  // pre-existing state. The real home is never read at all — see the module
-  // header for why a real-home diff would be unreliable in this environment.
+  // Scenario 7's fake-home baseline. The real home gets a narrow name search
+  // instead — see the module header.
   fakeHomeClaudeListingBefore = await snapshotHomeClaudeListing(home);
 
   await exec('git', ['init', '-q', repo], { env: gitEnv() });
@@ -319,6 +357,9 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       { RIG_RUN_DIR: ownerRunDir },
     );
     expect(ownerRecordAttempt.code).not.toBe(0);
+    // Its own reason, not merely a non-zero exit — an exit code alone cannot
+    // tell this refusal apart from an unknown-id or a missing-run-dir one.
+    expect(ownerRecordAttempt.stderr).toContain('needs a delegated run authority');
     await expect(readFile(decisionsFilePath('RP-2'), 'utf8')).rejects.toMatchObject({
       code: 'ENOENT',
     });
@@ -328,6 +369,7 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
     const nonDelegable: Array<[string, string]> = [
       ['RP-10', 'publication'],
       ['RP-11', 'kill-switch'],
+      ['RP-12', 'failing-mechanical-gate'],
     ];
     for (const [ticket, decision] of nonDelegable) {
       const attempt = await run(
@@ -344,6 +386,10 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
         { RIG_RUN_DIR: runDirA },
       );
       expect(attempt.code, `"${decision}" must be refused under delegated authority`).not.toBe(0);
+      // Its own reason, not merely a non-zero exit — an exit code alone
+      // cannot tell this boundary refusal apart from an unknown-id or a
+      // missing-run-dir refusal.
+      expect(attempt.stderr, decision).toContain('stays with the owner regardless of delegation');
       await expect(readFile(decisionsFilePath(ticket), 'utf8')).rejects.toMatchObject({
         code: 'ENOENT',
       });
@@ -360,7 +406,6 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
         { RIG_RUN_DIR: runDirA },
       );
       expect(resolved.resolution, stop).toBe('escalate-item');
-      expect(resolved.resolution, stop).not.toBe('decide-and-continue');
     }
 
     const unreadableRunDir = await makeRunDir('session-unreadable-state');
@@ -385,6 +430,45 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       stopClass: 'systemic-wall',
     });
     expect(parsed.revalidation).toBeNull();
+  }, 120_000);
+
+  it('scenario 3b: the real mechanical gate still blocks a delegated run, and a work-blocked stop never resolves to decide-and-continue', async () => {
+    // (c) `blocking-verdict` is `work-blocked`, not `decision-needed` — its
+    // resolution never depends on the decision id or the run's authority
+    // (`queue/stop-class.mjs`'s `resolutionOf`). Asserted by VALUE, not merely
+    // "not decide-and-continue".
+    const blockingVerdict = await runJson(
+      [delegatedDecisionPath(), 'resolve', '--stop', 'blocking-verdict', '--json'],
+      { RIG_RUN_DIR: runDirA },
+    );
+    expect(blockingVerdict.resolution).toBe('escalate-item');
+
+    // (b) The INSTALLED gate-stop-dod.mjs, run for real, under a declared
+    // delegated run: `failing-mechanical-gate` being non-delegable (above) is
+    // a fact about `record`, not proof the gate itself still fires. A failing
+    // check requires a dirty tree to be reached at all.
+    await writeFile(dodChecksPath(), JSON.stringify(['node -e "process.exit(1)"']));
+    const payload = JSON.stringify({ hook_event_name: 'Stop', stop_hook_active: false });
+    const blocked = await runWithStdin([gateStopDodPath()], payload, {
+      CLAUDE_PROJECT_DIR: repo,
+      RIG_RUN_DIR: runDirA,
+    });
+    expect(blocked.code).toBe(2);
+    expect(blocked.stderr).toContain('process.exit(1)');
+    expect(blocked.stderr).toMatch(/diagnosis/i);
+
+    // The compliant form: the same hook, the same declared authority, a
+    // passing check.
+    await writeFile(dodChecksPath(), JSON.stringify(['node -e "process.exit(0)"']));
+    const passed = await runWithStdin([gateStopDodPath()], payload, {
+      CLAUDE_PROJECT_DIR: repo,
+      RIG_RUN_DIR: runDirA,
+    });
+    expect(passed.code).toBe(0);
+
+    // Cleanup before scenario 6 commits `.rig/decisions/RP-1.jsonl` — this
+    // file must not be part of that commit.
+    await rm(dodChecksPath());
   }, 120_000);
 
   it('scenario 4: the kill switch and guard-bash stay intact under delegated authority, on both harness surfaces', async () => {
@@ -470,7 +554,7 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
     const brakeName = `${await projectName()}-loop-STOP`;
     const brakePath = path.join(home, '.claude', brakeName);
     expect(brakePath.startsWith(home)).toBe(true);
-    expect(brakePath.startsWith(homedir())).toBe(false);
+    expect(brakePath.startsWith(path.join(userInfo().homedir, '.claude'))).toBe(false);
     await mkdir(path.dirname(brakePath), { recursive: true });
     await writeFile(brakePath, '');
 
@@ -495,7 +579,7 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
 
     const flagPath = await plantedFlagPath(repo);
     expect(flagPath.startsWith(home)).toBe(true);
-    expect(flagPath.startsWith(homedir())).toBe(false);
+    expect(flagPath.startsWith(path.join(userInfo().homedir, '.claude'))).toBe(false);
     await mkdir(path.dirname(flagPath), { recursive: true });
     await writeFile(
       flagPath,
@@ -583,18 +667,51 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
     }
   }, 120_000);
 
-  it('scenario 7: nothing in this journey left a stray write under the fake HOME, and every planted path stayed out of the real one', async () => {
+  it('scenario 7: nothing in this journey left a stray write under the fake HOME, and the real one carries no trace of this fixture', async () => {
     // Every planted path across scenarios 4 and 5 was already asserted, at
-    // the point it was built, to start with the fake `home` and never with
-    // the real `os.homedir()` — this is the complementary check: once every
-    // scenario above has cleaned up what it planted, the fake home's own
-    // `.claude` directory is back to exactly what it held before any of them
-    // ran. A script that wrote something this file never asked for — and
-    // never cleaned up — would show up here as a leftover.
+    // the point it was built, to start with the fake `home`. This is the
+    // complementary check on that same fake home: once every scenario above
+    // has cleaned up what it planted, its own `.claude` directory holds
+    // exactly the files it holds after cleanup — a script that wrote
+    // something this file never asked for, and never cleaned up, would show
+    // up here as a leftover.
     // An absent `.claude` directory (`null`) and an empty, still-present one
     // (`[]`) both mean "no files" — the directory itself surviving a cleanup
     // that only ever `rm`'d the files it planted is not a stray write.
     const after = (await snapshotHomeClaudeListing(home)) ?? [];
     expect(after).toEqual(fakeHomeClaudeListingBefore ?? []);
+
+    // The complementary check on the REAL home: `stop-flag.mjs`'s own
+    // `homesOf` always adds `os.userInfo().homedir` regardless of `HOME`, so
+    // a regression writing there would never show up in the fake-home
+    // snapshot above. This reads only the real `~/.claude` directory's
+    // top-level ENTRY NAMES — never a file's content, never a write — and
+    // checks that none of them mentions this fixture's own project name or
+    // checkout id. Both are unique to this run, because the fixture
+    // directory itself is an `mkdtemp` name, so this cannot flicker on
+    // unrelated Claude Code session activity that uses other names.
+    let realHomeClaudeEntries: string[];
+    try {
+      realHomeClaudeEntries = await readdir(path.join(userInfo().homedir, '.claude'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      realHomeClaudeEntries = [];
+    }
+
+    const project = await projectName();
+    const expectedProjectSlug = path
+      .basename(repo)
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-')
+      .replace(/^[-.]+|[-.]+$/g, '');
+    // `project` is a unique marker only when it actually derives from this
+    // fixture's own unique `mkdtemp` basename (`init.ts`'s `projectNameFor`);
+    // it does here, so both markers are checked. If a future change to
+    // `projectNameFor` broke that derivation, this would fall back to the
+    // checkout id alone, which stays unique per run regardless.
+    const uniqueMarkers =
+      project === expectedProjectSlug ? [project, checkoutIdFor(repo)] : [checkoutIdFor(repo)];
+
+    expect(containsAnyMarker(realHomeClaudeEntries, uniqueMarkers)).toBe(false);
   });
 });
