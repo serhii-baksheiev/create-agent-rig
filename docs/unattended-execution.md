@@ -1,8 +1,12 @@
 # Unattended Execution
 
 Rig does not run agents. Claude Code or Codex runs the session. Rig installs
-the hooks that session calls, plus two read-only checks: preflight before an
-unattended run starts, and `create-agent-rig doctor` at any time. Rig is not a
+the hooks that session calls, and offers two checks: preflight before an
+unattended run starts, and `create-agent-rig doctor` at any time. Preflight
+and the `loop` skill that runs it ship only with the opt-in workflow layer
+(`init --layer workflow`), and doctor reports a rig without it as not ready:
+`packages/cli/test/doctor-unattended.test.ts` › "reports workflow-layer-missing
+as a failure on a rig without the workflow layer, and ok with it". Rig is not a
 sandbox, a daemon or a remote execution platform. Isolating the process, its
 permissions and its network stays with the harness's own sandbox setting.
 
@@ -29,8 +33,8 @@ malformed and absent".
 - **Enforced, at the tool layer.** The guards refuse specific edits and
   commands before they run. `AGENTS.md`, "Enforcement is mechanical", names
   each one, and each guard's own header lists what it cannot see.
-- **Verified, before the first task.** Preflight checks every condition the
-  contract puts on its surface. A required condition that fails is STOP.
+- **Verified, before the first task.** A required condition that preflight
+  checks and finds failing is STOP:
   `test/template/preflight-posture.test.ts` › "takes the verdict from the
   contract: every required check stops on its own, an advisory fail only
   cautions".
@@ -40,11 +44,11 @@ malformed and absent".
   not ready to run unattended still gets doctor’s own status and exit code".
 - **Left to the harness, and said so.** Rig cannot observe the native sandbox
   mode, workspace trust, or whether the harness loaded its hooks this session.
-  Both surfaces name that state as `unknown`, never as a pass:
-  `test/template/preflight-posture.test.ts` › "never reports a native harness
-  state it did not measure" and `packages/cli/test/doctor-unattended.test.ts` ›
-  "names the native harness state it cannot observe, only as unknown, never as
-  ok".
+  Doctor names that state as `unknown`, never as a pass:
+  `packages/cli/test/doctor-unattended.test.ts` › "names the native harness
+  state it cannot observe, only as unknown, never as ok". Preflight does not
+  name it at all: `test/template/preflight-posture.test.ts` › "never reports a
+  native harness state it did not measure".
 
 ## Before the first task
 
