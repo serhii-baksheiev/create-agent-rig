@@ -2,7 +2,8 @@
 
 ## Context
 
-Preflight (RP-281) and doctor (RP-282) both answer a version of the same
+Preflight (RP-281, opt-in workflow layer) and the CLI's
+`create-agent-rig doctor` (RP-282) both answer a version of the same
 question — is it safe for this checkout to keep running unattended — and
 until RP-280 they answered it from nothing shared at all. Each surface had
 its own notion of which conditions mattered, no stable id for any of them,
@@ -35,15 +36,13 @@ Preflight and doctor keep their own probes. Neither surface's job moves into
 this module; what moves is the vocabulary they report against, and the two
 pure functions that turn a reported outcome into that surface's answer
 (`preflightVerdict` for the stop/caution/go decision, `doctorStatus` for the
-per-condition fail/warn/ok line). A `not-observable` condition is refused by
-both functions rather than mapped to a passing outcome, because there is no
-"it passed" for a thing nothing looked at — the surface still names it, and
-names it as unobservable rather than silently dropping it from the report.
+per-condition fail/warn/ok line). A surface may name a `not-observable`
+condition only with the outcome `unknown`, and an outcome other than exactly
+`pass` is never read as a pass: there is no "it passed" for a thing nothing
+looked at.
 
-Where this repository's own CLI needs the same contract — rendering a
-posture line, or checking a reported id against the closed set — it imports
-the package's copy of this module the same way `packages/cli` already
-imports `doctor-guards` rather than re-deriving the hook list by hand. Any
+The CLI uses the package's own copy of this module, as it already does for
+`.claude/scripts/unattended-flag.mjs`, rather than a second list. Any
 documentation that explains what the contract covers points at this module
 and the test that pins its shape, and never re-lists the condition ids —
 the two would drift the moment an id changed in one and not the other, which

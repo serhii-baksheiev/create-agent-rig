@@ -1,33 +1,25 @@
 /**
  * The unattended-execution posture contract (RP-280) — ONE closed list of
- * conditions, so preflight (RP-281) and doctor (RP-282) answer the question
- * "is it safe to run unattended" from the same vocabulary instead of two
- * that can silently drift apart. Why this is one module rather than two
- * probes agreeing by accident: `docs/decisions/unattended-posture.md`.
+ * conditions, so preflight (RP-281, opt-in workflow layer) and the CLI's
+ * `create-agent-rig doctor` (RP-282) answer "is it safe to run unattended"
+ * from the same vocabulary instead of two that can silently drift apart.
+ * Why this is one module: `docs/decisions/unattended-posture.md`.
  *
- * Each condition names: which classification it is (`required` — a run
- * stops; `advisory` — a run cautions and continues; `not-observable` — this
- * rig cannot mechanically tell), which surface(s) report it (`preflight`,
- * `doctor`, both, or neither for `not-observable`), which harness it applies
- * to, and a one-line summary. Both surfaces keep their own probes — this
- * module decides nothing about HOW a condition is observed, only what the
- * closed list of conditions IS and what a reported outcome means.
+ * Each condition names its classification (`required` — a run stops;
+ * `advisory` — a run cautions and continues; `not-observable` — Rig cannot
+ * mechanically tell), the surfaces that report it (`preflight`, `doctor`),
+ * the harness it applies to, and a one-line summary of what is checked.
+ * Both surfaces keep their own probes; this module decides only what the
+ * conditions are and what a reported outcome means.
  *
- * `not-observable` conditions exist so a surface can say what Rig cannot
- * prove, rather than silently omitting it — a thing neither surface
- * mechanically checks (the harness's own loaded-hook state, Codex's `trust`
- * setting, the editor's workspace-trust prompt, the native OS sandbox mode,
- * and the rest the `POSTURE_CONDITIONS` list below names) is reported as
- * unobservable, never folded into a passing `ok`/`GO`. Per
- * `.claude/rules/invariants.md` ("one mechanism, one implementation") that
- * is why `preflightVerdict` and `doctorStatus` both throw rather than map a
- * `not-observable` id to an outcome — there is no "it passed" for a thing
- * nothing looked at.
+ * A surface may name a `not-observable` condition, but only with the
+ * outcome `unknown`: it says what Rig could not prove and never turns it
+ * into a pass. An outcome other than exactly `pass` is never read as one.
  *
- * Adding an id here is a deliberate contract change, not a drive-by edit:
- * see test/template/posture.test.ts (absent in a generated rig) ›
- * "exports exactly the required/advisory/not-observable ids the contract
- * names, each kebab-case and unique".
+ * Adding an id is a deliberate contract change: see
+ * test/template/posture.test.ts (absent in a generated rig) › "exports
+ * exactly the required/advisory/not-observable ids the contract names,
+ * each kebab-case and unique".
  */
 
 const condition = (id, classification, surfaces, harness, summary) =>
@@ -41,63 +33,63 @@ export const POSTURE_CONDITIONS = Object.freeze([
     'required',
     ['preflight', 'doctor'],
     'both',
-    'The kill-switch file is present, and guard-bash is refusing every merge while it is armed.',
+    'The kill-switch file is present in the home directory of the process that checks, or at a path AGENT_LOOP_STOP names.',
   ),
   condition(
     'run-dir-inherited',
     'required',
     ['preflight'],
     'both',
-    'RIG_RUN_DIR was inherited from the parent shell rather than declared fresh for this run.',
+    'RIG_RUN_DIR is already set in the environment preflight runs in, before the run declares its own.',
   ),
   condition(
     'detection-contract-invalid',
     'required',
     ['preflight', 'doctor'],
     'both',
-    'The elevated-paths contract detect-missed-gate.mjs reads failed to parse or resolve.',
+    '.rig/revalidation.json, the revalidation detection contract, is missing or does not pass its reader.',
   ),
   condition(
     'queue-unreadable',
     'required',
     ['preflight'],
     'both',
-    'The queue adapter named in .claude/queue.json could not be read.',
+    'The queue adapter .claude/queue.json names could not list eligible items.',
   ),
   condition(
     'last-deploy-failed',
     'required',
     ['preflight'],
     'both',
-    'The last recorded deploy verdict was REGRESSION and no HEALTHY verdict has cleared it since.',
+    "The latest run of the project's deploy workflow, as GitHub reports it, concluded failed.",
   ),
   condition(
     'hook-wiring-missing',
     'required',
     ['doctor'],
     'both',
-    'A hook .claude/settings.json names is missing from .claude/hooks/, or is not wired there.',
+    'A hook entry the rig ships is missing from .claude/settings.json or .codex/hooks.json, or hooks are disabled there.',
   ),
   condition(
     'guard-integrity-failed',
     'required',
     ['doctor'],
     'both',
-    "An owned guard's bytes differ from the installed manifest with no test file beside it.",
+    'An installed guard, or a script it loads, differs from the bytes this Rig version ships, or misbehaves on the guard fixtures.',
   ),
   condition(
     'unattended-flag-stale',
     'required',
-    ['preflight', 'doctor'],
+    ['preflight'],
     'both',
-    'The unattended flag on disk predates this checkout\'s current claim, so it may belong to a run that already ended.',
+    'An unattended flag for this checkout is already on disk, or unreadable, before the run arms its own.',
   ),
   condition(
     'workflow-layer-missing',
     'required',
     ['doctor'],
     'both',
-    'The queue configuration names the opt-in workflow layer, but its files are not installed.',
+    "The installed manifest's layers do not include the workflow layer that unattended runs use.",
   ),
   // advisory — a run cautions and continues.
   condition(
@@ -105,14 +97,14 @@ export const POSTURE_CONDITIONS = Object.freeze([
     'advisory',
     ['preflight'],
     'both',
-    "The default branch has diverged from origin/HEAD by more commits than preflight's own bound allows.",
+    "After a fetch, the local default branch is not the same commit as the remote's.",
   ),
   condition(
     'tracker-credentials-missing',
     'advisory',
     ['doctor'],
     'both',
-    'The tracker credentials this queue adapter needs are not set in the environment.',
+    'An environment variable the configured tracker adapter needs is not set; values are never read.',
   ),
   condition(
     'dod-checks-missing',
@@ -126,127 +118,117 @@ export const POSTURE_CONDITIONS = Object.freeze([
     'advisory',
     ['doctor'],
     'both',
-    'One of the runtime paths this layer requires in .gitignore is missing from it.',
+    'A runtime path the installed layers require in .gitignore is not listed there.',
   ),
-  // not-observable — this rig cannot mechanically tell, so neither surface
-  // may map it to a passing outcome.
+  // not-observable — Rig cannot mechanically tell; a surface may name one
+  // only with the outcome `unknown`.
   condition(
     'harness-hooks-loaded',
     'not-observable',
     [],
     'both',
-    "Whether the attached harness actually loaded these hooks this session — neither surface can read the harness's own loaded-hook state from outside it.",
+    'Whether the harness actually loaded these hooks in this session.',
   ),
   condition(
     'codex-hook-trust',
     'not-observable',
-    [],
+    ['doctor'],
     'codex',
-    "Whether Codex's own trust setting approved these hooks to run at all.",
+    'Whether Codex has been told to trust the project hooks.',
   ),
   condition(
     'workspace-trust',
     'not-observable',
     [],
     'both',
-    "Whether the editor's workspace-trust prompt was accepted for this checkout.",
+    "Whether the harness's own project or workspace trust was granted for this checkout.",
   ),
   condition(
     'native-sandbox-mode',
     'not-observable',
     [],
     'both',
-    "Which native OS sandbox mode the harness is running under is the harness's own setting, not something this rig can read.",
+    'Which native sandbox and permission mode the session runs under.',
   ),
   condition(
     'session-root-matches-run',
     'not-observable',
     [],
     'both',
-    "Whether the session's own working-directory root is the checkout the run directory was declared for.",
+    "Whether the session was started from the checkout its run directory belongs to.",
   ),
   condition(
     'run-dir-fresh-per-run',
     'not-observable',
     [],
     'both',
-    'Whether RIG_RUN_DIR was freshly declared for this run rather than left over from an earlier one — run-dir-inherited catches one failure mode of this; the rest is not mechanically observable.',
+    'Whether each run declares a fresh run directory rather than reusing an earlier one.',
   ),
   condition(
     'budget-declared',
     'not-observable',
-    [],
+    ['preflight'],
     'both',
-    'Whether a bounded point-of-diminishing-returns budget was actually agreed for this run before it started.',
+    'Whether a budget for this run was declared before it started.',
   ),
   condition(
     'stray-worktree',
     'not-observable',
-    [],
+    ['preflight'],
     'both',
-    'Whether every linked worktree belongs to a run still in flight, or one that stopped without cleanup — nothing records a worktree\'s owning run.',
+    'Whether a linked worktree is left over from a run that stopped without cleaning up.',
   ),
 ]);
 
 /** The matching condition for `id`, or `undefined` for an id the contract does not name. */
 export const conditionById = (id) => POSTURE_CONDITIONS.find((entry) => entry.id === id);
 
+/** Only the exact strings `pass` and `fail` keep their meaning; anything else is `unknown`. */
+const normalise = (outcome) => (outcome === 'pass' || outcome === 'fail' ? outcome : 'unknown');
+
+/** The condition for `id` on `surface`, refusing what the contract says that surface cannot report. */
+const onSurface = (fn, id, outcome, surface) => {
+  const found = conditionById(id);
+  if (!found) throw new Error(`${fn}: "${id}" is not a condition this contract names.`);
+  if (!found.surfaces.includes(surface)) {
+    throw new Error(`${fn}: "${id}" is not a ${surface} condition.`);
+  }
+  if (found.classification === 'not-observable' && outcome !== 'unknown') {
+    throw new Error(`${fn}: "${id}" is not observable, so its only outcome is "unknown".`);
+  }
+  return found;
+};
+
 /**
  * The preflight verdict for a set of reported outcomes, keyed by condition id.
  *
- * Throws for an id the contract does not name, and for an id whose condition
- * does not list `preflight` among its surfaces — that covers both a
- * `not-observable` id (empty surfaces) and a `doctor`-only id, because
- * neither may be reported to this surface at all.
- *
- * A required condition reporting `fail` outranks everything else and
- * returns `STOP`. Short of that, any `fail` (necessarily advisory, by the
- * rule above) or any `unknown` (required or advisory) returns `CAUTION`.
- * Otherwise — including an empty `outcomes` object — the verdict is `GO`.
+ * A required condition reporting `fail` returns `STOP`. Short of that, any
+ * other `fail` or any `unknown` on a required or advisory condition returns
+ * `CAUTION`. A not-observable condition named here does not move the
+ * verdict. Otherwise — including an empty `outcomes` object — `GO`.
  */
 export const preflightVerdict = (outcomes) => {
-  const entries = Object.entries(outcomes ?? {});
-  const conditions = entries.map(([id, outcome]) => {
-    const found = conditionById(id);
-    if (!found) throw new Error(`preflightVerdict: "${id}" is not a condition this contract names.`);
-    if (!found.surfaces.includes('preflight')) {
-      throw new Error(`preflightVerdict: "${id}" is not a preflight condition.`);
-    }
-    return { found, outcome };
+  const reported = Object.entries(outcomes ?? {}).map(([id, raw]) => {
+    const outcome = normalise(raw);
+    return { found: onSurface('preflightVerdict', id, outcome, 'preflight'), outcome };
   });
+  const judged = reported.filter(({ found }) => found.classification !== 'not-observable');
 
-  if (conditions.some(({ found, outcome }) => found.classification === 'required' && outcome === 'fail')) {
+  if (judged.some(({ found, outcome }) => found.classification === 'required' && outcome === 'fail')) {
     return 'STOP';
   }
-  if (conditions.some(({ outcome }) => outcome === 'fail' || outcome === 'unknown')) {
-    return 'CAUTION';
-  }
+  if (judged.some(({ outcome }) => outcome !== 'pass')) return 'CAUTION';
   return 'GO';
 };
 
 /**
- * The doctor status for one condition's reported outcome.
- *
- * Throws for an id the contract does not name, and for an id whose
- * condition does not list `doctor` among its surfaces — same two cases as
- * `preflightVerdict` above, mirrored for this surface.
- *
- * A required condition maps `fail`→`fail`, `pass`→`ok`, anything else
- * (including `unknown`)→`warn` — a required condition this surface could
- * not confirm cautions rather than silently passing. An advisory condition
- * never returns `fail`: it maps `pass`→`ok` and anything else→`warn`.
+ * The doctor status for one condition's reported outcome: a required
+ * condition maps `fail` to `fail`; `pass` maps to `ok`; anything else —
+ * an advisory `fail`, any `unknown`, a not-observable condition — is `warn`.
  */
-export const doctorStatus = (id, outcome) => {
-  const found = conditionById(id);
-  if (!found) throw new Error(`doctorStatus: "${id}" is not a condition this contract names.`);
-  if (!found.surfaces.includes('doctor')) {
-    throw new Error(`doctorStatus: "${id}" is not a doctor condition.`);
-  }
-
-  if (found.classification === 'required') {
-    if (outcome === 'fail') return 'fail';
-    if (outcome === 'pass') return 'ok';
-    return 'warn';
-  }
+export const doctorStatus = (id, raw) => {
+  const outcome = normalise(raw);
+  const found = onSurface('doctorStatus', id, outcome, 'doctor');
+  if (found.classification === 'required' && outcome === 'fail') return 'fail';
   return outcome === 'pass' ? 'ok' : 'warn';
 };

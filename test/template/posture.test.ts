@@ -97,12 +97,25 @@ const EXPECTED_SURFACES: Record<string, readonly Surface[]> = {
   'last-deploy-failed': ['preflight'],
   'hook-wiring-missing': ['doctor'],
   'guard-integrity-failed': ['doctor'],
-  'unattended-flag-stale': ['preflight', 'doctor'],
+  'unattended-flag-stale': ['preflight'],
   'workflow-layer-missing': ['doctor'],
   'default-branch-stale': ['preflight'],
   'tracker-credentials-missing': ['doctor'],
   'dod-checks-missing': ['doctor'],
   'gitignore-runtime-entries-missing': ['doctor'],
+};
+
+// A not-observable condition may still be NAMED by a surface — so it can say
+// what it could not prove — but only with an `unknown` outcome.
+const EXPECTED_NOT_OBSERVABLE_SURFACES: Record<string, readonly Surface[]> = {
+  'harness-hooks-loaded': [],
+  'codex-hook-trust': ['doctor'],
+  'workspace-trust': [],
+  'native-sandbox-mode': [],
+  'session-root-matches-run': [],
+  'run-dir-fresh-per-run': [],
+  'budget-declared': ['preflight'],
+  'stray-worktree': ['preflight'],
 };
 
 const KEBAB_CASE = /^[a-z]+(-[a-z]+)*$/;
@@ -139,12 +152,14 @@ describe('posture.mjs — the closed condition list (RP-280)', () => {
     }
   });
 
-  it('every not-observable condition declares an empty surfaces array', async () => {
+  it('every not-observable condition declares exactly the surfaces that name it as unproven', async () => {
     const { POSTURE_CONDITIONS } = await load();
     for (const id of EXPECTED_NOT_OBSERVABLE) {
       const condition = POSTURE_CONDITIONS.find((c) => c.id === id);
       expect(condition, `${id} missing from POSTURE_CONDITIONS`).toBeDefined();
-      expect(condition?.surfaces, id).toEqual([]);
+      expect([...(condition?.surfaces ?? [])], id).toEqual([
+        ...(EXPECTED_NOT_OBSERVABLE_SURFACES[id] ?? ['(unlisted)']),
+      ]);
     }
   });
 
@@ -268,6 +283,28 @@ describe('preflightVerdict (RP-280)', () => {
     const { preflightVerdict } = await load();
     expect(() => preflightVerdict({ 'hook-wiring-missing': 'fail' })).toThrow();
   });
+
+  it('never returns GO for an outcome that is not exactly pass — false, stale, undefined or a typo cautions', async () => {
+    const { preflightVerdict } = await load();
+    for (const outcome of [false, 'stale', undefined, 'FAIL', 'passed', true]) {
+      expect(
+        preflightVerdict({ 'kill-switch-armed': outcome as unknown as Outcome }),
+        String(outcome),
+      ).toBe('CAUTION');
+    }
+  });
+
+  it('accepts a not-observable condition named on its surface only as unknown, and it does not move the verdict', async () => {
+    const { preflightVerdict } = await load();
+    expect(preflightVerdict({ 'stray-worktree': 'unknown', 'budget-declared': 'unknown' })).toBe(
+      'GO',
+    );
+    expect(preflightVerdict({ 'stray-worktree': 'unknown', 'kill-switch-armed': 'fail' })).toBe(
+      'STOP',
+    );
+    expect(() => preflightVerdict({ 'stray-worktree': 'pass' })).toThrow();
+    expect(() => preflightVerdict({ 'budget-declared': 'fail' })).toThrow();
+  });
 });
 
 describe('doctorStatus (RP-280)', () => {
@@ -314,6 +351,23 @@ describe('doctorStatus (RP-280)', () => {
   it('throws for a preflight-only id reported to doctorStatus', async () => {
     const { doctorStatus } = await load();
     expect(() => doctorStatus('run-dir-inherited', 'fail')).toThrow();
+  });
+
+  it('never returns ok for an outcome that is not exactly pass', async () => {
+    const { doctorStatus } = await load();
+    for (const outcome of [false, 'stale', undefined, 'FAIL', 'passed', true]) {
+      expect(
+        doctorStatus('kill-switch-armed', outcome as unknown as Outcome),
+        String(outcome),
+      ).toBe('warn');
+    }
+  });
+
+  it('reports a not-observable condition named on the doctor surface as warn, and only as unknown', async () => {
+    const { doctorStatus } = await load();
+    expect(doctorStatus('codex-hook-trust', 'unknown')).toBe('warn');
+    expect(() => doctorStatus('codex-hook-trust', 'pass')).toThrow();
+    expect(() => doctorStatus('codex-hook-trust', 'fail')).toThrow();
   });
 });
 
