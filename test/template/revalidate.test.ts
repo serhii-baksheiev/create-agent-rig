@@ -126,18 +126,22 @@ const isAncestor = async (ancestor: string, descendant: string, cwd: string): Pr
   ).code === 0;
 
 /**
- * A bare `origin` and a working clone on a feature branch that edits `a.txt`.
- * `moveMain` lands a commit on master through a SECOND clone and fetches it into
- * the working clone, so `origin/master` moves without the branch doing anything.
+ * The seven git spawns (init, clone, add, commit, push, checkout, commit)
+ * that build an `origin.git` + feature-branch `clone` are identical on every
+ * call — no case parameterises them — so RP-426 builds that tree ONCE per
+ * file, lazily, on the first case that needs it, rather than once per case.
+ * Each case still gets its own fully independent repository: `gitFixture`
+ * below copies this template into a fresh `mkdtemp` and repoints the clone's
+ * `origin` remote, so no case can observe another's writes. Never written to
+ * directly — only copied from — and cleaned up the same way every other
+ * tmpdir in this file is: not at all; the OS reclaims it.
  */
-const gitFixture = async (): Promise<{
-  clone: string;
-  moveMain: (files: string[], options?: { fetch?: boolean }) => Promise<void>;
-}> => {
-  const root = await mkdtemp(path.join(tmpdir(), 'revalidate-git-'));
+let gitTemplateRoot: Promise<string> | null = null;
+
+const buildGitTemplate = async (): Promise<string> => {
+  const root = await mkdtemp(path.join(tmpdir(), 'revalidate-git-template-'));
   const origin = path.join(root, 'origin.git');
   const clone = path.join(root, 'clone');
-  const other = path.join(root, 'other');
   await mkdir(origin);
   await git(['init', '--bare', '-b', 'master'], origin);
   await git(['clone', '-q', origin, clone], root);
@@ -155,6 +159,28 @@ const gitFixture = async (): Promise<{
   await git(['checkout', '-q', '-b', 'feat/ar-1'], clone);
   await writeFile(path.join(clone, 'a.txt'), 'a.txt on the branch\n');
   await git(['commit', '-q', '-a', '-m', 'branch touches a.txt'], clone);
+  return root;
+};
+
+/**
+ * A bare `origin` and a working clone on a feature branch that edits `a.txt`.
+ * `moveMain` lands a commit on master through a SECOND clone and fetches it into
+ * the working clone, so `origin/master` moves without the branch doing anything.
+ */
+const gitFixture = async (): Promise<{
+  clone: string;
+  moveMain: (files: string[], options?: { fetch?: boolean }) => Promise<void>;
+}> => {
+  if (!gitTemplateRoot) gitTemplateRoot = buildGitTemplate();
+  const template = await gitTemplateRoot;
+  const root = await mkdtemp(path.join(tmpdir(), 'revalidate-git-'));
+  await cp(template, root, { recursive: true });
+  const origin = path.join(root, 'origin.git');
+  const clone = path.join(root, 'clone');
+  const other = path.join(root, 'other');
+  // The copy's `origin.git` sits at a NEW absolute path; the clone's remote
+  // still names the template's own `origin.git` until this repoints it.
+  await git(['remote', 'set-url', 'origin', origin], clone);
 
   const moveMain = async (files: string[], { fetch = true } = {}): Promise<void> => {
     if (!existsSync(other)) await git(['clone', '-q', origin, other], root);
