@@ -187,7 +187,15 @@ export const appendItemRecordLine = (recordPath, line) => {
  * `maxBytes` bound, before any byte is read: a file over the bound is refused
  * whole, never partially read.
  */
-export const readItemRecordFile = (recordPath, { maxBytes }) => {
+export const readItemRecordFile = (recordPath, options) => {
+  // Checked first, file or no file: a bound that is missing or not a
+  // non-negative integer would make the size check below always false.
+  const maxBytes = options?.maxBytes;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new Error(
+      `item-records: maxBytes must be a non-negative integer, got ${String(maxBytes)}.`,
+    );
+  }
   let pathStat;
   try {
     pathStat = lstatSync(recordPath);

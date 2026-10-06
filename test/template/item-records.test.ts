@@ -5,9 +5,10 @@
 // later RP-312 slice can persist artifact evidence per item in
 // `.rig/evidence/<ticket>.jsonl` without a second copy of the same
 // filesystem-safety logic (`invariants.md`'s "one mechanism, one
-// implementation"). `delegated-decision.mjs` itself, and its own test file
-// (`test/template/delegated-decision.test.ts`), are untouched by this slice
-// and stay the regression net.
+// implementation"). `delegated-decision.mjs` was rewired to import the
+// extracted functions from this module; only its own test file
+// (`test/template/delegated-decision.test.ts`) was untouched by this slice
+// and stays the regression net.
 //
 // This file pins the new module's contract on its own:
 //
@@ -17,8 +18,10 @@
 //   appendItemRecordLine(path, line)                      -> void     (throws on a symlink/hard link/directory)
 //   readItemRecordFile(path, { maxBytes })                -> { exists: false } | { exists: true, text }
 //
-// The module does not exist yet — every test here is expected to fail with
-// `Cannot find module`/`ERR_MODULE_NOT_FOUND`, never for any other reason.
+// The module exists (merged in PR #427); this file pins its contract,
+// including two cases advisories flagged on that PR that were not yet
+// pinned: an unbounded `readItemRecordFile` when `maxBytes` is missing or
+// unusable, and `ensureItemRecordDir`'s refusal of an unknown kind.
 //
 // Independent-oracle rule (`invariants.md`): every expected path below is
 // built with `path.join` by hand, never computed by calling the module under
@@ -188,6 +191,17 @@ describe('item-records.mjs — ensureItemRecordDir', () => {
     const { ensureItemRecordDir } = await loadModule();
     expect(() => ensureItemRecordDir(dir, 'decisions')).toThrow();
   });
+
+  const UNKNOWN_KINDS = ['../x', 'claims', ''];
+  it.each(UNKNOWN_KINDS)('refuses the unknown kind %j, creating nothing at all', async (kind) => {
+    const dir = await newProjectDir();
+    const { ensureItemRecordDir } = await loadModule();
+
+    expect(() => ensureItemRecordDir(dir, kind)).toThrow(/^item-records:/);
+
+    await expect(readdir(path.join(dir, '.rig'))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readdir(path.join(dir, 'x'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
 });
 
 describe('item-records.mjs — appendItemRecordLine', () => {
@@ -298,6 +312,74 @@ describe('item-records.mjs — readItemRecordFile', () => {
     await writeFile(filePath, 'x'.repeat(17));
 
     expect(() => readItemRecordFile(filePath, { maxBytes: 16 })).toThrow(/16/);
+  });
+
+  // `readItemRecordFile`'s own type signature requires `{ maxBytes: number }`,
+  // but the cases below are exactly the ones a caller — or a mistake in one —
+  // can still produce at runtime: a missing option, a non-numeric value, or a
+  // value `fstat`'s `size > maxBytes` comparison cannot use as a bound. Each
+  // one is cast past the type on purpose; the production code is what must
+  // reject it, not the compiler.
+  type LooseReadItemRecordFile = (filePath: string, options?: unknown) => ExistsResult;
+  const callLoosely = (fn: ItemRecordsModule['readItemRecordFile']) =>
+    fn as unknown as LooseReadItemRecordFile;
+
+  const BAD_MAX_BYTES: Array<[string, unknown]> = [
+    ['missing from the options object', {}],
+    ['NaN', { maxBytes: NaN }],
+    ['Infinity', { maxBytes: Infinity }],
+    ['negative', { maxBytes: -1 }],
+    ['non-integer', { maxBytes: 1.5 }],
+    ['a numeric string', { maxBytes: '10' }],
+    ['options object itself missing', undefined],
+  ];
+
+  it.each(BAD_MAX_BYTES)(
+    'throws naming maxBytes, before reading any byte, when maxBytes is %s',
+    async (_label, options) => {
+      const dir = await newProjectDir();
+      const { ensureItemRecordDir, readItemRecordFile } = await loadModule();
+      const recordsDir = ensureItemRecordDir(dir, 'decisions');
+      const filePath = path.join(recordsDir, 'RP-1.jsonl');
+      await writeFile(filePath, 'x'.repeat(400_000));
+
+      expect(() => callLoosely(readItemRecordFile)(filePath, options)).toThrow(
+        /^item-records:.*maxBytes/,
+      );
+    },
+  );
+
+  it.each(BAD_MAX_BYTES)(
+    'throws naming maxBytes for an absent file too, when maxBytes is %s (the argument is checked first)',
+    async (_label, options) => {
+      const dir = await newProjectDir();
+      const { readItemRecordFile } = await loadModule();
+      const filePath = path.join(dir, '.rig', 'decisions', 'RP-1.jsonl');
+
+      expect(() => callLoosely(readItemRecordFile)(filePath, options)).toThrow(
+        /^item-records:.*maxBytes/,
+      );
+    },
+  );
+
+  it('reads an empty file whole when maxBytes is 0', async () => {
+    const dir = await newProjectDir();
+    const { ensureItemRecordDir, readItemRecordFile } = await loadModule();
+    const recordsDir = ensureItemRecordDir(dir, 'decisions');
+    const filePath = path.join(recordsDir, 'RP-1.jsonl');
+    await writeFile(filePath, '');
+
+    expect(readItemRecordFile(filePath, { maxBytes: 0 })).toEqual({ exists: true, text: '' });
+  });
+
+  it('refuses a 1-byte file when maxBytes is 0', async () => {
+    const dir = await newProjectDir();
+    const { ensureItemRecordDir, readItemRecordFile } = await loadModule();
+    const recordsDir = ensureItemRecordDir(dir, 'decisions');
+    const filePath = path.join(recordsDir, 'RP-1.jsonl');
+    await writeFile(filePath, 'x');
+
+    expect(() => readItemRecordFile(filePath, { maxBytes: 0 })).toThrow(/0/);
   });
 
   it("refuses a symlink to a regular file elsewhere, never the target's own content", async (ctx) => {
