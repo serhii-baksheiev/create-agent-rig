@@ -28,6 +28,8 @@ type Fragment = {
   inspectionRefusal?: string;
   remedy?: string;
   appliesToAll?: boolean;
+  /** RP-214: the fragment stands for a path that stops existing. */
+  removes?: boolean;
 };
 
 const load = () =>
@@ -848,5 +850,69 @@ describe('editFragments: a plain POSIX absolute path with a huge component count
     expect(fragment?.inspectionRefusal).toMatch(/limit/i);
     expect(fragment?.remedy).toBeTruthy();
     expect(fragment?.remedy).toMatch(/split|smaller/i);
+  });
+});
+
+/**
+ * RP-366 — in the `*** Move to:` flush (`edit-input.mjs`, the second
+ * `repositoryPatchPath` call just below the `current.moveTo` check), the
+ * destination resolves first and then the move SOURCE is resolved a second
+ * time to produce the removal fragment for the vacated path. The fragment
+ * this names is the `removes: true` one pushed for the source path, not the
+ * earlier content fragment pushed under the destination's own `filePath`
+ * (that one is worded correctly already, via `movedFragment`'s own "move
+ * source is outside the repository root").
+ */
+const applyPatchPayload = (command: string) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'apply_patch',
+  tool_input: { command },
+  cwd: repoRoot,
+});
+
+describe('editFragments: an apply_patch move names the role that failed to resolve (RP-366)', () => {
+  it('names the move source, not the destination, when only the source of an apply_patch move cannot be resolved', async () => {
+    const { editFragments } = await load();
+
+    const sourceOutside = [
+      '*** Begin Patch',
+      '*** Update File: ../outside-rp366-source.txt',
+      '*** Move to: notes/moved.txt',
+      '@@',
+      '+// moved',
+      '*** End Patch',
+    ].join('\n');
+    const sourceFragments = editFragments(applyPatchPayload(sourceOutside));
+    const sourceRemovalRefusal = sourceFragments.find(
+      (fragment) => fragment.removes && fragment.inspectionRefusal,
+    );
+
+    expect(
+      sourceRemovalRefusal?.inspectionRefusal,
+      `fragments were: ${JSON.stringify(sourceFragments)}`,
+    ).toBeTruthy();
+    expect(sourceRemovalRefusal?.inspectionRefusal).toMatch(/source/i);
+    expect(sourceRemovalRefusal?.inspectionRefusal).not.toMatch(/destination/i);
+
+    // Both-direction control, in the same test: a move whose DESTINATION
+    // cannot be resolved (source stays inside the repo) must still say
+    // "destination" — proving the assertions above distinguish the roles
+    // rather than merely forbidding one word everywhere.
+    const destinationOutside = [
+      '*** Begin Patch',
+      '*** Update File: notes/a.txt',
+      '*** Move to: ../outside-rp366-dest.txt',
+      '@@',
+      '+// moved',
+      '*** End Patch',
+    ].join('\n');
+    const destinationFragments = editFragments(applyPatchPayload(destinationOutside));
+    const destinationRefusal = destinationFragments.find((fragment) => fragment.inspectionRefusal);
+
+    expect(
+      destinationRefusal?.inspectionRefusal,
+      `fragments were: ${JSON.stringify(destinationFragments)}`,
+    ).toBeTruthy();
+    expect(destinationRefusal?.inspectionRefusal).toMatch(/destination/i);
   });
 });
