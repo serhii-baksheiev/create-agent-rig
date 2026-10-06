@@ -1560,23 +1560,27 @@ describe('delegated-decision.mjs — recording bypasses no mechanical gate', () 
 // production function the CLI itself calls.
 describe('delegated-decision.mjs resolve — turns a per-item stop into one of three resolutions', () => {
   // Every ITEM_STOPS id, with its independently-declared expected resolution
-  // UNDER DELEGATED AUTHORITY. `gate-round-cap`/`premise-false`/
-  // `elevated-path-scope` each name a decision `DELEGABLE_DECISIONS` lists
-  // (`extra-gate-round`/`scope-correction`/`elevated-change-acceptance`), so a
-  // delegated run may decide and continue; the three `work-blocked` stops and
-  // the two decision-less `decision-needed` stops (`surprise-scope`,
-  // `invariant-conflict`) always escalate; `external-blocker` is a hard
-  // external boundary and always stops the run.
+  // UNDER DELEGATED AUTHORITY. RP-342 round 1 (controller decision, Jira
+  // RP-342 comment 23320): `elevated-path-scope` is now the ONLY catalogued
+  // stop that names a decision `DELEGABLE_DECISIONS` lists
+  // (`elevated-change-acceptance`), so it is the only one a delegated run may
+  // decide and continue past. `gate-round-cap` and `premise-false` now name
+  // no delegable decision at all and always escalate, under every
+  // authority including `delegated`; the three `work-blocked` stops, the
+  // two decision-less `decision-needed`
+  // stops (`surprise-scope`, `invariant-conflict`) and `external-blocker`
+  // (now `work-blocked`, a per-item wall rather than a run-level one) all
+  // always escalate the item — none of them stops the run.
   const UNDER_DELEGATED: Array<[string, string]> = [
-    ['gate-round-cap', 'decide-and-continue'],
-    ['premise-false', 'decide-and-continue'],
+    ['gate-round-cap', 'escalate-item'],
+    ['premise-false', 'escalate-item'],
     ['elevated-path-scope', 'decide-and-continue'],
     ['three-strikes', 'escalate-item'],
     ['attempt-budget', 'escalate-item'],
     ['blocking-verdict', 'escalate-item'],
     ['surprise-scope', 'escalate-item'],
     ['invariant-conflict', 'escalate-item'],
-    ['external-blocker', 'stop-run'],
+    ['external-blocker', 'escalate-item'],
   ];
 
   it.each(UNDER_DELEGATED)(
@@ -1592,12 +1596,13 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     },
   );
 
-  // The eight stops that CAN decide-and-continue only under delegated — under
-  // owner, or under an authority word the contract does not recognise at
-  // all, none of them may. `external-blocker` is checked separately below:
-  // it stops the run under every authority, delegated included (see
-  // UNDER_DELEGATED above), so it has no place in a "never
-  // decide-and-continue" table.
+  // RP-342 round 1: `elevated-path-scope` is now the only catalogued stop
+  // that can ever decide-and-continue, and only under exactly `delegated`
+  // (see UNDER_DELEGATED above). Every other catalogued stop — including
+  // `external-blocker`, now `work-blocked` rather than a run-level wall —
+  // never resolves to decide-and-continue under any authority, so checking
+  // "not decide-and-continue under owner/malformed" for all of them,
+  // `elevated-path-scope` included, is this table's job.
   const NEVER_DECIDES_OUTSIDE_DELEGATED = [
     'three-strikes',
     'attempt-budget',
@@ -1607,6 +1612,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     'elevated-path-scope',
     'surprise-scope',
     'invariant-conflict',
+    'external-blocker',
   ];
 
   it.each(NEVER_DECIDES_OUTSIDE_DELEGATED)(
@@ -1635,7 +1641,12 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     },
   );
 
-  it('external-blocker resolves to stop-run under owner too', async () => {
+  // RP-342 round 1: `external-blocker` moved from `hard-external-boundary`
+  // to `work-blocked` — it escalates the ITEM under every authority, and
+  // never stops the run at all, owner included. These two cases pin that
+  // it is specifically NOT `stop-run` (the under-delegated case is pinned
+  // by UNDER_DELEGATED above).
+  it('external-blocker resolves to escalate-item under owner, never stop-run', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
     await writeRunState(runDir, { decisionAuthority: 'owner' });
@@ -1646,10 +1657,11 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     );
     expect(result.code, result.out).toBe(0);
     const parsed = JSON.parse(result.stdout) as { resolution: string };
-    expect(parsed.resolution).toBe('stop-run');
+    expect(parsed.resolution).toBe('escalate-item');
+    expect(parsed.resolution).not.toBe('stop-run');
   });
 
-  it('external-blocker resolves to stop-run under a malformed authority too', async () => {
+  it('external-blocker resolves to escalate-item under a malformed authority too, never stop-run', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
     await writeRunState(runDir, { decisionAuthority: 'nonsense' });
@@ -1660,7 +1672,8 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     );
     expect(result.code, result.out).toBe(0);
     const parsed = JSON.parse(result.stdout) as { resolution: string };
-    expect(parsed.resolution).toBe('stop-run');
+    expect(parsed.resolution).toBe('escalate-item');
+    expect(parsed.resolution).not.toBe('stop-run');
   });
 
   // --- the --json shape, and the pinned key order -------------------------
@@ -1669,14 +1682,17 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     const { dir } = await newProject();
     const runDir = await newRunDir();
     await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    // RP-342 round 1: `elevated-path-scope` is the only catalogued stop that
+    // still names a delegable decision, so it is the one that exercises a
+    // non-null `decision` and a `decide-and-continue` resolution here.
     const result = await runCli(
-      ['resolve', '--stop', 'gate-round-cap', '--json'],
+      ['resolve', '--stop', 'elevated-path-scope', '--json'],
       dir,
       envFor(runDir),
     );
     expect(result.code, result.out).toBe(0);
     expect(result.stdout).toBe(
-      '{"stop":"gate-round-cap","stopClass":"decision-needed","decision":"extra-gate-round",' +
+      '{"stop":"elevated-path-scope","stopClass":"decision-needed","decision":"elevated-change-acceptance",' +
         '"authority":"delegated","resolution":"decide-and-continue"}\n',
     );
   });

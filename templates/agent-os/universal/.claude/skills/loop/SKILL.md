@@ -101,7 +101,7 @@ absent authority is the owner (`docs/decisions/decision-authority.md`). Pass the
 intent to preflight exactly as it was given:
 
 ```bash
-node .claude/scripts/preflight.mjs --unattended --decision-authority delegated   # the intent as given
+node .claude/scripts/preflight.mjs --unattended --decision-authority <owner|delegated>   # the intent as given
 ```
 
 A malformed authority word refuses before any report — pinned in the
@@ -161,7 +161,7 @@ Then record the run's decision authority in that directory, so every later
 step reads it from a file rather than from this session's memory:
 
 ```bash
-RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/run-state.mjs authority delegated   # or owner
+RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/run-state.mjs authority <owner|delegated>   # the word preflight was given
 ```
 
 It refuses a missing word and writes nothing — the generator's
@@ -593,7 +593,8 @@ node --input-type=module -e '
 
 Per-task stops (three strikes, attempt budget, invariant conflict, a blocking
 reviewer verdict, an exhausted gate-round cap, a false premise in the item itself)
-**do not end the run**: escalate that item (§6) and take the next one.
+**do not end the run**: escalate that item (§6) and take the next one. §6.0
+first asks the run's authority whether a stop may be decided instead.
 
 The run-level conditions are in `stopConditionOf` in `core.mjs`, checked in
 severity order: **queue unreadable** · **runtime regression** · **kill switch** ·
@@ -809,7 +810,7 @@ authority this run recorded in §1. Name the stop by its id:
 | a reviewer returned a blocking verdict | `blocking-verdict` |
 | the gate-round cap is exhausted | `gate-round-cap` |
 | the check-premises skill returned `PREMISE FALSE` on the item | `premise-false` |
-| the work reaches a declared elevated path that is none of the Tier-2 change kinds | `elevated-path-scope` |
+| a change that is Tier 2 only because it reaches a declared elevated path is ready to merge — none of the Tier-2 change kinds, gates SHIP, required checks green on its head | `elevated-path-scope` |
 | the work needs a Tier-2 change kind nobody planned (`autonomy.md`, "Surprise scope") | `surprise-scope` |
 | two rules collide (`autonomy.md`, "Invariant conflict") | `invariant-conflict` |
 | an owner or external dependency this session cannot resolve | `external-blocker` |
@@ -832,12 +833,28 @@ resolutions":
   ```bash
   RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/delegated-decision.mjs record \
     --ticket <id> --decision <the decision resolve named> --summary "<what was decided, and why>" \
-    [--evidence "<the finding or command it rests on>"] [--release <label>] --post
+    [--evidence "<the finding or command it rests on>"] [--release <label>] [--post]
   ```
 
+  `--post` belongs only on a queue whose adapter has a comment thread, and a
+  posted comment moves the item's commentary, so the close's BEFORE_CLOSE
+  check will hold on it (§9 says how to record that outcome). Commit
+  `.rig/decisions/<ticket>.jsonl` with the item's branch, as `.rig/claims/`
+  is, or a resume on another machine has nothing to read.
+
+  If `record` exits non-zero, read `delegated-decision.mjs list --ticket <id>`
+  before deciding anything: a decision listed there was made and only
+  the tracker comment failed; one that is not listed was not made, and the
+  stop escalates instead.
+
+  For `elevated-path-scope` the decision is `elevated-change-acceptance`: after
+  recording it, apply the `human-review` label with a PR comment that names the
+  recorded decision and says it is a delegated acceptance, not a human reading
+  of the diff, then merge on the usual criterion. Under owner authority the
+  same stop escalates, which here means leaving the merge to the owner.
+
   A decide-and-continue is not an escalation: the item is not marked, and no
-  escalation is counted toward §3's "two in a row". A `record` that refuses
-  means the decision was not made — escalate instead.
+  escalation is counted toward §3's "two in a row".
 - `escalate-item` — the steps below, unchanged: the item is parked and the run
   takes the next one.
 - `stop-run` — the run-scoped channel at the end of this section.

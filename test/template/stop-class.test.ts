@@ -104,11 +104,17 @@ const EXPECTED_ITEM_STOPS: ItemStop[] = [
   { id: 'three-strikes', stopClass: 'work-blocked', decision: null },
   { id: 'attempt-budget', stopClass: 'work-blocked', decision: null },
   { id: 'blocking-verdict', stopClass: 'work-blocked', decision: null },
-  { id: 'gate-round-cap', stopClass: 'decision-needed', decision: 'extra-gate-round' },
-  { id: 'premise-false', stopClass: 'decision-needed', decision: 'scope-correction' },
+  // RP-342 round 1 (controller decision, Jira RP-342 comment 23320):
+  // `gate-round-cap` and `premise-false` carry no delegable decision at all
+  // — they stay `decision-needed` but always escalate, under every
+  // authority including `delegated`.
+  { id: 'gate-round-cap', stopClass: 'decision-needed', decision: null },
+  { id: 'premise-false', stopClass: 'decision-needed', decision: null },
   // Reaching a declared elevated path that is none of the Tier-2 change kinds
   // is delegable; touching a Tier-2 change kind (autonomy.md, "Surprise
-  // scope") stays the owner's — RP-341 round 1.
+  // scope") stays the owner's — RP-341 round 1. After RP-342 round 1 this is
+  // the only catalogued stop that can reach decide-and-continue, and only
+  // under exactly `delegated`.
   {
     id: 'elevated-path-scope',
     stopClass: 'decision-needed',
@@ -116,7 +122,9 @@ const EXPECTED_ITEM_STOPS: ItemStop[] = [
   },
   { id: 'surprise-scope', stopClass: 'decision-needed', decision: null },
   { id: 'invariant-conflict', stopClass: 'decision-needed', decision: null },
-  { id: 'external-blocker', stopClass: 'hard-external-boundary', decision: null },
+  // RP-342 round 1: `external-blocker` is a per-item wall, not a run-level
+  // one — it escalates the ITEM (`escalate-item`), it never stops the run.
+  { id: 'external-blocker', stopClass: 'work-blocked', decision: null },
 ];
 
 // The resolution each catalogued item stop reaches under exactly `delegated`
@@ -125,12 +133,12 @@ const EXPECTED_RESOLUTION_UNDER_DELEGATED: Record<string, Resolution> = {
   'three-strikes': 'escalate-item',
   'attempt-budget': 'escalate-item',
   'blocking-verdict': 'escalate-item',
-  'gate-round-cap': 'decide-and-continue',
-  'premise-false': 'decide-and-continue',
+  'gate-round-cap': 'escalate-item',
+  'premise-false': 'escalate-item',
   'elevated-path-scope': 'decide-and-continue',
   'surprise-scope': 'escalate-item',
   'invariant-conflict': 'escalate-item',
-  'external-blocker': 'stop-run',
+  'external-blocker': 'escalate-item',
 };
 
 const EXPECTED_RUN_STOP_CLASS: Record<string, StopClass> = {

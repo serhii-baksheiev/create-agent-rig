@@ -77,6 +77,14 @@ describe('loop skill §1 — launching and declaring the run authority', () => {
   });
 });
 
+describe('loop skill §3 — what keeps the loop running references §6.0', () => {
+  it('names §6.0 between "## 3. What keeps the loop running" and "## 4. Budget"', async () => {
+    const content = await readFile(skillPath, 'utf8');
+    const section3 = sectionBetween(content, '## 3. What keeps the loop running', '## 4. Budget');
+    expect(section3).toContain('§6.0');
+  });
+});
+
 describe('loop skill §6 — resolving a per-item stop through the authority contract', () => {
   it('names the resolve and record commands, and all three resolution words', async () => {
     const content = await readFile(skillPath, 'utf8');
@@ -100,6 +108,50 @@ describe('loop skill §6 — resolving a per-item stop through the authority con
     const NEGATED_ESCALATION =
       /decide-and-continue[^.]{0,200}(?:not|never)[^.]{0,200}escalat|(?:not|never)[^.]{0,200}escalat[^.]{0,200}decide-and-continue/i;
     expect(section6).toMatch(NEGATED_ESCALATION);
+  });
+
+  it('on a non-zero record exit, tells the run to read delegated-decision.mjs list --ticket before deciding whether the decision was made', async () => {
+    const content = await readFile(skillPath, 'utf8');
+    const section6 = sectionBetween(content, '## 6. Escalation', '## 6a.');
+    // Paragraph-scoped (split on a blank line) rather than "found anywhere in
+    // §6", so the two clauses are pinned as one coherent instruction rather
+    // than two words that merely both occur somewhere in the section.
+    const paragraphs = section6.split(/\n\s*\n/);
+    const paragraph = paragraphs.find(
+      (p) => /exits non-zero/i.test(p) && p.includes('list --ticket'),
+    );
+    expect(
+      paragraph,
+      'no paragraph in §6 ties a non-zero `record` exit to reading `delegated-decision.mjs list --ticket` before deciding whether the decision was made',
+    ).toBeTruthy();
+  });
+
+  it('ties elevated-path-scope to the merge: human-review names the same paragraph, table row, or §6.0 subsection', async () => {
+    const content = await readFile(skillPath, 'utf8');
+    const section6 = sectionBetween(content, '## 6. Escalation', '## 6a.');
+    // §6.0 is the subsection the stop table itself lives in. §6 carries no
+    // other `#`-heading after it (checked: only "### 6.0" appears between
+    // "## 6. Escalation" and "## 6a."), so §6.0 runs from its own heading to
+    // the end of §6 — there is nothing else to bound it against.
+    const section60Start = section6.indexOf('### 6.0');
+    expect(section60Start, '"### 6.0" must exist in §6').toBeGreaterThan(-1);
+    const section60 = section6.slice(section60Start);
+    const paragraphs = section60.split(/\n\s*\n/);
+    const sameParagraph = paragraphs.find(
+      (p) => p.includes('elevated-path-scope') && p.includes('human-review'),
+    );
+    const sameTableRow = section60
+      .split('\n')
+      .find(
+        (line) =>
+          line.trim().startsWith('|') &&
+          line.includes('elevated-path-scope') &&
+          line.includes('human-review'),
+      );
+    expect(
+      Boolean(sameParagraph) || Boolean(sameTableRow),
+      '§6.0 must name human-review in the same paragraph or table row as elevated-path-scope',
+    ).toBe(true);
   });
 
   it('every ITEM_STOPS id is named in the §6 stop table, and vice versa', async () => {
