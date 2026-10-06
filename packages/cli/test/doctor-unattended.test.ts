@@ -213,34 +213,32 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
   });
 
   it('answers kill-switch-armed exactly as the brake preflight reads does, including an AGENT_LOOP_STOP path', async () => {
-    const { brakeIsOn } = (await import(
-      pathToFileURL(
-        path.join(
-          repoRoot,
-          'templates',
-          'agent-os',
-          'universal',
-          '.claude',
-          'scripts',
-          'stop-flag.mjs',
-        ),
-      ).href
-    )) as { brakeIsOn: (env: NodeJS.ProcessEnv) => string | null };
     await initProject(repo, { withWorkflow: true });
+    // The reference is the copy init installed into the rig — the one preflight
+    // runs, with the project name already filled in — never the template.
+    const { brakeIsOn, stopFlags } = (await import(
+      pathToFileURL(path.join(repo, '.claude', 'scripts', 'stop-flag.mjs')).href
+    )) as {
+      brakeIsOn: (env: NodeJS.ProcessEnv) => string | null;
+      stopFlags: (env: NodeJS.ProcessEnv) => string[];
+    };
     const extra = path.join(home, 'extra-brake');
     const env = { HOME: home, AGENT_LOOP_STOP: extra };
-    const seen: Array<[boolean, string | undefined]> = [];
-    seen.push([
+    const homeBrake = stopFlags({ HOME: home })[0]!;
+    const row = async (): Promise<[boolean, string | undefined]> => [
       brakeIsOn(env) !== null,
       condition(await doctor(env), 'kill-switch-armed')?.outcome,
-    ]);
+    ];
+    const seen = [await row()];
+    await mkdir(path.dirname(homeBrake), { recursive: true });
+    await writeFile(homeBrake, '');
+    seen.push(await row());
+    await rm(homeBrake);
     await writeFile(extra, '');
-    seen.push([
-      brakeIsOn(env) !== null,
-      condition(await doctor(env), 'kill-switch-armed')?.outcome,
-    ]);
+    seen.push(await row());
     expect(seen).toEqual([
       [false, 'pass'],
+      [true, 'fail'],
       [true, 'fail'],
     ]);
   });
