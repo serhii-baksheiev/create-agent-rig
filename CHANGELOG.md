@@ -15,7 +15,61 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.2.1 (release candidate)
+## 1.3.0 (release candidate)
+
+**1.3.0 is additive on the 1.2 line.** It adds upstream
+[Probity](https://github.com/nizos/probity) (`@nizos/probity` 1.10.1) as an
+opt-in TDD-enforcement provider for Claude Code and Codex, behind a thin
+Rig-owned boundary: Rig owns the setup, the hook that hands write actions to
+Probity, the diagnostics and owned-only removal; Probity owns the methodology
+and every allow/deny decision. Nothing changes for a project that does not
+opt in. Nothing in the 1.2 contract is removed or renamed.
+
+### Added
+
+- **`create-agent-rig setup add probity`** (`--harness claude-code|codex`,
+  `--dry-run`, `--yes`, `--adopt`) records the integration in
+  `.rig/integrations.json` at the pinned version 1.10.1 and, when the project
+  has no Probity config yet, writes a `probity.config.mjs` that scopes
+  `enforceTdd()` to `src/**`, `lib/**`, `test/**` and `tests/**`. Rig never
+  installs the package or runs Probity; the plan names the dev-dependency
+  install as a manual step. An existing config is used only with `--adopt`
+  and is never rewritten. `setup remove probity` deletes the generated config
+  only while it is still Rig's own bytes; an edited or adopted config is kept
+  and named in the result (RP-416).
+- **A `probity-gate` PreToolUse hook** in both harnesses' write-tool wiring.
+  It does nothing unless `.rig/integrations.json` selects Probity for that
+  harness; then it hands the unmodified write payload to the project's own
+  `node_modules/@nizos/probity` launcher and relays its decision. Commands
+  are not forwarded, so Probity's command rules are not enforced through
+  Rig (RP-415).
+- **`doctor` reports Probity per harness**: `config-missing` (fail),
+  `launcher-missing`, `version-drift`, `wiring-missing`, `config-drift`
+  (warn) or `wired`, plus a top-level `probity` state. Doctor never runs
+  Probity or a model, so runtime health stays `unverified` (RP-416).
+
+### Verification and limits
+
+- A live pilot on Claude Code with the packed candidate showed a
+  production-first write blocked, red → green → refactor proceeding, two
+  concurrent sessions unaffected by each other, `setup remove` restoring
+  normal behaviour, and a missing launcher or config reported by the gate and
+  doctor (RP-417).
+- Codex is wired and covered by tests with a stand-in launcher; live Codex
+  enforcement was not observed for this release. Probity 1.10.1 bundles Codex
+  CLI 0.154, which rejected a current configured model in discovery; a
+  package-manager override of `@openai/codex` to 0.160 cleared it.
+- Each gated write is sent by Probity, with recent session events and the
+  file's content, to the model provider the agent already uses; Probity adds
+  tokens and a few seconds per gated write.
+
+### Generator repository (not a rig-facing change)
+
+- This repository enforces TDD on its own code with Probity, enabled through
+  `setup add probity --adopt` and installed from a private workspace package
+  so the `npx github:` install path never downloads it (RP-418).
+
+## 1.2.1
 
 **1.2.1 is a reliability patch on the 1.2 line.** It fixes defects found while
 running the 1.2 release loop itself — `create` hanging on a stalled git,

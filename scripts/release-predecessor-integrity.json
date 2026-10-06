@@ -6,5 +6,9 @@
   "1.2.0": {
     "integrity": "sha512-Nn5UAlV65/NKPdrPS1IlTOwfJZZe31R1QoNnBCYtXcsxSHaqzrLjNPAoDUeprpg/o3BqEEtGCKxwkbX1BwjcXg==",
     "shasum": "802bbe5eb997ef613edd03ea959956b209595f4c"
+  },
+  "1.2.1": {
+    "integrity": "sha512-rS7mnJHFo2l2FPPg4v57bP0qYBtFwj7Jtd8yL9aZ20IRY79fT/mnMuntRtAbd0h0ppa+sOMgxGEbIajk/z1v/A==",
+    "shasum": "e8f6ef966b25be85d36b61cd13f762f095735b1c"
   }
 }
