@@ -85,6 +85,19 @@ human-readable output too, one line per condition". Look up an id in
 failed, `warn` is an advisory one or one that could not be judged, `ok` passed.
 `docs/command-contract.md` describes the JSON shape.
 
+After that block come five `authority:` lines: execution mode, decision
+authority, publication authority, safety gates and kill switch:
+`packages/cli/test/doctor-authority.test.ts` › "prints execution mode, decision
+authority, publication authority, safety gates and kill switch". Execution mode
+reads `unattended` only when an armed unattended flag for this checkout is
+readable; otherwise it reads `unknown`, never `attended`. Decision authority
+then comes from that run's `state.json`. With no armed run it reads `owner`,
+the contract's default, which is not a measurement of any session:
+› "is owner when no unattended flag is armed — no run declared any authority".
+Without a rig manifest there is no project name to find the flag by, and both
+read `unknown`: › "reports execution mode and decision authority unknown when
+there is no rig manifest to name the flag".
+
 ## Kill switch and stopping
 
 The brake is a file: `touch ~/.claude/<project>-loop-STOP`. While it exists,

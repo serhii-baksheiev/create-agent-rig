@@ -17,6 +17,7 @@ import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
 import { inspectUnattended, type Outcome } from '../integrations/doctor-unattended.js';
+import { inspectAuthority } from '../integrations/doctor-authority.js';
 import { packageVersion } from '../lib/version.js';
 import type { runProviderProcess } from '../integrations/spawn.js';
 import { locateRegion, MAX_AGENTS_MD_REGION_BYTES } from '../lib/agents-md-region.js';
@@ -519,6 +520,17 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
         ]),
       ),
     }));
+  const unattended = await inspectUnattended({
+    repoDir: options.cwd,
+    env: options.env ?? process.env,
+    guards,
+    tracker: trackerOutcome(trackerState),
+  });
+  const authority = await inspectAuthority({
+    repoDir: options.cwd,
+    env: options.env ?? process.env,
+    unattended,
+  });
   const report = {
     schemaVersion: 1,
     status: status === 'pass' ? 'ok' : status,
@@ -555,12 +567,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                           : 'Review create-agent-rig setup list and the intended provider wiring.',
     })),
     integrations,
-    unattended: await inspectUnattended({
-      repoDir: options.cwd,
-      env: options.env ?? process.env,
-      guards,
-      tracker: trackerOutcome(trackerState),
-    }),
+    unattended,
+    authority,
     memory: { ...memory, status: memory.status === 'pass' ? 'ok' : memory.status },
     probity: intent?.entries.some((entry) => entry.id === 'probity')
       ? {
@@ -596,6 +604,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           ...report.unattended.conditions.map(
             (condition) => `${condition.status}: unattended:${condition.id}: ${condition.outcome}`,
           ),
+          `authority: execution mode: ${report.authority.executionMode}`,
+          `authority: decision authority: ${report.authority.decisionAuthority}`,
+          `authority: publication authority: ${report.authority.publicationAuthority}`,
+          `authority: safety gates: ${report.authority.safetyGates}`,
+          `authority: kill switch: wired ${report.authority.killSwitch.wired}, armed ${report.authority.killSwitch.armed}`,
         ].join('\n')}\n`,
     stderr: '',
   };

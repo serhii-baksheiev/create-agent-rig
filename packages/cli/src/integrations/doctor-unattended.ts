@@ -30,7 +30,14 @@ type PostureModule = {
 
 type StopFlagModule = { stopFlags: (env: NodeJS.ProcessEnv) => string[] };
 
-const PROJECT_PLACEHOLDER = ['__PROJECT', 'NAME__'].join('_');
+/**
+ * Exported so `doctor-authority.ts` substitutes the same literal rather than
+ * carrying its own second copy (`.claude/rules/invariants.md`, "one spelling
+ * of a fact") — it faces the same `__PROJECT_NAME__` placeholder problem for
+ * `unattended-flag.mjs`'s `FLAG_BASENAME` that this file already solved for
+ * `stop-flag.mjs`'s own flag names below.
+ */
+export const PROJECT_PLACEHOLDER = ['__PROJECT', 'NAME__'].join('_');
 
 const loadScript = async <T>(...rel: string[]): Promise<T> =>
   (await import(
@@ -124,7 +131,8 @@ async function gitignoreEntries(repoDir: string, layers: readonly string[]): Pro
   return required.every((entry) => lines.has(entry)) ? 'pass' : 'fail';
 }
 
-async function readManifest(repoDir: string): Promise<RigManifest | null> {
+/** Exported so `doctor-authority.ts` reads the same manifest the same way. */
+export async function readManifest(repoDir: string): Promise<RigManifest | null> {
   const source = await readBounded(repoDir, MANIFEST_REL, 1024 * 1024);
   if (source.status !== 'ok') return null;
   return parseManifest(source.bytes.toString('utf8'));

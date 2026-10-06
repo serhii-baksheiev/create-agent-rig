@@ -589,6 +589,21 @@ pins these tests:
 - "answers kill-switch-armed exactly as the brake preflight reads does, including an AGENT_LOOP_STOP path"
 - "answers detection-contract-invalid exactly as preflight does, valid, malformed and absent"
 
+Controller authority (RP-343) is a separate `authority` object after
+`unattended`. Its first four keys are the authority contract's posture object
+(`.claude/scripts/lib/authority.mjs`, read from this package's own copy):
+`schemaVersion`, `executionMode`, `decisionAuthority` and
+`publicationAuthority`. Then come `safetyGates` and `killSwitch`
+(`{ wired, armed }`), derived from the `unattended` conditions above. It is
+observational and changes neither the top-level `status` nor the exit code.
+`packages/cli/test/doctor-authority.test.ts` pins these tests:
+
+- "reports exactly schemaVersion, executionMode, decisionAuthority, publicationAuthority, safetyGates, killSwitch, in that order"
+- "is unknown when no unattended flag is armed for this checkout — absence says nothing about who is watching"
+- "is unknown, never owner, when the armed flag itself is unreadable (corrupt JSON) — not just when its run directory’s state.json is"
+- "finds the flag armed for the inspected repo even when CLAUDE_PROJECT_DIR names a different directory"
+- "delegation never changes the exit code or any other field: owner and delegated state.json on otherwise-identical fixtures agree on everything but authority"
+
 The aggregate command also inspects the machine-scoped custom Memory manifest.
 It checks the child's version handshake before requesting its doctor response.
 An incompatible child is unusable and its doctor is never invoked. This is a
