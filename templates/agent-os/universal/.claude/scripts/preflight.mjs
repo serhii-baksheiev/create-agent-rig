@@ -344,16 +344,17 @@ export const report = (checks, { unchecked = UNCHECKED_CONDITIONS, authority } =
 
 /**
  * `--unattended` and `--decision-authority <value>` (space-separated only —
- * `--decision-authority=<value>` is a form this script does not read, and
- * reading it as "no value" would silently report `owner`, so it is refused
- * instead). Returns `{ error: true }` when the flag cannot be parsed into a
- * value the contract recognises; the caller refuses before producing any
- * report.
+ * an `=` form or a repeated `--decision-authority` is a form this script does
+ * not read, and reading it as "no value" would silently report a default, so
+ * it is refused instead). Returns `{ error: true }` when the flags cannot be
+ * parsed into values the contract recognises; the caller refuses before
+ * producing any report.
  */
 export const parseAuthorityArgs = (argv) => {
-  if (argv.some((arg) => arg.startsWith('--decision-authority='))) {
+  if (argv.some((arg) => arg.startsWith('--decision-authority=') || arg.startsWith('--unattended='))) {
     return { error: true };
   }
+  if (argv.filter((arg) => arg === '--decision-authority').length > 1) return { error: true };
   const unattended = argv.includes('--unattended');
   const index = argv.indexOf('--decision-authority');
   if (index === -1) return { unattended };
@@ -391,12 +392,14 @@ if (invokedDirectly()) {
   const parsedAuthority = parseAuthorityArgs(argv);
   if (parsedAuthority.error) {
     process.stderr.write(
-      `--decision-authority must be exactly one of: ${DECISION_AUTHORITIES.join(', ')} (space-separated, e.g. --decision-authority ${DECISION_AUTHORITIES[0]})\n`,
+      `preflight takes --unattended as a bare flag and --decision-authority at most once, space-separated, as exactly one of: ${DECISION_AUTHORITIES.join(', ')}\n`,
     );
     process.exit(1);
   }
   const authority = authorityPosture({
-    executionMode: parsedAuthority.unattended ? 'unattended' : 'attended',
+    // An absent --unattended says nothing about who is watching, so it stays
+    // `unknown` (the contract's parse of undefined), never `attended`.
+    executionMode: parsedAuthority.unattended ? 'unattended' : undefined,
     decisionAuthority: parsedAuthority.decisionAuthority,
   });
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');

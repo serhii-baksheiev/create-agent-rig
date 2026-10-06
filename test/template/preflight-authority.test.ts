@@ -16,8 +16,9 @@ import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
  * pins that `preflight.mjs`:
  *
  *  - accepts `--unattended` and `--decision-authority <value>` (space-
- *    separated only — the `--decision-authority=<value>` form is not
- *    recognised as supplying a value);
+ *    separated only — the `=` forms, and a repeated flag, refuse);
+ *  - reports an absent `--unattended` as execution mode `unknown`, never as
+ *    `attended`: a missing flag says nothing about who is watching;
  *  - adds a top-level `authority` key to `--json` output that is exactly
  *    `authorityPosture({ executionMode, decisionAuthority })`;
  *  - renders three lines in the non-JSON block: execution mode, decision
@@ -173,7 +174,7 @@ const EXECUTION_DECISION_CASES: {
   {
     name: 'no flags',
     args: [],
-    expected: { executionMode: 'attended', decisionAuthority: 'owner' },
+    expected: { executionMode: 'unknown', decisionAuthority: 'owner' },
   },
   {
     name: '--unattended --decision-authority delegated',
@@ -183,7 +184,7 @@ const EXECUTION_DECISION_CASES: {
   {
     name: '--decision-authority owner',
     args: ['--decision-authority', 'owner'],
-    expected: { executionMode: 'attended', decisionAuthority: 'owner' },
+    expected: { executionMode: 'unknown', decisionAuthority: 'owner' },
   },
 ];
 
@@ -270,6 +271,8 @@ describe('preflight refuses an unrecognised --decision-authority value (RP-343)'
     ['controller', ['--decision-authority', 'controller']],
     ['an empty string', ['--decision-authority', '']],
     ['a missing value', ['--decision-authority']],
+    ['a repeated flag', ['--decision-authority', 'delegated', '--decision-authority', 'owner']],
+    ['an --unattended=<value> form', ['--unattended=yes', '--decision-authority', 'owner']],
   ])(
     '%s: exit 1, nothing resembling a verdict block or JSON report on stdout',
     async (_case, args) => {
