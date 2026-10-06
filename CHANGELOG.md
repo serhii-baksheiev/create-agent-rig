@@ -15,6 +15,63 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
+## 1.5.0 (release candidate)
+
+**1.5.0 is additive on the 1.4 line.** It separates two questions a run used
+to answer with one word: whether anyone is watching (execution mode), and who
+may decide when the rules route a choice to a human (decision authority).
+Authority is declared once per run instead of living in a prompt. An absent
+declaration reads as owner. Publication stays with the owner under every
+authority.
+[`docs/decisions/decision-authority.md`](docs/decisions/decision-authority.md)
+records the decision and its consequences.
+
+### Added
+
+- **`.claude/scripts/lib/authority.mjs`** (Core). It is the single source of
+  the controller authority contract: the execution modes, the decision
+  authorities, the closed list of decisions a delegated run may make, and the
+  closed list of boundaries it never may. Documentation points at the module
+  and does not re-list it (RP-339).
+- **Durable delegated decisions** (opt-in workflow layer).
+  - `run-state.mjs authority <owner|delegated>` declares the run's authority.
+  - `delegated-decision.mjs record` refuses unless the run is delegated and
+    the decision is delegable. An accepted decision is journaled to the run
+    and appended to `.rig/decisions/<ticket>.jsonl`, which the `loop` skill
+    commits with the branch, so a later session or another clone can read it
+    with `delegated-decision.mjs list` (RP-340).
+- **Stop classes** (opt-in workflow layer). `.claude/scripts/queue/stop-class.mjs`
+  separates a stop that needs a decision from one where the work is blocked,
+  a systemic wall, and a hard external boundary. `queue/index.mjs next`
+  reports the class of a stop, and `delegated-decision.mjs resolve` names the
+  resolution a stop gets under the run's authority (RP-341).
+
+### Changed
+
+- **The `loop` skill declares authority at launch and resolves stops through
+  it** (opt-in workflow layer). A delegated run records a decision and
+  continues where the contract allows it, escalates the item otherwise, and
+  on resume applies the decisions already recorded for the item instead of
+  asking again (RP-342).
+- **Preflight reports the authority posture** (opt-in workflow layer). It
+  takes `--unattended` and `--decision-authority <owner|delegated>` and adds
+  an `authority` object to `--json` (RP-343).
+- **`create-agent-rig doctor` reports the authority posture.** Its
+  `authority` section is read from observed state — the unattended flag and
+  the run it names — and never changes doctor's status or exit code (RP-343).
+
+### Verification and limits
+
+- An e2e acceptance test drives the authority model on a generated workflow
+  rig: cold start, an ordinary decision under owner and delegated authority,
+  non-delegable boundaries including a failing Definition-of-Done gate, the
+  kill switch through both harnesses' hook invocations, the publication
+  boundary in preflight and doctor, and reading a decision back from a second
+  session and a second clone (RP-344).
+- Live Claude Code sessions were driven for RP-344; the evidence is on the
+  ticket. Live Codex acceptance was unavailable for this release (account
+  usage limit) and was not substituted.
+
 ## 1.4.0 (release candidate)
 
 **1.4.0 is additive on the 1.3 line.** It adds one contract for the conditions

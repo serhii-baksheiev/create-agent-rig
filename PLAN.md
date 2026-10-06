@@ -7,8 +7,11 @@
 > **Status (1.3.0 published 6 Oct 2026):** 1.3.0 is `latest`, published from
 > `gitHead` `9c2508302e7a04b95c51edab2d256816cedddd82`. Versions 0.1.0 through
 > 1.3.0 are live; delivery is done through `1.3.0`, the current `latest`.
-> `1.4.0` is the release candidate being prepared — the unattended-execution
-> posture contract on the 1.3 line — and is not published.
+> `1.4.0` is a frozen release candidate — the unattended-execution posture
+> contract on the 1.3 line, frozen as `release/1.4.0-rc` at `1e3db37f` — and
+> is not published; the owner decides its publication.
+> `1.5.0` is the release candidate being prepared — the controller authority
+> contract on the 1.4 line — and is not published.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
