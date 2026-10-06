@@ -2143,11 +2143,15 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // (`.claude/scripts/queue/stop-class.mjs`) to the WORKFLOW layer only, so
   // the full-install figure moves by one (114→115); the core-only figure
   // stays 68 — stop-class.mjs is workflow-layer only.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 115 manifest entries to 68', async () => {
+  // RP-340 adds the delegated-decision evidence CLI
+  // (`.claude/scripts/delegated-decision.mjs`) to the WORKFLOW layer, so only
+  // the full-install figure moves again (115→116); the core-only figure
+  // stays 68 because that file is workflow-only.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 116 manifest entries to 68', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(115);
+    expect(Object.keys(before!.files).length).toBe(116);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
