@@ -41,7 +41,16 @@
 // at runtime (`secrets-fixtures.ts`) so this file itself carries no
 // committable secret shape.
 import { execFile, execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readdir, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import {
+  link,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  realpath,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -402,6 +411,32 @@ describe('delegated-decision.mjs record — ticket hardening (RP-340 round 1)', 
 // --- record: must not follow a symlink (RP-340 round 1, security) ------
 
 describe('delegated-decision.mjs record — never follows a symlink out of the project, and writes nothing outside it', () => {
+  // Round 2 (security-scanner): on Windows O_NOFOLLOW does not exist, so an
+  // open-flag defence alone leaves the append following a link there. A hard
+  // link needs no privilege on NTFS or POSIX, so this case runs on every
+  // platform: the ticket file must be refused when it is a second name for
+  // an inode outside the project.
+  it('refuses when the ticket file is a hard link to a file outside the project, on every platform', async () => {
+    const { dir, runDir } = await delegatedFixture();
+    const outsideDir = await mkdtemp(path.join(tmpdir(), 'delegated-decision-outside-'));
+    const outsideFile = path.join(outsideDir, 'victim.txt');
+    const original = 'untouched\n';
+    await writeFile(outsideFile, original);
+    await mkdir(path.join(dir, '.rig', 'decisions'), { recursive: true });
+    await link(outsideFile, decisionsFile(dir, 'RP-1'));
+
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out, 'the CLI crashed on import rather than refusing').not.toMatch(
+      /Cannot find module|MODULE_NOT_FOUND/,
+    );
+    expect(await readFile(outsideFile, 'utf8')).toBe(original);
+  });
+
   it('refuses when .rig itself is a symlink to a directory outside the project', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     const { dir, runDir } = await delegatedFixture();
@@ -918,7 +953,9 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
         recordArgs({
           ticket: 'RP-1',
           decision: 'extra-gate-round',
-          summary: 'rotated the leaked token before merging',
+          // Round 2: a summary the redaction actually changes, so a body built
+          // from the raw argument instead of the stored record goes red.
+          summary: `rotated the leaked token ${GITHUB_PAT} before merging`,
           post: true,
         }),
         dir,
@@ -927,6 +964,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
       expect(result.code, result.out).toBe(0);
 
       const raw = await readFile(callsPath, 'utf8');
+      expect(raw, 'the raw credential never reaches gh').not.toContain(GITHUB_PAT);
       const calls = raw
         .split('\n')
         .filter((line) => line.trim() !== '')
@@ -942,7 +980,9 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
       expect(body).toMatch(/^ticket: RP-1$/m);
       expect(body).toMatch(/^decision: extra-gate-round$/m);
       expect(body).toMatch(/^authority: delegated$/m);
-      expect(body).toMatch(/^summary: rotated the leaked token before merging$/m);
+      expect(body).toMatch(/^summary: \[redacted\]$/m);
+      const [stored] = await readDecisionLines(dir, 'RP-1');
+      expect((stored as { summary: string }).summary).toBe('[redacted]');
     } finally {
       stub.restore();
     }

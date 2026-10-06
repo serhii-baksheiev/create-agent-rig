@@ -66,10 +66,13 @@
 // non-directory) before use, created one path segment at a time when
 // missing, and the resulting directory's realpath is checked against
 // `<realpath of project root>/.rig/decisions` before anything is written;
-// the evidence file itself is opened `O_NOFOLLOW`. See `describe
+// the evidence file itself is `lstat`-checked before any open (created with
+// `O_EXCL` when absent; otherwise it must be a regular file with a single
+// name, and the opened handle must be that same file), so the defence does
+// not rest on `O_NOFOLLOW`, which Windows lacks. See `describe
 // ('delegated-decision.mjs record — never follows a symlink out of the
-// project, and writes nothing outside it')` for all three cases (`.rig`
-// itself, `.rig/decisions`, and the ticket file).
+// project, and writes nothing outside it')` for the cases (`.rig` itself,
+// `.rig/decisions`, the ticket file as a symlink, and as a hard link).
 //
 // `--release <label>` is optional and validated by the same shape a ticket
 // id is (see `RELEASE_LABEL` below); omitted, the stored field is `release:
@@ -121,7 +124,8 @@
 //   never the path) BEFORE any read, so an oversized file is refused whole —
 //   › "a file larger than 256 KiB is unreadable — exit 2, never partially
 //   read".
-// - `list` never follows a symlink, and never blocks on a non-regular file.
+// - `list` never follows a symlink at the decisions file itself, and never
+//   blocks on a non-regular file.
 //   The path is `lstat`-checked first (refusing a symlink or anything that
 //   is not a regular file — a FIFO included, so a FIFO with no writer is
 //   refused before any `open()` is attempted and can never block inside
@@ -378,27 +382,43 @@ const ensureDecisionsDir = (projectRoot) => {
 
 /**
  * Append one already-serialised line to the decisions file at `decisionsPath`,
- * never following a symlink: opened `O_NOFOLLOW`, and the open handle is
- * `fstat`-checked before the write. `O_NOFOLLOW` turns a symlinked ticket
- * file into `ELOOP`, reported here as a symlink refusal rather than the bare
- * errno text — see the module header's "Limits" section.
+ * never following a link out of the project — see the comments inside.
  */
 const appendDecisionRecord = (decisionsPath, line) => {
+  // The path is checked BEFORE any open, because `O_NOFOLLOW` does not exist
+  // on Windows: an open-flag defence alone would follow a link there. A path
+  // that does not exist yet is created with `O_EXCL`, which refuses anything
+  // already at the name on every platform; an existing one must be a regular
+  // file with exactly one name, and the opened handle must be that same file.
+  let pathStat = null;
+  try {
+    pathStat = lstatSync(decisionsPath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error(`${decisionsPath} is unreadable — ${error.message}`, { cause: error });
+    }
+  }
+  if (pathStat?.isSymbolicLink()) {
+    throw new Error(`${decisionsPath} is a symlink; refusing to follow it out of the project.`);
+  }
+  if (pathStat && (!pathStat.isFile() || pathStat.nlink !== 1)) {
+    throw new Error(
+      `${decisionsPath} is not a regular file with a single name; refusing to write.`,
+    );
+  }
+  const flags =
+    constants.O_WRONLY |
+    constants.O_APPEND |
+    (pathStat ? 0 : constants.O_CREAT | constants.O_EXCL) |
+    // Undefined on Windows; the lstat above and the identity check below are
+    // what hold there.
+    (constants.O_NOFOLLOW ?? 0);
   let fd;
   try {
-    fd = openSync(
-      decisionsPath,
-      constants.O_WRONLY |
-        constants.O_APPEND |
-        constants.O_CREAT |
-        // `O_NOFOLLOW` is undefined on some Windows builds of Node — the
-        // same `?? 0` fallback `run-state.mjs`'s `readStateForSelection` uses.
-        (constants.O_NOFOLLOW ?? 0),
-      0o644,
-    );
+    fd = openSync(decisionsPath, flags, 0o644);
   } catch (error) {
-    if (error?.code === 'ELOOP') {
-      throw new Error(`${decisionsPath} is a symlink; refusing to follow it out of the project.`, {
+    if (error?.code === 'ELOOP' || error?.code === 'EEXIST') {
+      throw new Error(`${decisionsPath} changed under the check; refusing to write.`, {
         cause: error,
       });
     }
@@ -406,8 +426,11 @@ const appendDecisionRecord = (decisionsPath, line) => {
   }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) {
-      throw new Error(`${decisionsPath} is not a regular file; refusing to write.`);
+    if (!stat.isFile() || stat.nlink !== 1) {
+      throw new Error(`${decisionsPath} is not a regular file with a single name; refusing to write.`);
+    }
+    if (pathStat && (stat.dev !== pathStat.dev || stat.ino !== pathStat.ino)) {
+      throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
     }
     writeSync(fd, line);
   } finally {
