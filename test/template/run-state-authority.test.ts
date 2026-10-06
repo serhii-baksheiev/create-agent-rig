@@ -10,9 +10,8 @@
 // has somewhere durable to ask "is this run actually delegated" instead of
 // trusting its own turn's memory of a conversation nobody can replay.
 //
-// `run-state.mjs` has no `authority` command yet — every test below is
-// expected to fail because the CLI does not recognise the word, not because
-// of a typo in the test. The command this file assumes:
+// `run-state.mjs` already has the `authority` command this file pins — it
+// was added alongside this test. The command:
 //
 //   RIG_RUN_DIR=<dir> node run-state.mjs authority owner|delegated
 //
