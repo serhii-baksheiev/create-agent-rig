@@ -680,4 +680,14 @@ describe('the committed scripts/release-candidates.json against this repository 
       expect(isBelow(version, current), version).toBe(true);
     }
   });
+
+  // RP-434: 1.4.0 has no registry bytes, so it earns no ledger row — it is
+  // instead a frozen, unpublished baseline. The sha is written out here as a
+  // literal, independent of git and of production's own reading of the
+  // branch, rather than re-derived from `release/1.4.0-rc` — so this test
+  // cannot pass merely because the committed record agrees with itself.
+  it('records 1.4.0 as a frozen baseline at exactly the release/1.4.0-rc head, and nothing else', async () => {
+    const record = await readCandidates();
+    expect(record).toEqual({ '1.4.0': '1e3db37f2a9bc2b7d18aa4db94556270d13025c1' });
+  });
 });
