@@ -75,7 +75,10 @@ describe('the Windows Codex wrapper runs the guard from a non-ASCII or UNC root 
       skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
       const scratch = await mkdtemp(path.join(tmpdir(), 'codex-wrapper-unc-'));
       const driveMatch = /^([A-Za-z]):(\\.*)$/.exec(scratch);
-      const unc = driveMatch ? `\\\\localhost\\${driveMatch[1]}$${driveMatch[2]}` : null;
+      // 127.0.0.1, not localhost: Node turns a hook path into a file: URL,
+      // and the URL standard drops a `localhost` host (file://localhost/C$/x
+      // is file:///C$/x), which no real UNC root such as \\wsl$\... hits.
+      const unc = driveMatch ? `\\\\127.0.0.1\\${driveMatch[1]}$${driveMatch[2]}` : null;
       skipUnless(
         ctx,
         unc !== null && existsSync(unc),
