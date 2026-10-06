@@ -529,22 +529,27 @@ describe('the queue CLI fails loudly, exactly as its own header demands', () => 
 
 describe('preflight: "I looked and it is stale" is not "I could not look"', () => {
   it('keeps the two apart, and neither becomes a pass', async () => {
+    // RP-281: keys are real checks now — the verdict reads each one's posture
+    // condition, and only `defaultBranchFresh` ever answers `stale`.
     const { verdictOf } = await load('preflight.mjs');
-    expect(verdictOf({ a: { ok: 'stale' } })).toBe('CAUTION');
-    expect(verdictOf({ a: { ok: 'unknown' } })).toBe('CAUTION');
-    expect(verdictOf({ a: { ok: false } })).toBe('STOP');
-    expect(verdictOf({ a: { ok: true } })).toBe('GO');
+    expect(verdictOf({ defaultBranchFresh: { ok: 'stale' } })).toBe('CAUTION');
+    expect(verdictOf({ defaultBranchFresh: { ok: 'unknown' } })).toBe('CAUTION');
+    expect(verdictOf({ killSwitch: { ok: false } })).toBe('STOP');
+    expect(verdictOf({ killSwitch: { ok: true } })).toBe('GO');
   });
 
   it('renders the two with different words', async () => {
     const { report } = await load('preflight.mjs');
     const rendered = (
-      report({ x: { ok: 'stale', detail: 'd' }, y: { ok: 'unknown', detail: 'd' } }) as {
+      report({
+        defaultBranchFresh: { ok: 'stale', detail: 'd' },
+        lastDeploy: { ok: 'unknown', detail: 'd' },
+      }) as {
         rendered: string;
       }
     ).rendered;
-    expect(rendered).toMatch(/stale/);
-    expect(rendered).toMatch(/unknown/);
+    expect(rendered).toMatch(/- stale · defaultBranchFresh/);
+    expect(rendered).toMatch(/- unknown · lastDeploy/);
   });
 
   it('counts its own unchecked items correctly', async () => {

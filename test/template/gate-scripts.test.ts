@@ -617,7 +617,14 @@ describe('the CLI entrypoint survives a symlinked path', () => {
       // run in this fixture — it died on ERR_MODULE_NOT_FOUND every time, and the
       // old "output is non-empty" assertion was satisfied by the stack trace.
       // Third time this exact gap hid here; the shape assertion is what closes it.
-      for (const sibling of ['git-env.mjs', 'run-state.mjs', 'run-journal.mjs', 'stop-flag.mjs']) {
+      // `unattended-flag.mjs` joined it with RP-281: preflight imports it statically.
+      for (const sibling of [
+        'git-env.mjs',
+        'run-state.mjs',
+        'run-journal.mjs',
+        'stop-flag.mjs',
+        'unattended-flag.mjs',
+      ]) {
         await copyFile(scriptPath(sibling), path.join(project, '.claude', 'scripts', sibling));
       }
       await mkdir(path.join(project, '.rig'), { recursive: true });

@@ -26,13 +26,40 @@ import { fileURLToPath } from 'node:url';
 // cycle, because preflight is the only scripted brake check and had no test.
 import { brakeIsOn } from './stop-flag.mjs';
 import { readRevalidationContract } from './lib/claim-records.mjs';
+import { preflightVerdict } from './lib/posture.mjs';
+import { readUnattended } from './unattended-flag.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 
-/** The items this script cannot check: judgement, or a call worth more than it saves. */
-export const UNCHECKED = [
-  'no stray worktree from a dead session that this run might mistake for its own',
-  'a budget is declared for this run, and it is written down somewhere the run can re-read',
-];
+/**
+ * Each scripted check, keyed as the JSON output names it, and the posture
+ * condition (`lib/posture.mjs`, RP-280) it reports.
+ */
+export const CHECK_IDS = Object.freeze({
+  killSwitch: 'kill-switch-armed',
+  runDirNotExported: 'run-dir-inherited',
+  unattendedFlag: 'unattended-flag-stale',
+  detectionContract: 'detection-contract-invalid',
+  queue: 'queue-unreadable',
+  defaultBranchFresh: 'default-branch-stale',
+  lastDeploy: 'last-deploy-failed',
+});
+
+/**
+ * The items this script cannot check — judgement, or a call worth more than it
+ * saves — each with the posture condition that names it.
+ */
+export const UNCHECKED_CONDITIONS = Object.freeze([
+  Object.freeze({
+    id: 'stray-worktree',
+    detail: 'no stray worktree from a dead session that this run might mistake for its own',
+  }),
+  Object.freeze({
+    id: 'budget-declared',
+    detail: 'a budget is declared for this run, and it is written down somewhere the run can re-read',
+  }),
+]);
+
+export const UNCHECKED = UNCHECKED_CONDITIONS.map(({ detail }) => detail);
 
 /**
  * The environment loses the variables that locate a git repository.
@@ -150,6 +177,27 @@ export const checkRunDirNotExported = (env = process.env) => {
     : { ok: true, detail: 'not exported' };
 };
 
+/**
+ * No unattended flag may already be on disk for this checkout: preflight walks
+ * before this run arms its own, so one found here belongs to an earlier run.
+ */
+export const checkUnattendedFlag = (projectRoot, env = process.env) => {
+  const flag = readUnattended({ ...env, CLAUDE_PROJECT_DIR: projectRoot });
+  if (!flag.on) return { ok: true, detail: 'not armed for this checkout' };
+  if (flag.unreadable) {
+    return {
+      ok: false,
+      detail: `an unattended flag is on disk and unreadable (${flag.path}): ${flag.why} — remove it before starting`,
+    };
+  }
+  return {
+    ok: false,
+    detail:
+      `an unattended flag is already armed for this checkout (item ${flag.item ?? 'unnamed'}) — ` +
+      'an earlier run left it; clear it with `unattended-flag.mjs off --root <checkout>` before starting',
+  };
+};
+
 export const checkDetectionContract = (projectRoot) => {
   try {
     const contract = readRevalidationContract(projectRoot);
@@ -218,36 +266,59 @@ export const checkLastDeploy = ({ workflow = 'deploy' } = {}) => {
 };
 
 /**
- * STOP on any hard failure; CAUTION on anything that is not a clean pass; GO only
- * when every scripted item genuinely passed. Unscripted checks remain the reader's.
- *
- * `stale` and `unknown` both give CAUTION but are never merged into one word:
- * "I looked and it is stale" is actionable, "I could not look" is not, and neither
- * ever becomes a pass.
+ * A check's answer as the posture contract reads it. `stale` is an observed
+ * failure — the probe ran and the condition holds — so it is `fail`, never
+ * `unknown`; anything that is not exactly `true` or `false` is `unknown`.
  */
-export const verdictOf = (checks) => {
-  const values = Object.values(checks);
-  if (values.some((check) => check?.ok === false)) return 'STOP';
-  if (values.some((check) => check?.ok !== true)) return 'CAUTION';
-  return 'GO';
-};
+const outcomeOf = (ok) => (ok === true ? 'pass' : ok === false || ok === 'stale' ? 'fail' : 'unknown');
 
-export const report = (checks, { unchecked = UNCHECKED } = {}) => {
-  const verdict = verdictOf(checks);
+/**
+ * The verdict is the posture contract's `preflightVerdict`, not a policy of
+ * this file's own: a required condition that fails is STOP, an advisory one
+ * that fails or anything `unknown` is CAUTION, and each item in `unchecked` is
+ * named as `unknown` — so GO needs every scripted item to pass and nothing left
+ * unchecked. `stale` and `unknown` both give CAUTION but keep their own words
+ * in the rendered block: "I looked and it is stale" is actionable, "I could not
+ * look" is not.
+ */
+export const verdictOf = (checks, unchecked = []) =>
+  preflightVerdict({
+    ...Object.fromEntries(
+      Object.entries(checks).map(([key, check]) => [CHECK_IDS[key] ?? key, outcomeOf(check?.ok)]),
+    ),
+    ...Object.fromEntries(unchecked.map(({ id }) => [id, 'unknown'])),
+  });
+
+export const report = (checks, { unchecked = UNCHECKED_CONDITIONS } = {}) => {
+  const verdict = verdictOf(checks, unchecked);
+  const identified = Object.fromEntries(
+    Object.entries(checks).map(([key, check]) => [
+      key,
+      { ...check, id: CHECK_IDS[key], outcome: outcomeOf(check?.ok) },
+    ]),
+  );
   const mark = (ok) =>
     ok === true ? 'pass' : ok === false ? 'FAIL' : ok === 'stale' ? 'stale' : 'unknown';
   const lines = [
     `**preflight** — verdict: ${verdict}`,
     '',
-    ...Object.entries(checks).map(([key, check]) => `- ${mark(check?.ok)} · ${key} — ${check?.detail ?? ''}`),
+    ...Object.entries(identified).map(
+      ([key, check]) => `- ${mark(check.ok)} · ${key} (${check.id}) — ${check.detail ?? ''}`,
+    ),
     '',
     `_Not checked by this script — still yours (${unchecked.length}):_`,
-    ...unchecked.map((item) => `- ${item}`),
+    ...unchecked.map(({ id, detail }) => `- ${id} — ${detail}`),
     '',
     '_An item skipped twice is the signal to script it or drop it: a checklist',
     "nobody completes decays into one nobody reads._",
   ];
-  return { verdict, checks, unchecked, rendered: lines.join('\n') };
+  return {
+    verdict,
+    checks: identified,
+    unchecked: unchecked.map(({ detail }) => detail),
+    uncheckedConditions: unchecked.map(({ id, detail }) => ({ id, outcome: 'unknown', detail })),
+    rendered: lines.join('\n'),
+  };
 };
 
 /**
@@ -276,6 +347,7 @@ if (invokedDirectly()) {
   const checks = {
     killSwitch: checkKillSwitch(),
     runDirNotExported: checkRunDirNotExported(),
+    unattendedFlag: checkUnattendedFlag(projectRoot),
     detectionContract: checkDetectionContract(projectRoot),
     queue: await checkQueue(projectRoot),
     defaultBranchFresh: checkDefaultBranchFresh(),
