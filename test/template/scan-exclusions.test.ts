@@ -245,6 +245,7 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
       'layers-split.test.ts',
       'no-vendored-plugins.test.ts',
       'platform-skips.test.ts',
+      'preflight-authority.test.ts', // RP-343: walks its own temp fixture
       'release-evidence.test.ts',
       'run-journal.test.ts',
       'token-report.test.ts',

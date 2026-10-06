@@ -3,6 +3,14 @@
 //
 //   node .claude/scripts/preflight.mjs           # the block, ready to paste
 //   node .claude/scripts/preflight.mjs --json
+//   node .claude/scripts/preflight.mjs --unattended
+//   node .claude/scripts/preflight.mjs --decision-authority <owner|delegated>
+//
+// The last two report the run's authority posture (RP-339) alongside the
+// scripted checks and change nothing else it reports — pinned in
+// test/template/preflight-authority.test.ts (absent in a generated rig) ›
+// "verdict, checks and uncheckedConditions are deep-equal with and without
+// the flags, on an ordinary CAUTION fixture".
 //
 // Every scripted item below has already cost a run somewhere: they are cheap
 // before task #1 and expensive at turn 40.
@@ -27,6 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { brakeIsOn } from './stop-flag.mjs';
 import { readRevalidationContract } from './lib/claim-records.mjs';
 import { preflightVerdict } from './lib/posture.mjs';
+import { authorityPosture, DECISION_AUTHORITIES } from './lib/authority.mjs';
 import { readUnattended } from './unattended-flag.mjs';
 import { loadConfig, optionsWithPlanPath, resolveAdapter } from './queue/index.mjs';
 
@@ -289,7 +298,10 @@ export const verdictOf = (checks, unchecked = []) =>
     ...Object.fromEntries(unchecked.map(({ id }) => [id, 'unknown'])),
   });
 
-export const report = (checks, { unchecked = UNCHECKED_CONDITIONS } = {}) => {
+// RP-343: `authority`, when passed, is `lib/authority.mjs`'s own
+// `authorityPosture` object — report() never computes or restates it, only
+// renders the three lines a caller's posture already carries.
+export const report = (checks, { unchecked = UNCHECKED_CONDITIONS, authority } = {}) => {
   const verdict = verdictOf(checks, unchecked);
   const identified = Object.fromEntries(
     Object.entries(checks).map(([key, check]) => [
@@ -305,6 +317,14 @@ export const report = (checks, { unchecked = UNCHECKED_CONDITIONS } = {}) => {
     ...Object.entries(identified).map(
       ([key, check]) => `- ${mark(check.ok)} · ${key} (${check.id}) — ${check.detail ?? ''}`,
     ),
+    ...(authority
+      ? [
+          '',
+          `Execution mode: ${authority.executionMode}`,
+          `Decision authority: ${authority.decisionAuthority}`,
+          `Publication authority: ${authority.publicationAuthority}`,
+        ]
+      : []),
     '',
     `_Not checked by this script — still yours (${unchecked.length}):_`,
     ...unchecked.map(({ id, detail }) => `- ${id} — ${detail}`),
@@ -318,7 +338,28 @@ export const report = (checks, { unchecked = UNCHECKED_CONDITIONS } = {}) => {
     unchecked: unchecked.map(({ detail }) => detail),
     uncheckedConditions: unchecked.map(({ id, detail }) => ({ id, outcome: 'unknown', detail })),
     rendered: lines.join('\n'),
+    ...(authority ? { authority } : {}),
   };
+};
+
+/**
+ * `--unattended` and `--decision-authority <value>` (space-separated only —
+ * `--decision-authority=<value>` is a form this script does not read, and
+ * reading it as "no value" would silently report `owner`, so it is refused
+ * instead). Returns `{ error: true }` when the flag cannot be parsed into a
+ * value the contract recognises; the caller refuses before producing any
+ * report.
+ */
+export const parseAuthorityArgs = (argv) => {
+  if (argv.some((arg) => arg.startsWith('--decision-authority='))) {
+    return { error: true };
+  }
+  const unattended = argv.includes('--unattended');
+  const index = argv.indexOf('--decision-authority');
+  if (index === -1) return { unattended };
+  const value = argv[index + 1];
+  if (!DECISION_AUTHORITIES.includes(value)) return { error: true };
+  return { unattended, decisionAuthority: value };
 };
 
 /**
@@ -343,6 +384,21 @@ const invokedDirectly = () => {
 };
 
 if (invokedDirectly()) {
+  const argv = process.argv.slice(2);
+  // Refused BEFORE any check runs or any report is produced — an
+  // unparsable authority flag means the operator asked for a posture this
+  // run cannot honestly report, not "fall back to the default".
+  const parsedAuthority = parseAuthorityArgs(argv);
+  if (parsedAuthority.error) {
+    process.stderr.write(
+      `--decision-authority must be exactly one of: ${DECISION_AUTHORITIES.join(', ')} (space-separated, e.g. --decision-authority ${DECISION_AUTHORITIES[0]})\n`,
+    );
+    process.exit(1);
+  }
+  const authority = authorityPosture({
+    executionMode: parsedAuthority.unattended ? 'unattended' : 'attended',
+    decisionAuthority: parsedAuthority.decisionAuthority,
+  });
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const checks = {
     killSwitch: checkKillSwitch(),
@@ -353,10 +409,8 @@ if (invokedDirectly()) {
     defaultBranchFresh: checkDefaultBranchFresh(),
     lastDeploy: checkLastDeploy(),
   };
-  const result = report(checks);
+  const result = report(checks, { authority });
   process.stdout.write(
-    process.argv.includes('--json')
-      ? `${JSON.stringify(result, null, 2)}\n`
-      : `${result.rendered}\n`,
+    argv.includes('--json') ? `${JSON.stringify(result, null, 2)}\n` : `${result.rendered}\n`,
   );
 }
