@@ -268,7 +268,7 @@ export const checkLastDeploy = ({ workflow = 'deploy' } = {}) => {
 /**
  * A check's answer as the posture contract reads it. `stale` is an observed
  * failure — the probe ran and the condition holds — so it is `fail`, never
- * `unknown`; anything that is not exactly `true` or `false` is `unknown`.
+ * `unknown`; anything else is `unknown`.
  */
 const outcomeOf = (ok) => (ok === true ? 'pass' : ok === false || ok === 'stale' ? 'fail' : 'unknown');
 
