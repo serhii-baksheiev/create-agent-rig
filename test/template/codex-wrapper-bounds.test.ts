@@ -36,6 +36,7 @@ import { describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
+import { runWindowsWrapper } from '../helpers/codex-windows-wrapper.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -345,43 +346,15 @@ describe('the Windows Codex wrapper resists a hijacked $repoRoot and a faulted s
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
         expect(oversized.code, oversized.stderr).toBe(2);
+        // RP-321: the wrapper's own failures also exit 2 now, so the 2 above
+        // is the guard's only if the wrapper reported nothing of its own.
+        expect(oversized.stderr).not.toContain('codex wrapper:');
       } finally {
         await removeFixture(largeScratch);
       }
     },
   );
 });
-
-function runWindowsWrapper(
-  encodedCommand: string,
-  input: Record<string, unknown>,
-  cwd: string,
-  env: Record<string, string>,
-  timeout?: number,
-): Promise<{ code: number; stderr: string; stdout: string }> {
-  return new Promise((resolve, reject) => {
-    // Never let an ambient value from the test host's own environment stand
-    // in for the wrapper's own fix — RP-266 round 3's security case relies
-    // on this var being genuinely absent unless the generated script itself
-    // sets it.
-    const merged: NodeJS.ProcessEnv = { ...process.env, ...env };
-    delete merged.NoDefaultCurrentDirectoryInExePath;
-    const child = execFile(
-      'powershell.exe',
-      ['-NoProfile', '-NonInteractive', '-EncodedCommand', encodedCommand],
-      { cwd, env: merged, timeout },
-      (error, stdout, stderr) =>
-        resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stdout, stderr }),
-    );
-    if (!child.stdin) return reject(new Error('no stdin'));
-    // The large-stdin case has the wrapper exit before it reads all of its
-    // own input, so this write can fail with EOF/EPIPE. That is the scenario
-    // under test, not a harness failure: the verdict is the exit code the
-    // callback resolves with.
-    child.stdin.on('error', () => {});
-    child.stdin.end(JSON.stringify(input));
-  });
-}
 
 /**
  * Process ids of any `node.exe` whose command line contains `marker` (here,

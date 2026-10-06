@@ -224,6 +224,13 @@ function windowsHookCommand(command) {
   // JSON here would make the wrapper a second implementation of the hook input.
   const script = bounded
     ? [
+        // RP-321: a wrapper-internal failure means the guard never ran, and
+        // that is not the guard error the fail-open rule allows — so any
+        // terminating error the script does not catch itself blocks (exit 2)
+        // instead of PowerShell's own exit 1, which Codex reads as
+        // non-blocking. The guard's own exit code, once it ran, still passes
+        // through unchanged below.
+        "trap { [Console]::Error.WriteLine('codex wrapper: ' + $_.Exception.Message + '; the guard did not run'); exit 2 }",
         "$ErrorActionPreference = 'Stop'",
         // PR #353 round 2: a native command's stderr, redirected under this
         // preference, becomes a terminating NativeCommandError — including
@@ -248,21 +255,27 @@ function windowsHookCommand(command) {
         "if ($rigRaw -match '^[0-9]{1,9}\\z') { $rigMs = [int]$rigRaw }",
         `$gitDefaultMs = ${GIT_DEFAULT_MS}`,
         '$gitBoundMs = [Math]::Min($gitDefaultMs, $rigMs)',
-        // PR #353 round 1 resolved git through `cmd.exe /c`, which risks a
-        // cwd lookup and the user's own AutoRun; ComSpec with `/d` (skip
-        // AutoRun) is the documented safer form of the same idea.
+        // RP-321: git is started as the git.exe application PATH resolves,
+        // never through cmd.exe. cmd.exe looked in the cwd, ran the user's
+        // AutoRun, and refused a UNC current directory outright, falling back
+        // to the Windows directory, where rev-parse failed and the guard
+        // never ran. `Get-Command -CommandType Application` reads PATH only.
+        // The working directory is set explicitly, so a UNC location reaches
+        // git, and its output is read as UTF-8, the encoding git writes, so a
+        // non-ASCII root survives the decode.
+        '$gitExe = (Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source',
         '$gitInfo = New-Object System.Diagnostics.ProcessStartInfo',
-        '$gitInfo.FileName = $env:ComSpec',
-        "$gitInfo.Arguments = '/d /c git rev-parse --show-toplevel'",
+        '$gitInfo.FileName = $gitExe',
+        "$gitInfo.Arguments = 'rev-parse --show-toplevel'",
+        '$gitInfo.WorkingDirectory = (Get-Location).ProviderPath',
+        '$gitInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)',
         '$gitInfo.UseShellExecute = $false',
         '$gitInfo.RedirectStandardOutput = $true',
-        // PR #353 round 3 SECURITY blocker (code-reviewer, security-scanner):
-        // cmd.exe resolves a bare command name (`git`) in the CURRENT
-        // DIRECTORY first, ahead of PATH, unless this is set — so a text
-        // `git.cmd` planted at the wrapper's own cwd could replace `git`
-        // itself and, through it, `$repoRoot`. This governs the CHILD
-        // cmd.exe's own environment, so it is set on ProcessStartInfo,
-        // before that child starts.
+        // git's own "fatal: not a git repository" stays out of the block
+        // reason; the wrapper reports the failure in its own words below.
+        '$gitInfo.RedirectStandardError = $true',
+        // PR #353 round 3: kept on the git child's environment; git itself is
+        // started by the absolute path Get-Command returned above.
         "$gitInfo.EnvironmentVariables['NoDefaultCurrentDirectoryInExePath'] = '1'",
         '$gitProc = [System.Diagnostics.Process]::Start($gitInfo)',
         '$gitOk = $gitProc.WaitForExit($gitBoundMs)',
@@ -275,9 +288,14 @@ function windowsHookCommand(command) {
         // never inside the catch.
         'if (-not $gitOk) { try { taskkill /PID $gitProc.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: git rev-parse timed out after $gitBoundMs ms"); exit 2 }',
         '$repoRoot = $gitProc.StandardOutput.ReadToEnd().Trim()',
-        'if ($gitProc.ExitCode -ne 0) { exit $gitProc.ExitCode }',
+        '$null = $gitProc.StandardError.ReadToEnd()',
+        'if ($gitProc.ExitCode -ne 0 -or -not $repoRoot) { [Console]::Error.WriteLine("codex wrapper: git rev-parse found no repository (exit $($gitProc.ExitCode)); the guard did not run"); exit 2 }',
+        // git prints a UNC root with forward slashes (//host/share/...);
+        // the rest of the wrapper and the guard expect the Windows form.
+        "if ($repoRoot.StartsWith('//')) { $repoRoot = $repoRoot.Replace('/', '\\') }",
         '$env:CLAUDE_PROJECT_DIR = $repoRoot',
         `$hookPath = Join-Path $repoRoot '${hook}'`,
+        'if (-not (Test-Path -LiteralPath $hookPath -PathType Leaf)) { [Console]::Error.WriteLine("codex wrapper: $hookPath not found; the guard did not run"); exit 2 }',
         '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
         "$startInfo.FileName = 'node'",
         argumentsLine,
