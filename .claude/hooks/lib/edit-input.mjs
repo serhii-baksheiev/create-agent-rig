@@ -389,7 +389,7 @@ function patchFragments(command, payloadCwd) {
                   filePath: '',
                   fragment: '',
                   inspectionRefusal:
-                    'patch destination is outside the repository or cannot be resolved safely',
+                    'patch move source is outside the repository or cannot be resolved safely',
                   appliesToAll: true,
                   removes: true,
                 }
