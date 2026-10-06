@@ -53,7 +53,7 @@ export const DELEGABLE_DECISIONS = Object.freeze([
   ),
   decision(
     'elevated-change-acceptance',
-    'Accept a Tier-2 change confined to the repository — no new dependency or outbound integration, no public API, auth, schema or data change — that went through the full review and check flow.',
+    'Accept a change that is Tier 2 only because it reaches a declared elevated path — none of the change kinds the autonomy rules list under Tier 2 — after the full review and check flow.',
   ),
   decision('merge', 'Merge a change whose required reviews and required checks passed for its exact head.'),
   decision(
