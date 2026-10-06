@@ -73,7 +73,7 @@ interface StopClassModule {
   resolutionOf(input: {
     stopClass: string;
     authority: unknown;
-    decision: string | null;
+    decision?: string | null;
   }): Resolution;
 }
 
@@ -106,7 +106,15 @@ const EXPECTED_ITEM_STOPS: ItemStop[] = [
   { id: 'blocking-verdict', stopClass: 'work-blocked', decision: null },
   { id: 'gate-round-cap', stopClass: 'decision-needed', decision: 'extra-gate-round' },
   { id: 'premise-false', stopClass: 'decision-needed', decision: 'scope-correction' },
-  { id: 'surprise-scope', stopClass: 'decision-needed', decision: 'elevated-change-acceptance' },
+  // Reaching a declared elevated path that is none of the Tier-2 change kinds
+  // is delegable; touching a Tier-2 change kind (autonomy.md, "Surprise
+  // scope") stays the owner's — RP-341 round 1.
+  {
+    id: 'elevated-path-scope',
+    stopClass: 'decision-needed',
+    decision: 'elevated-change-acceptance',
+  },
+  { id: 'surprise-scope', stopClass: 'decision-needed', decision: null },
   { id: 'invariant-conflict', stopClass: 'decision-needed', decision: null },
   { id: 'external-blocker', stopClass: 'hard-external-boundary', decision: null },
 ];
@@ -119,7 +127,8 @@ const EXPECTED_RESOLUTION_UNDER_DELEGATED: Record<string, Resolution> = {
   'blocking-verdict': 'escalate-item',
   'gate-round-cap': 'decide-and-continue',
   'premise-false': 'decide-and-continue',
-  'surprise-scope': 'decide-and-continue',
+  'elevated-path-scope': 'decide-and-continue',
+  'surprise-scope': 'escalate-item',
   'invariant-conflict': 'escalate-item',
   'external-blocker': 'stop-run',
 };
@@ -131,6 +140,8 @@ const EXPECTED_RUN_STOP_CLASS: Record<string, StopClass> = {
   'repeated-escalation': 'systemic-wall',
   'kill-switch': 'hard-external-boundary',
   budget: 'hard-external-boundary',
+  // Emitted by queue/index.mjs before stopConditionOf is consulted.
+  'run-state-unreadable': 'systemic-wall',
 };
 
 const REVALIDATION_HOLD = {
@@ -165,7 +176,7 @@ describe('ITEM_STOPS — the per-item stop catalogue (RP-341)', () => {
     }
   });
 
-  it('lists exactly the eight catalogued stops, in order, each with its stop class and decision', async () => {
+  it('lists exactly the nine catalogued stops, in order, each with its stop class and decision', async () => {
     const { ITEM_STOPS } = await load();
     const shape = ITEM_STOPS.map(({ id, stopClass, decision }) => ({ id, stopClass, decision }));
     expect(shape).toEqual(EXPECTED_ITEM_STOPS);
@@ -195,7 +206,23 @@ describe('RUN_STOP_CLASS — every run-level stop core.mjs can return, mapped to
     expect(Object.isFrozen(RUN_STOP_CLASS)).toBe(true);
   });
 
-  it("maps exactly the six run-stop kinds core.mjs can return, minus the two clean ends — derived by driving stopConditionOf, not by reading this file's own prose", async () => {
+  it('names every stop kind stopConditionOf can return — a source scan of its kind literals matches the kinds driven below', async () => {
+    const core = await readFile(coreModulePath, 'utf8');
+    const start = core.indexOf('export const stopConditionOf');
+    expect(start).toBeGreaterThan(-1);
+    const end = core.indexOf('\nexport const ', start + 1);
+    const body = core.slice(start, end === -1 ? undefined : end);
+    const literals = new Set([...body.matchAll(/\bkind:\s*'([a-z-]+)'/g)].map((m) => m[1]));
+    expect(literals).toEqual(
+      new Set([
+        ...Object.keys(EXPECTED_RUN_STOP_CLASS).filter((k) => k !== 'run-state-unreadable'),
+        'nothing-selectable',
+        'queue-empty',
+      ]),
+    );
+  });
+
+  it("maps exactly the run-stop kinds stopConditionOf returns, minus the two clean ends, plus index.mjs's run-state-unreadable — derived by driving stopConditionOf, not by reading this file's own prose", async () => {
     const { stopConditionOf } = await loadCore();
     const driven = [
       stopConditionOf({ queueReadable: false }),
@@ -219,11 +246,12 @@ describe('RUN_STOP_CLASS — every run-level stop core.mjs can return, mapped to
     const runStopKinds = allKinds.filter(
       (kind) => kind !== 'nothing-selectable' && kind !== 'queue-empty',
     );
-    expect(new Set(runStopKinds)).toEqual(new Set(Object.keys(EXPECTED_RUN_STOP_CLASS)));
+    const allRunStopKinds = [...runStopKinds, 'run-state-unreadable'];
+    expect(new Set(allRunStopKinds)).toEqual(new Set(Object.keys(EXPECTED_RUN_STOP_CLASS)));
 
     const { RUN_STOP_CLASS } = await load();
-    expect(new Set(Object.keys(RUN_STOP_CLASS))).toEqual(new Set(runStopKinds));
-    for (const kind of runStopKinds) {
+    expect(new Set(Object.keys(RUN_STOP_CLASS))).toEqual(new Set(allRunStopKinds));
+    for (const kind of allRunStopKinds) {
       expect(RUN_STOP_CLASS[kind], kind).toBe(EXPECTED_RUN_STOP_CLASS[kind]);
     }
   });
@@ -334,6 +362,16 @@ describe('resolutionOf (RP-341)', () => {
     expect(
       resolutionOf({ stopClass: 'decision-needed', authority: 'delegated', decision: null }),
     ).toBe('escalate-item');
+  });
+
+  it('decision-needed with an absent decision escalates like a null one, never continues and never throws', async () => {
+    const { resolutionOf } = await load();
+    expect(
+      resolutionOf({ stopClass: 'decision-needed', authority: 'delegated', decision: undefined }),
+    ).toBe('escalate-item');
+    expect(resolutionOf({ stopClass: 'decision-needed', authority: 'delegated' })).toBe(
+      'escalate-item',
+    );
   });
 
   it('decision-needed with a non-delegable boundary id never continues, even under delegated — delegation never converts a true boundary into permission', async () => {

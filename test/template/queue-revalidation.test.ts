@@ -524,10 +524,12 @@ describe('`next` revalidates through the durable claim and preserves take-up evi
     expect(result.out).toMatch(/run-state-unreadable|run state is unreadable/);
     expect(result.out).not.toMatch(/run journal:/);
     const parsed = JSON.parse(result.stdout) as {
-      stop: { success: boolean };
+      stop: { success: boolean; stopClass?: string };
       revalidation: null;
     };
     expect(parsed.stop.success).toBe(false);
+    // RP-341: unreadable run state is a run-level wall like every other stop.
+    expect(parsed.stop.stopClass).toBe('systemic-wall');
     expect(parsed.revalidation).toBeNull();
     await expect(read(runDir, 'events.jsonl')).rejects.toThrow();
   });

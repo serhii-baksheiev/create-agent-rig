@@ -1,12 +1,12 @@
-// The closed stop-class vocabulary (RP-341): every stop the loop can reach
-// is an owner decision (`decision-needed`), a blocked item (`work-blocked`)
-// or a run-level wall (`systemic-wall`, `hard-external-boundary`), and
+// The closed stop-class vocabulary (RP-341): each stop it catalogues is a
+// decision the rules route to the owner (`decision-needed`), a blocked item
+// (`work-blocked`) or a run-level wall (`systemic-wall`, `hard-external-boundary`), and
 // `resolutionOf` says what a decision authority may do about it. Decision
 // kinds are checked against the one authority contract, `../lib/authority.mjs`
 // (RP-339), never a second copy of it. Why: `docs/decisions/decision-authority.md`.
 //
 // Pinned in test/template/stop-class.test.ts (absent in a generated rig) ›
-// "lists exactly the eight catalogued stops, in order, each with its stop
+// "lists exactly the nine catalogued stops, in order, each with its stop
 // class and decision".
 
 import { mayResolve } from '../lib/authority.mjs';
@@ -31,7 +31,11 @@ export const ITEM_STOPS = Object.freeze([
   itemStop('blocking-verdict', 'work-blocked'),
   itemStop('gate-round-cap', 'decision-needed', 'extra-gate-round'),
   itemStop('premise-false', 'decision-needed', 'scope-correction'),
-  itemStop('surprise-scope', 'decision-needed', 'elevated-change-acceptance'),
+  // A declared elevated path that is none of the Tier-2 change kinds is
+  // delegable; an unplanned Tier-2 change kind (autonomy.md, "Surprise
+  // scope") names no delegable decision, so it stays the owner's.
+  itemStop('elevated-path-scope', 'decision-needed', 'elevated-change-acceptance'),
+  itemStop('surprise-scope', 'decision-needed'),
   itemStop('invariant-conflict', 'decision-needed'),
   itemStop('external-blocker', 'hard-external-boundary'),
 ]);
@@ -44,6 +48,8 @@ export const RUN_STOP_CLASS = Object.freeze({
   'repeated-escalation': 'systemic-wall',
   'kill-switch': 'hard-external-boundary',
   budget: 'hard-external-boundary',
+  // `queue/index.mjs` emits this one itself, before stopConditionOf runs.
+  'run-state-unreadable': 'systemic-wall',
 });
 
 /**
@@ -63,6 +69,6 @@ export const resolutionOf = ({ stopClass, authority, decision }) => {
     return 'escalate-item';
   }
   // decision-needed
-  if (decision === null) return 'escalate-item';
+  if (decision === null || decision === undefined) return 'escalate-item';
   return mayResolve(decision, authority) ? 'decide-and-continue' : 'escalate-item';
 };

@@ -56,10 +56,11 @@ duplicating it".
 
 ## Stop classes
 
-The opt-in workflow layer sorts every stop the loop can reach into an owner
-decision, a blocked item or a run-level wall, and turns a stop, the run's
-authority and the decision it needs into one answer. Only an owner decision of a delegable kind resolves without
-a human, and only under delegated authority — pinned in the generator's
+The opt-in workflow layer sorts each stop it catalogues into a decision the
+rules route to the owner, a blocked item or a run-level wall, and turns a
+stop, the run's authority and the decision it needs into one answer. Only a
+stop whose decision is of a delegable kind resolves without a human, and only
+under delegated authority — pinned in the generator's
 `test/template/stop-class.test.ts` (absent in a generated rig) ›
 "table-driven: every ITEM_STOPS entry resolves, under delegated authority,
 to the independently declared expected resolution — and none of them is
