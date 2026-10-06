@@ -513,6 +513,11 @@ describe('create-agent-rig uninstall', () => {
   // `probity-gate.mjs`; its one import, `lib/hook-input.mjs`, is already
   // among the 7 real imports. 8 direct hooks + 7 real imports + 2
   // non-dependency entries = 17. The precaution-only count stays 11.
+  //
+  // RP-280: the new Core module `.claude/scripts/lib/posture.mjs` is an owned
+  // `.mjs` no wired hook imports, so it joins the precaution-only bucket
+  // (11→12), exactly like check-run.mjs did under RP-290; the traced count
+  // stays 17.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -534,7 +539,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(17 genuinely referenced or imported; 11 kept only as a precaution',
+        '(17 genuinely referenced or imported; 12 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',
