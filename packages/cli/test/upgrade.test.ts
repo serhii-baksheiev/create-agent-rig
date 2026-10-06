@@ -2135,18 +2135,22 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // RP-280 adds the posture contract (`.claude/scripts/lib/posture.mjs`) and
   // its decision record (`docs/decisions/unattended-posture.md`) to the
   // PROCESS layer, so both figures move by two (110→112, 64→66).
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 112 manifest entries to 66', async () => {
+  // RP-339 adds the authority contract (`.claude/scripts/lib/authority.mjs`)
+  // and its decision record (`docs/decisions/decision-authority.md`) to the
+  // PROCESS layer the same way, so both figures move by two again
+  // (112→114, 66→68).
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 114 manifest entries to 68', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(112);
+    expect(Object.keys(before!.files).length).toBe(114);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(66);
+    expect(Object.keys(after!.files).length).toBe(68);
   });
 });
 

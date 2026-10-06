@@ -518,6 +518,13 @@ describe('create-agent-rig uninstall', () => {
   // `.mjs` no wired hook imports, so it joins the precaution-only bucket
   // (11→12), exactly like check-run.mjs did under RP-290; the traced count
   // stays 17.
+  //
+  // RP-339: `.claude/scripts/lib/authority.mjs` is the same shape again — an
+  // owned `.mjs` no wired hook imports — so it joins the precaution-only
+  // bucket once more (12→13). Its decision record
+  // (`docs/decisions/decision-authority.md`) is a `.md`, not a `.mjs`, so it
+  // never enters this bucket at all (the bucket is defined over owned `.mjs`
+  // paths only, per the comment above); the traced count stays 17.
   it('a run with a symlinked, single-seeded hook dependency rolls up the EXACT genuinely-traced versus precaution-only counts', async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
@@ -539,7 +546,7 @@ describe('create-agent-rig uninstall', () => {
       const result = await runCli(['uninstall', '--yes']);
       expect(result.code, result.stderr).toBe(0);
       expect(result.stdout).toContain(
-        '(17 genuinely referenced or imported; 12 kept only as a precaution',
+        '(17 genuinely referenced or imported; 13 kept only as a precaution',
       );
       expect(result.stdout).toContain(
         'protected because .claude/hooks/guard-secret-file.mjs could not be read',
