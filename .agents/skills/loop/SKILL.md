@@ -848,10 +848,14 @@ resolutions":
   stop escalates instead.
 
   For `elevated-path-scope` the decision is `elevated-change-acceptance`: after
-  recording it, apply the `human-review` label with a PR comment that names the
-  recorded decision and says it is a delegated acceptance, not a human reading
-  of the diff, then merge on the usual criterion. Under owner authority the
-  same stop escalates, which here means leaving the merge to the owner.
+  recording it, comment on the PR naming the recorded decision as a delegated
+  acceptance, then merge on the usual criterion. The run does **not** apply
+  the `human-review` label: that label is the one signal the gate sweep trusts
+  because the audited run cannot write it (`autonomy.md`, the gate sweep). The
+  sweep will report the merge, and that report is correct — nobody read the
+  diff — with the record and the comment as its explanation. Under owner
+  authority the same stop escalates, which here means leaving the merge to the
+  owner.
 
   A decide-and-continue is not an escalation: the item is not marked, and no
   escalation is counted toward §3's "two in a row".
@@ -866,7 +870,7 @@ never answers `decide-and-continue` for one of them.
 **Task-scoped — the item is the home, and the loop continues.** Three strikes, the
 attempt budget, an invariant conflict, a blocking reviewer verdict, an **exhausted
 gate-round cap**, or a `PREMISE FALSE` verdict from `check-premises` **on the queue
-item**. The last two are
+item** — and any other stop §6.0 resolves to `escalate-item`. The last two are
 a `documented-stall` (§5) and their diagnoses differ, so take the one that matches the
 stop: a false premise writes what the item claimed, what the code says, and the
 citation; an exhausted cap writes the round count and what the last gate reported.
@@ -987,7 +991,8 @@ machine, or from a continuation note — reads the decisions earlier runs
 already made for it before doing anything else, with
 `node .claude/scripts/delegated-decision.mjs list --ticket <id> --json` on
 that item's branch. A recorded decision is applied as already made, never
-re-asked; no record means the decision is still open, and it goes through
+re-asked, when its `head` is the head now under review — an acceptance made
+for an older head does not carry; no record means the decision is still open, and it goes through
 §6.0 again under this run's own authority. Nothing here invents a decision
 an earlier run did not record — the generator's
 `test/template/delegated-decision.test.ts` (absent in a generated rig) ›
