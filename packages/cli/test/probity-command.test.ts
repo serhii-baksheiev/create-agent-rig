@@ -554,6 +554,32 @@ describe('setup remove probity', () => {
   // resolves to the `.ts` file purely because it is the only candidate that
   // exists, the hash comparison passes by construction, and the hand-written
   // file is deleted as if Rig had generated it.
+  it('names the kept hand-edited probity.config.mjs in probityConfigKept even when another recognised config file sits alongside it', async () => {
+    const added = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'claude-code', '--yes', '--json'],
+      isTTY: false,
+    });
+    expect(added.exitCode, added.stderr).toBe(0);
+    const edited = `${await readFile(mjsConfigPath(), 'utf8')}// mine\n`;
+    await writeFile(mjsConfigPath(), edited);
+    const tsConfigPath = path.join(repo, 'probity.config.ts');
+    await writeFile(tsConfigPath, 'export default {}\n');
+
+    const result = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'remove',
+      args: [PROBITY, '--yes', '--json'],
+      isTTY: false,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.parse(result.stdout).probityConfigKept).toBe('probity.config.mjs');
+    expect(await readFile(mjsConfigPath(), 'utf8')).toBe(edited);
+    expect(await readFile(tsConfigPath, 'utf8')).toBe('export default {}\n');
+  });
+
   it('never deletes a hand-written probity.config.ts merely because its hash happens to equal the recorded configHash (no .mjs present)', async () => {
     const tsConfigPath = path.join(repo, 'probity.config.ts');
     const handWritten = Buffer.from('export default { rules: [] };\n');

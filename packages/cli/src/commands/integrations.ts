@@ -415,7 +415,11 @@ export async function runIntegrationsCommand(
         // `configHash` at all) or a Rig-generated one whose bytes have since
         // drifted from the recorded hash. Either way the caller needs to
         // know WHICH file was preserved.
-        if (existingRel !== undefined && !ownedMatch) probityHandEditedConfig = probityConfigRel;
+        if (existingRel !== undefined && !ownedMatch)
+          probityHandEditedConfig =
+            probity.configHash !== undefined && ownConfigSnapshot.bytes !== null
+              ? PROBITY_CONFIG_REL
+              : probityConfigRel;
         probityPlan = [
           `Probity ${PROBITY_VERSION}: remove the declaration entry${
             ownedMatch
