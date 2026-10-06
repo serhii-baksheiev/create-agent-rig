@@ -373,6 +373,41 @@ per-integration and per-harness records the same run also emits —
 `id: '<integration>:harness-selection'` — whose ids are built from whatever
 the caller declared, not fixed here.
 
+### `probity:<harness>` (RP-416)
+
+Probity is one such per-harness record, built as `probity:<harness>`
+(e.g. `probity:claude-code`), with its own closed set of reasons — Probity
+denies every tool action without a config, so a missing one is the one
+`fail`; everything else about it is a `warn`, and every check is a bounded,
+local file read. Doctor never spawns the Probity launcher and never calls a
+model to answer any of these:
+
+- `config-missing` — no recognised `probity.config.{ts,mts,js,mjs}` file
+  exists at the repository root; `fail`.
+- `config-drift` — every check below passes, but the declaration entry's
+  recorded `configHash` no longer matches `probity.config.mjs`'s own bytes
+  on disk (hand-edited since Rig generated it); `warn`. `setup add probity
+--adopt` keeps the edit and drops the hash.
+- `launcher-missing` — either `@nizos/probity` is not installed at all, or
+  `node_modules/@nizos/probity/dist/bin.js` — the file the gate hook actually
+  spawns — is absent even though the package's own `package.json` is
+  present; `warn`.
+- `version-drift` — the installed package's `package.json` reports a version
+  other than the pinned `1.10.1`; `warn`.
+- `wiring-missing` — this harness's own hook-wiring file
+  (`.claude/settings.json` for Claude Code, `.codex/hooks.json` for Codex)
+  does not name the Probity gate hook `.claude/hooks/probity-gate.mjs`;
+  `warn`.
+- `wired` — every check above passed; `ok`.
+
+The aggregate report also carries a top-level `probity` key, independent of
+`checks`, with two states: `not-configured` when no Probity integration is
+declared at all (`{ state: 'not-configured' }`), or, once one is,
+`configured` (`{ state: 'configured', version, runtime: 'unverified',
+connectivity: 'not-observed', trust: 'not-observed' }`) — `version` is the
+pinned version Rig generated against, never a value doctor observed by
+running the launcher.
+
 ### `rig-version` (RP-229)
 
 `rig-version` compares the CLI's own version with the version recorded in
@@ -1666,6 +1701,30 @@ Executable evidence:
 - `packages/cli/test/provider-spawn.test.ts` › "returns only after a deadline
   kills a live child and grandchild on this platform".
 
+Probity is neither upstream-managed like Spec Kit nor an MCP server — it
+never reaches `.mcp.json` or `.codex/config.toml`, even once a `codex`
+harness is selected for it. `setup add probity --yes` writes a local,
+Rig-generated `probity.config.mjs` (`enforceTdd()`, scoped to `src/**`,
+`lib/**`, `test/**`, `tests/**`) and records its SHA-256 as `configHash` on
+the declaration entry — the version is pinned at `1.10.1` and a different
+`--version` is refused. Rig never runs `npm install` or the Probity launcher
+itself; the plan names `npm install -D @nizos/probity@1.10.1` as a manual
+next step. On a first `add`, a pre-existing `probity.config.{ts,mts,js,mjs}`
+is refused unless `--adopt` is given. Once the declaration carries a
+`probity` entry, `add` and `apply` keep whatever config exists exactly as it
+is — nothing is refused or rewritten, and adding a harness only extends
+`harnesses`. Adopting with `--adopt` leaves the file byte-identical and the
+declaration entry carries no `configHash`; adopting an edited copy of Rig's
+own config is how its ownership passes to the user. `setup remove probity`
+deletes `probity.config.mjs` only when its own bytes still match the recorded
+`configHash`; a hand-edited `probity.config.mjs` or an adopted config is kept
+and named in the JSON result's `probityConfigKept` field. Rig never deletes
+or rewrites any other recognised filename. Wiring the gate hook into
+`.claude/settings.json` or `.codex/hooks.json` is a separate slice's concern
+— `setup` never edits either file for Probity.
+
+Executable evidence: `packages/cli/test/probity-command.test.ts`.
+
 ## Fixtures
 
 Examples, one per shape the contract names. They are illustrative payloads, not
@@ -2109,6 +2168,15 @@ each provider's own CLI or launcher; it does not copy, hash or delete their
 files, and does not claim their data as its own — `packages/cli/test/spec-kit.test.ts`
 › "requires explicit adoption before touching an external .specify payload".
 
+**Probity is a third, local ownership shape — neither an MCP server nor
+upstream-owned.** Rig owns one file it generates itself,
+`probity.config.mjs`, tracked by a `configHash` on the declaration entry the
+same way a Claude MCP entry's `entryHash` is tracked; an adopted (pre-existing)
+config carries no `configHash` and is never hashed or rewritten. Rig never
+installs the `@nizos/probity` package and never runs its launcher — the gate
+hook that does (`.claude/hooks/probity-gate.mjs`, wired per harness) is a
+separate slice.
+
 **Authorization, connectivity and trust are never claimed.** `doctor`
 reports wiring — `wired`, `absent`, `drifted`, `foreign`, `unreadable` —
 and, for a launcher it can merely find on the machine, `observed`; it never
@@ -2136,6 +2204,11 @@ baseline commit".
 for nothing else (`## setup integrations (RP-22)`) —
 `packages/cli/test/spec-kit.test.ts` › "refuses repository-controlled uv and
 uvx launchers before invoking one".
+
+**Probity only: Node and `npm` — never `uv`.** `@nizos/probity` is an npm dev
+dependency (`npm install -D @nizos/probity@1.10.1`, a manual step `setup`
+names but never runs itself); nothing about it needs `uv` or `uvx`
+(`## setup integrations (RP-22)`).
 
 **Platforms.** Linux, Windows and macOS (Apple silicon), each accepted on
 the exact packed release commit before publish, through the exact-SHA

@@ -23,12 +23,22 @@ import {
   type SpecKitOptions,
   type SpecKitResult,
 } from '../integrations/spec-kit.js';
+import {
+  findProbityConfig,
+  PROBITY_CONFIG_CONTENTS,
+  PROBITY_CONFIG_REL,
+  PROBITY_VERSION,
+  probityConfigHash,
+} from '../integrations/probity.js';
 
 const MCP = '.mcp.json';
 const CODEX_CONFIG = '.codex/config.toml';
 const MAX_MCP_BYTES = 64 * 1024;
 type Snapshot = { rel: string; bytes: Buffer | null };
-type Edit = Snapshot & { next: Buffer };
+// `next: null` means "delete the file at `rel`" — needed only by the Probity
+// config lane (RP-416): every other provider here only ever writes or
+// rewrites a file, never removes one through this shared edit machinery.
+type Edit = Snapshot & { next: Buffer | null };
 export type IntegrationsCliResult = { exitCode: number; stdout: string; stderr: string };
 export type IntegrationsCliOptions = {
   verb: string;
@@ -114,7 +124,10 @@ async function hasMachineMemoryManifest(env: NodeJS.ProcessEnv): Promise<boolean
 }
 function renderCodexConfig(base: string, entries: readonly DeclaredIntegration[]): Buffer {
   const sections = entries
-    .filter((entry) => entry.id !== 'spec-kit' && entry.harnesses?.includes('codex'))
+    .filter(
+      (entry) =>
+        entry.id !== 'spec-kit' && entry.id !== 'probity' && entry.harnesses?.includes('codex'),
+    )
     .map((entry) => codexSection(entry.id))
     .sort((a, b) => a.localeCompare(b));
   return Buffer.from(
@@ -205,7 +218,13 @@ async function applyEdits(root: string, preimages: Snapshot[], edits: Edit[]) {
   try {
     for (const edit of edits) {
       await checkSnapshots(root, [{ rel: edit.rel, bytes: edit.bytes }]);
-      await atomicWrite(root, edit.rel, edit.next);
+      if (edit.next === null) {
+        const dest = await resolveWritableInside(root, edit.rel);
+        if (dest === null) throw new Refusal('write-path-unsafe');
+        await unlink(dest);
+      } else {
+        await atomicWrite(root, edit.rel, edit.next);
+      }
       written.push(edit);
     }
   } catch (error) {
@@ -287,7 +306,8 @@ export async function runIntegrationsCommand(
     const id = positionals[0];
     if (id !== undefined && !registry.some((entry) => entry.id === id))
       throw new Refusal('not-in-matrix');
-    if (values.adopt && id !== 'spec-kit') throw new Refusal('adopt-only-for-spec-kit');
+    if (values.adopt && id !== 'spec-kit' && id !== 'probity')
+      throw new Refusal('adopt-only-for-spec-kit-or-probity');
     const [declarationFile, mcpFile, codexFile, manifestFile] = await Promise.all([
       snapshot(options.cwd, DECLARATION_REL),
       snapshot(options.cwd, MCP),
@@ -326,6 +346,7 @@ export async function runIntegrationsCommand(
         ...(values.required !== undefined ? { required: values.required } : {}),
         ...(values.version !== undefined ? { version: values.version } : {}),
         ...(id === 'spec-kit' ? { version: values.version ?? SPEC_KIT_VERSION } : {}),
+        ...(id === 'probity' ? { version: values.version ?? PROBITY_VERSION } : {}),
       };
       const checked = parseDeclaration(
         JSON.stringify({ schemaVersion: 1, integrations: [candidate] }),
@@ -357,7 +378,107 @@ export async function runIntegrationsCommand(
       upstreamPlan = planned.plan;
       if (verb === 'remove') entries = entries.filter((entry) => entry.id !== 'spec-kit');
     }
-    const selectedMcp = selected.filter((entry) => entry.id !== 'spec-kit');
+    // RP-416: Probity is neither an MCP server nor upstream-managed like Spec
+    // Kit — Rig generates a local `probity.config.mjs` and owns only that one
+    // file's hash, never npm installing the package or running its launcher.
+    const probity = selected.find((entry) => entry.id === 'probity');
+    let probityPlan: string[] = [];
+    let probityConfigSnapshot: Snapshot | undefined;
+    let probityConfigNext: Buffer | null | undefined;
+    let probityHandEditedConfig: string | undefined;
+    if (probity) {
+      if (probity.version !== PROBITY_VERSION) throw new Refusal('probity-pinned-version-required');
+      const lookup = await findProbityConfig(options.cwd);
+      if (lookup.status === 'unsafe') throw new Refusal('probity-config-unreadable');
+      const existingRel = lookup.status === 'found' ? lookup.rel : undefined;
+      // Ownership is judged ONLY against Rig's own filename
+      // (`probity.config.mjs`) — never whatever filename `findProbityConfig`
+      // happened to find first in discovery order, and never a coincidental
+      // hash match on a different, hand-written filename (RP-416 round 2,
+      // points 2 and 6).
+      const ownConfigSnapshot = await snapshot(options.cwd, PROBITY_CONFIG_REL);
+      const ownedMatch =
+        probity.configHash !== undefined &&
+        ownConfigSnapshot.bytes !== null &&
+        probityConfigHash(ownConfigSnapshot.bytes) === probity.configHash;
+      const probityConfigRel =
+        ownedMatch || existingRel === undefined ? PROBITY_CONFIG_REL : existingRel;
+      probityConfigSnapshot =
+        probityConfigRel === PROBITY_CONFIG_REL
+          ? ownConfigSnapshot
+          : await snapshot(options.cwd, probityConfigRel);
+      if (verb === 'remove') {
+        entries = entries.filter((entry) => entry.id !== 'probity');
+        probityConfigNext = ownedMatch ? null : probityConfigSnapshot.bytes;
+        // A config is being KEPT for one of two reasons, both named in the
+        // JSON result's `probityConfigKept` field: an adopted config (no
+        // `configHash` at all) or a Rig-generated one whose bytes have since
+        // drifted from the recorded hash. Either way the caller needs to
+        // know WHICH file was preserved.
+        if (existingRel !== undefined && !ownedMatch)
+          probityHandEditedConfig =
+            probity.configHash !== undefined && ownConfigSnapshot.bytes !== null
+              ? PROBITY_CONFIG_REL
+              : probityConfigRel;
+        probityPlan = [
+          `Probity ${PROBITY_VERSION}: remove the declaration entry${
+            ownedMatch
+              ? ` and delete ${probityConfigRel}`
+              : existingRel !== undefined
+                ? ` and keep ${probityConfigRel} (hand-edited or adopted, not Rig's own bytes)`
+                : ''
+          }.`,
+        ];
+      } else if (ownedMatch) {
+        // `probity.config.mjs` on disk already matches the recorded
+        // `configHash` — this is Rig's own config, so add/apply is
+        // idempotent over it: nothing to adopt, nothing to rewrite, and a
+        // repeated `add` for a new harness only extends `harnesses` above
+        // (RP-416 round 2, point 2).
+        probityConfigNext = probityConfigSnapshot.bytes;
+        probityPlan = [
+          `Probity ${PROBITY_VERSION} (pinned): ${probityConfigRel} already matches Rig's own generated bytes; nothing to write.`,
+        ];
+      } else if (existingRel !== undefined) {
+        // Not Rig's bytes. `--adopt` takes ownership (the entry drops its
+        // configHash, so doctor stops calling the edit drift); an entry the
+        // declaration already records keeps the config exactly as it is, so
+        // apply and a repeated add never refuse what an earlier add accepted.
+        // Only a first add over a foreign config needs the explicit --adopt.
+        const alreadyDeclared = parsed.entries.some((entry) => entry.id === 'probity');
+        if (!values.adopt && !alreadyDeclared) throw new Refusal('probity-config-exists');
+        probityConfigNext = probityConfigSnapshot.bytes;
+        if (values.adopt) {
+          const index = entries.findIndex((entry) => entry.id === 'probity');
+          if (index !== -1) {
+            const adopted = { ...entries[index]! };
+            delete adopted.configHash;
+            entries[index] = adopted;
+          }
+        }
+        probityPlan = [
+          values.adopt
+            ? `Probity ${PROBITY_VERSION} (pinned): adopt the existing ${probityConfigRel} without rewriting it.`
+            : `Probity ${PROBITY_VERSION} (pinned): keep the declared ${probityConfigRel} as it is.`,
+          `Manual next step, not run by Rig: npm install -D @nizos/probity@${PROBITY_VERSION}`,
+        ];
+      } else {
+        probityConfigNext = Buffer.from(PROBITY_CONFIG_CONTENTS);
+        const index = entries.findIndex((entry) => entry.id === 'probity');
+        if (index !== -1)
+          entries[index] = {
+            ...entries[index]!,
+            configHash: probityConfigHash(probityConfigNext),
+          };
+        probityPlan = [
+          `Probity ${PROBITY_VERSION} (pinned): write ${PROBITY_CONFIG_REL} with an enforceTdd() hook; never runs the launcher.`,
+          `Manual next step, not run by Rig: npm install -D @nizos/probity@${PROBITY_VERSION}`,
+        ];
+      }
+    }
+    const selectedMcp = selected.filter(
+      (entry) => entry.id !== 'spec-kit' && entry.id !== 'probity',
+    );
     const needsClaude = selectedMcp.some((entry) => entry.harnesses?.includes('claude-code'));
     const servers = needsClaude ? { ...readConfig(mcpFile).mcpServers } : {};
     const mcpChanges = new Map<string, unknown | undefined>();
@@ -437,6 +558,12 @@ export async function runIntegrationsCommand(
       edits.push({ ...codexFile, next: nextCodex });
     if (!equalBytes(declarationFile.bytes, nextDeclaration))
       edits.push({ ...declarationFile, next: nextDeclaration });
+    if (
+      probityConfigSnapshot !== undefined &&
+      probityConfigNext !== undefined &&
+      !equalBytes(probityConfigSnapshot.bytes, probityConfigNext)
+    )
+      edits.push({ ...probityConfigSnapshot, next: probityConfigNext });
     const basicMemory = selected.some((entry) => entry.id === 'basic-memory');
     const coexistence =
       basicMemory && (await hasMachineMemoryManifest(options.env ?? process.env))
@@ -445,7 +572,13 @@ export async function runIntegrationsCommand(
     const basicBoundary = basicMemory
       ? ' Basic Memory is a wiring-only preview: it configures local, per-machine storage only; does not automatically access Memory; does not synchronize across machines; and uvx is a launcher, not a verified runtime.'
       : '';
-    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}. MCP wiring does not verify authorization, connectivity or trust.${basicBoundary}${coexistence}${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}`;
+    // The MCP authorization/connectivity/trust disclaimer only applies to an
+    // actual MCP provider selection — Probity is neither an MCP server nor
+    // rendered into any MCP config, so a Probity-only plan never carries it.
+    const mcpBoundary = selectedMcp.length
+      ? ' MCP wiring does not verify authorization, connectivity or trust.'
+      : '';
+    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}.${mcpBoundary}${basicBoundary}${coexistence}${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}${probityPlan.length ? '\n' + probityPlan.join('\n') : ''}`;
     if (values['dry-run'])
       return respond({ outcome: 'planned', dryRun: true, changed: false, plan }, plan);
     if (
@@ -456,7 +589,13 @@ export async function runIntegrationsCommand(
         !(await options.confirm(plan)))
     )
       throw new Refusal('yes-required-for-json-or-noninteractive');
-    const preimages = [declarationFile, mcpFile, codexFile, manifestFile];
+    const preimages = [
+      declarationFile,
+      mcpFile,
+      codexFile,
+      manifestFile,
+      ...(probityConfigSnapshot === undefined ? [] : [probityConfigSnapshot]),
+    ];
     await checkSnapshots(options.cwd, preimages);
     if (upstreamOptions) {
       const rechecked = await runSpecKitLifecycle(upstreamOptions);
@@ -490,6 +629,9 @@ export async function runIntegrationsCommand(
         ...(id === undefined ? {} : { id }),
         integrations: entries,
         ...(observed === undefined ? {} : { observed }),
+        ...(probityHandEditedConfig === undefined
+          ? {}
+          : { probityConfigKept: probityHandEditedConfig }),
       },
       plan,
     );
