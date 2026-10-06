@@ -94,9 +94,20 @@ state-vs-queue split exists to prevent.
 
 ## 1. Preflight — once, before the first task
 
+**The launch intent is two words, and both are the operator's.** `--unattended`
+says nobody is watching; `--decision-authority <owner|delegated>` says who
+answers the decisions the rules route to a human. They are independent, and an
+absent authority is the owner (`docs/decisions/decision-authority.md`). Pass the
+intent to preflight exactly as it was given:
+
 ```bash
-node .claude/scripts/preflight.mjs
+node .claude/scripts/preflight.mjs --unattended --decision-authority delegated   # the intent as given
 ```
+
+A malformed authority word refuses before any report — pinned in the
+generator's `test/template/preflight-authority.test.ts` (absent in a generated
+rig) › "a missing value after --decision-authority refuses: exit 1, no report
+on stdout, both words on stderr".
 
 Scripted checks cover the kill switch, inherited `RIG_RUN_DIR`, an unattended
 flag an earlier run left on disk for this checkout, the versioned
@@ -145,6 +156,17 @@ everything that already happened — so this goes in preflight or not at all:
 export RIG_RUN_DIR="$PWD/.claude/runs/$(date +%Y%m%d-%H%M%S)"   # one per run
 mkdir -p "$RIG_RUN_DIR"
 ```
+
+Then record the run's decision authority in that directory, so every later
+step reads it from a file rather than from this session's memory:
+
+```bash
+RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/run-state.mjs authority delegated   # or owner
+```
+
+It refuses a missing word and writes nothing — the generator's
+`test/template/run-state-authority.test.ts` (absent in a generated rig) ›
+"refuses with no word at all, and writes nothing".
 
 🔴 **The session must be started from the checkout whose run directory it
 declares.** The controller and the loop's own `RIG_RUN_DIR`/unattended flag
@@ -775,6 +797,55 @@ mechanises fully (`missed`, `.claude/rules/autonomy.md`) needs no self-report.
 
 ## 6. Escalation — two channels, by scope
 
+### 6.0 First, resolve the stop against the run's authority
+
+A per-item stop is one of a closed set, and which way it goes depends on the
+authority this run recorded in §1. Name the stop by its id:
+
+| the stop | id |
+| --- | --- |
+| three consecutive red runs of one check | `three-strikes` |
+| the item's attempt budget is spent | `attempt-budget` |
+| a reviewer returned a blocking verdict | `blocking-verdict` |
+| the gate-round cap is exhausted | `gate-round-cap` |
+| the check-premises skill returned `PREMISE FALSE` on the item | `premise-false` |
+| the work reaches a declared elevated path that is none of the Tier-2 change kinds | `elevated-path-scope` |
+| the work needs a Tier-2 change kind nobody planned (`autonomy.md`, "Surprise scope") | `surprise-scope` |
+| two rules collide (`autonomy.md`, "Invariant conflict") | `invariant-conflict` |
+| an owner or external dependency this session cannot resolve | `external-blocker` |
+
+then ask what this run may do about it:
+
+```bash
+RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/delegated-decision.mjs resolve --stop <id> --json
+```
+
+It answers exactly one of three words, from `.claude/scripts/queue/stop-class.mjs`
+and the authority contract — the generator's
+`test/template/delegated-decision.test.ts` (absent in a generated rig) ›
+"delegated-decision.mjs resolve — turns a per-item stop into one of three
+resolutions":
+
+- `decide-and-continue` — the run may make this decision itself. Record it
+  first, then carry on with the same item:
+
+  ```bash
+  RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/delegated-decision.mjs record \
+    --ticket <id> --decision <the decision resolve named> --summary "<what was decided, and why>" \
+    [--evidence "<the finding or command it rests on>"] [--release <label>] --post
+  ```
+
+  A decide-and-continue is not an escalation: the item is not marked, and no
+  escalation is counted toward §3's "two in a row". A `record` that refuses
+  means the decision was not made — escalate instead.
+- `escalate-item` — the steps below, unchanged: the item is parked and the run
+  takes the next one.
+- `stop-run` — the run-scoped channel at the end of this section.
+
+The decisions a delegated run may never make are not restated here; they are
+the non-delegable list in `.claude/scripts/lib/authority.mjs`, and `resolve`
+never answers `decide-and-continue` for one of them.
+
 **Task-scoped — the item is the home, and the loop continues.** Three strikes, the
 attempt budget, an invariant conflict, a blocking reviewer verdict, an **exhausted
 gate-round cap**, or a `PREMISE FALSE` verdict from `check-premises` **on the queue
@@ -893,6 +964,18 @@ automatically carries a `failed-check: <name> exit <code>; tests: <id1>,
 it. A check that never exited on its own reads differently in that same
 position: `timed out` when `--timeout` killed it, or `killed by <SIGNAL>`
 when a signal ended it without a timeout.
+
+A session that resumes a claimed item — after a compaction, on another
+machine, or from a continuation note — reads the decisions earlier runs
+already made for it before doing anything else, with
+`node .claude/scripts/delegated-decision.mjs list --ticket <id> --json` on
+that item's branch. A recorded decision is applied as already made, never
+re-asked; no record means the decision is still open, and it goes through
+§6.0 again under this run's own authority. Nothing here invents a decision
+an earlier run did not record — the generator's
+`test/template/delegated-decision.test.ts` (absent in a generated rig) ›
+"a FRESH run directory (a different controller session) still reads the made
+decision".
 
 A session resuming from a continuation note checks out the note's `branch:`
 line by its own name — `git checkout <branch>` (no `-b`, no rename). When

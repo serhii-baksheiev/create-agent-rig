@@ -15,6 +15,12 @@
 //        --decision <kind> --summary <text> [--evidence <text>] \
 //        [--release <label>] [--post]
 //   node .claude/scripts/delegated-decision.mjs list --ticket <id> [--json]
+//   node .claude/scripts/delegated-decision.mjs resolve --stop <item-stop-id> [--json]
+//
+// `resolve` reads, never writes: it answers what THIS run may do about one
+// per-item stop, from `queue/stop-class.mjs` and the run's declared authority —
+// `describe('delegated-decision.mjs resolve — turns a per-item stop into one
+// of three resolutions')` in the test file named below.
 //
 // `record` may resolve nothing on its own authority. It reads the run's OWN
 // declared authority — `run-state.mjs`'s `decisionAuthority`, written by
@@ -195,6 +201,7 @@ import { composeCappedTextField, composeTextField } from './continuation.mjs';
 import { readState } from './run-state.mjs';
 import { DECISION_AUTHORITIES, mayResolve, parseDecisionAuthority } from './lib/authority.mjs';
 import { recordEvent } from './run-journal.mjs';
+import { ITEM_STOPS, resolutionOf } from './queue/stop-class.mjs';
 
 const DECISIONS_ROOT = ['.rig', 'decisions'];
 const MAX_DECISIONS_BYTES = 256 * 1024;
@@ -794,6 +801,59 @@ const invokedDirectly = () => {
   return real(fileURLToPath(import.meta.url)) === real(process.argv[1]);
 };
 
+const parseResolveArgs = (argv) => {
+  const args = { stop: undefined, json: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const flag = argv[i];
+    if (flag === '--stop') {
+      if (i + 1 >= argv.length) {
+        return { error: 'resolve: --stop requires a value.' };
+      }
+      i += 1;
+      args.stop = argv[i];
+    } else if (flag === '--json') {
+      args.json = true;
+    } else {
+      return { error: `resolve: unknown flag ${flag}` };
+    }
+  }
+  if (typeof args.stop !== 'string' || args.stop === '') {
+    return { error: 'resolve: --stop is required.' };
+  }
+  return { ok: true, ...args };
+};
+
+const runResolve = (argv) => {
+  const parsed = parseResolveArgs(argv);
+  if (!parsed.ok) return refuse(parsed.error);
+  const runDir = process.env.RIG_RUN_DIR;
+  if (!runDir) {
+    return refuse('resolve: RIG_RUN_DIR is not set, so there is no run whose authority to read.');
+  }
+  const entry = ITEM_STOPS.find((stop) => stop.id === parsed.stop);
+  if (!entry) {
+    return refuse(
+      `resolve: "${parsed.stop}" is not a per-item stop queue/stop-class.mjs names ` +
+        `(${ITEM_STOPS.map((stop) => stop.id).join(', ')}).`,
+    );
+  }
+  const authority = parseDecisionAuthority(readState(runDir).decisionAuthority);
+  const resolution = resolutionOf({ stopClass: entry.stopClass, authority, decision: entry.decision });
+  const answer = {
+    stop: entry.id,
+    stopClass: entry.stopClass,
+    decision: entry.decision,
+    authority,
+    resolution,
+  };
+  process.stdout.write(
+    parsed.json
+      ? `${JSON.stringify(answer)}\n`
+      : `${answer.stop}: ${answer.resolution} (${answer.stopClass}, authority ${answer.authority})\n`,
+  );
+  process.exit(0);
+};
+
 if (invokedDirectly()) {
   const [command, ...rest] = process.argv.slice(2);
   const cwd = process.cwd();
@@ -802,9 +862,11 @@ if (invokedDirectly()) {
     await runRecord(rest, cwd);
   } else if (command === 'list') {
     runList(rest, cwd);
+  } else if (command === 'resolve') {
+    runResolve(rest);
   } else {
     process.stderr.write(
-      `unknown command: ${command ?? '(none)'}. This CLI has two: \`record\` and \`list\`.\n`,
+      `unknown command: ${command ?? '(none)'}. This CLI has three: \`record\`, \`list\` and \`resolve\`.\n`,
     );
     process.exit(1);
   }

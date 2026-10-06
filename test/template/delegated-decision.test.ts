@@ -1541,3 +1541,248 @@ describe('delegated-decision.mjs — recording bypasses no mechanical gate', () 
     },
   );
 });
+
+// --- resolve (RP-342): a per-item stop -> one of the three resolutions ----
+//
+// `node delegated-decision.mjs resolve --stop <id> [--json]` turns a
+// `queue/stop-class.mjs` ITEM_STOPS id and this run's declared authority into
+// one of `RESOLUTIONS` (`decide-and-continue` | `escalate-item` | `stop-run`).
+// It is read-only: unlike `record`, it never touches `.rig/decisions`, the
+// run journal, or any other file, and it never refuses on an unrecognised or
+// absent authority — only on a missing run directory, a missing --stop
+// value, or a stop id the stop-class vocabulary does not name.
+//
+// The expected resolution per stop/authority pair below is hard-coded in
+// this file rather than derived by importing or calling `resolutionOf`
+// (`.claude/rules/invariants.md`'s independent-oracle rule): the oracle here
+// is the written-down contract in `queue/stop-class.mjs`'s own module header
+// and `docs/decisions/decision-authority.md` ("Stop classes"), not the
+// production function the CLI itself calls.
+describe('delegated-decision.mjs resolve — turns a per-item stop into one of three resolutions', () => {
+  // Every ITEM_STOPS id, with its independently-declared expected resolution
+  // UNDER DELEGATED AUTHORITY. `gate-round-cap`/`premise-false`/
+  // `elevated-path-scope` each name a decision `DELEGABLE_DECISIONS` lists
+  // (`extra-gate-round`/`scope-correction`/`elevated-change-acceptance`), so a
+  // delegated run may decide and continue; the three `work-blocked` stops and
+  // the two decision-less `decision-needed` stops (`surprise-scope`,
+  // `invariant-conflict`) always escalate; `external-blocker` is a hard
+  // external boundary and always stops the run.
+  const UNDER_DELEGATED: Array<[string, string]> = [
+    ['gate-round-cap', 'decide-and-continue'],
+    ['premise-false', 'decide-and-continue'],
+    ['elevated-path-scope', 'decide-and-continue'],
+    ['three-strikes', 'escalate-item'],
+    ['attempt-budget', 'escalate-item'],
+    ['blocking-verdict', 'escalate-item'],
+    ['surprise-scope', 'escalate-item'],
+    ['invariant-conflict', 'escalate-item'],
+    ['external-blocker', 'stop-run'],
+  ];
+
+  it.each(UNDER_DELEGATED)(
+    'under a delegated authority, %s resolves to %s',
+    async (stop, expected) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await writeRunState(runDir, { decisionAuthority: 'delegated' });
+      const result = await runCli(['resolve', '--stop', stop, '--json'], dir, envFor(runDir));
+      expect(result.code, result.out).toBe(0);
+      const parsed = JSON.parse(result.stdout) as { resolution: string };
+      expect(parsed.resolution).toBe(expected);
+    },
+  );
+
+  // The eight stops that CAN decide-and-continue only under delegated — under
+  // owner, or under an authority word the contract does not recognise at
+  // all, none of them may. `external-blocker` is checked separately below:
+  // it stops the run under every authority, delegated included (see
+  // UNDER_DELEGATED above), so it has no place in a "never
+  // decide-and-continue" table.
+  const NEVER_DECIDES_OUTSIDE_DELEGATED = [
+    'three-strikes',
+    'attempt-budget',
+    'blocking-verdict',
+    'gate-round-cap',
+    'premise-false',
+    'elevated-path-scope',
+    'surprise-scope',
+    'invariant-conflict',
+  ];
+
+  it.each(NEVER_DECIDES_OUTSIDE_DELEGATED)(
+    'under an owner authority, %s never resolves to decide-and-continue',
+    async (stop) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await writeRunState(runDir, { decisionAuthority: 'owner' });
+      const result = await runCli(['resolve', '--stop', stop, '--json'], dir, envFor(runDir));
+      expect(result.code, result.out).toBe(0);
+      const parsed = JSON.parse(result.stdout) as { resolution: string };
+      expect(parsed.resolution).not.toBe('decide-and-continue');
+    },
+  );
+
+  it.each(NEVER_DECIDES_OUTSIDE_DELEGATED)(
+    'under a malformed (unrecognised) authority, %s never resolves to decide-and-continue',
+    async (stop) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await writeRunState(runDir, { decisionAuthority: 'nonsense' });
+      const result = await runCli(['resolve', '--stop', stop, '--json'], dir, envFor(runDir));
+      expect(result.code, result.out).toBe(0);
+      const parsed = JSON.parse(result.stdout) as { resolution: string };
+      expect(parsed.resolution).not.toBe('decide-and-continue');
+    },
+  );
+
+  it('external-blocker resolves to stop-run under owner too', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'owner' });
+    const result = await runCli(
+      ['resolve', '--stop', 'external-blocker', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { resolution: string };
+    expect(parsed.resolution).toBe('stop-run');
+  });
+
+  it('external-blocker resolves to stop-run under a malformed authority too', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'nonsense' });
+    const result = await runCli(
+      ['resolve', '--stop', 'external-blocker', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { resolution: string };
+    expect(parsed.resolution).toBe('stop-run');
+  });
+
+  // --- the --json shape, and the pinned key order -------------------------
+
+  it('--json prints exactly { stop, stopClass, decision, authority, resolution }, in that key order', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(
+      ['resolve', '--stop', 'gate-round-cap', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).toBe(
+      '{"stop":"gate-round-cap","stopClass":"decision-needed","decision":"extra-gate-round",' +
+        '"authority":"delegated","resolution":"decide-and-continue"}\n',
+    );
+  });
+
+  it('--json prints decision: null for a stop that names no delegable decision at all', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'owner' });
+    const result = await runCli(
+      ['resolve', '--stop', 'three-strikes', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).toBe(
+      '{"stop":"three-strikes","stopClass":"work-blocked","decision":null,' +
+        '"authority":"owner","resolution":"escalate-item"}\n',
+    );
+  });
+
+  it('an absent authority (no state.json at all) reads as owner, exactly as record.mjs reads it', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir(); // no writeRunState call at all
+    const result = await runCli(
+      ['resolve', '--stop', 'three-strikes', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { authority: string };
+    expect(parsed.authority).toBe('owner');
+  });
+
+  it('a malformed authority word is reported back as "unknown", never as owner or delegated', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'nonsense' });
+    const result = await runCli(
+      ['resolve', '--stop', 'three-strikes', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const parsed = JSON.parse(result.stdout) as { authority: string };
+    expect(parsed.authority).toBe('unknown');
+  });
+
+  // --- refusals -------------------------------------------------------------
+
+  it('refuses with no RIG_RUN_DIR declared, naming it', async () => {
+    const { dir } = await newProject();
+    const result = await runCli(['resolve', '--stop', 'three-strikes'], dir, envFor(undefined));
+    expect(result.code, result.out).toBe(1);
+    expect(result.out, 'the CLI crashed on import rather than refusing').not.toMatch(
+      /Cannot find module|MODULE_NOT_FOUND/,
+    );
+    expect(result.out).toMatch(/RIG_RUN_DIR/);
+  });
+
+  it('refuses an unknown stop id, naming it', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(['resolve', '--stop', 'made-up-stop'], dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expect(result.out, 'the CLI crashed on import rather than refusing').not.toMatch(
+      /Cannot find module|MODULE_NOT_FOUND/,
+    );
+    expect(result.out).toMatch(/made-up-stop/);
+  });
+
+  it('refuses a --stop flag with nothing after it', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(['resolve', '--stop'], dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/--stop/);
+  });
+
+  it('refuses when --stop is omitted altogether', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(['resolve'], dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/--stop/);
+  });
+
+  // --- it is read-only -------------------------------------------------------
+
+  it('writes nothing: no .rig/decisions file, and nothing new in the run directory', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const before = (await readdir(runDir)).sort();
+    const result = await runCli(
+      ['resolve', '--stop', 'gate-round-cap', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    await expect(readFile(decisionsFile(dir, 'gate-round-cap'), 'utf8')).rejects.toThrow();
+    const dotRig = path.join(dir, '.rig');
+    await expect(readdir(dotRig)).rejects.toThrow();
+    const after = (await readdir(runDir)).sort();
+    expect(after).toEqual(before);
+  });
+});
