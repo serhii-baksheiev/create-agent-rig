@@ -107,11 +107,13 @@ const EXPECTED_SURFACES: Record<string, readonly Surface[]> = {
 
 // A not-observable condition may still be NAMED by a surface — so it can say
 // what it could not prove — but only with an `unknown` outcome.
+// RP-282: doctor names the native harness states it cannot observe, as
+// `unknown`, so their absence is explicit rather than silent.
 const EXPECTED_NOT_OBSERVABLE_SURFACES: Record<string, readonly Surface[]> = {
-  'harness-hooks-loaded': [],
+  'harness-hooks-loaded': ['doctor'],
   'codex-hook-trust': ['doctor'],
-  'workspace-trust': [],
-  'native-sandbox-mode': [],
+  'workspace-trust': ['doctor'],
+  'native-sandbox-mode': ['doctor'],
   'session-root-matches-run': [],
   'run-dir-fresh-per-run': [],
   'budget-declared': ['preflight'],
