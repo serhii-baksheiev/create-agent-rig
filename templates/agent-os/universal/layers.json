@@ -82,6 +82,7 @@
     ".claude/scripts/duplicate-work.mjs",
     ".claude/scripts/continuation.mjs",
     ".claude/scripts/delegated-decision.mjs",
+    ".claude/scripts/evidence-attach.mjs",
     ".claude/scripts/preflight.mjs",
     ".claude/scripts/run-state.mjs",
     ".claude/scripts/revalidate.mjs",
@@ -114,6 +115,7 @@
     "docs/decisions/run-directory.md",
     "docs/decisions/spacing-rations-mechanisms.md",
     "docs/decisions/stop-conditions-in-a-file.md",
-    "docs/decisions/two-empty-endings.md"
+    "docs/decisions/two-empty-endings.md",
+    "docs/decisions/artifact-evidence.md"
   ]
 }
