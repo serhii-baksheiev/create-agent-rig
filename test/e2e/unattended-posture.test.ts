@@ -314,8 +314,14 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
           env: gitEnv(),
         })
       ).stdout;
+    // The harnesses' own configuration — where their permissions and trust
+    // live. Not the whole HOME: preflight's `gh run list` writes gh's own
+    // state there (.local/state/gh/device-id on CI), which is gh's, not Rig's.
+    const HARNESS_HOME_DIRS = ['.claude', '.codex'];
     const homeListing = async (): Promise<string[]> =>
-      (await readdir(home, { recursive: true })).sort();
+      (await readdir(home, { recursive: true }))
+        .filter((entry) => HARNESS_HOME_DIRS.some((dir) => entry.split(/[\\/]/)[0] === dir))
+        .sort();
 
     const statusBefore = await status();
     const homeBefore = await homeListing();
