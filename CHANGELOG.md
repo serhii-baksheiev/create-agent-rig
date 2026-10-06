@@ -15,7 +15,70 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.3.0 (release candidate)
+## 1.4.0 (release candidate)
+
+**1.4.0 is additive on the 1.3 line.** It adds one contract for the conditions
+that decide whether a checkout is ready to run unattended, and reports it on
+two surfaces: preflight, before an unattended run starts, and
+`create-agent-rig doctor`. Rig is still not a sandbox, a daemon or a remote
+execution platform; [`docs/unattended-execution.md`](docs/unattended-execution.md)
+says what it enforces, verifies and leaves to the harness.
+
+### Added
+
+- **`.claude/scripts/lib/posture.mjs`** (Core). It is the closed list of
+  unattended-posture conditions. Each condition has a stable id, a
+  classification (`required`, `advisory`, `not-observable`) and the surfaces
+  that report it. The module also maps an outcome to preflight's verdict and
+  doctor's status. Documentation points at the module and does not re-list
+  it (RP-280).
+- **An `unattended` section in `doctor --json`.**
+  - It has one entry per condition on the doctor surface, with its outcome and
+    status, plus the worst of those statuses.
+  - Doctor cannot observe the native sandbox mode, workspace trust, whether
+    the harness loaded its hooks, or Codex hook trust. It names that state as
+    `unknown`.
+  - The section changes neither doctor's own status nor its exit code
+    (RP-282).
+- **[`docs/unattended-execution.md`](docs/unattended-execution.md).** It covers
+  the preflight sequence before the first task, troubleshooting with doctor,
+  and the kill switch (RP-284).
+
+### Changed
+
+- **Preflight reports against the contract** (opt-in workflow layer).
+  - Each check carries its posture id and an outcome in `--json`. The verdict
+    is the contract's.
+  - A new required check stops the run on an unattended flag that an earlier
+    run left on disk for this checkout.
+  - ⚠ Preflight names the two items it does not check as `unknown`. While
+    they remain, a clean scripted run reads **CAUTION**, never GO (RP-281).
+- **The Windows Codex wrapper for the guards.**
+  - It starts `git.exe` from PATH instead of going through `cmd.exe`, so a
+    UNC repository root resolves.
+  - It reads git's output as UTF-8.
+  - When it cannot run the guard, it now blocks with exit 2. That covers
+    three failures: no repository, a missing guard file, and git not on PATH.
+    Before, the wrapper exited with a code that Codex reads as non-blocking
+    (RP-321).
+- **An `apply_patch` move whose source cannot be resolved** is now refused
+  with wording that names the source, not the destination (RP-366).
+
+### Verification and limits
+
+- An e2e acceptance test runs the contract's scenario matrix on a generated
+  workflow rig on Linux, macOS and Windows (RP-283). It covers:
+  - the kill switch and the detection contract;
+  - the scope of the unattended flag;
+  - changed Claude Code and Codex hook wiring;
+  - unobservable native state;
+  - a guard refusal under an armed run, through both harnesses' invocations;
+  - no change to the repository or to the harness configuration in HOME.
+- Live Claude Code and Codex sessions were not driven for this release.
+- The Windows wrapper's non-ASCII repository root case did not reproduce on
+  the hosted Windows runner. It stays as a regression test.
+
+## 1.3.0
 
 **1.3.0 is additive on the 1.2 line.** It adds upstream
 [Probity](https://github.com/nizos/probity) (`@nizos/probity` 1.10.1) as an

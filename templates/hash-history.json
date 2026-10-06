@@ -21,7 +21,8 @@
     "1.1.0",
     "1.1.1",
     "1.2.0",
-    "1.2.1"
+    "1.2.1",
+    "1.3.0"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -317,7 +318,14 @@
       "since": "0.6.2",
       "hashes": [
         "c40320d90e9585a52026e074e399b6883a0dfed704115b28e8da4dea284cf85f",
-        "3be3d4af4a25536d2a2bac0441a1370be7efafb5f8aa737b195bdce77db0091b"
+        "3be3d4af4a25536d2a2bac0441a1370be7efafb5f8aa737b195bdce77db0091b",
+        "0d9297266b8d6598f80562b547bd22766fc02dd4cb63c5d6b0f1de63ad56d564"
+      ]
+    },
+    ".claude/hooks/probity-gate.mjs": {
+      "since": "1.3.0",
+      "hashes": [
+        "e87aa0e4e7cfe51573805f2f8bb5643283882bb0c553b210bcb340eedc5e0be8"
       ]
     },
     ".claude/hooks/record-dispatch.mjs": {
@@ -727,7 +735,8 @@
         "a180578d6e6de6a21900ff2f8a8ade2242170d16d2dd95574e5004435d870b9b",
         "44695f83e445c7da3257556a3decc70e79ef46d19da394d4d5dd4c9268c0b429",
         "a13952579f1752862133a5746f2c0e8696b9548c2c18eb6ff0bb6a54772cea3c",
-        "57a4c74b13fc2f2c05b3f075aee38defe320fceb2724f5f980842ef1f955ffd4"
+        "57a4c74b13fc2f2c05b3f075aee38defe320fceb2724f5f980842ef1f955ffd4",
+        "0ef0958d4d4243b39b58f5cea5dbd7880e8c4222bec9b8c0db7c5c840eebb6b2"
       ]
     },
     ".claude/skills/check-premises/SKILL.md": {
@@ -919,7 +928,8 @@
         "fa9a34eb9f889910e55269b76172608b989d553583de38af34316a31f4ad570b",
         "f3eaf4a9a2c0af418a6ecf54b6d7d32065033909907ea237d51423c9129f44a7",
         "e1e595da8de22768ad65fd8ea4d4a9f1d2e4ebe33a5b3ce6058f9c2e7bd0c217",
-        "7cc03a1235a99a18513740e16f6ea76498c55e65eaf5437bd4b690883a78ba86"
+        "7cc03a1235a99a18513740e16f6ea76498c55e65eaf5437bd4b690883a78ba86",
+        "5d8ec9c21abb513b607de933dc6c19d5685149cee887b8fbc16b4ead8f820b1f"
       ]
     },
     ".rig/revalidation.json": {
