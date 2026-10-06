@@ -287,7 +287,9 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           const windowsScript = Buffer.from(windowsCommand?.[1] ?? '', 'base64').toString(
             'utf16le',
           );
-          expect(windowsScript).toContain('git rev-parse --show-toplevel');
+          // RP-321: a bounded guard starts git.exe with the arguments on their
+          // own, so the root query is matched without the `git ` prefix.
+          expect(windowsScript).toContain('rev-parse --show-toplevel');
           expect(windowsScript).toMatch(
             /Join-Path \$repoRoot '\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs'/,
           );
@@ -425,9 +427,12 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
 
   // Hygiene, from reviewer advisories accepted alongside the blocker above:
   // CLIXML progress noise from a native command can land IN the block
-  // reason, and `cmd.exe` alone risks a cwd lookup / the user's AutoRun.
+  // reason, and `cmd.exe` risks a cwd lookup / the user's AutoRun. RP-321:
+  // cmd.exe also refuses a UNC working directory, so git is now started as
+  // the git.exe application PATH resolves, never through cmd.exe at all,
+  // in the wrapper's own directory, with its output read as UTF-8.
   it.each(BOUNDED_STAGE_GUARDS)(
-    "keeps CLIXML progress noise out of %s's block reason and resolves git through ComSpec with AutoRun disabled (RP-266 follow-up)",
+    "keeps CLIXML progress noise out of %s's block reason and starts git.exe from PATH, never through cmd.exe (RP-266 follow-up, RP-321)",
     async (guardFile) => {
       const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
         hooks: Record<
@@ -451,11 +456,13 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
 
       expect(
         windowsScript,
-        `${guardFile}: expected git resolved through $env:ComSpec (not a bare 'cmd.exe', which ` +
-          'risks a cwd lookup) with /d (skips the user AutoRun) before /c',
-      ).toMatch(/\$env:ComSpec/);
-      expect(windowsScript).toMatch(/\/d\b/);
-      expect(windowsScript).toContain('git rev-parse --show-toplevel');
+        `${guardFile}: expected git started as the git.exe application from PATH, never through ` +
+          'cmd.exe (which looks in the cwd, runs AutoRun and refuses a UNC directory)',
+      ).toMatch(/Get-Command git\.exe -CommandType Application/);
+      expect(windowsScript).not.toMatch(/ComSpec|cmd\.exe/i);
+      expect(windowsScript).toContain("'rev-parse --show-toplevel'");
+      expect(windowsScript).toMatch(/\$gitInfo\.WorkingDirectory\s*=/);
+      expect(windowsScript).toMatch(/\$gitInfo\.StandardOutputEncoding\s*=.*UTF8Encoding/);
     },
   );
 

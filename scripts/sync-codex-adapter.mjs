@@ -248,12 +248,20 @@ function windowsHookCommand(command) {
         "if ($rigRaw -match '^[0-9]{1,9}\\z') { $rigMs = [int]$rigRaw }",
         `$gitDefaultMs = ${GIT_DEFAULT_MS}`,
         '$gitBoundMs = [Math]::Min($gitDefaultMs, $rigMs)',
-        // PR #353 round 1 resolved git through `cmd.exe /c`, which risks a
-        // cwd lookup and the user's own AutoRun; ComSpec with `/d` (skip
-        // AutoRun) is the documented safer form of the same idea.
+        // RP-321: git is started as the git.exe application PATH resolves,
+        // never through cmd.exe. cmd.exe looked in the cwd, ran the user's
+        // AutoRun, and refused a UNC current directory outright, falling back
+        // to the Windows directory, where rev-parse failed and the guard
+        // never ran. `Get-Command -CommandType Application` reads PATH only.
+        // The working directory is set explicitly, so a UNC location reaches
+        // git, and its output is read as UTF-8, the encoding git writes, so a
+        // non-ASCII root survives the decode.
+        '$gitExe = (Get-Command git.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source',
         '$gitInfo = New-Object System.Diagnostics.ProcessStartInfo',
-        '$gitInfo.FileName = $env:ComSpec',
-        "$gitInfo.Arguments = '/d /c git rev-parse --show-toplevel'",
+        '$gitInfo.FileName = $gitExe',
+        "$gitInfo.Arguments = 'rev-parse --show-toplevel'",
+        '$gitInfo.WorkingDirectory = (Get-Location).ProviderPath',
+        '$gitInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)',
         '$gitInfo.UseShellExecute = $false',
         '$gitInfo.RedirectStandardOutput = $true',
         // PR #353 round 3 SECURITY blocker (code-reviewer, security-scanner):
@@ -276,6 +284,9 @@ function windowsHookCommand(command) {
         'if (-not $gitOk) { try { taskkill /PID $gitProc.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: git rev-parse timed out after $gitBoundMs ms"); exit 2 }',
         '$repoRoot = $gitProc.StandardOutput.ReadToEnd().Trim()',
         'if ($gitProc.ExitCode -ne 0) { exit $gitProc.ExitCode }',
+        // git prints a UNC root with forward slashes (//host/share/...);
+        // the rest of the wrapper and the guard expect the Windows form.
+        "if ($repoRoot.StartsWith('//')) { $repoRoot = $repoRoot.Replace('/', '\\') }",
         '$env:CLAUDE_PROJECT_DIR = $repoRoot',
         `$hookPath = Join-Path $repoRoot '${hook}'`,
         '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
