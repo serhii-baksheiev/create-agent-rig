@@ -61,7 +61,7 @@ export const POSTURE_CONDITIONS = Object.freeze([
     'required',
     ['preflight'],
     'both',
-    "The latest run of the project's deploy workflow, as GitHub reports it, concluded failed.",
+    "The latest run of the project's deploy workflow, as GitHub reports it, did not conclude with success.",
   ),
   condition(
     'hook-wiring-missing',
@@ -187,13 +187,13 @@ export const conditionById = (id) => POSTURE_CONDITIONS.find((entry) => entry.id
 const normalise = (outcome) => (outcome === 'pass' || outcome === 'fail' ? outcome : 'unknown');
 
 /** The condition for `id` on `surface`, refusing what the contract says that surface cannot report. */
-const onSurface = (fn, id, outcome, surface) => {
+const onSurface = (fn, id, raw, surface) => {
   const found = conditionById(id);
   if (!found) throw new Error(`${fn}: "${id}" is not a condition this contract names.`);
   if (!found.surfaces.includes(surface)) {
     throw new Error(`${fn}: "${id}" is not a ${surface} condition.`);
   }
-  if (found.classification === 'not-observable' && outcome !== 'unknown') {
+  if (found.classification === 'not-observable' && raw !== 'unknown') {
     throw new Error(`${fn}: "${id}" is not observable, so its only outcome is "unknown".`);
   }
   return found;
@@ -203,21 +203,20 @@ const onSurface = (fn, id, outcome, surface) => {
  * The preflight verdict for a set of reported outcomes, keyed by condition id.
  *
  * A required condition reporting `fail` returns `STOP`. Short of that, any
- * other `fail` or any `unknown` on a required or advisory condition returns
- * `CAUTION`. A not-observable condition named here does not move the
- * verdict. Otherwise — including an empty `outcomes` object — `GO`.
+ * outcome other than `pass` — including the `unknown` that is a
+ * not-observable condition's only outcome — returns `CAUTION`. Otherwise —
+ * including an empty `outcomes` object — `GO`.
  */
 export const preflightVerdict = (outcomes) => {
-  const reported = Object.entries(outcomes ?? {}).map(([id, raw]) => {
-    const outcome = normalise(raw);
-    return { found: onSurface('preflightVerdict', id, outcome, 'preflight'), outcome };
-  });
-  const judged = reported.filter(({ found }) => found.classification !== 'not-observable');
+  const reported = Object.entries(outcomes ?? {}).map(([id, raw]) => ({
+    found: onSurface('preflightVerdict', id, raw, 'preflight'),
+    outcome: normalise(raw),
+  }));
 
-  if (judged.some(({ found, outcome }) => found.classification === 'required' && outcome === 'fail')) {
+  if (reported.some(({ found, outcome }) => found.classification === 'required' && outcome === 'fail')) {
     return 'STOP';
   }
-  if (judged.some(({ outcome }) => outcome !== 'pass')) return 'CAUTION';
+  if (reported.some(({ outcome }) => outcome !== 'pass')) return 'CAUTION';
   return 'GO';
 };
 
@@ -227,8 +226,8 @@ export const preflightVerdict = (outcomes) => {
  * an advisory `fail`, any `unknown`, a not-observable condition — is `warn`.
  */
 export const doctorStatus = (id, raw) => {
+  const found = onSurface('doctorStatus', id, raw, 'doctor');
   const outcome = normalise(raw);
-  const found = onSurface('doctorStatus', id, outcome, 'doctor');
   if (found.classification === 'required' && outcome === 'fail') return 'fail';
   return outcome === 'pass' ? 'ok' : 'warn';
 };

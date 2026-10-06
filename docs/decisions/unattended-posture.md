@@ -41,12 +41,10 @@ condition only with the outcome `unknown`, and an outcome other than exactly
 `pass` is never read as a pass: there is no "it passed" for a thing nothing
 looked at.
 
-The CLI uses the package's own copy of this module, as it already does for
-`.claude/scripts/unattended-flag.mjs`, rather than a second list. Any
-documentation that explains what the contract covers points at this module
-and the test that pins its shape, and never re-lists the condition ids —
-the two would drift the moment an id changed in one and not the other, which
-is the exact failure this decision exists to close.
+Any documentation that explains what the contract covers points at this
+module and the test that pins its shape, and never re-lists the condition
+ids — the two would drift the moment an id changed in one and not the other,
+which is the exact failure this decision exists to close.
 
 ## Consequences
 

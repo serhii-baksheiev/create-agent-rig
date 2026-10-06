@@ -294,16 +294,22 @@ describe('preflightVerdict (RP-280)', () => {
     }
   });
 
-  it('accepts a not-observable condition named on its surface only as unknown, and it does not move the verdict', async () => {
+  it('accepts a not-observable condition named on its surface only as unknown, and it cautions — never GO', async () => {
     const { preflightVerdict } = await load();
     expect(preflightVerdict({ 'stray-worktree': 'unknown', 'budget-declared': 'unknown' })).toBe(
-      'GO',
+      'CAUTION',
     );
     expect(preflightVerdict({ 'stray-worktree': 'unknown', 'kill-switch-armed': 'fail' })).toBe(
       'STOP',
     );
     expect(() => preflightVerdict({ 'stray-worktree': 'pass' })).toThrow();
     expect(() => preflightVerdict({ 'budget-declared': 'fail' })).toThrow();
+    for (const outcome of [true, false, undefined, 'garbage']) {
+      expect(
+        () => preflightVerdict({ 'stray-worktree': outcome as unknown as Outcome }),
+        String(outcome),
+      ).toThrow();
+    }
   });
 });
 
@@ -368,6 +374,12 @@ describe('doctorStatus (RP-280)', () => {
     expect(doctorStatus('codex-hook-trust', 'unknown')).toBe('warn');
     expect(() => doctorStatus('codex-hook-trust', 'pass')).toThrow();
     expect(() => doctorStatus('codex-hook-trust', 'fail')).toThrow();
+    for (const outcome of [true, false, undefined, 'garbage']) {
+      expect(
+        () => doctorStatus('codex-hook-trust', outcome as unknown as Outcome),
+        String(outcome),
+      ).toThrow();
+    }
   });
 });
 
