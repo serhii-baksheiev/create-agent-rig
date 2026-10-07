@@ -82,7 +82,8 @@ generated rig) › "refuses when the run authority is absent (reads as owner),
 naming owner". A recorded decision is made; no record means the decision is
 still open — › "a FRESH run directory (a different controller session) still
 reads the made decision". The gates read their own inputs and never this
-record, so a recorded decision bypasses none of them.
+record, so a recorded decision bypasses none of them — with one bounded
+exception, the gate-round counter, described next.
 
 ## Extra gate rounds are bounded (opt-in workflow layer)
 
@@ -90,8 +91,9 @@ The delegable decision to run an extra gate round buys one review round past
 `maxGateRounds` for one exact ticket, branch and head, never a standing
 permission. The owner's
 `options.maxDelegatedRounds` in `.claude/queue.json` (default 1) bounds how
-many such authorizations a ticket may have on a branch, and `record` reads it
-from there, so a controller cannot enlarge it — the generator's
+many such authorizations a branch may hold, whatever ticket each names, and
+both `record` and the counter read it from there, so a controller cannot
+enlarge it by recording decisions — the generator's
 `test/template/delegated-rounds.test.ts` (absent in a generated rig) ›
 "absent maxDelegatedRounds defaults to 1: a first record succeeds, a second
 for the same ticket+branch is refused". The authorization is committed with

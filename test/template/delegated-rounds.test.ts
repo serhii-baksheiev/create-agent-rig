@@ -4,7 +4,8 @@
 // and RP-341/RP-342 (`queue/stop-class.mjs`, see `stop-class.test.ts` —
 // `gate-round-cap` now names the delegable `extra-gate-round` decision).
 //
-// This file pins the new, still-unimplemented design:
+// Round 1 of this design is already implemented (production) and already
+// pinned below:
 //
 //   - `options.maxDelegatedRounds` in the queue config: default 1 when
 //     absent; a non-negative integer; anything else refused (exit 1,
@@ -13,9 +14,7 @@
 //   - `delegated-decision.mjs record --decision extra-gate-round` now
 //     REQUIRES `--head <sha>`: refused (nothing written) when it is
 //     missing, when it differs from the checkout's actual HEAD, or on a
-//     detached checkout. It also refuses once `.rig/decisions/<ticket>.jsonl`
-//     already holds `maxDelegatedRounds` `extra-gate-round` records for the
-//     same ticket and branch. Every other decision id is unaffected — no
+//     detached checkout. Every other decision id is unaffected — no
 //     `--head` requirement, no budget (`delegated-decision.test.ts` already
 //     exercises the general CLI through a different, unaffected decision
 //     id, `tracker-correction`, precisely so this feature's blast radius
@@ -27,6 +26,29 @@
 //     (`run-journal.mjs`'s `decisions.jsonl`, `gate` one of the reviewers,
 //     `headSha` equal to that head) — read from the checkout's own
 //     `.claude/runs/` or, when declared, `RIG_RUN_DIR`.
+//
+// Round 1's own budget check counted `extra-gate-round` records per FREE
+// `--ticket` string (one file per ticket, `.rig/decisions/<ticket>.jsonl`)
+// rather than per branch, and only at `record` time. A reviewer reproduced
+// two ways through that gap: (1) a second, made-up ticket id on the same
+// branch gets its own empty file and its own fresh budget; (2) a second
+// `extra-gate-round` line appended BY HAND to an existing ticket's file
+// (never through `record`, so none of its checks ran) is still read back by
+// `gate-round --authorized`, which never compares the record count to the
+// budget at all. This file's still-unimplemented round 2 closes both:
+//
+//   - the budget is the BRANCH's, counted across every
+//     `.rig/decisions/*.jsonl`, whatever ticket each record names —
+//     checked in `record` (refuses a new record once the branch already
+//     holds `maxDelegatedRounds` records) AND in `gate-round --authorized`
+//     (refuses — exit 2, nothing counted — the moment the branch holds MORE
+//     `extra-gate-round` records than the budget, which is evidence of a
+//     bypass rather than a close call);
+//   - `record`'s success message names which delegated round it just spent,
+//     e.g. "delegated round 1 of 1";
+//   - a reviewer verdict's `headSha` is matched to the authorization's
+//     covered heads without regard to case, so an uppercase SHA cannot hide
+//     a verdict from the consumed-once check.
 //
 // Every expected literal below (exit codes, file counts, the stored record's
 // own fields) is declared by this file, independently of the production
@@ -193,6 +215,40 @@ const readDecisionLines = async (
     .split('\n')
     .filter((line) => line.trim() !== '')
     .map((line) => JSON.parse(line));
+
+/**
+ * Append a well-formed `extra-gate-round` line directly to a ticket's
+ * decisions file — bypassing `delegated-decision.mjs record` entirely, so
+ * none of its own checks (budget included) ever ran. Used only to build the
+ * over-budget state a bypass would leave behind.
+ */
+const appendForgedDecisionLine = async (
+  dir: string,
+  ticket: string,
+  overrides: Record<string, unknown>,
+): Promise<void> => {
+  const file = decisionsFile(dir, ticket);
+  let existing: string;
+  try {
+    existing = await readFile(file, 'utf8');
+  } catch {
+    existing = '';
+  }
+  const record = {
+    schemaVersion: 1,
+    ticket,
+    release: null,
+    decision: 'extra-gate-round',
+    authority: 'delegated',
+    summary: 'forged — appended directly to the file, bypassing record',
+    evidence: null,
+    branch: 'fix/a',
+    head: '',
+    at: new Date().toISOString(),
+    ...overrides,
+  };
+  await writeFile(file, `${existing}${JSON.stringify(record)}\n`);
+};
 
 // --- options.maxDelegatedRounds — config validation -----------------------
 
@@ -361,6 +417,62 @@ describe('options.maxDelegatedRounds — the config value delegated-decision.mjs
     }
   });
 
+  it('a second ticket id on the same branch cannot record once the branch budget is spent', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      // No .claude/queue.json — the default budget (1) is per BRANCH, not
+      // per the free-text --ticket string.
+      const runDir = await delegatedRunDir();
+      const h1 = await head(dir);
+      const first = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(first.code, first.out).toBe(0);
+
+      await writeFile(path.join(dir, 'fix.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix'], dir);
+      const h2 = await head(dir);
+
+      // A DIFFERENT, made-up ticket id on the SAME branch — a fresh file,
+      // but the same branch's already-spent budget.
+      const second = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'FAKE-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h2,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(second.code, second.out).not.toBe(0);
+      await expect(readFile(decisionsFile(dir, 'FAKE-1'), 'utf8')).rejects.toThrow();
+      // RP-1's own record is untouched by the refused attempt.
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(1);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
   it('maxDelegatedRounds: 0 refuses the very first record as budget-exhausted, not as a config error', async () => {
     const roots: string[] = [];
     try {
@@ -388,6 +500,192 @@ describe('options.maxDelegatedRounds — the config value delegated-decision.mjs
       );
       expect(result.code, result.out).not.toBe(0);
       await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+});
+
+// --- the budget is the branch's, not any one ticket's (RP-442 round 2) ----
+
+describe('the delegated-round budget is spent by the BRANCH, whatever ticket each record names', () => {
+  it('with maxDelegatedRounds: 2, RP-1 and RP-2 on the same branch each get one authorized round, and RP-3 is refused', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, {
+        adapter: 'plan-md',
+        options: { maxDelegatedRounds: 2 },
+      });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h1 = await head(dir);
+      const runDir = await delegatedRunDir();
+      const firstRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'one',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(firstRecord.code, firstRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-rp1'], dir);
+      await git(['push', '-q'], dir);
+
+      const round4 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(round4.code, round4.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      const h2 = await head(dir);
+      const secondRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-2',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'two',
+          '--head',
+          h2,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(secondRecord.code, secondRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-rp2'], dir);
+      await git(['push', '-q'], dir);
+
+      const round5 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-2', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(round5.code, round5.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+
+      // The budget — not a per-ticket count — is what refuses a THIRD
+      // ticket: --head here is the current checkout HEAD, past the second
+      // authorization's own record-only commit.
+      const h3 = await head(dir);
+      const thirdRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-3',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'three',
+          '--head',
+          h3,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(thirdRecord.code).not.toBe(0);
+      await expect(readFile(decisionsFile(dir, 'RP-3'), 'utf8')).rejects.toThrow();
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+});
+
+// --- record's success message names the delegated round (RP-442 round 2) --
+
+describe('record names the delegated round it just spent in its success message', () => {
+  it('names "delegated round 1 of 1" under the default budget', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const runDir = await delegatedRunDir();
+      const h = await head(dir);
+      const result = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(result.code, result.out).toBe(0);
+      expect(result.out).toMatch(/delegated round 1 of 1/);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('names "delegated round 2 of 2" for a second ticket on the same branch under a configured budget of 2', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      await writeFile(
+        path.join(dir, '.claude', 'queue.json'),
+        JSON.stringify({ adapter: 'plan-md', options: { maxDelegatedRounds: 2 } }),
+      );
+      const runDir = await delegatedRunDir();
+      const h1 = await head(dir);
+      const first = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'one',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(first.code, first.out).toBe(0);
+
+      await writeFile(path.join(dir, 'fix.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix'], dir);
+      const h2 = await head(dir);
+
+      const second = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-2',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'two',
+          '--head',
+          h2,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(second.code, second.out).toBe(0);
+      expect(second.out).toMatch(/delegated round 2 of 2/);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
@@ -1209,6 +1507,129 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       );
       expect(result.code, result.out).toBe(0);
       expect(await roundsFor(cloneCfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // RP-442 round 2: `record` is not the only way a line can land in
+  // `.rig/decisions/` — a line appended by hand, never through `record`,
+  // carries none of that command's checks. `--authorized` has to notice the
+  // branch holds more `extra-gate-round` records than the budget allows and
+  // refuse on that alone, even though the matching record's own chain to
+  // HEAD is otherwise intact and unconsumed.
+  it('refuses --authorized when the branch holds MORE extra-gate-round records than the budget — evidence of a bypass', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' }); // default budget 1
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h1 = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+      const h2 = await head(dir);
+
+      // The bypass: a second `extra-gate-round` line appended BY HAND,
+      // naming the record-only commit's own head so the chain walk below
+      // still matches it — committed on its own, still a record-only
+      // commit.
+      await appendForgedDecisionLine(dir, 'RP-1', { branch: 'fix/a', head: h2 });
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'forged second authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(result.code).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // RP-442 round 2: a verdict's `headSha` is free text a reviewer process
+  // writes, not a value this module controls — case alone must not hide it
+  // from the consumed-once check, since git's own canonical SHA text is
+  // always lowercase and a case mismatch is exactly the gap a bypass would
+  // exploit.
+  it('a reviewer verdict recorded with an UPPERCASE headSha still counts as consumption', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h = await head(dir);
+      const delegated = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      const firstAuthorized = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(firstAuthorized.code, firstAuthorized.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      const reviewRunDir = path.join(dir, '.claude', 'runs', 'r1');
+      await mkdir(reviewRunDir, { recursive: true });
+      recordDecision({
+        runDir: reviewRunDir,
+        gate: 'code-reviewer',
+        verdict: 'HOLD',
+        headSha: h.toUpperCase(),
+        now: new Date().toISOString(),
+      });
+
+      const secondAuthorized = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(secondAuthorized.code).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }

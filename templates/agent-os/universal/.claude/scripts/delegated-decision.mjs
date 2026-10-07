@@ -90,8 +90,9 @@
 // `--post` is the only thing that touches the network, resolved exactly the
 // way `continuation.mjs --post` resolves it — `queue/index.mjs`'s
 // `loadConfig` + `resolveAdapter`, then that adapter's `comment()`. Without
-// it, `record` never reads `.claude/queue.json` and never resolves an
-// adapter at all; a project with no such file records perfectly well — ›
+// it, `record` never resolves an adapter, and reads `.claude/queue.json` only
+// for an `extra-gate-round` decision's `options.maxDelegatedRounds` (RP-442);
+// a project with no such file records perfectly well — ›
 // "works with no .claude/queue.json present at all when --post is not
 // given". The posted body is a fixed, line-oriented shape — › "(d) the
 // posted comment body starts with \"rig-delegated-decision v1\" and carries
@@ -344,6 +345,25 @@ export const delegatedRoundBudget = (config) => {
   return raw;
 };
 
+/**
+ * Every `extra-gate-round` authorization recorded on one branch, whatever
+ * ticket each names — the budget belongs to the branch, so a second ticket id
+ * cannot buy another round (RP-442 round 2).
+ */
+export const extraGateRoundsOnBranch = ({ projectRoot, branch }) => {
+  const dir = join(projectRoot, '.rig', 'decisions');
+  let names;
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith('.jsonl'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  return names.flatMap((name) =>
+    extraGateRoundsFor({ projectRoot, ticket: name.slice(0, -'.jsonl'.length), branch }),
+  );
+};
+
 /** The `extra-gate-round` authorizations recorded for one ticket on one branch. */
 export const extraGateRoundsFor = ({ projectRoot, ticket, branch }) => {
   const file = readItemRecordFile(decisionsPathFor(projectRoot, ticket), {
@@ -421,10 +441,10 @@ const journalDecisionTexts = (projectRoot, runDir) => {
   } catch (error) {
     if (error?.code !== 'ENOENT') throw error;
   }
-  if (names.length > MAX_RUN_DIRS) {
-    throw new Error(`${runsRoot} holds more than ${MAX_RUN_DIRS} runs; consumption cannot be read whole.`);
-  }
-  for (const name of names) dirs.add(join(runsRoot, name));
+  // The newest runs by name (run dirs are timestamp-named): a round spent on
+  // the head under review is recent, and an old checkout must not lose
+  // delegated rounds for good once it has accumulated many runs.
+  for (const name of names.sort().reverse().slice(0, MAX_RUN_DIRS)) dirs.add(join(runsRoot, name));
   if (typeof runDir === 'string' && runDir !== '') dirs.add(runDir);
   const texts = [];
   for (const dir of dirs) {
@@ -457,16 +477,28 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
   if (!head) return { ok: false, why: 'HEAD could not be read.' };
   let records;
   let texts;
+  let onBranch;
+  let budget;
   try {
     records = extraGateRoundsFor({ projectRoot, ticket, branch });
+    onBranch = extraGateRoundsOnBranch({ projectRoot, branch }).length;
+    budget = delegatedRoundBudget(loadConfig(join(projectRoot, '.claude', 'queue.json')));
     texts = journalDecisionTexts(projectRoot, runDir);
   } catch (error) {
     return { ok: false, why: `the authorization or its consumption could not be read — ${error.message}` };
   }
+  // More authorizations than the owner's budget can only come from outside
+  // `record`; none of them is honoured.
+  if (onBranch > budget) {
+    return {
+      ok: false,
+      why: `${branch} holds ${onBranch} extra-gate-round authorizations, more than the budget of ${budget}.`,
+    };
+  }
   for (const record of records) {
     const covered = recordOnlyChain(projectRoot, record.head, head);
     if (covered === null) continue;
-    const heads = new Set(covered);
+    const heads = new Set(covered.map((sha) => sha.toLowerCase()));
     const answered = texts.some((text) =>
       text.split('\n').some((line) => {
         if (line === '') return false;
@@ -476,7 +508,11 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
         } catch {
           return false;
         }
-        return REVIEW_GATES.has(decision?.gate) && heads.has(decision?.headSha);
+        return (
+          REVIEW_GATES.has(decision?.gate) &&
+          typeof decision?.headSha === 'string' &&
+          heads.has(decision.headSha.toLowerCase())
+        );
       }),
     );
     if (answered) {
@@ -635,6 +671,7 @@ const runRecord = async (argv, cwd) => {
   const branch = gitValue(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
   const head = gitValue(['rev-parse', 'HEAD'], cwd);
 
+  let delegatedRound = null;
   // RP-442: an extra gate round is bound to the exact head and branch it was
   // decided for, and to the owner's budget — checked before anything is written.
   if (parsed.decision === 'extra-gate-round') {
@@ -654,14 +691,15 @@ const runRecord = async (argv, cwd) => {
     let recorded;
     try {
       budget = delegatedRoundBudget(loadConfig(join(projectRoot, '.claude', 'queue.json')));
-      recorded = extraGateRoundsFor({ projectRoot, ticket: parsed.ticket, branch }).length;
+      recorded = extraGateRoundsOnBranch({ projectRoot, branch }).length;
     } catch (error) {
       return refuse(`record: ${error.message}`);
     }
+    delegatedRound = `delegated round ${recorded + 1} of ${budget} on ${branch}`;
     if (recorded >= budget) {
       return refuse(
         `record: the delegated gate-round budget is spent — ${recorded} of ${budget} on ` +
-          `${branch} for ${parsed.ticket}. The next decision belongs to the owner.`,
+          `${branch}. The next decision belongs to the owner.`,
       );
     }
   }
@@ -715,6 +753,7 @@ const runRecord = async (argv, cwd) => {
 
   const relativePath = relative(projectRoot, decisionsPath);
   process.stdout.write(`recorded ${parsed.decision} for ${parsed.ticket} -> ${relativePath}\n`);
+  if (delegatedRound !== null) process.stdout.write(`${delegatedRound}\n`);
 
   // `--post` is the ONLY branch that resolves a queue adapter or touches the
   // network — exactly the way `continuation.mjs --post` resolves one.

@@ -870,7 +870,7 @@ resolutions":
   first, then carry on with the same item (for `gate-round-cap` the decision is
   `extra-gate-round`, recorded with `--head "$(git rev-parse HEAD)"`; `record`
   refuses once the owner's `options.maxDelegatedRounds` in `.claude/queue.json`,
-  default 1, is spent for this item and branch, and the stop then escalates):
+  default 1, is spent on this branch, and the stop then escalates):
 
   ```bash
   RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/delegated-decision.mjs record \
