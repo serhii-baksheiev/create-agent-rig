@@ -35,7 +35,7 @@
 // `extra-gate-round` line appended BY HAND to an existing ticket's file
 // (never through `record`, so none of its checks ran) is still read back by
 // `gate-round --authorized`, which never compares the record count to the
-// budget at all. This file's still-unimplemented round 2 closes both:
+// budget at all. This file's round 2 (implemented) closes both:
 //
 //   - the budget is the BRANCH's, counted across every
 //     `.rig/decisions/*.jsonl`, whatever ticket each record names —
@@ -49,6 +49,23 @@
 //   - a reviewer verdict's `headSha` is matched to the authorization's
 //     covered heads without regard to case, so an uppercase SHA cannot hide
 //     a verdict from the consumed-once check.
+//
+// Round 2's own "more records than the budget" check still reads only the
+// CURRENT contents of `.rig/decisions/*.jsonl`, and a reviewer found two
+// ways through THAT gap that never change the record count at all: (1)
+// rewriting an already-consumed record's own `--head <sha>` field IN PLACE
+// to a new, not-yet-verdicted commit — the count stays the same, but the
+// rewritten record's chain no longer carries the head the reviewer verdict
+// was recorded against, so the consumed-once check finds nothing to match
+// and calls it fresh; (2) deleting a ticket's decisions file outright and
+// recording a brand-new authorization in its place — the count of records on
+// the branch never exceeds the budget at any single instant, because the
+// deletion and the fresh record never coexist in the same read. This file's
+// total-cap case (RP-442, further round) closes both the same way: once the
+// branch's OWN counted rounds (`gate-round`'s own counter file, read before
+// any decision record is even consulted) already reach `maxGateRounds +
+// maxDelegatedRounds`, `--authorized` refuses — exit 2, nothing counted —
+// whatever the decision records on disk claim, tampered or genuine alike.
 //
 // Every expected literal below (exit codes, file counts, the stored record's
 // own fields) is declared by this file, independently of the production
@@ -1630,6 +1647,330 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       );
       expect(secondAuthorized.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // RP-442, further round — the total cap is maxGateRounds + maxDelegatedRounds
+  // (3 + 1 = 4 under the default budget), and it is checked from the
+  // branch's OWN counted rounds, never from a decision record's content.
+  //
+  // Probe 3: once round 4 is counted and the reviewer verdict that consumed
+  // it is on record, an in-place rewrite of the SINGLE existing RP-1 line —
+  // changing only its `head` field to a commit no verdict was ever recorded
+  // against — keeps the record COUNT at 1 (so the "more records than the
+  // budget" check in round 2 never fires) while escaping the consumed-once
+  // check entirely. `--authorized` must still refuse: the branch has already
+  // spent its 4 rounds, independent of what the rewritten record claims.
+  it('an in-place rewrite of the single counted record to a new, unverdicted head cannot buy a round past the total cap (probe 3)', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h1 = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+      const hA = await head(dir);
+
+      const round4 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(round4.code, round4.out).toBe(0);
+      // The total cap this project has: maxGateRounds (3, the default) plus
+      // maxDelegatedRounds (1, the default) — declared here, not read from
+      // production.
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      // Consume the authorization exactly the way an honest reviewer fan-out
+      // would: a verdict at the record's own declared head.
+      const reviewRunDir = path.join(dir, '.claude', 'runs', 'r1');
+      await mkdir(reviewRunDir, { recursive: true });
+      recordDecision({
+        runDir: reviewRunDir,
+        gate: 'code-reviewer',
+        verdict: 'HOLD',
+        headSha: h1,
+        now: new Date().toISOString(),
+      });
+
+      // The tamper: rewrite the one existing RP-1 line in place so its own
+      // `head` names the current real HEAD (`hA`) instead of `h1` — no
+      // verdict was ever recorded against `hA`, so the rewritten record
+      // reads as fresh. The rewrite itself is committed, and it changes
+      // nothing but `.rig/decisions/`.
+      const beforeRewrite = await readDecisionLines(dir, 'RP-1');
+      expect(beforeRewrite).toHaveLength(1);
+      const rewritten = { ...beforeRewrite[0], head: hA };
+      await writeFile(decisionsFile(dir, 'RP-1'), `${JSON.stringify(rewritten)}\n`);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'rewrite record in place'], dir);
+      await git(['push', '-q'], dir);
+
+      // The rewrite changed the one line's content, not the line count.
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(1);
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(result.code).toBe(2);
+      // Nothing was counted — still exactly the total cap from round 4.
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // Probe 4: deleting a ticket's decisions file and recording a brand-new
+  // authorization in its place also keeps the branch's record count inside
+  // the budget at every single read (the deletion and the fresh record never
+  // coexist), and the fresh record's head carries no verdict at all — yet
+  // the branch has already spent its total cap and `--authorized` must
+  // refuse regardless.
+  it('deleting a ticket decisions file and re-recording a fresh authorization cannot buy a round past the total cap (probe 4)', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h1 = await head(dir);
+      const runDir = await delegatedRunDir();
+      const firstRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(firstRecord.code, firstRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      const round4 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(round4.code, round4.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      // Consume round 4's authorization, so a plain replay of the SAME
+      // record could never explain what follows.
+      const reviewRunDir = path.join(dir, '.claude', 'runs', 'r1');
+      await mkdir(reviewRunDir, { recursive: true });
+      recordDecision({
+        runDir: reviewRunDir,
+        gate: 'code-reviewer',
+        verdict: 'HOLD',
+        headSha: h1,
+        now: new Date().toISOString(),
+      });
+
+      // The tamper: delete the ticket's decisions file outright (never
+      // through `record`), then run the OFFICIAL `record` command again —
+      // it succeeds, because the branch's record count is 0 the instant it
+      // is checked.
+      await git(['rm', '-q', path.join('.rig', 'decisions', 'RP-1.jsonl')], dir);
+      await git(['commit', '-q', '-m', 'delete decision record'], dir);
+      await git(['push', '-q'], dir);
+      const h2 = await head(dir);
+
+      const secondRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'again',
+          '--head',
+          h2,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(secondRecord.code, secondRecord.out).toBe(0);
+      expect(secondRecord.out).toMatch(/delegated round 1 of 1/);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-2'], dir);
+      await git(['push', '-q'], dir);
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(result.code).toBe(2);
+      // Nothing was counted — still exactly the total cap from round 4.
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // The total cap is maxGateRounds + maxDelegatedRounds generally, not just
+  // under the default budget of 1: with maxDelegatedRounds: 2, rounds 4 and
+  // 5 are authorized exactly as the legitimate-budget tests above already
+  // pin, and the total cap (3 + 2 = 5) still refuses a tampered round 6.
+  it('with maxDelegatedRounds: 2, rounds 4 and 5 authorize legitimately and a rewritten-in-place record still cannot buy round 6', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, {
+        adapter: 'plan-md',
+        options: { maxDelegatedRounds: 2 },
+      });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h1 = await head(dir);
+      const delegated = await delegatedRunDir();
+      const firstRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'one',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(firstRecord.code, firstRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      const round4 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(round4.code, round4.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      const reviewRunDir = path.join(dir, '.claude', 'runs', 'r1');
+      await mkdir(reviewRunDir, { recursive: true });
+      recordDecision({
+        runDir: reviewRunDir,
+        gate: 'code-reviewer',
+        verdict: 'HOLD',
+        headSha: h1,
+        now: new Date().toISOString(),
+      });
+
+      await writeFile(path.join(dir, 'fix.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix'], dir);
+      await git(['push', '-q'], dir);
+      const h2 = await head(dir);
+
+      const secondRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'two',
+          '--head',
+          h2,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(secondRecord.code, secondRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-2'], dir);
+      await git(['push', '-q'], dir);
+      const hB = await head(dir);
+
+      const round5 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(round5.code, round5.out).toBe(0);
+      // The total cap with a configured budget of 2: 3 + 2 = 5.
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+
+      recordDecision({
+        runDir: reviewRunDir,
+        gate: 'code-reviewer',
+        verdict: 'SHIP',
+        headSha: h2,
+        now: new Date().toISOString(),
+      });
+
+      // The tamper: rewrite the SECOND record in place so its own `head`
+      // names the current real HEAD (`hB`, the commit that landed it) —
+      // not `h2`, the head the reviewer verdict above was recorded against.
+      // The record count stays 2.
+      const beforeRewrite = await readDecisionLines(dir, 'RP-1');
+      expect(beforeRewrite).toHaveLength(2);
+      const rewritten = beforeRewrite.map((line, index) =>
+        index === 1 ? { ...line, head: hB } : line,
+      );
+      await writeFile(
+        decisionsFile(dir, 'RP-1'),
+        `${rewritten.map((line) => JSON.stringify(line)).join('\n')}\n`,
+      );
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'rewrite record 2 in place'], dir);
+      await git(['push', '-q'], dir);
+
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(result.code).toBe(2);
+      // Nothing was counted — still exactly the total cap from round 5.
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }

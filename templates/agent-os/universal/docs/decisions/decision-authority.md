@@ -103,7 +103,9 @@ the round was spent — › "exits 2 on a second --authorized call at the same
 head once a reviewer verdict is recorded for it". A new head earns nothing on
 its own — › "exits 2 on a fix commit past the default budget — no second
 authorization exists to match". With the default budget a run therefore stops
-at the owner after three base rounds and one delegated round. Consumption is
+at the owner after three base rounds and one delegated round, however the
+records are edited — › "an in-place rewrite of the single counted record to a
+new, unverdicted head cannot buy a round past the total cap (probe 3)". Consumption is
 read from this checkout's run journals; a second clone with no verdicts of its
 own does not see it spent.
 

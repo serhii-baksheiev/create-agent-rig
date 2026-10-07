@@ -330,7 +330,7 @@ const gitValue = (args, cwd) => {
 const projectRootOf = (cwd) => gitValue(['rev-parse', '--show-toplevel'], cwd) ?? cwd;
 
 /**
- * The owner's budget of delegated gate rounds per ticket and branch:
+ * The owner's budget of delegated gate rounds per branch, whatever ticket each record names:
  * `options.maxDelegatedRounds` from the queue config, an owner-composed file,
  * so a controller cannot enlarge it by recording decisions (RP-442).
  */

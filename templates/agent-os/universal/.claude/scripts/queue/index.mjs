@@ -439,13 +439,22 @@ if (invokedDirectly()) {
         const { gateRoundsFor } = await import('./gate-rounds.mjs');
         const spent = gateRoundsFor({ branch: args.branch, roundsPath });
         if (spent >= verdictFor(0).max) {
-          const { authorizedRoundFor } = await import('../delegated-decision.mjs');
-          const authorization = authorizedRoundFor({
-            projectRoot: gitRoot,
-            ticket: args.ticket,
-            branch: args.branch,
-            runDir: process.env.RIG_RUN_DIR,
-          });
+          const { authorizedRoundFor, delegatedRoundBudget } = await import(
+            '../delegated-decision.mjs'
+          );
+          const total = verdictFor(0).max + delegatedRoundBudget(config);
+          const authorization =
+            spent >= total
+              ? {
+                  ok: false,
+                  why: `${args.branch} has spent ${spent} gate rounds, the cap of ${total} (maxGateRounds plus maxDelegatedRounds).`,
+                }
+              : authorizedRoundFor({
+                  projectRoot: gitRoot,
+                  ticket: args.ticket,
+                  branch: args.branch,
+                  runDir: process.env.RIG_RUN_DIR,
+                });
           if (!authorization.ok) {
             process.stderr.write(
               `DELEGATED ROUND REFUSED — ${authorization.why} Nothing was counted; the ` +

@@ -487,12 +487,10 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       });
     }
 
-    for (const stop of [
-      'surprise-scope',
-      'invariant-conflict',
-      'gate-round-cap',
-      'premise-false',
-    ]) {
+    // RP-442: `gate-round-cap` is deliberately absent from this loop — it is
+    // no longer a true non-delegable stop (it now names the delegable
+    // `extra-gate-round` decision; see the positive assertion below).
+    for (const stop of ['surprise-scope', 'invariant-conflict', 'premise-false']) {
       const resolved = await runJson(
         [delegatedDecisionPath(), 'resolve', '--stop', stop, '--json'],
         { RIG_RUN_DIR: runDirA },
@@ -522,6 +520,30 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       stopClass: 'systemic-wall',
     });
     expect(parsed.revalidation).toBeNull();
+  }, 120_000);
+
+  it('scenario 3a (RP-442): gate-round-cap resolves to one bounded delegated round, and stays with the owner otherwise', async () => {
+    const delegatedResolve = await runJson(
+      [delegatedDecisionPath(), 'resolve', '--stop', 'gate-round-cap', '--json'],
+      { RIG_RUN_DIR: runDirA },
+    );
+    expect(delegatedResolve).toMatchObject({
+      stop: 'gate-round-cap',
+      decision: 'extra-gate-round',
+      authority: 'delegated',
+      resolution: 'decide-and-continue',
+    });
+
+    const ownerResolve = await runJson(
+      [delegatedDecisionPath(), 'resolve', '--stop', 'gate-round-cap', '--json'],
+      { RIG_RUN_DIR: ownerRunDir },
+    );
+    expect(ownerResolve).toMatchObject({
+      stop: 'gate-round-cap',
+      decision: 'extra-gate-round',
+      authority: 'owner',
+      resolution: 'escalate-item',
+    });
   }, 120_000);
 
   it('scenario 3b: the real mechanical gate still blocks a delegated run, and a work-blocked stop never resolves to decide-and-continue', async () => {
