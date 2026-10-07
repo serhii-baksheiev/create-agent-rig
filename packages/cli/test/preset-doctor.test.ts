@@ -190,6 +190,8 @@ describe('doctor: the top-level preset summary (RP-314)', () => {
           declared: true,
           observed: { status: playwrightCheck!.status, reason: playwrightCheck!.reason },
         },
+        // RP-315: composed also names `bmad-tea`, undeclared and unobserved here.
+        { id: 'bmad-tea', declared: false, observed: null },
       ],
     });
   });
@@ -214,6 +216,8 @@ describe('doctor: the top-level preset summary (RP-314)', () => {
       integrations: [
         { id: 'spec-kit', declared: false, observed: null },
         { id: 'playwright-mcp', declared: false, observed: null },
+        // RP-315: composed also names `bmad-tea`, undeclared and unobserved here.
+        { id: 'bmad-tea', declared: false, observed: null },
       ],
     });
   });

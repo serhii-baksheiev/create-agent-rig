@@ -47,11 +47,12 @@ describe('templates/agent-os/profiles.json — the static preset data (RP-314, R
 
   // RP-313: composed is exactly sdd's layer set, plus Playwright MCP's
   // integration name alongside Spec Kit's — never replacing it.
-  it('composed installs the process and workflow layers plus the spec-kit and playwright-mcp integrations', async () => {
+  // RP-315 adds `bmad-tea` after `playwright-mcp`, never replacing either.
+  it('composed installs the process and workflow layers plus the spec-kit, playwright-mcp and bmad-tea integrations', async () => {
     const profiles = await loadProfiles();
     expect(profiles.presets.composed).toEqual({
       layers: ['process', 'workflow'],
-      integrations: ['spec-kit', 'playwright-mcp'],
+      integrations: ['spec-kit', 'playwright-mcp', 'bmad-tea'],
     });
   });
 

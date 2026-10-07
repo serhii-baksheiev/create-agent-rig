@@ -4,7 +4,7 @@
 // note — to a queue item as bounded, provenance-aware Rig evidence.
 //
 //   node .claude/scripts/evidence-attach.mjs attach --ticket <id> \
-//        --kind <token> --producer <token> \
+//        --kind <token> --producer <token> [--producer-version <version>] \
 //        --subject-kind <token> --subject-id <text> [--subject-version <text>] \
 //        --authority-class <token> (--file <path> | --ref <text>) \
 //        [--advisory-decision <pass|concerns|fail>] [--advisory-summary <text>] [--json]
@@ -59,6 +59,8 @@ const HASH_CHUNK = 64 * 1024;
 
 /** kind, producer, subject kind, authority class: lowercase, 1-64 characters. */
 const TOKEN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+/** The producer's own version, e.g. `1.27.2` or `0.0.83`: one token, 1-64 characters. */
+const PRODUCER_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
 const HEAD_SHA = /^[0-9a-f]{7,64}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
@@ -120,6 +122,12 @@ const recordProblem = (record, ticket) => {
     if (typeof record[key] !== 'string' || !TOKEN.test(record[key])) {
       return `${key} ${JSON.stringify(record[key])} is not a lowercase token`;
     }
+  }
+  if (
+    Object.hasOwn(record, 'producerVersion') &&
+    (typeof record.producerVersion !== 'string' || !PRODUCER_VERSION.test(record.producerVersion))
+  ) {
+    return `producerVersion ${JSON.stringify(record.producerVersion)} is not a version token`;
   }
   const authority = authorityClassProblem(record.authorityClass);
   if (authority) return `authorityClass ${JSON.stringify(record.authorityClass)} ${authority}`;
@@ -213,6 +221,7 @@ const ATTACH_FLAGS = Object.freeze({
   '--ticket': 'ticket',
   '--kind': 'kind',
   '--producer': 'producer',
+  '--producer-version': 'producerVersion',
   '--subject-kind': 'subjectKind',
   '--subject-id': 'subjectId',
   '--subject-version': 'subjectVersion',
@@ -326,6 +335,14 @@ const runAttach = (argv, cwd) => {
       return refuse(`${flag} ${JSON.stringify(options[key])} is not a lowercase token (1-64 of a-z 0-9 . _ -).`);
     }
   }
+  if (options.producerVersion !== undefined && !PRODUCER_VERSION.test(options.producerVersion)) {
+    return refuse(
+      `--producer-version ${JSON.stringify(options.producerVersion)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`,
+    );
+  }
+  if (options.producerVersion !== undefined && findSecretValues(options.producerVersion).length > 0) {
+    return refuse('--producer-version carries a credential-shaped value; it is never recorded.');
+  }
   const authority = authorityClassProblem(options.authorityClass);
   if (authority) return refuse(`--authority-class ${JSON.stringify(options.authorityClass)} ${authority}.`);
   if ((options.file === undefined) === (options.ref === undefined)) {
@@ -426,6 +443,7 @@ const runAttach = (argv, cwd) => {
     subject,
     authorityClass: options.authorityClass,
     producer: options.producer,
+    ...(options.producerVersion === undefined ? {} : { producerVersion: options.producerVersion }),
     ref: artifact.ref,
     sha256: artifact.sha256,
     item: options.ticket,

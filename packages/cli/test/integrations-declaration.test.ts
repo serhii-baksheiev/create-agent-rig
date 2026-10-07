@@ -15,6 +15,9 @@ describe('integration intent declaration', () => {
     // RP-313 adds `playwright-mcp` (Playwright MCP, routed `automatic` for
     // both harnesses) grouped with the other plain MCP providers, ahead of
     // `probity` which is neither an MCP server nor upstream-managed.
+    // RP-315 adds `bmad-tea` (BMAD Method's Test Architecture Enterprise
+    // module) after `probity` — an advisory evidence provider, like Probity,
+    // that Rig never installs and never wires into any harness's MCP config.
     expect(REGISTRY.map((x) => x.id)).toEqual([
       'basic-memory',
       'spec-kit',
@@ -22,6 +25,7 @@ describe('integration intent declaration', () => {
       'atlassian-mcp',
       'playwright-mcp',
       'probity',
+      'bmad-tea',
     ]));
   it('round trips only finite intent and target hash fields', () =>
     expect(
