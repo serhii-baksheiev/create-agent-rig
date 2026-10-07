@@ -3,7 +3,7 @@ import { access, chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from 'nod
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { verifyIntegrations } from '../src/integrations/verify.js';
+import { launcherFileNames, verifyIntegrations } from '../src/integrations/verify.js';
 import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
@@ -439,5 +439,30 @@ describe('integration doctor verification (RP-21)', () => {
     });
     expect(JSON.stringify(result)).not.toContain(privateId);
     expect(await readFile(declarationPath(), 'utf8')).toBe(declarationBefore);
+  });
+});
+
+// RP-313 gate round 2: on win32 a launcher installed from npm is as likely
+// to be a `.cmd` shim as an `.exe` — the default locator's own win32 branch
+// only ever tried `${name}.exe`, so an `npx.cmd`/`uvx.cmd`-only install
+// reported `missing` even though the launcher is right there on `PATH`. The
+// candidate-name list this file pins is the fix's whole decision surface,
+// pulled out as a pure function so each platform/launcher combination is
+// checked directly rather than through a PATH fixture.
+describe('launcherFileNames (RP-313 gate round 2)', () => {
+  it('names only the bare launcher on a non-Windows platform (uvx, linux)', () => {
+    expect(launcherFileNames('uvx', 'linux')).toEqual(['uvx']);
+  });
+
+  it('names only the bare launcher on a non-Windows platform (npx, linux)', () => {
+    expect(launcherFileNames('npx', 'linux')).toEqual(['npx']);
+  });
+
+  it('names both the .exe and the .cmd shim on win32 (uvx)', () => {
+    expect(launcherFileNames('uvx', 'win32')).toEqual(['uvx.exe', 'uvx.cmd']);
+  });
+
+  it('names both the .exe and the .cmd shim on win32 (npx)', () => {
+    expect(launcherFileNames('npx', 'win32')).toEqual(['npx.exe', 'npx.cmd']);
   });
 });

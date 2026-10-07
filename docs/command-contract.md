@@ -2260,8 +2260,11 @@ names but never runs itself); nothing about it needs `uv` or `uvx`
 MCP entry launched as `npx @playwright/mcp@0.0.83`; doctor observes `npx` on
 `PATH` and reports its absence as a warning, never a failure —
 `packages/cli/test/doctor.test.ts` › "distinguishes owned wiring, missing
-launcher and unobserved runtime for both Playwright MCP targets". The browser
-path is attended only (`docs/unattended-execution.md`).
+launcher and unobserved runtime for both Playwright MCP targets". On Windows
+doctor looks for `npx.cmd` as well as `npx.exe`. The written entry runs a bare
+`npx`; on native Windows a harness may need a `cmd /c` wrapper to launch it,
+and this release does not verify the Playwright path on native Windows. The
+browser path is attended only (`docs/unattended-execution.md`).
 
 **Platforms.** Linux, Windows and macOS (Apple silicon), each accepted on
 the exact packed release commit before publish, through the exact-SHA

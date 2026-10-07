@@ -17,11 +17,12 @@
 // deterministic way on every machine this suite runs on, rather than
 // racing a real upstream call that happens to be reachable on some of them.
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initProject } from '../src/commands/init.js';
+import { runIntegrationsCommand } from '../src/commands/integrations.js';
 import { runDoctor } from '../src/commands/doctor.js';
 import { readManifest, writeManifest } from '../src/lib/manifest.js';
 import type { RigManifest } from '../src/lib/manifest.js';
@@ -230,5 +231,65 @@ describe('doctor: the top-level preset summary (RP-314)', () => {
 
     const checks = body.checks as Array<{ id: string }>;
     expect(checks.some((check) => check.id === 'preset')).toBe(false);
+  });
+
+  // RP-313 gate round 2: `playwright-mcp` can be declared for BOTH harnesses
+  // at once. `doctor` reports one check per harness
+  // (`playwright-mcp:claude-code`, `playwright-mcp:codex`); the preset
+  // summary's single `observed` entry for that id must take the WORSE of the
+  // two. This environment (like every other case in this file) never
+  // observes a real `npx` on `PATH`, so a HEALTHY-wiring entry with a
+  // missing launcher and a DRIFTED entry both land on the same `warn`
+  // status — the Claude entry is healthy in the sense that its own wiring
+  // matches exactly what `setup add` wrote (`reason: launcher-missing`,
+  // same status as everything else in this file's "missing launcher"
+  // fixtures), while the Codex entry's wiring itself has drifted
+  // (`reason: drift`) because its config was edited after setup. A
+  // same-rank tie is exactly where "pick the worse one" is distinct from
+  // "pick the first one found": the latter would silently surface the
+  // benign missing-launcher reason while the real config drift sits
+  // unreported behind it.
+  it("reports the Codex entry's drift, not the Claude entry's merely-missing launcher, when both land on the same rank", async () => {
+    await initProject(repo, { withWorkflow: true });
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await writeManifest(repo, { ...manifest, preset: 'composed' } as RigManifest);
+    expect(
+      (
+        await runIntegrationsCommand({
+          cwd: repo,
+          verb: 'add',
+          args: ['playwright-mcp', '--harness', 'claude-code', '--harness', 'codex', '--yes'],
+        })
+      ).exitCode,
+    ).toBe(0);
+    // Edit the Codex section after setup — the Claude entry is left exactly
+    // as `add` wrote it, so only the Codex side drifts.
+    const codexConfigPath = path.join(repo, '.codex', 'config.toml');
+    await writeFile(codexConfigPath, `${await readFile(codexConfigPath, 'utf8')}# human edit\n`);
+
+    const { body } = await doctor();
+
+    const checks = body.checks as Array<{ id: string; status: string; reason: string }>;
+    const claudeCheck = checks.find((check) => check.id === 'playwright-mcp:claude-code');
+    const codexCheck = checks.find((check) => check.id === 'playwright-mcp:codex');
+    expect(claudeCheck, JSON.stringify(checks)).toBeDefined();
+    expect(codexCheck, JSON.stringify(checks)).toBeDefined();
+    // Fixture sanity: both checks land on `warn`, one for a merely-missing
+    // launcher and the other for an actual config drift — the exact tie
+    // this test exists to break correctly.
+    expect(claudeCheck!.status).toBe('warn');
+    expect(claudeCheck!.reason).toBe('launcher-missing');
+    expect(codexCheck!.status).toBe('warn');
+    expect(codexCheck!.reason).toBe('drift');
+
+    const preset = body.preset as { integrations: Array<{ id: string; observed: unknown }> };
+    const playwright = preset.integrations.find((entry) => entry.id === 'playwright-mcp');
+    expect(playwright, JSON.stringify(preset.integrations)).toBeDefined();
+    expect(playwright!.observed).toEqual({
+      status: codexCheck!.status,
+      reason: codexCheck!.reason,
+    });
+    expect((playwright!.observed as { status: string; reason: string }).reason).toBe('drift');
   });
 });

@@ -98,6 +98,11 @@ function decode(bytes: Buffer): string | null {
   }
 }
 
+/** The file names a launcher has on `platform`: Windows ships `uvx.exe` but `npx.cmd`. */
+export function launcherFileNames(name: 'uvx' | 'npx', platform: NodeJS.Platform): string[] {
+  return platform === 'win32' ? [`${name}.exe`, `${name}.cmd`] : [name];
+}
+
 async function defaultLocateLauncher(
   name: 'uvx' | 'npx',
   env = process.env,
@@ -106,14 +111,16 @@ async function defaultLocateLauncher(
   if (variable === undefined) return null;
   for (const directory of variable.split(path.delimiter)) {
     if (!path.isAbsolute(directory)) continue;
-    const candidate = path.join(directory, process.platform === 'win32' ? `${name}.exe` : name);
-    try {
-      // Follow a machine-installed launcher symlink, but never execute it.
-      if (!(await stat(candidate)).isFile()) continue;
-      await access(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
-      return candidate;
-    } catch {
-      // A PATH member not present on this machine is not a diagnostic failure.
+    for (const file of launcherFileNames(name, process.platform)) {
+      const candidate = path.join(directory, file);
+      try {
+        // Follow a machine-installed launcher symlink, but never execute it.
+        if (!(await stat(candidate)).isFile()) continue;
+        await access(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+        return candidate;
+      } catch {
+        // A PATH member not present on this machine is not a diagnostic failure.
+      }
     }
   }
   return null;

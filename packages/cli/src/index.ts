@@ -33,7 +33,7 @@ import type {
 } from './commands/uninstall.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest, sha256 } from './lib/manifest.js';
-import { PresetError, resolvePreset } from './lib/presets.js';
+import { PresetError, presetNames, resolvePreset } from './lib/presets.js';
 import type { Preset } from './lib/presets.js';
 import { templatesRoot } from './templates.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
@@ -42,6 +42,19 @@ import { collectGovernance, renderSummary } from './lib/summary.js';
 import { packageVersion, rigHandshake } from './lib/version.js';
 import { runMemory } from './commands/memory.js';
 import { runDoctor } from './commands/doctor.js';
+
+/**
+ * The shipped preset names for the usage text. Read once; a CLI whose
+ * profiles.json is missing must still print its usage and run every other
+ * command, so the read cannot be allowed to throw at import.
+ */
+const PRESET_LIST = (() => {
+  try {
+    return presetNames().join(', ');
+  } catch {
+    return 'none readable — templates/agent-os/profiles.json is missing';
+  }
+})();
 
 const USAGE = `Usage: create-agent-rig <dir> [options]
 
@@ -59,16 +72,18 @@ Options
                     "workflow" is the only accepted name — process/Core
                     installs unconditionally and is never named. Repeatable;
                     repeating the same name is harmless.
-  --preset <name>   a named composition preset (minimal, sdd): its layers are
-                    installed with any --layer given, and its name is
-                    recorded in the manifest for doctor. Never installs an
-                    integration — init prints the setup step to run instead.
+  --preset <name>   a named composition preset (${PRESET_LIST}):
+                    its layers are installed with any --layer given, and its
+                    name is recorded in the manifest for doctor. Never
+                    installs an integration — it prints the setup step to
+                    run instead.
   --no-color        plain output (NO_COLOR is respected too)
   --version         print the version (--version --json: the contract handshake,
                     one JSON object with the name, version and contract version)
   -h, --help        this text
 
 Also: create-agent-rig init [--dry-run] [--layer workflow] [--preset <name>]
+  --preset <name> is one of: ${PRESET_LIST}.
   Install the process layer (rules, gates, stop rules — no architecture
   assumptions) into the CURRENT existing repo. A pre-existing CLAUDE.md is
   kept, and the shim installs nested at .claude/CLAUDE.md instead; a

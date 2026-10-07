@@ -131,6 +131,18 @@ describe('Playwright MCP integration wiring (RP-313)', () => {
     expect(result.stdout).toContain('npx is a launcher, not a verified runtime');
   });
 
+  // RP-313 gate round 2: `npx @playwright/mcp@<version>` fetches the package
+  // from the npm registry at first harness launch — this CLI pins the
+  // version but never vendors or verifies the package itself, so the plan's
+  // own disclaimer must say where that launch actually reaches, the same
+  // way it already names npx as "a launcher, not a verified runtime".
+  it('names the npm registry as what npx actually fetches the package from at first launch', async () => {
+    const result = await setup('add', ['playwright-mcp', '--harness', 'claude-code', '--dry-run']);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain('npm registry');
+  });
+
   it('with --harness codex writes exactly the pinned command/args TOML section', async () => {
     const result = await setup('add', ['playwright-mcp', '--harness', 'codex', '--yes', '--json']);
 

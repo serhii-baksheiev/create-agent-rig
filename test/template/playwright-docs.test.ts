@@ -26,12 +26,28 @@ describe("docs/command-contract.md's support matrix names Playwright's Node/npx 
     const contract = await readFile(CONTRACT_PATH, 'utf8');
     expect(contract).toMatch(/Playwright[\s\S]{0,200}npx|npx[\s\S]{0,200}Playwright/i);
   });
+
+  // RP-313 gate round 2: `setup add playwright-mcp` launches its MCP
+  // server through `npx`, and on native Windows that launch itself goes
+  // through `cmd /c` — a limit the "Playwright MCP only" paragraph must
+  // name, the same way it already names the Node/npx requirement above,
+  // or an operator reading only this paragraph has no way to know their
+  // platform changes how the launcher actually runs.
+  it('names the native-Windows cmd /c launch limit in the "Playwright MCP only" paragraph', async () => {
+    const contract = await readFile(CONTRACT_PATH, 'utf8');
+    expect(contract).toMatch(/Playwright[\s\S]{0,600}Windows/);
+    expect(contract).toMatch(/cmd \/c/);
+  });
 });
 
 describe('docs/unattended-execution.md states the Playwright browser-verification path is attended only (RP-313)', () => {
-  it('names Playwright and says the path is attended, never extending the unattended posture', async () => {
+  it('names Playwright and says the path is attended only, never extending the unattended posture', async () => {
     const content = await readFile(UNATTENDED_PATH, 'utf8');
     expect(content).toMatch(/Playwright/i);
-    expect(content).toMatch(/attended/i);
+    // Tightened from /attended/i (RP-313 gate round 2): that regex also
+    // matched this very file's own "Unattended Execution" heading, so a
+    // regression that deleted the "attended only" sentence entirely could
+    // still pass.
+    expect(content).toMatch(/attended only/i);
   });
 });

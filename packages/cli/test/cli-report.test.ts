@@ -875,6 +875,31 @@ describe('`--help` on a subcommand (RP-239 A1)', () => {
     expect((await readdir(repo)).sort()).toEqual(before);
   });
 
+  // RP-313 gate round 2: `--preset <name>`'s own description names the
+  // presets this CLI ships as a parenthetical example — "(minimal, sdd)" —
+  // which is stale the moment a new preset ships (`composed`, RP-313's
+  // own) without someone remembering to update a hand-written list. The
+  // independent oracle is `templates/agent-os/profiles.json` itself, read
+  // directly here rather than through `presetNames()` — a name this CLI's
+  // own help text omits should fail this test even if the omission and the
+  // production code that renders the help text both forgot the same preset.
+  it('init --help names every preset templates/agent-os/profiles.json ships, not a stale subset', async () => {
+    const profiles = JSON.parse(
+      await readFile(path.join(repoRoot, 'templates', 'agent-os', 'profiles.json'), 'utf8'),
+    ) as { presets: Record<string, unknown> };
+    const presetNamesOnDisk = Object.keys(profiles.presets);
+    // Fixture sanity: this repo ships more than the two names the stale
+    // help text hardcoded, or this assertion cannot distinguish "every name"
+    // from "the first two names".
+    expect(presetNamesOnDisk.length).toBeGreaterThan(2);
+
+    const run = await runCli(repo, ['init', '--help']);
+
+    expect(run.code, run.stderr).toBe(0);
+    const missing = presetNamesOnDisk.filter((name) => !run.stdout.includes(name));
+    expect(missing, run.stdout).toEqual([]);
+  });
+
   it('upgrade --help prints usage to stdout, exits 0, and touches nothing', async () => {
     await installRig();
     const manifestBefore = await readFile(abs(MANIFEST_REL), 'utf8');
