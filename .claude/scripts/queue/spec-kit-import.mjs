@@ -4,10 +4,16 @@
 import { execFileSync } from 'node:child_process';
 import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
+import { findSecretValues } from '../lib/secrets.mjs';
+import { boundedSummary } from './jira.mjs';
 
 const MAX_TASKS_BYTES = 1024 * 1024;
 const MAX_TASKS = 1000;
 const MAX_TASK_DESCRIPTION_BYTES = 64 * 1024;
+// GitHub refuses a longer issue title; the full task text stays in the body.
+const MAX_GITHUB_TITLE_LENGTH = 256;
+const MAX_GH_REASON_LENGTH = 300;
+const titleOf = (task) => boundedSummary(task.title, MAX_GITHUB_TITLE_LENGTH);
 // Exported — RP-279's `spec-kit-jira.mjs` writes the identical label on its
 // own projected issues, so the two targets cannot drift onto two different
 // spellings of "this is managed by Rig Spec Kit import" (`invariants.md`: one
@@ -46,8 +52,21 @@ const gh = (projectRoot, args) => {
   } catch (error) {
     const operation = args.slice(0, 2).join(' ');
     const status = Number.isInteger(error?.status) ? ` (exit ${error.status})` : '';
-    throw new Error(`GitHub ${operation} failed${status}.`, { cause: error });
+    throw new Error(`GitHub ${operation} failed${status}${reasonOf(error?.stderr)}.`, { cause: error });
   }
+};
+
+// gh's own first stderr line, bounded and stripped of control characters; a
+// line carrying a credential-shaped value is withheld rather than printed.
+const reasonOf = (stderr) => {
+  const line = String(stderr ?? '')
+    .split(/\r?\n/, 1)[0]
+    // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+    .replace(/[\u0000-\u001f\u007f-\u009f]/g, '')
+    .trim()
+    .slice(0, MAX_GH_REASON_LENGTH);
+  if (line === '') return '';
+  return findSecretValues(line).length > 0 ? ': [reason withheld]' : `: ${line}`;
 };
 
 const issueNumberOf = (output) => {
@@ -223,7 +242,7 @@ const changeFor = (task, issue, numbers) => {
     return { identity: task.identity, action: 'update', dependencies: dependenciesFor(task), body: null };
   }
   const body = bodyFor(task, numbers);
-  const action = issue.title === task.title && issue.body === body ? 'unchanged' : 'update';
+  const action = issue.title === titleOf(task) && issue.body === body ? 'unchanged' : 'update';
   return { identity: task.identity, action, dependencies: dependenciesFor(task), body };
 };
 
@@ -323,7 +342,7 @@ export const importSpecKit = ({
   for (const task of ordered) {
     if (numbers[task.identity]) continue;
     const output = gh(root, [
-      'issue', 'create', '--title', task.title, '--body', bodyFor(task, numbers), '--label', PROJECTED_LABEL,
+      'issue', 'create', '--title', titleOf(task), '--body', bodyFor(task, numbers), '--label', PROJECTED_LABEL,
     ]);
     numbers[task.identity] = issueNumberOf(output);
     created.add(task.identity);
@@ -336,7 +355,7 @@ export const importSpecKit = ({
     if (created.has(task.identity)) {
       changes.push({ ...change, action: 'create' });
     } else if (change.action === 'update') {
-      gh(root, ['issue', 'edit', String(existingIssue.number), '--body', change.body, '--title', task.title]);
+      gh(root, ['issue', 'edit', String(existingIssue.number), '--body', change.body, '--title', titleOf(task)]);
       changes.push(change);
     } else {
       changes.push(change);

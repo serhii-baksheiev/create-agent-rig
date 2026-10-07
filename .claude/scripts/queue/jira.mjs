@@ -1295,10 +1295,11 @@ const MAX_SUMMARY_LENGTH = 255;
 
 // Exported for RP-279's `spec-kit-jira.mjs`, which needs the same 255-byte
 // summary cut for a projected task title that `triageItemFor` already applies
-// to a proposal — one rule, one implementation.
-export const boundedSummary = (text) => {
-  if (text.length <= MAX_SUMMARY_LENGTH) return text;
-  const cut = text.slice(0, MAX_SUMMARY_LENGTH);
+// to a proposal, and for `spec-kit-import.mjs`'s GitHub title (RP-441), with
+// GitHub's own maximum — one rule, one implementation.
+export const boundedSummary = (text, max = MAX_SUMMARY_LENGTH) => {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
   return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut;
 };
 
