@@ -938,6 +938,18 @@ describe('queue import spec-kit --to github-issues — GitHub title bound (RP-44
   // pilot's own 2423-character T001.
   const LONG_TASK_TEXT = 'Generate exports '.repeat(142).trim();
 
+  // RP-441 gate round 2 — every secret-shaped value below is assembled from
+  // non-secret-shaped parts at RUN TIME, never written as a literal, so this
+  // file itself never carries a credential value for `guard-secret-file` (or
+  // a human reader) to find.
+  const runtimeAlnum = (length: number): string => {
+    const alphabet = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    return Array.from({ length }, (_, index) => alphabet[(index * 7 + 11) % alphabet.length]).join(
+      '',
+    );
+  };
+  const runtimeGithubToken = (): string => ['gh', 'p_', runtimeAlnum(36)].join('');
+
   it('imports a 2400+ character task line, bounding the issue title while keeping the full text in the body', async () => {
     expect(LONG_TASK_TEXT.length).toBeGreaterThanOrEqual(2400);
     const { dir, scriptPath } = await scratchProject(
@@ -990,6 +1002,18 @@ describe('queue import spec-kit --to github-issues — GitHub title bound (RP-44
       // the end — that is not valid UTF-16 text, and GitHub would refuse it
       // as malformed JSON content the same way a raw cut would.
       expect(/[\uD800-\uDBFF]$/.test(created.title)).toBe(false);
+      // RP-441 gate round 2 — the check above is vacuous on its own: the
+      // title crosses into the `gh` STUB as a separate process's argv, and a
+      // lone high surrogate has no valid UTF-8 encoding, so a WRONG
+      // implementation that left one dangling would still arrive here as
+      // U+FFFD rather than as the surrogate the regex above looks for — the
+      // assertion would read "no dangling surrogate" even on broken code. The
+      // exact-equality check below has no such gap: a correct bound drops the
+      // whole incomplete pair rather than keep its mangled half, so the
+      // stored title is exactly the 255 'x' characters that precede it, with
+      // no replacement character anywhere in it.
+      expect(created.title).toBe('x'.repeat(255));
+      expect(created.title).not.toContain('�');
     } finally {
       github.stub.restore();
     }
@@ -1058,10 +1082,13 @@ describe('queue import spec-kit --to github-issues — GitHub title bound (RP-44
     // own `ghText` catches and rethrows on a `gh` failure, carrying it on
     // the thrown Error); `spec-kit-import.mjs`'s own `gh()` wrapper
     // currently discards `error.stderr` entirely and reports only
-    // "failed (exit 1)". No existing helper bounds/redacts an arbitrary `gh`
-    // stderr string in this tree — `jira.mjs`'s `boundedSummary` bounds a
-    // TITLE, not a free-text error reason — so surfacing this is new
-    // surface, not a reuse of one.
+    // "failed (exit 1)". The helper this is expected to reuse already exists:
+    // `sanitizeDiagnostic` in `.claude/scripts/reconcile-external-prs.mjs`
+    // already bounds and redacts an arbitrary subprocess stderr string —
+    // `jira.mjs`'s `boundedSummary` bounds a TITLE, not a free-text error
+    // reason, so it is `sanitizeDiagnostic`, not `boundedSummary`, that is
+    // the reuse candidate here (`invariants.md`: one mechanism, one
+    // implementation).
     const github = await installGh([], {
       createErrorStderr: "GraphQL: Could not resolve to a Repository with the name 'owner/repo'.",
     });
@@ -1077,6 +1104,105 @@ describe('queue import spec-kit --to github-issues — GitHub title bound (RP-44
       expect(result.out).not.toMatch(
         /^spec-kit import: GitHub issue create failed \(exit 1\)\.\s*$/m,
       );
+    } finally {
+      github.stub.restore();
+    }
+  });
+
+  // RP-441 gate round 2 — code-reviewer: `reasonOf` cuts `gh`'s stderr line to
+  // 300 characters BEFORE running `findSecretValues`, so a credential-shaped
+  // value straddling that cut prints partially. A GitHub classic token is
+  // `ghp_` followed by (here) 36 alphanumeric characters — 40 characters in
+  // all, comfortably inside `gh[pousr]_[A-Za-z0-9]{20,}` — placed so the
+  // 300-character cut lands inside it rather than before or after.
+  it('withholds a GitHub personal access token even when the 300-character reason cut would otherwise split it', async () => {
+    const taskText = 'Create the export configuration';
+    const { dir, scriptPath } = await scratchProject(`# Tasks: Export\n\n- [ ] T001 ${taskText}\n`);
+    const token = runtimeGithubToken();
+    const github = await installGh([], {
+      createErrorStderr: `${'x'.repeat(276)} ${token}`,
+    });
+    try {
+      const result = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+
+      expect(result.code, result.out).toBe(1);
+      // No 8+ character prefix of the token's secret part may survive: not
+      // even the bare prefix, and not even its first 12 characters.
+      expect(result.out).not.toContain('ghp_');
+      expect(result.out).not.toContain(token.slice(4, 16));
+      expect(result.out.includes('[redacted]') || !result.out.includes(token)).toBe(true);
+    } finally {
+      github.stub.restore();
+    }
+  });
+
+  it('withholds an Authorization: Bearer value from the reported reason', async () => {
+    const taskText = 'Create the export configuration';
+    const { dir, scriptPath } = await scratchProject(`# Tasks: Export\n\n- [ ] T001 ${taskText}\n`);
+    const value = runtimeAlnum(30);
+    const github = await installGh([], {
+      createErrorStderr: `HTTP 401: Authorization: Bearer ${value}`,
+    });
+    try {
+      const result = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).not.toContain(value);
+    } finally {
+      github.stub.restore();
+    }
+  });
+
+  it('strips a bidi override and a zero-width format character from the reported reason, keeping its words', async () => {
+    const taskText = 'Create the export configuration';
+    const { dir, scriptPath } = await scratchProject(`# Tasks: Export\n\n- [ ] T001 ${taskText}\n`);
+    const github = await installGh([], {
+      // U+202E (RIGHT-TO-LEFT OVERRIDE) and U+200B (ZERO WIDTH SPACE), each
+      // its own token so neither can be read as "glued onto a word" — the
+      // point here is that the format characters themselves never reach the
+      // reported reason, while the honest words around them do.
+      createErrorStderr: 'GraphQL: Could not resolve ‮ ​ to a Repository',
+    });
+    try {
+      const result = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).not.toContain('‮');
+      expect(result.out).not.toContain('​');
+      expect(result.out).toContain('resolve');
+      expect(result.out).toContain('Repository');
+    } finally {
+      github.stub.restore();
+    }
+  });
+
+  it('names the reason from the first NON-EMPTY line when gh stderr starts with blank lines', async () => {
+    const taskText = 'Create the export configuration';
+    const { dir, scriptPath } = await scratchProject(`# Tasks: Export\n\n- [ ] T001 ${taskText}\n`);
+    const github = await installGh([], {
+      createErrorStderr: '\n\nGraphQL: Could not resolve to a Repository',
+    });
+    try {
+      const result = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toContain('Could not resolve to a Repository');
     } finally {
       github.stub.restore();
     }
