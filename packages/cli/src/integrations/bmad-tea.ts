@@ -106,13 +106,15 @@ export async function inspectBmadTea(repoDir: string): Promise<BmadTeaInspection
 
   const tea = findTeaModuleVersion(text);
   if (!tea.found) return { status: 'warn', reason: 'not-installed' };
-  if (tea.version === undefined || !VERSION_TOKEN.test(tea.version))
+  // YAML's null scalars are no version at all.
+  if (tea.version === undefined || tea.version === 'null' || !VERSION_TOKEN.test(tea.version))
     return { status: 'warn', reason: 'version-unknown' };
 
   const config = await resolveReadableInside(repoDir, TEA_CONFIG_REL, 'file');
   if (config.status !== 'ok') return { status: 'warn', reason: 'config-missing' };
 
-  if (tea.version !== BMAD_TEA_VERSION)
+  // The installer records an external module's git tag (`v1.27.2`), not its package version.
+  if (tea.version.replace(/^v/, '') !== BMAD_TEA_VERSION)
     return { status: 'warn', reason: 'version-drift', version: tea.version };
   return { status: 'pass', reason: 'installed', version: tea.version };
 }

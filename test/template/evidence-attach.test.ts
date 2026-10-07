@@ -54,7 +54,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { modeBitsDeny, skipUnless, symlinksAvailable } from '../helpers/env.js';
-import { GITHUB_PAT } from './secrets-fixtures.js';
+import { CLOUD_ACCESS_KEY, GITHUB_PAT } from './secrets-fixtures.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universalDir = path.join(repoRoot, 'templates', 'agent-os', 'universal');
@@ -1448,6 +1448,50 @@ describe('evidence-attach.mjs attach — --producer-version (RP-315)', () => {
     const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
     expect(record!.producerVersion).toBe(producerVersion);
   });
+
+  // `--ref` already refuses a credential-shaped value (`findSecretValues`,
+  // above) and `--subject-id` redacts one (`composeTextField`) — but
+  // `--producer-version` is checked only against `PRODUCER_VERSION`
+  // (`/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/`), a shape a live credential
+  // satisfies as happily as a real version string. A GitHub PAT and an AWS
+  // access key id are both well-formed version tokens by that regex alone,
+  // so today's `attach` accepts either one and writes it verbatim to the
+  // run journal's `artifact-evidence` event and to
+  // `.rig/evidence/<ticket>.jsonl`. `--producer-version` must refuse a
+  // credential-shaped value the same way `--ref` does: non-zero exit,
+  // naming the flag and stating it is credential-shaped and never
+  // recorded, with nothing appended to either store.
+  const CREDENTIAL_SHAPED_PRODUCER_VERSIONS: Array<[string, string]> = [
+    ['a GitHub personal access token', GITHUB_PAT],
+    ['an AWS access key id', CLOUD_ACCESS_KEY],
+  ];
+
+  it.each(CREDENTIAL_SHAPED_PRODUCER_VERSIONS)(
+    'refuses a credential-shaped --producer-version (%s): non-zero exit, names --producer-version as credential-shaped, and writes nothing to the evidence file or the journal',
+    async (_label, credential) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
+      const before = await readEventsFor(runDir);
+
+      const result = await runCli(
+        attachArgs({ ...VALID_REF, producerVersion: credential }),
+        dir,
+        envFor(runDir),
+      );
+
+      expect(result.code, result.out).toBe(1);
+      expectDidNotCrash(result);
+      expect(result.out).toContain('--producer-version');
+      expect(result.out.toLowerCase()).toMatch(/credential/);
+      expect(result.out.toLowerCase()).toMatch(/never record/);
+      // The refusal must never echo the credential it is refusing.
+      expect(result.out).not.toContain(credential);
+      await expectNothingWritten(dir, 'RP-1');
+      const after = await readEventsFor(runDir);
+      expect(after).toEqual(before);
+    },
+  );
 });
 
 describe('evidence-attach.mjs — parseEvidence validates a stored producerVersion (RP-315)', () => {

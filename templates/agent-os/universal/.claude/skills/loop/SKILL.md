@@ -475,9 +475,11 @@ screenshot that is missing holds the PR the way any unmet acceptance line
 does, in review.
 When the item's acceptance names BMAD TEA output (`bmad-tea`; BMAD's own
 installer owns TEA, Rig only reads its installation state), attach the files
-TEA's workflows wrote — the trace workflow's `gate-decision.json` as
-`tea-trace`, an `nfr-assessment-*.md` as `tea-nfr-assessment`. The version is
-the `tea` entry's `version` in `_bmad/_config/manifest.yaml`:
+TEA's workflows wrote — the trace workflow's gate decision as `tea-trace`
+(`gate_decision_output` in TEA 1.27.2's
+`src/workflows/testarch/bmad-testarch-trace/workflow.yaml`), an NFR assessment
+as `tea-nfr-assessment`. The version is the `tea` entry's `version` in
+`_bmad/_config/manifest.yaml`:
 
 ```sh
 node .claude/scripts/evidence-attach.mjs attach --ticket <item-id> \

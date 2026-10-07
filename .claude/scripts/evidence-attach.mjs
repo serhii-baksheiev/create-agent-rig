@@ -340,6 +340,9 @@ const runAttach = (argv, cwd) => {
       `--producer-version ${JSON.stringify(options.producerVersion)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`,
     );
   }
+  if (options.producerVersion !== undefined && findSecretValues(options.producerVersion).length > 0) {
+    return refuse('--producer-version carries a credential-shaped value; it is never recorded.');
+  }
   const authority = authorityClassProblem(options.authorityClass);
   if (authority) return refuse(`--authority-class ${JSON.stringify(options.authorityClass)} ${authority}.`);
   if ((options.file === undefined) === (options.ref === undefined)) {

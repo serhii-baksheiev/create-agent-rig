@@ -83,6 +83,41 @@ ides:
     version: 1.27.2
 `;
 
+// A git commit SHA shape, not a credential shape — no recognised prefix from
+// `lib/secrets.mjs`'s `SECRET_VALUE_PATTERNS`, and `sha` is not in
+// `CREDENTIAL_WORDS`, so this literal is not a finding under the repository's
+// own secret scanner.
+const TEA_SHA = '8dcbb414c1708121748cbcc5a05504d02bd71159';
+
+/**
+ * code-reviewer (gate round 2): the EXACT upstream shape BMAD Method 6.12.1's
+ * installer writes for an externally-managed module resolved to a git TAG —
+ * `version` carries the tag text verbatim (`v1.27.2`, with the leading `v`),
+ * alongside `channel`, `sha` and `lastUpdated`, none of which `teaManifest`
+ * above includes. `inspectBmadTea` must read this shape the same way it reads
+ * the unprefixed `teaManifest` fixture above — both are accepted versions of
+ * "the tea entry names 1.27.2", and neither is privileged over the other.
+ */
+function realisticTeaManifest(versionLiteral: string): string {
+  return `installation:
+  version: 6.12.1
+  installDate: "2026-10-07T10:00:00.000Z"
+modules:
+  - name: core
+    version: 6.12.1
+    source: built-in
+  - name: tea
+    version: ${versionLiteral}
+    source: external
+    npmPackage: bmad-method-test-architecture-enterprise
+    channel: stable
+    sha: ${TEA_SHA}
+    installDate: "2026-10-07T10:00:05.000Z"
+    lastUpdated: "2026-10-07T10:00:05.000Z"
+ides: []
+`;
+}
+
 let repo: string;
 
 beforeEach(async () => {
@@ -239,6 +274,61 @@ describe('inspectBmadTea (RP-315): read-only doctor surface over the BMAD instal
       reason: 'installed',
       version: '1.27.2',
     });
+  });
+
+  // code-reviewer (gate round 2): BMAD 6.12.1 records an external module's
+  // resolved git TAG as its `version` — `v1.27.2`, with the leading `v` —
+  // never the bare `1.27.2` `BMAD_TEA_VERSION` is pinned as. Comparing the
+  // manifest's literal text against `BMAD_TEA_VERSION` as a plain string
+  // reads a correct, up-to-date install as drift.
+  it('passes installed with the upstream v-prefixed tag and full installer metadata (channel, sha, installDate, lastUpdated)', async () => {
+    await writeManifestYaml(realisticTeaManifest('v1.27.2'));
+    await writeTeaConfig();
+
+    const result = await inspectBmadTea(repo);
+
+    expect(result.status).toBe('pass');
+    expect(result.reason).toBe('installed');
+    // The manifest's own text, verbatim — the `v` prefix is not stripped.
+    expect(result.version).toBe('v1.27.2');
+  });
+
+  it('warns version-drift with the installed tag when the realistic manifest names an older v-prefixed version (v1.26.0)', async () => {
+    await writeManifestYaml(realisticTeaManifest('v1.26.0'));
+    await writeTeaConfig();
+
+    await expect(inspectBmadTea(repo)).resolves.toEqual({
+      status: 'warn',
+      reason: 'version-drift',
+      version: 'v1.26.0',
+    });
+  });
+
+  // BMAD Method writes `version: null` for a `tea` entry with no resolved
+  // version at all (an unquoted YAML null scalar, not an absent field).
+  // `findTeaModuleVersion` reads the literal text `null`, which is itself a
+  // well-formed version token (letters only) — so today's strict-equality
+  // comparison against `BMAD_TEA_VERSION` reports `version-drift` with
+  // `version: 'null'` ("installed at null") instead of recognising that no
+  // version was ever installed.
+  it('warns version-unknown with no version field when the tea entry version is the literal YAML null scalar (version: null)', async () => {
+    await writeManifestYaml(realisticTeaManifest('null'));
+    await writeTeaConfig();
+
+    const result = await inspectBmadTea(repo);
+
+    expect(result).toEqual({ status: 'warn', reason: 'version-unknown' });
+    expect(result).not.toHaveProperty('version');
+  });
+
+  it('warns version-unknown with no version field when the tea entry version is the tilde YAML null scalar (version: ~)', async () => {
+    await writeManifestYaml(realisticTeaManifest('~'));
+    await writeTeaConfig();
+
+    const result = await inspectBmadTea(repo);
+
+    expect(result).toEqual({ status: 'warn', reason: 'version-unknown' });
+    expect(result).not.toHaveProperty('version');
   });
 
   it('warns manifest-unreadable when the manifest is a directory, not a file', async () => {
@@ -514,6 +604,27 @@ describe('doctor: bmad-tea (RP-315)', () => {
     expect(checks).toContainEqual(
       expect.objectContaining({ id: 'bmad-tea', status: 'ok', reason: 'installed' }),
     );
+  });
+
+  it('reports ok/installed with an empty fix for the realistic upstream manifest (v-prefixed tag, channel, sha, installDate, lastUpdated)', async () => {
+    await writeDeclaration([{ id: 'bmad-tea', selected: true, harnesses: ['claude-code'] }]);
+    const manifestFile = path.join(repo, MANIFEST_REL);
+    await mkdir(path.dirname(manifestFile), { recursive: true });
+    await writeFile(manifestFile, realisticTeaManifest('v1.27.2'));
+    await writeTeaConfig();
+
+    const { result, body } = await doctor();
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const checks = body.checks as Array<{
+      id: string;
+      status: string;
+      reason: string;
+      fix: string;
+    }>;
+    const check = checks.find((candidate) => candidate.id === 'bmad-tea');
+    expect(check).toMatchObject({ status: 'ok', reason: 'installed' });
+    expect(check!.fix).toBe('');
   });
 
   it('never appears in the integrations (MCP wiring) array and emits no bmad-tea:* MCP-wiring check', async () => {
