@@ -361,18 +361,55 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
         expect(existsSync(countsFile(cfg))).toBe(false);
       });
 
-      // Rule under test: the exempt shape is exactly the stop's own entry path
-      // — `journal/YYYY-MM.md`, flat under `journal/`. SKILL.md §7 never
-      // describes a subdirectory or a non-`.md` file as something the stop
-      // writes, so neither shape is the stop's entry and neither is exempt;
-      // widening the match would also excuse an unrelated untracked file that
-      // merely happens to live under `journal/`.
-      it('still refuses on an untracked file under journal/ that is not a flat YYYY-MM.md', async () => {
+      // Rule under test: the exempt shape requires FLATNESS — directly under
+      // `journal/`, no subdirectory. SKILL.md §7 never describes the stop as
+      // writing into a subdirectory, so a nested file is not the stop's entry;
+      // widening the match to any depth would also excuse an unrelated
+      // untracked file nested anywhere under `journal/`. Nothing else in the
+      // tree is untracked, so a looser "any path under journal/" match is the
+      // only way this one could pass.
+      it('still refuses on a nested untracked file under journal/ (journal/sub/2026-10.md alone)', async () => {
         const cfg = await config();
         const dir = path.join(path.dirname(cfg), '..');
         await mkdir(path.join(dir, 'journal', 'sub'), { recursive: true });
         await writeFile(path.join(dir, 'journal', 'sub', '2026-10.md'), 'nested\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exempt shape requires the `.md` EXTENSION.
+      // SKILL.md §7 never describes the stop as writing a non-markdown file,
+      // so a flat non-`.md` file under `journal/` is not the stop's entry;
+      // widening the match to any flat filename would also excuse an
+      // unrelated untracked file that merely happens to sit flat under
+      // `journal/`. Nothing else in the tree is untracked, so a looser "any
+      // flat file under journal/" match is the only way this one could pass.
+      it('still refuses on a flat non-markdown untracked file under journal/ (journal/notes.txt alone)', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal'), { recursive: true });
         await writeFile(path.join(dir, 'journal', 'notes.txt'), 'not markdown\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exempt shape requires the YYYY-MM NAME exactly —
+      // not merely "some `.md` file flat under `journal/`". SKILL.md §7 names
+      // the stop's own entry as this month's dated file, never a file named
+      // anything else; widening the match to any flat `.md` name would also
+      // excuse an unrelated untracked markdown file (a README, a stray note)
+      // that merely happens to sit flat under `journal/`. Nothing else in the
+      // tree is untracked, so a looser "any flat .md under journal/" match is
+      // the only way this one could pass.
+      it('still refuses on a flat untracked .md file under journal/ that is not YYYY-MM (journal/README.md alone)', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal'), { recursive: true });
+        await writeFile(path.join(dir, 'journal', 'README.md'), 'not a stop entry\n');
         const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
         expect(result.code).toBe(1);
         expect(result.stderr).toMatch(/working tree is dirty/);
