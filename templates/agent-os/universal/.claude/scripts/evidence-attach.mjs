@@ -357,7 +357,21 @@ const runAttach = (argv, cwd) => {
         '--ref must be a remote reference (scheme://host/…); a local file goes through --file, which hashes it.',
       );
     }
-    if (remote[2].includes('@')) {
+    if (remote[2].includes('@') || options.ref.includes('\\')) {
+      return refuse('--ref carries URL userinfo; credentials in a reference are never recorded.');
+    }
+    // The parser a consumer uses decides last: it reads the authority past
+    // slashes and backslashes the regex above stops at.
+    let parsed;
+    try {
+      parsed = new URL(options.ref);
+    } catch {
+      return refuse('--ref is not a URL a client could parse.');
+    }
+    if (parsed.protocol === 'file:' || parsed.host === '') {
+      return refuse('--ref must be a remote reference (scheme://host/…).');
+    }
+    if (parsed.username !== '' || parsed.password !== '') {
       return refuse('--ref carries URL userinfo; credentials in a reference are never recorded.');
     }
   }

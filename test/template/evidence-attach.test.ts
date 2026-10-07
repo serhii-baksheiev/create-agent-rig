@@ -1019,6 +1019,143 @@ describe('evidence-attach.mjs attach — --ref carrying whitespace or a control 
   });
 });
 
+// --- A: --ref backslash-smuggled userinfo past the WHATWG URL parser (RP-312 gate round 4) -
+
+/**
+ * `REMOTE_REF`'s authority group (`[^/?#\s]*`) does not exclude a backslash,
+ * so for `scheme://\/bot:pw@host/r` it greedily consumes only the leading
+ * backslash run and stops at the very next `/` — it never reaches the `@`,
+ * so today's `remote[2].includes('@')` check finds nothing and the ref is
+ * accepted. The WHATWG URL parser (`new URL(ref)`), which is what a consumer
+ * of a STORED `ref` actually uses, reads the very same string differently: a
+ * run of `/` and `\` right after a special scheme's `:` is all path/authority
+ * separator to it, so it walks straight past the backslash(es) and lands on
+ * `bot` as `username` and the built password as `password` — a credential
+ * this CLI's own regex never saw.
+ *
+ * The password is built at runtime below (`buildPassword()`), deliberately
+ * NOT one of `secrets-fixtures.ts`'s named shapes: a `GITHUB_PAT`-shaped value
+ * anywhere in `--ref` is already refused by this CLI's separate,
+ * pre-existing `findSecretValues` check (see "refuses a credential-shaped
+ * --ref" above), which would make a test built on it pass for that unrelated
+ * reason and hide whether the backslash-parsing fix under test does anything
+ * at all.
+ */
+describe('evidence-attach.mjs attach — --ref backslash-smuggled userinfo past the WHATWG URL parser (RP-312 gate round 4)', () => {
+  const BACKSLASH = String.fromCharCode(0x5c); // one literal backslash character
+
+  /** A runtime-assembled password shaped like none of `secrets-fixtures.ts`'s credentials. */
+  const buildPassword = (): string =>
+    Array.from({ length: 24 }, (_, i) => String.fromCharCode(97 + ((i * 7 + 3) % 26))).join('');
+
+  const SCHEMES = ['https', 'http', 'wss', 'ftp'];
+
+  it.each(SCHEMES)(
+    'refuses a %s ref whose userinfo sits after exactly one backslash then a slash',
+    async (scheme) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
+      const password = buildPassword();
+      const ref = `${scheme}://${BACKSLASH}/bot:${password}@ci.example.invalid/r`;
+      expect(ref.split(BACKSLASH)).toHaveLength(2); // exactly one backslash character
+      const parsed = new URL(ref);
+      expect(parsed.username).toBe('bot');
+      expect(parsed.password).toBe(password);
+      const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+      expect(result.code, result.out).toBe(1);
+      expectDidNotCrash(result);
+      await expectNothingWritten(dir, 'RP-1');
+    },
+  );
+
+  it.each(SCHEMES)(
+    'refuses a %s ref whose userinfo sits after exactly two backslashes then a slash',
+    async (scheme) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
+      const password = buildPassword();
+      const ref = `${scheme}://${BACKSLASH}${BACKSLASH}/bot:${password}@ci.example.invalid/r`;
+      expect(ref.split(BACKSLASH)).toHaveLength(3); // exactly two backslash characters
+      const parsed = new URL(ref);
+      expect(parsed.username).toBe('bot');
+      expect(parsed.password).toBe(password);
+      const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+      expect(result.code, result.out).toBe(1);
+      expectDidNotCrash(result);
+      await expectNothingWritten(dir, 'RP-1');
+    },
+  );
+
+  it('refuses a backslash elsewhere in an otherwise valid ref', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = `https://ci.example.invalid/a${BACKSLASH}b`;
+    expect(ref.split(BACKSLASH)).toHaveLength(2); // exactly one backslash character
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a ref the WHATWG URL parser itself cannot parse (a non-numeric port)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'https://bot%40ci.example.invalid:notaport/r';
+    // The independent oracle: this string is unparseable to the WHATWG algorithm
+    // by construction, regardless of anything this CLI itself decides about it.
+    expect(() => new URL(ref)).toThrow();
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+});
+
+// --- A: --ref ACCEPT set, checked against the independent oracle (RP-312 gate round 4) -----
+
+/**
+ * The fix under test (RP-312 gate round 4) decides `--ref` by asking
+ * `new URL(ref)` rather than `REMOTE_REF`. Independent-oracle rule
+ * (`.claude/rules/invariants.md`): every ref this CLI is expected to go on
+ * ACCEPTING is checked here against that very parser, directly — not against
+ * this CLI's own exit code — so a future narrowing of the production check
+ * cannot silently agree with itself that an accepted ref carries no
+ * credential.
+ */
+const ACCEPT_REFS: Array<[string, string]> = [
+  ['https', 'https://ci.example.invalid/run/123'],
+  ['http', 'http://ci.example.invalid/run/123'],
+  ['s3', 's3://bucket/key'],
+  ['an uppercase scheme', 'HTTPS://ci.example.invalid/run/123'],
+  ['a port', 'https://ci.example.invalid:8443/run/123'],
+  ["'@' in the path, not the authority", 'https://ci.example.invalid/a@b/r'],
+];
+
+describe('evidence-attach.mjs attach — --ref ACCEPT cases (uppercase scheme, a port, "@" in the path)', () => {
+  it.each(ACCEPT_REFS)('accepts a ref with %s', async (_label, ref) => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+  });
+});
+
+describe('evidence-attach.mjs attach — the --ref ACCEPT set carries no userinfo by the independent oracle (new URL)', () => {
+  it.each(ACCEPT_REFS)(
+    'new URL() finds no username or password in a ref with %s',
+    (_label, ref) => {
+      const parsed = new URL(ref);
+      expect(parsed.username).toBe('');
+      expect(parsed.password).toBe('');
+    },
+  );
+});
+
 // --- A: more refusals (RP-312 gate round 2) ----------------------------------
 
 describe('evidence-attach.mjs attach — more refusals (RP-312 gate round 2)', () => {
