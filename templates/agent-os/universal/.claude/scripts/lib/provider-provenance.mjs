@@ -65,8 +65,8 @@ export const playwrightPin = async (projectRoot) => {
   }
   const toml = readBounded(join(projectRoot, '.codex', 'config.toml'));
   for (const line of toml === null ? [] : toml.split('\n')) {
-    if (line.trimStart().startsWith('#')) continue;
-    const match = PLAYWRIGHT_IN_TOML.exec(line);
+    const hash = line.indexOf('#');
+    const match = PLAYWRIGHT_IN_TOML.exec(hash === -1 ? line : line.slice(0, hash));
     if (match) return versionOrNull(match[1]);
   }
   return null;

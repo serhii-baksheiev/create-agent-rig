@@ -83,7 +83,9 @@ The compilation, identities and dry-run report are the GitHub target's
 (`test/template/spec-kit-import-jira.test.ts` › "dry-run report matches the
 github-issues target's shape and identities for the same tasks.md"). Each task
 becomes a Jira Task with the `rig-spec-kit` label and its identity marker as the
-first line of the description, followed by the same `rig-spec-kit-version` line. Dependencies become native Blocks links,
+first line of the description, followed by the same `rig-spec-kit-version` line
+(› "creates an issue whose description carries the version marker as its second
+paragraph, right after the task marker"). Dependencies become native Blocks links,
 created together with the dependent issue (› "creates dependents with their
 Blocks link in the create request (link direction), then an identical reimport
 is unchanged"), so the Jira queue holds a dependent until its blocker is done

@@ -214,6 +214,40 @@ describe('provider-provenance.mjs — playwrightPin', () => {
     const { playwrightPin } = await loadModule();
     expect(await playwrightPin(root)).toBe('0.0.83');
   });
+
+  // RP-443 round-2 security fix: a pin is only "commented out" when the `#`
+  // starts the line (checked above). A `#` that trails live TOML on the SAME
+  // line — a comment explaining what the value used to be — must not win
+  // over the real, uncommented pin that follows it. Everything from a line's
+  // first `#` on is ignored before matching, so the stale version named in
+  // the trailing comment never beats the live `args` pin below it.
+  it('rule: a pin inside a trailing comment never wins over the live pin that follows it', async () => {
+    const root = await newProjectRoot();
+    await mkdir(path.join(root, '.codex'), { recursive: true });
+    await writeFile(
+      path.join(root, '.codex', 'config.toml'),
+      '[mcp_servers.playwright]\n' +
+        'command = "npx" # was "@playwright/mcp@0.0.30" before the upgrade\n' +
+        'args = ["@playwright/mcp@0.0.41"]\n',
+    );
+    const { playwrightPin } = await loadModule();
+    expect(await playwrightPin(root)).toBe('0.0.41');
+  });
+
+  // RP-443 round-2 security fix: the same rule from the other side — when the
+  // ONLY pin anywhere in the file sits after a trailing `#`, stripping the
+  // comment before matching must leave that line with no pin at all, never
+  // fall back to matching inside the stripped-away comment text.
+  it('rule: a pin that sits ONLY inside a trailing comment is not returned — reads as null', async () => {
+    const root = await newProjectRoot();
+    await mkdir(path.join(root, '.codex'), { recursive: true });
+    await writeFile(
+      path.join(root, '.codex', 'config.toml'),
+      '[mcp_servers.playwright]\n' + 'command = "npx" # @playwright/mcp@0.0.30\n',
+    );
+    const { playwrightPin } = await loadModule();
+    expect(await playwrightPin(root)).toBeNull();
+  });
 });
 
 // --- specKitVersion ------------------------------------------------------------
