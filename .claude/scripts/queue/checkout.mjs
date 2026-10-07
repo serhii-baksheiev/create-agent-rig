@@ -91,18 +91,26 @@ export const mainCheckoutRoot = (startDir) => {
 };
 
 /**
+ * The previous stop's own journal entry, left untracked on purpose (loop skill
+ * §7), is the one dirt that does not refuse — `gate-rounds.test.ts` (absent in
+ * a generated rig) › "passes gate-round on an untracked journal/YYYY-MM.md, and
+ * counts the round" (RP-450).
+ */
+const JOURNAL_ENTRY = /^\?\? journal\/\d{4}-\d{2}\.md$/;
+
+/**
  * Is this checkout in a state a gate round may be counted against (AR-141)?
  *
  * A round is counted per branch and the fan-out's verdicts name a head. On one
  * branch two rounds were counted before a commit that pre-commit then refused,
  * so the counter and the records named a head that never shipped. The three
  * states that make a head unshippable are decidable from git alone: a dirty
- * working tree (tracked or untracked), a branch with no upstream, and commits
- * the upstream has not seen. `{ ok: true }` otherwise; a git that cannot answer
+ * working tree (tracked or untracked, bar that journal entry), a branch with no
+ * upstream, and commits the upstream has not seen. `{ ok: true }` otherwise; a git that cannot answer
  * is reported as such, never as clean.
  *
  * Bounded: two git calls, each with a timeout, and the porcelain output is
- * read only for emptiness. The upstream question has one catch for three
+ * read only for lines other than that entry. The upstream question has one catch for three
  * states — a detached HEAD, a branch with no upstream, an upstream that is
  * gone — and names none of them apart; the refusal is right for all three.
  */
@@ -117,11 +125,12 @@ export const checkoutIsShippable = (root) => {
     }).trim();
   let status;
   try {
-    status = git(['status', '--porcelain']);
+    status = git(['status', '--porcelain', '--untracked-files=all']);
   } catch (error) {
     return { ok: false, why: `git could not read the working tree at ${root}: ${error.message}` };
   }
-  if (status !== '') {
+  const dirty = status.split('\n').filter((line) => line !== '' && !JOURNAL_ENTRY.test(line));
+  if (dirty.length > 0) {
     return {
       ok: false,
       why: 'the working tree is dirty — a round counted now would name a head that has not ' +
