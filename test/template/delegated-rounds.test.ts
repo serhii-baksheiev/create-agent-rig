@@ -851,10 +851,10 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         withoutGitLocation(),
       );
       expect(result.code).toBe(2);
-      // Today's existing behaviour (pinned in gate-rounds.test.ts) always
-      // records the attempt before computing the verdict, even a doomed
-      // one — unaffected by `--ticket` being present with no `--authorized`.
-      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+      // RP-442: an exhausted plain call is not counted — the branch still
+      // reads 3, the base cap it already spent, not a phantom fourth round.
+      // Unaffected by `--ticket` being present with no `--authorized`.
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
@@ -1971,6 +1971,149 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(result.code).toBe(2);
       // Nothing was counted — still exactly the total cap from round 5.
       expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // RP-442, round-3 fix: pr-ship step 0 (SKILL.md's own step 0) runs a PLAIN
+  // `gate-round` first — no `--ticket` — and only on exit 2 does the loop
+  // record the delegated authorization and retry with `--ticket --authorized`.
+  // Today, the exhausted plain call still COUNTS before computing its exit
+  // code, so by the time the documented `--authorized` retry runs, the
+  // branch already reads as having spent the total cap (maxGateRounds +
+  // maxDelegatedRounds) and the retry is refused — the delegated round this
+  // project's config grants is unreachable through the documented order.
+  it('pr-ship order: an exhausted plain call does not count, so the documented --authorized retry still buys round 4', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+
+      // pr-ship step 0's own first call: plain, no --ticket.
+      const exhausted = await runGateRound(
+        ['--branch', 'fix/a', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(exhausted.code).toBe(2);
+      // An exhausted call is not a round (RP-442): the branch still reads 3,
+      // not 4 — this is the assertion the round-3 bug violates.
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+
+      // pr-ship's documented recovery: record the delegated authorization at
+      // HEAD, commit it alone, push.
+      const h = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      // And step 0's documented retry: --ticket --authorized.
+      const authorized = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(authorized.code, authorized.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // RP-442, round-3 fix: once the branch has spent round 4 (the one
+  // delegated round the default budget grants) and a reviewer has verdicted
+  // the authorized head, the authorization is both consumed AND the branch
+  // sits at its total cap. Neither a further plain call nor a further
+  // --authorized call may move the counter from there — and, per the fix,
+  // the plain call must refuse WITHOUT counting, exactly like the
+  // authorized one already does.
+  it('past the total cap and a consumed authorization, a further plain call and a further --authorized call both refuse without counting', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      const round4 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(round4.code, round4.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      // The reviewer fan-out's own verdict on the authorized head — spends
+      // the one authorization record just like the earlier consume-once
+      // tests above.
+      const reviewRunDir = path.join(dir, '.claude', 'runs', 'r1');
+      await mkdir(reviewRunDir, { recursive: true });
+      recordDecision({
+        runDir: reviewRunDir,
+        gate: 'code-reviewer',
+        verdict: 'HOLD',
+        headSha: h,
+        now: new Date().toISOString(),
+      });
+
+      const furtherPlain = await runGateRound(
+        ['--branch', 'fix/a', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(furtherPlain.code).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      const furtherAuthorized = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        withoutGitLocation(),
+      );
+      expect(furtherAuthorized.code).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }

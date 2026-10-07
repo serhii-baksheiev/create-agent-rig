@@ -435,9 +435,9 @@ if (invokedDirectly()) {
       // only for a durable extra-gate-round authorization bound to this ticket,
       // branch and head that no reviewer has answered yet. Refused without
       // counting, like an exhausted cap.
+      const { gateRoundsFor } = await import('./gate-rounds.mjs');
+      const spent = gateRoundsFor({ branch: args.branch, roundsPath });
       if (args.authorized) {
-        const { gateRoundsFor } = await import('./gate-rounds.mjs');
-        const spent = gateRoundsFor({ branch: args.branch, roundsPath });
         if (spent >= verdictFor(0).max) {
           const { authorizedRoundFor, delegatedRoundBudget } = await import(
             '../delegated-decision.mjs'
@@ -471,7 +471,10 @@ if (invokedDirectly()) {
         }
       }
 
-      const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
+      const { rounds } =
+        spent >= verdictFor(0).max
+          ? { rounds: spent + 1 }
+          : recordGateRound({ branch: args.branch, roundsPath });
       const verdict = verdictFor(rounds);
 
       if (!verdict.exceeded) {
@@ -486,7 +489,7 @@ if (invokedDirectly()) {
       }
 
       process.stderr.write(
-        `GATE ROUNDS EXHAUSTED — ${verdict.rounds} rounds on ${args.branch}, cap is ` +
+        `GATE ROUNDS EXHAUSTED — ${spent} rounds on ${args.branch}, cap is ` +
           `${verdict.max}: ${verdict.stop}.\n` +
           '  Do not run another round. The item stops here and goes back to a human ' +
           'with the round count and whatever the last gate reported. Whether those ' +
