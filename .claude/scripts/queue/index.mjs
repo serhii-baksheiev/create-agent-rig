@@ -215,11 +215,14 @@ const parseArgs = (argv) => {
   const args = {
     command: argv[0] ?? 'next', json: false, config: null, branch: null, name: null,
     source: null, target: null, tasksPath: null, dryRun: false, unknownOptions: [],
+    ticket: null, authorized: false,
   };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
     else if (argv[i] === '--config') args.config = argv[++i];
     else if (argv[i] === '--branch') args.branch = argv[++i];
+    else if (argv[i] === '--ticket') args.ticket = argv[++i];
+    else if (argv[i] === '--authorized') args.authorized = true;
     else if (argv[i] === '--to') args.target = argv[++i];
     else if (argv[i] === '--tasks') args.tasksPath = argv[++i];
     else if (argv[i] === '--dry-run') args.dryRun = true;
@@ -427,6 +430,37 @@ if (invokedDirectly()) {
       const gitRoot = projectRootOfConfig(configPath) ?? projectRoot;
       const shippable = checkoutIsShippable(gitRoot);
       if (!shippable.ok) throw new Error(`${shippable.why} (nothing was counted)`);
+
+      // RP-442: past the base cap, `--authorized` buys exactly one round, and
+      // only for a durable extra-gate-round authorization bound to this ticket,
+      // branch and head that no reviewer has answered yet. Refused without
+      // counting, like an exhausted cap.
+      if (args.authorized) {
+        const { gateRoundsFor } = await import('./gate-rounds.mjs');
+        const spent = gateRoundsFor({ branch: args.branch, roundsPath });
+        if (spent >= verdictFor(0).max) {
+          const { authorizedRoundFor } = await import('../delegated-decision.mjs');
+          const authorization = authorizedRoundFor({
+            projectRoot: gitRoot,
+            ticket: args.ticket,
+            branch: args.branch,
+            runDir: process.env.RIG_RUN_DIR,
+          });
+          if (!authorization.ok) {
+            process.stderr.write(
+              `DELEGATED ROUND REFUSED — ${authorization.why} Nothing was counted; the ` +
+                'stop belongs to the owner.\n',
+            );
+            process.exit(2);
+          }
+          const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
+          process.stdout.write(
+            `delegated gate round on ${args.branch}: round ${rounds}, authorized for ` +
+              `${args.ticket} at ${authorization.head}.\n`,
+          );
+          process.exit(0);
+        }
+      }
 
       const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
       const verdict = verdictFor(rounds);

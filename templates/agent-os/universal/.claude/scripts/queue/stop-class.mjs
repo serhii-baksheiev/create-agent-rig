@@ -29,10 +29,13 @@ export const ITEM_STOPS = Object.freeze([
   itemStop('three-strikes', 'work-blocked'),
   itemStop('attempt-budget', 'work-blocked'),
   itemStop('blocking-verdict', 'work-blocked'),
-  // No delegable decision yet: pr-ship's round counter has no delegated
-  // override (RP-432), and check-premises leaves re-aiming a false premise
-  // to a human — RP-342 round 1.
-  itemStop('gate-round-cap', 'decision-needed'),
+  // RP-442: `gate-round-cap` now names the delegable `extra-gate-round`
+  // decision — a delegated run may authorise one more review round past the
+  // configured cap, under the budget `options.maxDelegatedRounds` sets
+  // (`delegated-decision.mjs record`, `queue/index.mjs gate-round
+  // --authorized`). `premise-false` still carries no delegable decision at
+  // all: check-premises leaves re-aiming a false premise to a human.
+  itemStop('gate-round-cap', 'decision-needed', 'extra-gate-round'),
   itemStop('premise-false', 'decision-needed'),
   // A declared elevated path that is none of the Tier-2 change kinds is
   // delegable; an unplanned Tier-2 change kind (autonomy.md, "Surprise
