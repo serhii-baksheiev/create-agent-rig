@@ -455,7 +455,10 @@ successful SELECT, `next` creates a versioned content-blind baseline at
 the task's branch: a later SELECT, BEFORE_PR or BEFORE_CLOSE refuses an
 untracked record, and a resumed checkpoint with no record is `UNVERIFIABLE`.
 Commit `.rig/evidence/<item-id>.jsonl` to the same branch whenever the task
-attached artifact evidence (`evidence-attach.mjs`).
+attached artifact evidence (`evidence-attach.mjs`), in a commit of its own that
+changes nothing outside `.rig/evidence/` — not code, not `.rig/claims/`, not
+`.rig/decisions/`. Any other commit on top makes the evidence stale
+(`docs/decisions/artifact-evidence.md`, "Current-head staleness").
 When the item's acceptance names browser evidence, capture it with the
 Playwright MCP integration (`playwright-mcp`, attended sessions only) and
 attach each file — `--kind browser-trace` for a trace:

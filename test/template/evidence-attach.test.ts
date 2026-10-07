@@ -1754,6 +1754,36 @@ describe('docs/decisions/artifact-evidence.md', () => {
     expect(content).toMatch(/stale/i);
   });
 
+  // RP-437: the loop commits `.rig/evidence/<ticket>.jsonl` after evidence is
+  // attached, which moves the code head one commit past the one the evidence
+  // named — a record-only commit that changes nothing a reviewer would read.
+  // The staleness paragraph has to say this is an exception, not merely
+  // restate the general rule it is an exception TO: a reader of the plain
+  // "bound to another head is stale" sentence has no way to tell that a
+  // record-only commit is deliberately exempted from it.
+  //
+  // The exception covers `.rig/evidence/` ONLY. `.rig/decisions/` stays
+  // outside it — `verdict.mjs` never references `.rig/decisions` or
+  // `delegated-decision` at all (`test/template/delegated-decision.test.ts`
+  // › ".claude/scripts/verdict.mjs never references .rig/decisions or
+  // delegated-decision"), so a staleness paragraph that named `.rig/decisions`
+  // as exempt would describe behaviour the module is forbidden to have.
+  it('states the record-only exception to current-head staleness, in the staleness paragraph itself', async () => {
+    const content = await read();
+    const paragraph = content
+      .split(/\n{2,}/)
+      .find((block) => /current.?head.{0,40}staleness/i.test(block));
+    expect(
+      typeof paragraph,
+      'no paragraph of the decision record opens with "Current-head staleness"',
+    ).toBe('string');
+    expect(paragraph).toMatch(/\.rig\/evidence\//);
+    expect(paragraph).toMatch(/only\s*`?\.rig\/evidence\//i);
+    // The exception is `.rig/evidence/` alone — a paragraph that names
+    // `.rig/decisions` at all would be claiming decisions share it.
+    expect(paragraph).not.toContain('.rig/decisions');
+  });
+
   it('states the degradation rule: an unavailable provider or evidence source is not itself a failure', async () => {
     const content = await read();
     expect(content).toMatch(/unavailable/i);
