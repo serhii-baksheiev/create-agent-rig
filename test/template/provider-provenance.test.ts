@@ -170,6 +170,50 @@ describe('provider-provenance.mjs — playwrightPin', () => {
     const { playwrightPin } = await loadModule();
     expect(await playwrightPin(root)).toBeNull();
   });
+
+  // RP-443 B1: only an exact semver counts as a version. A dist-tag or a
+  // range is version-SHAPED (it matches the old, looser `VERSION_TOKEN`) but
+  // names no exact version at all, so it must read as null rather than being
+  // handed out as if it pinned one.
+  it.each(['latest', 'next', 'beta', '^0.0.83', '~1.2.3', '1.x', '0.0.x'])(
+    'rule: a dist-tag or range pin (%s) is not an exact version — reads as null, never returned verbatim',
+    async (pin) => {
+      const root = await newProjectRoot();
+      await writeJson(path.join(root, '.mcp.json'), {
+        mcpServers: { playwright: { command: 'npx', args: [`@playwright/mcp@${pin}`] } },
+      });
+      const { playwrightPin } = await loadModule();
+      expect(await playwrightPin(root)).toBeNull();
+    },
+  );
+
+  // RP-443 B1: the tightened check must not reject what it was always meant
+  // to accept — a genuine prerelease is still an exact semver.
+  it('an exact prerelease semver (1.0.0-beta.1) is still accepted verbatim', async () => {
+    const root = await newProjectRoot();
+    await writeJson(path.join(root, '.mcp.json'), {
+      mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp@1.0.0-beta.1'] } },
+    });
+    const { playwrightPin } = await loadModule();
+    expect(await playwrightPin(root)).toBe('1.0.0-beta.1');
+  });
+
+  // RP-443 B2: the `.codex/config.toml` search must ignore commented-out
+  // lines — a stale `# old: ...` pin above the live one must never win just
+  // because it appears first in the file.
+  it('rule: a commented-out TOML line is ignored; the live pin below it is returned', async () => {
+    const root = await newProjectRoot();
+    await mkdir(path.join(root, '.codex'), { recursive: true });
+    await writeFile(
+      path.join(root, '.codex', 'config.toml'),
+      '# old: args = ["@playwright/mcp@0.0.1"]\n' +
+        '[mcp_servers.playwright]\n' +
+        'command = "npx"\n' +
+        'args = ["@playwright/mcp@0.0.83"]\n',
+    );
+    const { playwrightPin } = await loadModule();
+    expect(await playwrightPin(root)).toBe('0.0.83');
+  });
 });
 
 // --- specKitVersion ------------------------------------------------------------
@@ -220,6 +264,17 @@ describe('provider-provenance.mjs — specKitVersion', () => {
     });
     const { specKitVersion } = await loadModule();
     expect(await specKitVersion(root)).toEqual({ version: '1.0.8', source: 'declared' });
+  });
+
+  // RP-443 B1: a dist-tag is version-shaped but names no exact version — it
+  // must read as unknown rather than being handed out as "installed".
+  it('rule: speckit_version "latest" is a dist-tag, not an exact version — reads as unknown', async () => {
+    const root = await newProjectRoot();
+    await writeJson(path.join(root, '.specify', 'init-options.json'), {
+      speckit_version: 'latest',
+    });
+    const { specKitVersion } = await loadModule();
+    expect(await specKitVersion(root)).toEqual({ version: null, source: 'unknown' });
   });
 
   it('rule: a malformed declared version token reads as unknown rather than returned verbatim', async () => {
@@ -322,6 +377,15 @@ describe('provider-provenance.mjs — probityProvenance', () => {
       declared: '1.10.1',
       installed: null,
     });
+  });
+
+  // RP-443 B1: a dist-tag is version-shaped but names no exact version — a
+  // declared "latest" must read as null, never handed out verbatim.
+  it('rule: a declared version of "latest" is a dist-tag, not an exact version — reads as null', async () => {
+    const root = await newProjectRoot();
+    await withProbityEntry(root, { version: 'latest', selected: true });
+    const { probityProvenance } = await loadModule();
+    expect((await probityProvenance(root)).declared).toBeNull();
   });
 
   it('declared and installed are read independently — something installed with no declaration at all reports declared: null, selected: false', async () => {

@@ -1,8 +1,8 @@
 // External-provider version provenance (RP-443): which exact provider
 // versions a rig declares, pins or has installed, read from the files the rig
 // and the providers already keep. Offline and read-only. A file that is over
-// 256 KiB, a symlink, unreadable or not valid JSON reads as absent, and a
-// value that is not a version token reads as unknown — a version is reported
+// 256 KiB, a symlinked file, unreadable or not valid JSON reads as absent, and
+// a value that is not an exact semver reads as unknown — a version is reported
 // only when one of these files states it, never inferred from another.
 //
 // Tests: `test/template/provider-provenance.test.ts` (absent in a generated rig).
@@ -11,13 +11,13 @@ import { lstatSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const MAX_BYTES = 256 * 1024;
-/** One version token — the shape `evidence-attach.mjs --producer-version` accepts. */
-const VERSION_TOKEN = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+/** An exact semver: a dist-tag or a range names no version. */
+const EXACT_VERSION = /^\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z.-]{1,40})?(?:\+[0-9A-Za-z.-]{1,40})?$/;
 const PLAYWRIGHT_ARG = /^@playwright\/mcp@(.+)$/;
 const PLAYWRIGHT_IN_TOML = /["']@playwright\/mcp@([^"']+)["']/;
 
 const versionOrNull = (value) =>
-  typeof value === 'string' && VERSION_TOKEN.test(value) ? value : null;
+  typeof value === 'string' && EXACT_VERSION.test(value) ? value : null;
 
 /** A regular, bounded file's text, or null. */
 const readBounded = (file) => {
@@ -64,8 +64,12 @@ export const playwrightPin = async (projectRoot) => {
     }
   }
   const toml = readBounded(join(projectRoot, '.codex', 'config.toml'));
-  const match = toml === null ? null : PLAYWRIGHT_IN_TOML.exec(toml);
-  return match ? versionOrNull(match[1]) : null;
+  for (const line of toml === null ? [] : toml.split('\n')) {
+    if (line.trimStart().startsWith('#')) continue;
+    const match = PLAYWRIGHT_IN_TOML.exec(line);
+    if (match) return versionOrNull(match[1]);
+  }
+  return null;
 };
 
 /**

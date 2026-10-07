@@ -71,6 +71,17 @@ const envFor = (runDir: string | undefined): NodeJS.ProcessEnv => {
   return env;
 };
 
+/** A minimal git init — RP-443 B3's test needs a real toplevel to resolve from a subdirectory. */
+const git = (args: string[], cwd: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+      { cwd, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
+
 const stateOf = async (runDir: string): Promise<Record<string, unknown>> =>
   JSON.parse(await readFile(path.join(runDir, 'state.json'), 'utf8')) as Record<string, unknown>;
 
@@ -259,6 +270,36 @@ describe('run-state.mjs — the `providers` command (RP-443)', () => {
 
     expect(result.code, result.out).not.toBe(0);
     expect(result.out).toMatch(/RIG_RUN_DIR/);
+  });
+
+  // RP-443 B3: `recordProviders` must read the project from the git toplevel
+  // of the cwd (as `evidence-attach.mjs` does) — not `process.cwd()` raw —
+  // so running from a subdirectory of the project records the same
+  // provenance as running from the root.
+  it('reads the same provenance from a subdirectory of the project as from its root', async () => {
+    const projectRoot = await newProjectRoot();
+    await git(['init', '-q', '-b', 'master'], projectRoot);
+    await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, '.rig', 'integrations.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        integrations: [{ id: 'probity', version: '1.10.1', selected: true }],
+      })}\n`,
+    );
+    const sub = path.join(projectRoot, 'sub');
+    await mkdir(sub, { recursive: true });
+    const runDir = await newRunDir();
+
+    const result = await runCli(['providers'], sub, envFor(runDir));
+
+    expect(result.code, result.out).toBe(0);
+    const events = await eventsOf(runDir);
+    const data = events.find((event) => event.kind === 'provider-provenance')?.data as {
+      probity: { selected: boolean; declared: string | null };
+    };
+    expect(data.probity.selected).toBe(true);
+    expect(data.probity.declared).toBe('1.10.1');
   });
 
   it('reads the real Probity provenance declared for the project it runs in', async () => {

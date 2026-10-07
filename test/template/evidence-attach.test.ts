@@ -1682,6 +1682,41 @@ describe('evidence-attach.mjs attach — producer-aware version provenance (RP-4
     expect(record!.producerVersionSource).toBe('stated');
   });
 
+  // --- playwright-mcp, the configured pin is a dist-tag (RP-443 B1) ----------
+
+  it('playwright-mcp with an @latest pin and no --producer-version: refused — a dist-tag names no exact pin', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    await writeMcpPin(dir, 'latest');
+    const before = await readEventsFor(runDir);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
+  it('playwright-mcp with an @latest pin and a truthful --producer-version 0.0.84: accepted, producerVersionSource "stated"', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    await writeMcpPin(dir, 'latest');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp', producerVersion: '0.0.84' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe('0.0.84');
+    expect(record!.producerVersionSource).toBe('stated');
+  });
+
   // --- bmad-tea --------------------------------------------------------------
 
   it('bmad-tea with no --producer-version: refused, writes nothing', async () => {

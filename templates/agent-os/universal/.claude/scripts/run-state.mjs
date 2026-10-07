@@ -688,7 +688,19 @@ const recordProviders = async (runDir) => {
     process.stdout.write('run state: provider provenance is already recorded for this run\n');
     process.exit(0);
   }
-  const data = { probity: await probityProvenance(process.cwd()) };
+  const { execFileSync } = await import('node:child_process');
+  const { withoutGitLocation } = await import('./git-env.mjs');
+  let projectRoot = process.cwd();
+  try {
+    projectRoot = execFileSync('git', ['rev-parse', '--show-toplevel'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: withoutGitLocation(),
+    }).trim();
+  } catch {
+    // Not a git checkout: the working directory is the only root there is.
+  }
+  const data = { probity: await probityProvenance(projectRoot) };
   recordEvent({ runDir, kind: 'provider-provenance', data, now: new Date().toISOString() });
   process.stdout.write(`run state: provider provenance ${JSON.stringify(data)}\n`);
 };

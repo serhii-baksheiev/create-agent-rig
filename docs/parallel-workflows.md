@@ -50,7 +50,14 @@ existing projections are refused before issue writes.
 The dry run reads the plan and current GitHub Issues, then reports creates,
 updates and unchanged tasks without writing issues or labels. The real import
 creates missing issues and updates projected titles, bodies and dependency
-lines; an unchanged re-import writes nothing. It does not delete an issue when
+lines; an unchanged re-import writes nothing. Each projected body also names
+the Spec Kit version behind the plan in a `rig-spec-kit-version` line, read
+from `.specify/init-options.json` (`installed`), else `.rig/integrations.json`
+(`declared`), else `unknown`; a body written before that line existed is
+updated once
+(`test/template/spec-kit-import.test.ts` › "an existing projection whose body
+predates the version marker is reported update exactly once, then unchanged").
+It does not delete an issue when
 a task disappears from `tasks.md`. Edits to a projected title or body are
 replaced on the next import; keep ongoing discussion in issue comments.
 
@@ -76,7 +83,7 @@ The compilation, identities and dry-run report are the GitHub target's
 (`test/template/spec-kit-import-jira.test.ts` › "dry-run report matches the
 github-issues target's shape and identities for the same tasks.md"). Each task
 becomes a Jira Task with the `rig-spec-kit` label and its identity marker as the
-first line of the description. Dependencies become native Blocks links,
+first line of the description, followed by the same `rig-spec-kit-version` line. Dependencies become native Blocks links,
 created together with the dependent issue (› "creates dependents with their
 Blocks link in the create request (link direction), then an identical reimport
 is unchanged"), so the Jira queue holds a dependent until its blocker is done
