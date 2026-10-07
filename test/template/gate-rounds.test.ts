@@ -384,13 +384,16 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       // so a flat non-`.md` file under `journal/` is not the stop's entry;
       // widening the match to any flat filename would also excuse an
       // unrelated untracked file that merely happens to sit flat under
-      // `journal/`. Nothing else in the tree is untracked, so a looser "any
-      // flat file under journal/" match is the only way this one could pass.
-      it('still refuses on a flat non-markdown untracked file under journal/ (journal/notes.txt alone)', async () => {
+      // `journal/`. The name keeps the exact YYYY-MM shape of a real entry —
+      // only the extension differs — so a looser match that dropped the
+      // extension check (while still requiring the YYYY-MM name) would also
+      // pass this file, and nothing else in the tree is untracked to make
+      // this one refuse for any other reason.
+      it('still refuses on a flat untracked journal/2026-10.txt (YYYY-MM name, wrong extension) alone', async () => {
         const cfg = await config();
         const dir = path.join(path.dirname(cfg), '..');
         await mkdir(path.join(dir, 'journal'), { recursive: true });
-        await writeFile(path.join(dir, 'journal', 'notes.txt'), 'not markdown\n');
+        await writeFile(path.join(dir, 'journal', '2026-10.txt'), 'not markdown\n');
         const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
         expect(result.code).toBe(1);
         expect(result.stderr).toMatch(/working tree is dirty/);
