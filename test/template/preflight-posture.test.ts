@@ -233,3 +233,41 @@ describe('preflight refuses an unattended flag already on disk for this checkout
     });
   }, 60_000);
 });
+
+// RP-443 — `report()` carries informational provider provenance
+// (`lib/provider-provenance.mjs`, not yet implemented —
+// `provider-provenance.test.ts` pins its own shape) under `providers`, never
+// changing the GO/CAUTION/STOP verdict: the posture contract decides the
+// verdict from the scripted checks alone, exactly as it did before this
+// field existed.
+describe('preflight carries provider provenance as informational, never deciding the verdict (RP-443)', () => {
+  const PROBITY_INSTALLED = {
+    probity: { selected: true, declared: '1.10.1', installed: '1.10.1' },
+  };
+  const PROBITY_ABSENT = {
+    probity: { selected: false, declared: null, installed: null },
+  };
+
+  it('carries the providers option verbatim under `providers` on the report', async () => {
+    const { report } = await load('preflight.mjs');
+    const result = report(allPass(), { providers: PROBITY_INSTALLED }) as Report & {
+      providers?: unknown;
+    };
+    expect(result.providers).toEqual(PROBITY_INSTALLED);
+  });
+
+  it('does not change the verdict on an all-pass run, with or without Probity installed', async () => {
+    const { report } = await load('preflight.mjs');
+    const withInstalled = report(allPass(), { providers: PROBITY_INSTALLED }) as Report;
+    const withAbsent = report(allPass(), { providers: PROBITY_ABSENT }) as Report;
+    const withoutOption = report(allPass()) as Report;
+    expect(withInstalled.verdict).toBe(withoutOption.verdict);
+    expect(withAbsent.verdict).toBe(withoutOption.verdict);
+  });
+
+  it('is absent from the report when no providers option is given (backward compatible)', async () => {
+    const { report } = await load('preflight.mjs');
+    const result = report(allPass()) as Report & { providers?: unknown };
+    expect(Object.hasOwn(result, 'providers')).toBe(false);
+  });
+});

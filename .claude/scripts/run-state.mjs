@@ -668,7 +668,34 @@ const COMMANDS = Object.freeze({
 // write has nowhere to go instead, and exiting 0 would tell the operator the
 // regression was filed while the next selection hands out work on top of it —
 // the one move `autonomy.md` names as never fix-forward.
-if (invokedDirectly()) {
+/**
+ * `providers` (RP-443): journal this project's external-provider provenance
+ * once per run — today Probity's selected, declared and installed versions,
+ * each as read, never inferred. A second call in the same run records nothing.
+ */
+const recordProviders = async (runDir) => {
+  if (!runDir) {
+    process.stderr.write(
+      'RIG_RUN_DIR is not set, so there is no run whose provider provenance this would record.\n',
+    );
+    process.exit(1);
+  }
+  // Loaded here, not at the top: the queue CLI imports this module, and a rig
+  // whose journal or lib predates RP-443 must still select (run-journal.test.ts).
+  const { readRun, recordEvent } = await import('./run-journal.mjs');
+  const { probityProvenance } = await import('./lib/provider-provenance.mjs');
+  if (readRun({ runDir }).events.some((event) => event.kind === 'provider-provenance')) {
+    process.stdout.write('run state: provider provenance is already recorded for this run\n');
+    process.exit(0);
+  }
+  const data = { probity: await probityProvenance(process.cwd()) };
+  recordEvent({ runDir, kind: 'provider-provenance', data, now: new Date().toISOString() });
+  process.stdout.write(`run state: provider provenance ${JSON.stringify(data)}\n`);
+};
+
+if (invokedDirectly() && process.argv[2] === 'providers') {
+  await recordProviders(process.env.RIG_RUN_DIR);
+} else if (invokedDirectly()) {
   const [command, word] = process.argv.slice(2);
   const runDir = process.env.RIG_RUN_DIR;
   const spec = Object.hasOwn(COMMANDS, String(command)) ? COMMANDS[command] : null;

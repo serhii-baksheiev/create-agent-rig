@@ -12,7 +12,15 @@
 // for `target: 'jira'`, which is also what keeps the two modules' mutual
 // reuse from being a circular STATIC import.
 import { join } from 'node:path';
-import { creationOrder, dependenciesFor, parseTasks, PROJECTED_LABEL, reportFor } from './spec-kit-import.mjs';
+import {
+  creationOrder,
+  dependenciesFor,
+  parseTasks,
+  PROJECTED_LABEL,
+  reportFor,
+  versionMarkerOf,
+} from './spec-kit-import.mjs';
+import { specKitVersion } from '../lib/provider-provenance.mjs';
 import {
   BLOCKED_BY,
   BLOCKS,
@@ -214,7 +222,7 @@ const reReadOwned = async (hits, wantedIdentities, env) => {
  * absent — or whose blocker does not exist yet at all — is reported `update`,
  * never `unchanged`, mirroring the GitHub target's own `changeFor`.
  */
-const changeForJira = (task, owned, keyOf) => {
+const changeForJira = (task, owned, keyOf, versionLine) => {
   const dependencies = dependenciesFor(task);
   if (!owned) return { identity: task.identity, action: 'create', dependencies };
   const key = keyOf.get(task.identity) ?? owned.key;
@@ -224,7 +232,8 @@ const changeForJira = (task, owned, keyOf) => {
   const bodyChanged =
     currentSummary !== boundedSummary(task.title) ||
     currentParagraphs[0] !== marker ||
-    currentParagraphs[1] !== task.title;
+    currentParagraphs[1] !== versionLine ||
+    currentParagraphs[2] !== task.title;
   const ticket = toTicket({ key, fields: owned.issue.fields });
   const existingBlockers = new Set(ticket.blockedBy.map((blocker) => blocker.id));
   const missingLink = dependencies.some((dependencyIdentity) => {
@@ -269,6 +278,7 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
   const projectKey = projectKeyOf({ project, jql });
 
   const { tasks } = parseTasks({ projectRoot, tasksPath });
+  const versionLine = versionMarkerOf(await specKitVersion(projectRoot));
   const ordered = creationOrder(tasks); // also validates the dependency graph has no cycle
 
   const { linkTypeName } = await preflight({ projectKey, env });
@@ -301,7 +311,7 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
   const keyOf = new Map([...owned].map(([identity, entry]) => [identity, entry.key]));
 
   if (dryRun) {
-    const planned = tasks.map((task) => changeForJira(task, owned.get(task.identity) ?? null, keyOf));
+    const planned = tasks.map((task) => changeForJira(task, owned.get(task.identity) ?? null, keyOf, versionLine));
     return reportFor(true, tasks, planned, 'jira');
   }
 
@@ -316,7 +326,7 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
         project: { key: projectKey },
         issuetype: { name: 'Task' },
         summary: boundedSummary(task.title),
-        description: adfOf([marker, task.title]),
+        description: adfOf([marker, versionLine, task.title]),
         labels: [PROJECTED_LABEL],
       },
       // Oracle, measured live on this project's own Jira (2026-10-05): in a
@@ -382,17 +392,18 @@ export const importSpecKitToJira = async ({ projectRoot, tasksPath = null, dryRu
     }
     const entry = owned.get(task.identity);
     const key = keyOf.get(task.identity);
-    const plan = changeForJira(task, entry, keyOf);
+    const plan = changeForJira(task, entry, keyOf, versionLine);
 
     const marker = markerOf(task.identity);
     const desiredSummary = boundedSummary(task.title);
-    const desiredParagraphs = [marker, task.title];
+    const desiredParagraphs = [marker, versionLine, task.title];
     const currentSummary = entry.issue.fields?.summary ?? '';
     const currentParagraphs = paragraphsOf(entry.issue.fields?.description);
     const bodyChanged =
       currentSummary !== desiredSummary ||
       currentParagraphs[0] !== desiredParagraphs[0] ||
-      currentParagraphs[1] !== desiredParagraphs[1];
+      currentParagraphs[1] !== desiredParagraphs[1] ||
+      currentParagraphs[2] !== desiredParagraphs[2];
     if (bodyChanged) {
       try {
         await request(`/rest/api/3/issue/${encodeURIComponent(key)}`, {

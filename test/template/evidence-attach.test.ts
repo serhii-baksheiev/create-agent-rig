@@ -1556,6 +1556,253 @@ describe('evidence-attach.mjs — parseEvidence validates a stored producerVersi
   });
 });
 
+// --- A: producer-aware version provenance (RP-443) --------------------------
+
+/**
+ * RP-443 generalises `--producer-version` (RP-315) further: for two known
+ * producers, the version is no longer purely a caller-supplied string.
+ *
+ *   - `playwright-mcp`: without `--producer-version`, the descriptor is
+ *     stamped from `lib/provider-provenance.mjs`'s `playwrightPin` (the exact
+ *     `@playwright/mcp@<v>` pin this project's own `.mcp.json`/
+ *     `.codex/config.toml` declares), with `producerVersionSource:
+ *     'declared'`. A `--producer-version` that agrees with that pin is
+ *     accepted with `producerVersionSource: 'stated'`; one that disagrees is
+ *     refused, naming both versions, with nothing written. With no pin
+ *     configured at all, `--producer-version` is required — omitting it is
+ *     refused — and supplying it is accepted as `'stated'`.
+ *   - `bmad-tea`: `--producer-version` is always required; omitting it is
+ *     refused.
+ *   - every other producer: unchanged from RP-315 — no `producerVersion` or
+ *     `producerVersionSource` at all unless `--producer-version` is given,
+ *     in which case it is stored with `producerVersionSource: 'stated'`.
+ *
+ * `lib/provider-provenance.mjs` does not exist yet; this suite pins the
+ * CLI-observable behaviour, not the module's own shape (see
+ * `provider-provenance.test.ts` for that).
+ */
+describe('evidence-attach.mjs attach — producer-aware version provenance (RP-443)', () => {
+  const readEventsFor = async (runDir: string): Promise<Array<Record<string, unknown>>> => {
+    const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+      readRun: (input: { runDir: string }) => { events: Array<Record<string, unknown>> };
+    };
+    return readRun({ runDir }).events;
+  };
+
+  const writeMcpPin = async (dir: string, version: string): Promise<void> => {
+    await writeFile(
+      path.join(dir, '.mcp.json'),
+      `${JSON.stringify({ mcpServers: { playwright: { command: 'npx', args: [`@playwright/mcp@${version}`] } } })}\n`,
+    );
+  };
+
+  // --- playwright-mcp, a pin is configured ----------------------------------
+
+  it('playwright-mcp with no --producer-version and a configured pin: stamps producerVersion from the pin, producerVersionSource "declared"', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    await writeMcpPin(dir, '0.0.83');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe('0.0.83');
+    expect(record!.producerVersionSource).toBe('declared');
+  });
+
+  it('playwright-mcp with --producer-version equal to the configured pin: accepted, producerVersionSource "stated"', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    await writeMcpPin(dir, '0.0.83');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp', producerVersion: '0.0.83' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe('0.0.83');
+    expect(record!.producerVersionSource).toBe('stated');
+  });
+
+  it('playwright-mcp with --producer-version DIFFERENT from the configured pin: refused, names both versions, writes nothing', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    await writeMcpPin(dir, '0.0.83');
+    const before = await readEventsFor(runDir);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp', producerVersion: '0.0.80' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).toContain('0.0.83');
+    expect(result.out).toContain('0.0.80');
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
+  // --- playwright-mcp, no pin is configured ---------------------------------
+
+  it('playwright-mcp with no configured pin and no --producer-version: refused, writes nothing', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const before = await readEventsFor(runDir);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
+  it('playwright-mcp with no configured pin but a given --producer-version: accepted, producerVersionSource "stated"', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp', producerVersion: '0.0.83' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe('0.0.83');
+    expect(record!.producerVersionSource).toBe('stated');
+  });
+
+  // --- bmad-tea --------------------------------------------------------------
+
+  it('bmad-tea with no --producer-version: refused, writes nothing', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const before = await readEventsFor(runDir);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'bmad-tea' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
+  it('bmad-tea with --producer-version given: accepted, producerVersionSource "stated"', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'bmad-tea', producerVersion: '1.27.2' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe('1.27.2');
+    expect(record!.producerVersionSource).toBe('stated');
+  });
+
+  // --- every other producer: unchanged from RP-315 ----------------------------
+
+  it('an ordinary producer ("ci") with no --producer-version: no producerVersion and no producerVersionSource at all', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(attachArgs({ ...VALID_REF, producer: 'ci' }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(Object.hasOwn(record!, 'producerVersion')).toBe(false);
+    expect(Object.hasOwn(record!, 'producerVersionSource')).toBe(false);
+  });
+
+  it('an ordinary producer ("ci") with --producer-version given: accepted, producerVersionSource "stated"', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'ci', producerVersion: '1.2.3' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe('1.2.3');
+    expect(record!.producerVersionSource).toBe('stated');
+  });
+});
+
+describe('evidence-attach.mjs — parseEvidence validates a stored producerVersionSource (RP-443)', () => {
+  type ParseEvidenceLike = (
+    text: string,
+    options?: { ticket?: string },
+  ) => { ok: true; records: unknown[] } | { ok: false; line: number; reason: string };
+
+  const loadParseEvidence = async (): Promise<ParseEvidenceLike> =>
+    (
+      (await import(pathToFileURL(evidenceAttachScript).href)) as {
+        parseEvidence: ParseEvidenceLike;
+      }
+    ).parseEvidence;
+
+  const baseRecord = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    schemaVersion: 1,
+    kind: 'test-report',
+    subject: { kind: 'commit', id: 'abc123' },
+    authorityClass: 'automated',
+    producer: 'ci',
+    producerVersion: '1.2.3',
+    ref: 'https://ci.example.invalid/run/123',
+    sha256: null,
+    item: 'RP-1',
+    headSha: 'deadbeef',
+    producedAt: '2026-08-18T09:00:00.000Z',
+    ...overrides,
+  });
+
+  it('accepts a record with no producerVersionSource key at all (absence stays valid)', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord())}\n`;
+    expect(parseEvidence(line, { ticket: 'RP-1' }).ok).toBe(true);
+  });
+
+  it('accepts a record whose producerVersionSource is "declared"', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersionSource: 'declared' }))}\n`;
+    expect(parseEvidence(line, { ticket: 'RP-1' }).ok).toBe(true);
+  });
+
+  it('accepts a record whose producerVersionSource is "stated"', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersionSource: 'stated' }))}\n`;
+    expect(parseEvidence(line, { ticket: 'RP-1' }).ok).toBe(true);
+  });
+
+  it('rejects a record whose producerVersionSource is outside declared|stated ("guessed")', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersionSource: 'guessed' }))}\n`;
+    expect(parseEvidence(line, { ticket: 'RP-1' }).ok).toBe(false);
+  });
+
+  it('rejects a record whose producerVersionSource is present but not a string (a number)', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersionSource: 1 }))}\n`;
+    expect(parseEvidence(line, { ticket: 'RP-1' }).ok).toBe(false);
+  });
+});
+
 // --- B: list -----------------------------------------------------------------
 
 describe('evidence-attach.mjs list', () => {

@@ -394,13 +394,13 @@ describe('queue import spec-kit --to github-issues (RP-275)', () => {
       {
         number: 41,
         title: 'Create the export configuration',
-        body: '<!-- rig-spec-kit-task:001-export:T001 -->\n\nCreate the export configuration',
+        body: '<!-- rig-spec-kit-task:001-export:T001 -->\n<!-- rig-spec-kit-version:unknown (unknown) -->\n\nCreate the export configuration',
         labels: ['rig-spec-kit'],
       },
       {
         number: 42,
         title: 'Old export generation',
-        body: '<!-- rig-spec-kit-task:001-export:T002 -->\n\nOld export generation',
+        body: '<!-- rig-spec-kit-task:001-export:T002 -->\n<!-- rig-spec-kit-version:unknown (unknown) -->\n\nOld export generation',
         labels: ['rig-spec-kit'],
       },
     ]);
@@ -1203,6 +1203,127 @@ describe('queue import spec-kit --to github-issues — GitHub title bound (RP-44
 
       expect(result.code, result.out).toBe(1);
       expect(result.out).toContain('Could not resolve to a Repository');
+    } finally {
+      github.stub.restore();
+    }
+  });
+});
+
+// RP-443 — every projected item carries the Spec Kit version BEHIND the task
+// marker, as a second marker line immediately after it:
+//
+//   <!-- rig-spec-kit-task:<identity> -->
+//   <!-- rig-spec-kit-version:<version> (<source>) -->
+//
+//   <task title>
+//
+// `<version>` reads `unknown` when nothing in this project names a Spec Kit
+// version at all, in which case `<source>` is also `unknown`
+// (`lib/provider-provenance.mjs`'s `specKitVersion`, not yet implemented —
+// `provider-provenance.test.ts` pins its own shape). A re-import with
+// nothing changed reports `unchanged`; an existing projection whose body
+// predates this marker reports `update` exactly once, then reads
+// `unchanged` on the next import.
+describe('queue import spec-kit --to github-issues — Spec Kit version marker (RP-443)', () => {
+  const ONE_TASK = ['# Tasks: Export', '', '- [ ] T001 Create the export configuration', ''].join(
+    '\n',
+  );
+
+  const writeSpecKitInstalled = async (dir: string, version: string): Promise<void> => {
+    await mkdir(path.join(dir, '.specify'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.specify', 'init-options.json'),
+      `${JSON.stringify({ speckit_version: version })}\n`,
+    );
+  };
+
+  it('creates an issue whose body carries the version marker as the second line, right after the task marker', async () => {
+    const { dir, scriptPath } = await scratchProject(ONE_TASK);
+    await writeSpecKitInstalled(dir, '1.0.8');
+    const github = await installGh();
+    try {
+      const result = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+      expect(result.code, result.out).toBe(0);
+      const state = await github.state();
+      expect(state.issues).toHaveLength(1);
+      const lines = state.issues[0]!.body.split('\n');
+      expect(lines[0]).toBe('<!-- rig-spec-kit-task:001-export:T001 -->');
+      expect(lines[1]).toBe('<!-- rig-spec-kit-version:1.0.8 (installed) -->');
+      expect(lines[2]).toBe('');
+      expect(lines[3]).toBe('Create the export configuration');
+    } finally {
+      github.stub.restore();
+    }
+  });
+
+  it('reads the version marker as unknown (unknown) when nothing in the project names a Spec Kit version', async () => {
+    const { dir, scriptPath } = await scratchProject(ONE_TASK);
+    const github = await installGh();
+    try {
+      const result = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+      expect(result.code, result.out).toBe(0);
+      const state = await github.state();
+      expect(state.issues[0]!.body.split('\n')[1]).toBe(
+        '<!-- rig-spec-kit-version:unknown (unknown) -->',
+      );
+    } finally {
+      github.stub.restore();
+    }
+  });
+
+  it('an existing projection whose body predates the version marker is reported update exactly once, then unchanged', async () => {
+    const { dir, scriptPath } = await scratchProject(ONE_TASK);
+    await writeSpecKitInstalled(dir, '1.0.8');
+    const preexisting = [
+      {
+        number: 41,
+        title: 'Create the export configuration',
+        body: '<!-- rig-spec-kit-task:001-export:T001 -->\n\nCreate the export configuration',
+        labels: ['rig-spec-kit'],
+        state: 'OPEN',
+      },
+    ];
+    const github = await installGh(preexisting);
+    try {
+      const first = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+      expect(first.code, first.out).toBe(0);
+      const firstReport = JSON.parse(first.stdout) as {
+        counts: { create: number; update: number; unchanged: number };
+        changes: Array<{ identity: string; action: string }>;
+      };
+      expect(firstReport.counts).toEqual({ create: 0, update: 1, unchanged: 0 });
+      expect(firstReport.changes).toEqual([
+        { identity: '001-export:T001', action: 'update', dependencies: [] },
+      ]);
+      const afterFirst = await github.state();
+      expect(afterFirst.issues[0]!.body.split('\n')[1]).toBe(
+        '<!-- rig-spec-kit-version:1.0.8 (installed) -->',
+      );
+
+      const second = await runQueue(
+        scriptPath,
+        ['import', 'spec-kit', '--to', 'github-issues', '--json'],
+        dir,
+      );
+      expect(second.code, second.out).toBe(0);
+      const secondReport = JSON.parse(second.stdout) as {
+        counts: { create: number; update: number; unchanged: number };
+        changes: unknown[];
+      };
+      expect(secondReport.counts).toEqual({ create: 0, update: 0, unchanged: 1 });
+      expect(secondReport.changes).toEqual([]);
     } finally {
       github.stub.restore();
     }
