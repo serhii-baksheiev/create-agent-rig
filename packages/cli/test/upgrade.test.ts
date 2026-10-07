@@ -2615,14 +2615,14 @@ describe('upgrade — an absent adopted-layer path is recorded, not forgotten (R
 describe('preset — carried forward unchanged by upgrade, never invented (RP-314)', () => {
   it('a manifest with no `preset` key gains none on upgrade — byte-identical manifest when nothing else changed', async () => {
     await installRig();
-    const before = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
-    expect(before.preset).toBeUndefined();
+    const before = await read(MANIFEST_REL);
+    expect((JSON.parse(before) as Record<string, unknown>).preset).toBeUndefined();
 
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
-    const after = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
-    expect(after.preset).toBeUndefined();
+    const after = await read(MANIFEST_REL);
+    expect(after).toBe(before);
   });
 
   it('a manifest recording a preset keeps it, unchanged, across an upgrade', async () => {

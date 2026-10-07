@@ -2030,9 +2030,10 @@ and how an old manifest missing one is read:
 | `layers` (`'process'` and/or `'workflow'`, deduplicated) | RP-180        | **every layer this release ships** (`ALL_LAYERS`) — never the default-only set, so a pre-RP-180 rig's workflow files stay owned rather than becoming `retired` — `packages/cli/test/manifest.test.ts` › "a manifest with no `layers` key parses as though it recorded every layer" |
 | `files` (path → sha256)                                  | always        | — (required)                                                                                                                                                                                                                                                                       |
 | `kept` (path → sha256)                                   | RP-182        | no kept paths at all — read as an empty record (`{}`)                                                                                                                                                                                                                              |
+| `preset` (a preset name, `/^[a-z][a-z0-9-]{0,31}$/`)     | RP-314        | no preset — the key is omitted entirely; diagnostics only, reported by `doctor` and carried by `upgrade` — `packages/cli/test/manifest.test.ts` › "omits the `preset` key entirely when absent — a clean install serialises byte-identical to today"                               |
 
 A manifest carrying an unrecognised shape in any required key, or a
-`stacks`, `layers` or `kept` value this reader does not accept, does not
+`stacks`, `layers`, `kept` or `preset` value this reader does not accept, does not
 parse at all: `readManifest` returns `null`, which sends `upgrade` to the
 hash-history fallback rather than a half-trusted read.
 
@@ -2275,7 +2276,9 @@ something to check first. None of these are refused forever — RP-184 is a
 freeze of what 1.0 covers today, not a roadmap.
 
 - **Profiles.** No per-repository named configuration profile exists in
-  this release's command surface.
+  this release's command surface. A composition preset (`--preset`, RP-314)
+  is not one: it records a name for diagnostics only and owns no state —
+  `docs/decisions/composition-presets.md`.
 - **Receipts.** Retired in favour of the single repository intent file,
   `.rig/integrations.json` (`## Persistent state at 1.0`); a separate
   per-run receipt file is not written — `packages/cli/test/integrations-intent.test.ts`

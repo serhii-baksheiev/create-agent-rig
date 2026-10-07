@@ -296,3 +296,85 @@ describe('--preset sdd is exactly --layer workflow, plus the recorded name and a
     expect(`${result.stdout}${result.stderr}`).toContain('setup add spec-kit');
   });
 });
+
+// Mirrors the two `init --preset` describe blocks above, through `create
+// <dir>` instead — `create` is a thin wrapper around the same `initProject`
+// (`packages/cli/src/commands/create.ts`), so the same two equivalences hold
+// for it: `--preset minimal` is byte-identical to a plain create, and
+// `--preset sdd` is byte-identical to `--layer workflow`. `--no-git` on both
+// sides of each comparison, matching this file's own `init` fixtures (no git
+// step at all to vary between the two runs) and the sibling e2e fixture in
+// `test/e2e/init.test.ts` ("refuses `--force`...", which also creates via
+// `--no-git`).
+describe('create --preset minimal is exactly the default create install (RP-314)', () => {
+  it('installs the same file tree and bytes as a plain create, manifest differing only by the added preset key', async () => {
+    const repoB = await freshRepoDir('caf-preset-e2e-create-min-b-');
+    try {
+      const plain = await runCli(['app', '--no-git'], repo);
+      expect(plain.code, plain.stderr).toBe(0);
+      const presetRun = await runCli(['app', '--preset', 'minimal', '--no-git'], repoB);
+      expect(presetRun.code, presetRun.stderr).toBe(0);
+
+      const dirA = path.join(repo, 'app');
+      const dirB = path.join(repoB, 'app');
+
+      const treeA = await walk(dirA);
+      const treeB = await walk(dirB);
+      expect(treeB).toEqual(treeA);
+
+      const nonManifest = treeA.filter((rel) => rel !== '.claude/.rig-manifest.json');
+      expect(await hashTree(dirB, nonManifest)).toEqual(await hashTree(dirA, nonManifest));
+
+      const manifestA = await manifestOf(dirA);
+      const manifestB = await manifestOf(dirB);
+      expect(manifestA.preset).toBeUndefined();
+      expect(manifestB.preset).toBe('minimal');
+      expect({ ...manifestB, preset: undefined }).toEqual({ ...manifestA, preset: undefined });
+    } finally {
+      await removeFixture(path.dirname(repoB));
+    }
+  });
+});
+
+describe('create --preset sdd is exactly create --layer workflow, plus the recorded name and a printed next step (RP-314)', () => {
+  it('installs the same file tree and bytes as create --layer workflow, manifest differing only by the added preset key, and writes no .rig/integrations.json', async () => {
+    const repoB = await freshRepoDir('caf-preset-e2e-create-sdd-b-');
+    try {
+      const layerOnly = await runCli(['app', '--layer', 'workflow', '--no-git'], repo);
+      expect(layerOnly.code, layerOnly.stderr).toBe(0);
+      const presetRun = await runCli(['app', '--preset', 'sdd', '--no-git'], repoB);
+      expect(presetRun.code, presetRun.stderr).toBe(0);
+
+      const dirA = path.join(repo, 'app');
+      const dirB = path.join(repoB, 'app');
+
+      const treeA = await walk(dirA);
+      const treeB = await walk(dirB);
+      expect(treeB).toEqual(treeA);
+
+      const nonManifest = treeA.filter((rel) => rel !== '.claude/.rig-manifest.json');
+      expect(await hashTree(dirB, nonManifest)).toEqual(await hashTree(dirA, nonManifest));
+
+      const manifestA = await manifestOf(dirA);
+      const manifestB = await manifestOf(dirB);
+      expect(manifestA.preset).toBeUndefined();
+      expect(manifestB.preset).toBe('sdd');
+      expect({ ...manifestB, preset: undefined }).toEqual({ ...manifestA, preset: undefined });
+
+      // Explicit, on top of the tree-equality check above: create --layer
+      // workflow never creates `.rig/`, and create --preset sdd must not
+      // either.
+      await expect(
+        readFile(path.join(dirB, '.rig', 'integrations.json'), 'utf8'),
+      ).rejects.toThrow();
+    } finally {
+      await removeFixture(path.dirname(repoB));
+    }
+  });
+
+  it('tells the operator to run setup add spec-kit as the next step', async () => {
+    const result = await runCli(['app', '--preset', 'sdd', '--no-git'], repo);
+    expect(result.code, result.stderr).toBe(0);
+    expect(`${result.stdout}${result.stderr}`).toContain('setup add spec-kit');
+  });
+});

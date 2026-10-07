@@ -138,7 +138,7 @@ describe('doctor: the top-level preset summary (RP-314)', () => {
     expect(sdd.body.checks).toEqual(plain.body.checks);
     expect(sdd.body.preset).toEqual({
       name: 'sdd',
-      integrations: [expect.objectContaining({ id: 'spec-kit', declared: false })],
+      integrations: [{ id: 'spec-kit', declared: false, observed: null }],
     });
   });
 
