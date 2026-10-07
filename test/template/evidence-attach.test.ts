@@ -39,12 +39,21 @@
 // never carries a committable secret shape.
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, symlink, truncate, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  symlink,
+  truncate,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { skipUnless, symlinksAvailable } from '../helpers/env.js';
+import { modeBitsDeny, skipUnless, symlinksAvailable } from '../helpers/env.js';
 import { GITHUB_PAT } from './secrets-fixtures.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -943,6 +952,73 @@ describe('evidence-attach.mjs attach — --ref is a remote reference only', () =
   });
 });
 
+// --- A: --ref carrying whitespace or a control character is never accepted -
+
+/**
+ * `REMOTE_REF` (`^([a-z][a-z0-9+.-]*):\/\/([^/?#\s]*)`) stops its authority
+ * group at the FIRST whitespace character, because `\s` sits in the group's
+ * own negated class. Placed inside a userinfo user part, that whitespace
+ * therefore ends the captured authority BEFORE the `@` that follows it — so
+ * today's userinfo check (`remote[2].includes('@')`) never sees the `@` at
+ * all, and the ref is accepted. A URL parser reading the very same string
+ * does not stop there: the WHATWG URL algorithm strips ASCII tab/newline
+ * characters as a pre-processing step and otherwise still walks past a plain
+ * space, NBSP or line separator to find the `@` — so a consumer downstream of
+ * this CLI reads a userinfo (and its credential) this CLI itself missed.
+ * `--ref` must therefore refuse ANY whitespace or control character, not only
+ * ones a regex happens to stop on, which is also why the leading-space and
+ * trailing-newline cases below are pinned even though each already refuses
+ * for an unrelated reason (the leading space breaks the scheme match outright;
+ * the trailing newline is simply outside what the regex ever required to
+ * match to the end of the string).
+ */
+describe('evidence-attach.mjs attach — --ref carrying whitespace or a control character is never accepted', () => {
+  const USERINFO_SEPARATORS: Array<[string, string]> = [
+    ['a TAB', '\t'],
+    ['an LF', '\n'],
+    ['a CR', '\r'],
+    ['a plain space', ' '],
+    ['an NBSP (U+00A0)', ' '],
+    ['a U+2028 line separator', ' '],
+  ];
+
+  it.each(USERINFO_SEPARATORS)(
+    'refuses a --ref whose user part carries %s before the @',
+    async (_label, separator) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
+      const ref = `https://bot${separator}@ci.example.invalid/r`;
+      const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+      expect(result.code, result.out).toBe(1);
+      expectDidNotCrash(result);
+      await expectNothingWritten(dir, 'RP-1');
+    },
+  );
+
+  it('refuses a --ref with a leading space on an otherwise valid URL', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = ' https://ci.example.invalid/run/1';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a --ref with a trailing newline on an otherwise valid URL', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'https://ci.example.invalid/run/1\n';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+});
+
 // --- A: more refusals (RP-312 gate round 2) ----------------------------------
 
 describe('evidence-attach.mjs attach — more refusals (RP-312 gate round 2)', () => {
@@ -1117,7 +1193,7 @@ describe('evidence-attach.mjs attach — journal-first ordering', () => {
     });
   });
 
-  it('writes no evidence file when the run journal itself cannot be written (events.jsonl is a directory)', async () => {
+  it('refuses when the run journal cannot be READ (events.jsonl is a directory), and writes nothing', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
     await mkdir(path.join(runDir, 'events.jsonl'));
@@ -1126,6 +1202,29 @@ describe('evidence-attach.mjs attach — journal-first ordering', () => {
     expect(result.code, result.out).not.toBe(0);
     expectDidNotCrash(result);
     await expectNothingWritten(dir, 'RP-1');
+  });
+
+  // Unlike the READ case above (events.jsonl is a directory, so even the
+  // SELECT-predicate read fails before anything else runs), this one exercises
+  // the WRITE half of the journal-first guarantee: the SELECT read succeeds
+  // first (the file is a plain, readable file), so the run gets all the way to
+  // the point where it tries to append its own `artifact-evidence` event — and
+  // only THAT append is refused.
+  it('refuses when the run journal cannot be APPENDED to (events.jsonl is read-only), naming the journal, and writes no evidence file', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    await chmod(path.join(runDir, 'events.jsonl'), 0o444);
+    try {
+      const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+      expect(result.code, result.out).not.toBe(0);
+      expectDidNotCrash(result);
+      expect(result.out).toMatch(/journal/i);
+      await expectNothingWritten(dir, 'RP-1');
+    } finally {
+      await chmod(path.join(runDir, 'events.jsonl'), 0o644);
+    }
   });
 });
 
@@ -1336,6 +1435,42 @@ describe('evidence-attach.mjs list', () => {
     expect(result.code, result.out).toBe(2);
   });
 
+  // `list`'s error paths (`evidence-attach: <path> line <n> is unreadable —
+  // <reason>`) embed the forged field's own `JSON.stringify(...)` straight
+  // into the message handed to `process.stderr.write` — unlike `attach`'s
+  // `refuse()`, which runs every message through `printable()` first. A C1
+  // control character (U+0080-U+009F) is NOT one JSON.stringify escapes (only
+  // U+0000-U+001F are required to be), so it reaches the terminal raw; ESC
+  // (U+001B) IS inside that escaped range, so it is already safe by
+  // JSON.stringify's own doing — both are pinned here so neither regresses.
+  it('a forged kind carrying a C1 control character (U+009B) does not leak the raw byte into stderr — exit 2', async () => {
+    const { dir } = await newProject();
+    const C1 = String.fromCharCode(0x9b);
+    await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ kind: `test${C1}report` }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).not.toContain(C1);
+  });
+
+  it('a forged kind carrying an ESC (U+001B) does not leak the raw byte into stderr — exit 2', async () => {
+    const { dir } = await newProject();
+    const ESC = String.fromCharCode(0x1b);
+    await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ kind: `test${ESC}report` }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).not.toContain(ESC);
+  });
+
   it('a well-formed record is still listed back fine (control case for the four forgeries above)', async () => {
     const { dir } = await newProject();
     await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({}));
@@ -1526,8 +1661,22 @@ describe('docs/decisions/artifact-evidence.md', () => {
     );
   });
 
+  it('documents the SELECT precondition: attach refuses an item this run has not SELECTed', async () => {
+    const content = await read();
+    expect(content).toMatch(/SELECT/);
+    expect(content).toMatch(/selected/i);
+  });
+
   it("is cited from evidence-attach.mjs's own source", async () => {
     const source = await readFile(evidenceAttachScript, 'utf8');
     expect(source).toContain('docs/decisions/artifact-evidence.md');
+  });
+});
+
+describe("evidence-attach.mjs's own header documents the SELECT precondition", () => {
+  it('the first 40 lines mention SELECT — a reader scanning only the header sees the precondition', async () => {
+    const source = await readFile(evidenceAttachScript, 'utf8');
+    const header = source.split('\n').slice(0, 40).join('\n');
+    expect(header).toMatch(/select/i);
   });
 });

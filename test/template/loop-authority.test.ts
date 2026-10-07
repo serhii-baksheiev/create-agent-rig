@@ -49,6 +49,41 @@ const sectionBetween = (content: string, startMarker: string, endMarker: string)
   return content.slice(start, end);
 };
 
+/**
+ * The text between the line STARTING WITH `startPrefix` and the next line
+ * starting with `endPrefix` — matched at line-start rather than against a
+ * full heading string, so a future rewording of the heading text itself does
+ * not retitle what this helper locates.
+ */
+const sectionByLinePrefix = (content: string, startPrefix: string, endPrefix: string): string => {
+  const lines = content.split('\n');
+  const startIndex = lines.findIndex((line) => line.startsWith(startPrefix));
+  expect(startIndex, `no line starts with "${startPrefix}"`).toBeGreaterThan(-1);
+  const endIndex = lines.findIndex(
+    (line, index) => index > startIndex && line.startsWith(endPrefix),
+  );
+  expect(endIndex, `no line after "${startPrefix}" starts with "${endPrefix}"`).toBeGreaterThan(
+    startIndex,
+  );
+  return lines.slice(startIndex, endIndex).join('\n');
+};
+
+/**
+ * §6.0 itself, bounded by its own heading and the next heading line of
+ * either level (`## ` or `### `) — §6 carries other `###` subsections after
+ * 6.0, so "all of §6" is not the same span as "just §6.0".
+ */
+const section60Only = (content: string): string => {
+  const lines = content.split('\n');
+  const startIndex = lines.findIndex((line) => line.startsWith('### 6.0'));
+  expect(startIndex, 'no line starts with "### 6.0"').toBeGreaterThan(-1);
+  const endIndex = lines.findIndex(
+    (line, index) => index > startIndex && (line.startsWith('## ') || line.startsWith('### ')),
+  );
+  expect(endIndex, 'no heading line follows "### 6.0"').toBeGreaterThan(startIndex);
+  return lines.slice(startIndex, endIndex).join('\n');
+};
+
 describe('loop skill §1 — launching and declaring the run authority', () => {
   it('names the --unattended and --decision-authority launch intent', async () => {
     const content = await readFile(skillPath, 'utf8');
@@ -243,14 +278,28 @@ describe('docs/decisions/decision-authority.md — the loop-integration follow-u
   });
 });
 
-// RP-312 gate round 2: the commit instruction next to `.rig/decisions/<ticket>.jsonl`
-// (§6, "decide-and-continue") is the natural home for the sibling instruction —
-// `.rig/evidence/<ticket>.jsonl` is written by `evidence-attach.mjs` the same
-// way, and a resume on another machine has nothing to read from either one
-// unless both are committed.
-describe('loop skill §6 — the evidence record is committed alongside the decision record', () => {
-  it('names .rig/evidence/<ticket>.jsonl in a commit instruction', async () => {
+// RP-312 gate round 3: the commit instruction belongs next to
+// `.rig/claims/<item-id>.json`'s own commit instruction in §2 — the point
+// selection itself already tells a resuming session to commit a durable
+// record — not inside §6.0's per-stop resolution text, which is read only
+// once a stop has actually fired and never on the ordinary cold-start/resume
+// path this instruction has to survive. `.rig/evidence/<ticket>.jsonl` is
+// written by `evidence-attach.mjs` the same way `.rig/claims/` and
+// `.rig/decisions/` are, and a resume on another machine has nothing to read
+// from any of them unless each is committed.
+describe('loop skill §2 — the evidence record is committed alongside the claim baseline', () => {
+  const COMMIT_EVIDENCE = /[Cc]ommit[^\n]{0,120}\.rig\/evidence\//;
+
+  it('names .rig/evidence/<ticket>.jsonl in a commit instruction, in §2 next to .rig/claims/', async () => {
     const content = await readFile(skillPath, 'utf8');
-    expect(content).toMatch(/[Cc]ommit[^\n]{0,120}\.rig\/evidence\//);
+    const section2 = sectionByLinePrefix(content, '## 2.', '## 3.');
+    expect(section2).toMatch(COMMIT_EVIDENCE);
+    expect(section2).toContain('.rig/claims/');
+  });
+
+  it('never carries the .rig/evidence/ commit instruction inside §6.0 — a stop-resolution section a cold-start/resume never reads', async () => {
+    const content = await readFile(skillPath, 'utf8');
+    const section60 = section60Only(content);
+    expect(section60).not.toMatch(COMMIT_EVIDENCE);
   });
 });

@@ -1537,10 +1537,12 @@ describe('`verdict.mjs coverage` prints the witness answer', () => {
 // `stale`. It never affects `ok` or any of the other six fields — only the
 // reviewer fan-out/verdict trio decides those, exactly as before this slice.
 //
-// The production type does not carry `evidence` yet (this is the Red step),
-// so `withEvidence` below is a local, test-only cast rather than a change to
-// the shared `Coverage` interface above — the interface gains the field only
-// once the module actually returns it.
+// `lib/gate-coverage.mjs` already returns `evidence` at runtime (its own
+// `evidenceOf`, called from `coverageCore`'s result). What has NOT gained the
+// field is this FILE's own local `Coverage` TypeScript interface above, which
+// types every other test in this file and is never widened just for this one
+// slice's sake — so `withEvidence` below stays a local, test-only cast rather
+// than a change to that shared interface.
 type CoverageWithEvidence = Coverage & {
   evidence: { current: Record<string, unknown>[]; stale: Record<string, unknown>[] };
 };

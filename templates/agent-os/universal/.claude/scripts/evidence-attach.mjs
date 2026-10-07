@@ -14,8 +14,9 @@
 // boundary and the non-goals: `docs/decisions/artifact-evidence.md`.
 // Current-head staleness is read by gate coverage, not here.
 //
-// `attach` needs a declared run (RIG_RUN_DIR) and a repository with a HEAD
-// commit; the descriptor binds the artifact to that item and that head. It
+// `attach` needs a declared run (RIG_RUN_DIR) whose journal shows the ticket
+// was selected (the queue's SELECT revalidation event) and a repository with a
+// HEAD commit; the descriptor binds the artifact to that item and that head. It
 // journals one `artifact-evidence` run EVENT first and only then appends the
 // same descriptor to `.rig/evidence/<ticket>.jsonl` through
 // `lib/item-records.mjs` — the item-owned record mechanism `.rig/decisions/`
@@ -337,6 +338,13 @@ const runAttach = (argv, cwd) => {
     return refuse('--advisory-summary needs --advisory-decision.');
   }
   if (options.ref !== undefined) {
+    // Whitespace or a control character anywhere is refused first: a URL parser
+    // strips tabs and newlines, so the authority read below would otherwise
+    // stop short of userinfo that a client still sends.
+    // eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+    if (/[\s\u0000-\u001f\u007f-\u009f]/u.test(options.ref)) {
+      return refuse('--ref carries whitespace or a control character.');
+    }
     if (options.ref === '' || options.ref.length > MAX_REF_LENGTH) {
       return refuse(`--ref must be 1-${MAX_REF_LENGTH} characters.`);
     }
@@ -429,7 +437,7 @@ const runAttach = (argv, cwd) => {
     appendItemRecordLine(evidencePath, `${JSON.stringify(descriptor)}\n`);
   } catch (error) {
     process.stderr.write(
-      `evidence-attach: journaled, but ${relative(projectRoot, evidencePath)} was not written — ${error.message}\n`,
+      `evidence-attach: ${printable(`journaled, but ${relative(projectRoot, evidencePath)} was not written — ${error.message}`)}\n`,
     );
     process.exit(2);
   }
@@ -463,7 +471,9 @@ const runList = (argv, cwd) => {
   try {
     file = readItemRecordFile(evidencePath, { maxBytes: MAX_EVIDENCE_BYTES });
   } catch (error) {
-    process.stderr.write(`evidence-attach: ${evidencePath} is unreadable — ${error.message}\n`);
+    process.stderr.write(
+      `evidence-attach: ${printable(`${evidencePath} is unreadable — ${error.message}`)}\n`,
+    );
     process.exit(2);
   }
   let records = [];
@@ -471,7 +481,7 @@ const runList = (argv, cwd) => {
     const result = parseEvidence(file.text, { ticket });
     if (!result.ok) {
       process.stderr.write(
-        `evidence-attach: ${evidencePath} line ${result.line} is unreadable — ${result.reason}\n`,
+        `evidence-attach: ${printable(`${evidencePath} line ${result.line} is unreadable — ${result.reason}`)}\n`,
       );
       process.exit(2);
     }

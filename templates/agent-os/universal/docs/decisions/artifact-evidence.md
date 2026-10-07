@@ -21,6 +21,8 @@ one entry point. It journals an `artifact-evidence` event in the run and
 appends the same descriptor to `.rig/evidence/<ticket>.jsonl` — an item-owned
 record written through `lib/item-records.mjs`, the mechanism the delegated
 decisions in `.rig/decisions/` use. One store, one append, one bounded read.
+It attaches only to an item the run selected: the run journal must already
+hold the queue's SELECT revalidation event for the ticket.
 
 **The descriptor (schema version 1):**
 
