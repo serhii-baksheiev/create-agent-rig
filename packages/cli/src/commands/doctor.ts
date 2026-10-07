@@ -19,6 +19,7 @@ import { inspectWorkflow } from '../integrations/doctor-workflow.js';
 import { inspectUnattended, type Outcome } from '../integrations/doctor-unattended.js';
 import { inspectAuthority } from '../integrations/doctor-authority.js';
 import { packageVersion } from '../lib/version.js';
+import { knownPreset } from '../lib/presets.js';
 import type { runProviderProcess } from '../integrations/spawn.js';
 import { locateRegion, MAX_AGENTS_MD_REGION_BYTES } from '../lib/agents-md-region.js';
 
@@ -261,6 +262,13 @@ async function codexHookTrustCheck(root: string): Promise<Check | undefined> {
   const source = await readBounded(root, CODEX_HOOKS_REL, MAX_PERSONAL_CHECK_BYTES);
   if (source.status === 'absent') return undefined;
   return { id: 'codex-hook-trust', status: 'warn', reason: 'codex-hooks-need-review' };
+}
+
+/** The preset name the manifest records (RP-314), or null — diagnostics only. */
+async function manifestPreset(root: string): Promise<string | null> {
+  const source = await readBounded(root, MANIFEST_REL, 1024 * 1024);
+  const decoded = source.status === 'ok' ? text(source.bytes) : undefined;
+  return decoded === undefined ? null : (parseManifest(decoded)?.preset ?? null);
 }
 
 async function rigChecks(root: string, codexHash?: string): Promise<Check[]> {
@@ -531,6 +539,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     env: options.env ?? process.env,
     unattended,
   });
+  const presetName = await manifestPreset(options.cwd);
   const report = {
     schemaVersion: 1,
     status: status === 'pass' ? 'ok' : status,
@@ -569,6 +578,22 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     integrations,
     unattended,
     authority,
+    // RP-314: the preset the manifest names and the integrations it expects,
+    // each with whether `.rig/integrations.json` declares it and doctor's own
+    // check for it. Reported only: it changes no status and no exit code.
+    preset: {
+      name: presetName,
+      integrations: (knownPreset(presetName ?? undefined)?.integrations ?? []).map((id) => {
+        const check = checks.find((candidate) => candidate.id === id);
+        return {
+          id,
+          declared: intent?.entries.some((entry) => entry.id === id) ?? false,
+          observed: check
+            ? { status: check.status === 'pass' ? 'ok' : check.status, reason: check.reason }
+            : null,
+        };
+      }),
+    },
     memory: { ...memory, status: memory.status === 'pass' ? 'ok' : memory.status },
     probity: intent?.entries.some((entry) => entry.id === 'probity')
       ? {

@@ -18,6 +18,7 @@ import { substituteContent } from '../lib/substitute.js';
 import type { SubstitutionContext } from '../lib/substitute.js';
 import { agentOsUniversalDir } from '../templates.js';
 import { packageVersion } from '../lib/version.js';
+import { resolvePreset } from '../lib/presets.js';
 import { readBoundedFileInRepo } from '../lib/bounded-file.js';
 import {
   composeRegion,
@@ -87,6 +88,12 @@ export interface InitOptions {
    * or `--layer workflow` already recorded.
    */
   withWorkflow?: boolean;
+  /**
+   * A composition preset name (RP-314), validated here before anything is
+   * read or written. Its layers are unioned with `withWorkflow`; its name is
+   * recorded in the manifest for diagnostics only.
+   */
+  preset?: string;
   /**
    * RP-268 AD2 test-only seam: invoked once this run has decided to append a
    * managed region to a genuinely foreign AGENTS.md, immediately before the
@@ -367,11 +374,18 @@ export async function initInstallSet(
 export interface PlanInitOptions {
   /** Plan as though `--layer workflow` were given (RP-180). */
   withWorkflow?: boolean;
+  /** Plan as though `--preset <name>` were given (RP-314). */
+  preset?: string;
 }
+
+/** `withWorkflow`, widened by the preset's layers when one is named (RP-314). */
+const wantsWorkflow = (options: { withWorkflow?: boolean; preset?: string }): boolean =>
+  options.withWorkflow === true ||
+  (options.preset !== undefined && resolvePreset(options.preset).layers.includes('workflow'));
 
 export async function planInit(repoDir: string, options: PlanInitOptions = {}): Promise<InitPlan> {
   const previous = await readManifest(repoDir);
-  const layers = effectiveLayers(previous, options.withWorkflow === true);
+  const layers = effectiveLayers(previous, wantsWorkflow(options));
   const placement = await claudeMdPlacementForInstall(repoDir, previous);
   const files = (await initManifest(layers, placement)).map((f) => f.rel);
   const conflicts = (
@@ -405,9 +419,18 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // half-install: `upgrade` covers what this stood in for, and it decides per
   // file from the manifest instead of overriding one refusal wholesale.
   if (options.force) throw new InitError(FORCE_DEPRECATED);
+  // An unknown preset refuses here too, for a caller that skipped the CLI's
+  // own check — before the first read, so it cannot half-install.
+  if (options.preset !== undefined) {
+    try {
+      resolvePreset(options.preset);
+    } catch (error) {
+      throw new InitError((error as Error).message);
+    }
+  }
 
   const previous = await readManifest(repoDir);
-  const layers = effectiveLayers(previous, options.withWorkflow === true);
+  const layers = effectiveLayers(previous, wantsWorkflow(options));
   const placement = await claudeMdPlacementForInstall(repoDir, previous);
   const files = (await initManifest(layers, placement)).map((f) => f.rel);
 
@@ -758,6 +781,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
       dropKept,
       extraRegions,
       dropStaleRegion,
+      options.preset,
     );
   }
 
@@ -921,6 +945,9 @@ async function recordInstall(
   // "freshly whole-file-written" — only `initProject`, which saw the file's
   // state BEFORE its own writes, knows which one happened.
   dropRegions?: readonly string[],
+  // RP-314: the preset this run was asked for. A re-run without one keeps
+  // whatever name a previous run recorded — diagnostics only.
+  preset?: string,
 ): Promise<void> {
   const previous = await readManifest(repoDir);
   const name = projectNameFor(repoDir);
@@ -1015,6 +1042,7 @@ async function recordInstall(
     files,
     ...(Object.keys(kept).length > 0 ? { kept } : {}),
     ...(Object.keys(regions).length > 0 ? { regions } : {}),
+    ...((preset ?? previous?.preset) !== undefined ? { preset: preset ?? previous?.preset } : {}),
   };
   await writeManifest(repoDir, manifest);
 }

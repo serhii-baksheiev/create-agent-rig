@@ -92,6 +92,13 @@ export interface RigManifest {
    * serialises exactly as before.
    */
   regions?: Record<string, string>;
+  /**
+   * The composition preset `init --preset` installed with (RP-314). Recorded
+   * for diagnostics only — nothing reads it to decide what to install or
+   * refresh — and absent when no preset was named, so a plain install
+   * serialises byte-identical to one written before the key existed.
+   */
+  preset?: string;
 }
 
 export function sha256(data: string | Buffer): string {
@@ -207,6 +214,11 @@ export function parseManifest(raw: string): RigManifest | null {
   ) {
     return null;
   }
+  // Any well-formed name is accepted on read, not only the presets this
+  // version ships: a manifest written by a newer CLI must still parse here.
+  if (m.preset !== undefined && (typeof m.preset !== 'string' || !PRESET_NAME.test(m.preset))) {
+    return null;
+  }
   return {
     version: m.version,
     kind: m.kind,
@@ -223,8 +235,12 @@ export function parseManifest(raw: string): RigManifest | null {
     files: { ...m.files },
     ...(m.kept !== undefined ? { kept: { ...m.kept } } : {}),
     ...(m.regions !== undefined ? { regions: { ...m.regions } } : {}),
+    ...(m.preset !== undefined ? { preset: m.preset } : {}),
   };
 }
+
+/** A preset name as a manifest may carry it: lowercase, digits and hyphens, 1-32 characters. */
+export const PRESET_NAME = /^[a-z][a-z0-9-]{0,31}$/;
 
 const sortedRecord = (record: Record<string, string>): Record<string, string> => {
   const sorted: Record<string, string> = {};

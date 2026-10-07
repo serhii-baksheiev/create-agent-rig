@@ -314,6 +314,33 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
     });
   });
 
+  // --- 2d. the top-level `preset` object and its keys (RP-314) --------------
+  //
+  // Mirrors the probity block above: "## Doctor" has to literally name the
+  // top-level `preset` summary and the field that answers "did Rig find this
+  // integration declared" — `declared` — or a developer reading "## Doctor"
+  // has no way to find either without reading doctor.ts.
+  //
+  // `name`, `id`, `integrations` and `observed` are deliberately NOT in this
+  // list: each already appears as backtick code in "## Doctor" today, for
+  // unrelated reasons (the generic check `id` field, the existing
+  // `integrations` check id, `observed` on the probity/spec-kit summaries) —
+  // asserting them here would pass whether or not this section ever
+  // documents `preset` at all, exactly the vacuous-pass the probity block's
+  // own comment above warns about for `wired`.
+
+  describe('"## Doctor" documents the top-level preset object and its keys (RP-314)', () => {
+    it('names `preset` in backtick code in "## Doctor"', async () => {
+      const doctorSection = section(await loadContract(), /^##\s+Doctor\b/);
+      expect(codeSpans(doctorSection).has('preset')).toBe(true);
+    });
+
+    it('names `declared` in backtick code in "## Doctor"', async () => {
+      const doctorSection = section(await loadContract(), /^##\s+Doctor\b/);
+      expect(codeSpans(doctorSection).has('declared')).toBe(true);
+    });
+  });
+
   // --- 3. `setup add`/`apply`/`remove` --json `outcome` values --------------
   //
   // Observed empirically (four real `runIntegrationsCommand` calls) rather

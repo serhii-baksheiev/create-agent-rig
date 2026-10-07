@@ -49,6 +49,14 @@ describe('npm pack → install → generate (the publish path)', () => {
     expect(packedPaths.some((p) => /node_modules|cdk\.out|\.tsbuildinfo/.test(p))).toBe(false);
   });
 
+  // RP-314: the static preset data `--preset <name>` reads at runtime lives
+  // outside `templates/agent-os/universal/` (the CLI reads it directly; it is
+  // never installed into a generated rig), so it needs its own packaging
+  // assertion rather than riding along with the universal-layer check above.
+  it('the tarball ships the static preset data file', () => {
+    expect(packedPaths).toContain('templates/agent-os/profiles.json');
+  });
+
   it('the tarball ships the npm landing files', () => {
     expect(packedPaths).toContain('LICENSE');
     expect(packedPaths).toContain('README.md');

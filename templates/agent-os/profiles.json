@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 1,
+  "presets": {
+    "minimal": { "layers": ["process"], "integrations": [] },
+    "sdd": { "layers": ["process", "workflow"], "integrations": ["spec-kit"] }
+  }
+}

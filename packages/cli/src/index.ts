@@ -33,6 +33,8 @@ import type {
 } from './commands/uninstall.js';
 import { makePalette } from './lib/colors.js';
 import { readManifest, sha256 } from './lib/manifest.js';
+import { PresetError, resolvePreset } from './lib/presets.js';
+import type { Preset } from './lib/presets.js';
 import { templatesRoot } from './templates.js';
 import { SubsystemsError, refreshSubsystems, subsystemsManifestPath } from './lib/subsystems.js';
 import { promptConfirm } from './lib/prompts.js';
@@ -57,12 +59,16 @@ Options
                     "workflow" is the only accepted name — process/Core
                     installs unconditionally and is never named. Repeatable;
                     repeating the same name is harmless.
+  --preset <name>   a named composition preset (minimal, sdd): its layers are
+                    installed with any --layer given, and its name is
+                    recorded in the manifest for doctor. Never installs an
+                    integration — init prints the setup step to run instead.
   --no-color        plain output (NO_COLOR is respected too)
   --version         print the version (--version --json: the contract handshake,
                     one JSON object with the name, version and contract version)
   -h, --help        this text
 
-Also: create-agent-rig init [--dry-run] [--layer workflow]
+Also: create-agent-rig init [--dry-run] [--layer workflow] [--preset <name>]
   Install the process layer (rules, gates, stop rules — no architecture
   assumptions) into the CURRENT existing repo. A pre-existing CLAUDE.md is
   kept, and the shim installs nested at .claude/CLAUDE.md instead; a
@@ -329,6 +335,31 @@ function resolveLayerFlag(
   return { withWorkflow: names.length > 0 };
 }
 
+/**
+ * `--preset <name>` (RP-314): at most once, and a name `profiles.json` ships.
+ * Checked before anything is read or written, so an unknown name never
+ * half-installs — and, for `create`, never creates the target directory.
+ */
+function resolvePresetFlag(preset: string[] | undefined): { preset?: Preset } | { error: string } {
+  if (preset === undefined) return {};
+  if (preset.length > 1) return { error: '--preset was given more than once.' };
+  try {
+    return { preset: resolvePreset(preset[0]!) };
+  } catch (error) {
+    if (error instanceof PresetError) return { error: error.message };
+    throw error;
+  }
+}
+
+/** The next step for each integration a preset expects but `init` never installs. */
+const presetNextSteps = (preset: Preset | undefined): string =>
+  (preset?.integrations ?? [])
+    .map(
+      (id) =>
+        `\nNext: the ${preset!.name} preset expects ${id} — run \`create-agent-rig setup add ${id}\`.\n`,
+    )
+    .join('');
+
 async function runInit(rawArgs: string[]): Promise<number> {
   if (!rawArgs.includes('--json') && wantsHelp(rawArgs)) {
     process.stdout.write(subcommandUsage('init'));
@@ -339,6 +370,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
     force?: boolean;
     'no-color'?: boolean;
     layer?: string[];
+    preset?: string[];
   };
   try {
     ({ values } = parseArgs({
@@ -350,6 +382,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
         force: { type: 'boolean' },
         'no-color': { type: 'boolean' },
         layer: { type: 'string', multiple: true },
+        preset: { type: 'string', multiple: true },
       },
       allowPositionals: false,
     }));
@@ -362,9 +395,15 @@ async function runInit(rawArgs: string[]): Promise<number> {
     process.stderr.write(`${layerResult.error}\n\n${USAGE}\n`);
     return 1;
   }
+  const presetResult = resolvePresetFlag(values.preset);
+  if ('error' in presetResult) {
+    process.stderr.write(`${presetResult.error}\n\n${USAGE}\n`);
+    return 1;
+  }
+  const { preset } = presetResult;
   const cwd = process.cwd();
   const dryRun = values['dry-run'] === true;
-  const { withWorkflow } = layerResult;
+  const withWorkflow = layerResult.withWorkflow || (preset?.layers.includes('workflow') ?? false);
 
   // `init` adopts a repo the rig knows nothing about. Run inside a rig `create`
   // generated — reachable when its CLAUDE.md was deleted — it is the wrong
@@ -379,7 +418,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
   // one alone reads as wider.
   const existing = await readManifest(cwd);
 
-  const plan = await planInit(cwd, { withWorkflow });
+  const plan = await planInit(cwd, { withWorkflow, ...(preset ? { preset: preset.name } : {}) });
   process.stdout.write(
     `agent-rig init — process layer${withWorkflow ? ' + the opt-in workflow layer' : ''} into ${cwd}\n\n` +
       plan.files.map((f) => `  + ${f.path}`).join('\n') +
@@ -398,7 +437,12 @@ async function runInit(rawArgs: string[]): Promise<number> {
     );
   }
 
-  const result = await initProject(cwd, { dryRun, force: values.force === true, withWorkflow });
+  const result = await initProject(cwd, {
+    dryRun,
+    force: values.force === true,
+    withWorkflow,
+    ...(preset ? { preset: preset.name } : {}),
+  });
   if (dryRun) {
     process.stdout.write(`\nDry run — nothing written (${result.plannedCount} files planned).\n`);
     return 0;
@@ -411,6 +455,7 @@ async function runInit(rawArgs: string[]): Promise<number> {
   for (const warning of result.warnings ?? []) {
     process.stdout.write(`\n!  ${warning}\n`);
   }
+  process.stdout.write(presetNextSteps(preset));
 
   // A kept harness config silently disables that harness's enforcement: the
   // hooks sit on disk and are never called, while the rules claim they are.
@@ -1332,6 +1377,7 @@ async function main(): Promise<number> {
     'no-git'?: boolean;
     'no-color'?: boolean;
     layer?: string[];
+    preset?: string[];
   };
   try {
     ({ positionals, values } = parseArgs({
@@ -1345,6 +1391,7 @@ async function main(): Promise<number> {
         'no-git': { type: 'boolean' },
         'no-color': { type: 'boolean' },
         layer: { type: 'string', multiple: true },
+        preset: { type: 'string', multiple: true },
       },
       allowPositionals: true,
     }));
@@ -1378,10 +1425,18 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  const presetResult = resolvePresetFlag(values.preset);
+  if ('error' in presetResult) {
+    process.stderr.write(`${presetResult.error}\n\n${USAGE}\n`);
+    return 1;
+  }
+  const { preset } = presetResult;
+
   const { projectDir, projectName } = await createProject(dirArg, {
     cwd: process.cwd(),
     git: values['no-git'] !== true,
-    withWorkflow: layerResult.withWorkflow,
+    withWorkflow: layerResult.withWorkflow || (preset?.layers.includes('workflow') ?? false),
+    ...(preset ? { preset: preset.name } : {}),
   });
 
   const palette = makePalette(
@@ -1389,6 +1444,7 @@ async function main(): Promise<number> {
   );
   const summary = await collectGovernance(projectDir);
   process.stdout.write('\n' + renderSummary(projectName, dirArg, summary, palette));
+  process.stdout.write(presetNextSteps(preset));
   return 0;
 }
 

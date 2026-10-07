@@ -902,6 +902,31 @@ describe('initProject — `--force` is deprecated, not a smaller upgrade', () =>
   });
 });
 
+// RP-314: the CLI (`index.ts`) already validates `--preset` before calling
+// `initProject`, and `test/e2e/preset.test.ts` pins that path end to end.
+// `initProject` re-checks it anyway, for a caller that reaches the API
+// directly and skips the CLI's own parse — same as the `force` re-check
+// above, this must refuse before the first read or write, leaving the repo
+// exactly as empty as `force`'s own refusal does.
+describe('initProject — re-checks an unknown `--preset` itself, for a direct API caller (RP-314)', () => {
+  it('rejects with an InitError naming the known presets, and writes nothing', async () => {
+    await expect(initProject(repo, { preset: 'nope' })).rejects.toThrow(InitError);
+    await expect(initProject(repo, { preset: 'nope' })).rejects.toThrow(/nope/);
+    await expect(initProject(repo, { preset: 'nope' })).rejects.toThrow(/minimal/);
+    await expect(initProject(repo, { preset: 'nope' })).rejects.toThrow(/sdd/);
+    expect(await readdir(repo)).toEqual([]);
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+
+  it('rejects the same way with dryRun: true, and still writes nothing', async () => {
+    await expect(initProject(repo, { preset: 'nope', dryRun: true })).rejects.toThrow(InitError);
+    await expect(initProject(repo, { preset: 'nope', dryRun: true })).rejects.toThrow(/minimal/);
+    await expect(initProject(repo, { preset: 'nope', dryRun: true })).rejects.toThrow(/sdd/);
+    expect(await readdir(repo)).toEqual([]);
+    await expect(readManifest(repo)).resolves.toBeNull();
+  });
+});
+
 describe('initManifest — one list, used by the plan and the install alike', () => {
   it('carries the process layer, the map and the wiring', async () => {
     const rels = (await initManifest()).map((f) => f.rel);

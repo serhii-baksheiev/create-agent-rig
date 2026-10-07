@@ -24,6 +24,8 @@ export interface CreateOptions {
   git?: boolean;
   /** Opt into the experimental workflow layer (RP-180) — see `initProject`. */
   withWorkflow?: boolean;
+  /** A composition preset name (RP-314), already validated by the caller — see `initProject`. */
+  preset?: string;
   /**
    * Bound on each git child `initGitRepository` / `commitGitBaseline` runs,
    * in milliseconds. Defaults to `GIT_STEP_TIMEOUT_MS`; exists so a test can
@@ -81,6 +83,7 @@ export async function createProject(dirArg: string, options: CreateOptions): Pro
   await initProject(projectDir, {
     project: { name: projectName, scope: projectName, region: '' },
     withWorkflow: options.withWorkflow,
+    ...(options.preset !== undefined ? { preset: options.preset } : {}),
   });
 
   if (gitReady) {

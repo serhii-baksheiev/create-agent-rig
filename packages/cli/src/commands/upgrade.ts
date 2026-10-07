@@ -1318,6 +1318,8 @@ export async function planUpgrade(
       files: nextFiles,
       ...(Object.keys(nextKept).length > 0 ? { kept: nextKept } : {}),
       ...(Object.keys(nextRegions).length > 0 ? { regions: nextRegions } : {}),
+      // Carried forward unchanged (RP-314): diagnostics only, never re-derived.
+      ...(manifest?.preset !== undefined ? { preset: manifest.preset } : {}),
     },
   };
 }
