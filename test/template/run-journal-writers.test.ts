@@ -243,26 +243,17 @@ describe('a stale lock is reclaimed rather than honoured forever', () => {
 // likely rather than merely possible.
 describe('a stale lock reclaimed by two writers at once must not double-admit', () => {
   it('runs the eight-writer race against a pre-planted stale lock repeatedly, and readRun never breaks', async () => {
-    // RP-438: 20 iterations timed out at this project's testTimeout (15_000)
-    // on the hosted macOS runner (e2e.yml run 37575066233 attempt 1, job
-    // 112642003632); a re-run of the same head passed at 9_426ms. Lowered to
-    // 10 — the number this comment already named as the one to lower, not
-    // the budget — which still makes the interleaving LIKELY across the run:
-    // reproduced against a deliberately reverted, pre-marker-fix copy of the
-    // module (the exact "two writers both reclaim" shape code-reviewer r1
-    // found), 10 iterations hit at least one double-admit in 4 of 5 runs on
-    // this host (fail counts 2, 0, 1, 1, 1 — one run clean, same as the
-    // 20-iteration figure this replaces), so halving the count has not
-    // halved the detection power the way it halved the cost. Against the
-    // real, fixed module and run in isolation (vitest -t, this case alone),
-    // 10 iterations measured 1.72-1.85s total across 5 local runs on this
-    // host (vs 20 iterations' own previously-measured 5.0-6.6s) —
-    // proportionally, on the macOS runner that measured 9_426ms for 20, 10
-    // should cost roughly half that, ~4.7s (an ESTIMATE, not a
-    // remeasurement on that runner), about 31% of the 15_000ms budget. A
+    // RP-438: 20 iterations hit this project's testTimeout (15_000) once on
+    // the hosted macOS runner (e2e.yml run 37575066233, attempt 1, job
+    // 112642003632, at least 15_017ms); a re-run of the same head took
+    // 9_426ms. Lowered to 10 — the number to lower, not the budget — which by
+    // proportion to those two runs should take roughly 4.7-7.5s there (an
+    // estimate, not a measurement). The race is probabilistic: against a copy
+    // of the module with the stale-lock fix reverted, 10 iterations still
+    // caught the double-admit in most runs, though less often than 20. A
     // single clean run is a property of the race, not a sign the fixture is
-    // wrong. If a slower host needs more headroom still, the number to
-    // lower is this one, not the budget.
+    // wrong. If a slower host needs more headroom still, lower this number,
+    // not the budget.
     const iterations = 10;
     const failures: string[] = [];
 
