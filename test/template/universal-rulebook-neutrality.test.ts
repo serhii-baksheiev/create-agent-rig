@@ -58,4 +58,54 @@ describe('universal rulebook neutrality after the stack layers are retired', () 
     expect(workflow).toContain('TDD is the default motion');
     expect(workflow).not.toMatch(/tdd-evidence\.md/);
   });
+
+  // RP-448: "How you work" step 2 must tell test-writer to write, for every
+  // rule the item states, at least one test that rule ALONE decides — every
+  // other check on the path passes, so deleting or loosening that one rule
+  // is what turns the test red. Matched robustly against the section body
+  // rather than an exact sentence, so a reword that keeps the substance
+  // still passes.
+  it('tells test-writer to write one test per rule that only that rule decides, and that loosening it turns the test red', async () => {
+    const testWriter = await readFile(path.join(universal, 'agents', 'test-writer.md'), 'utf8');
+    const howYouWork =
+      testWriter.slice(
+        testWriter.indexOf('## How you work'),
+        testWriter.indexOf('## Judgment lines'),
+      ) || '';
+
+    expect(
+      howYouWork.length,
+      'the How you work section must exist and be non-empty',
+    ).toBeGreaterThan(0);
+    expect(howYouWork).toMatch(/every rule/i);
+    expect(howYouWork).toMatch(/only because of that rule/i);
+    expect(howYouWork).toMatch(/turns? the test red/i);
+  });
+
+  // RP-448: step 4 (report back) must list the rule-to-test pairs the new
+  // per-rule tests establish, not just "which tests you added".
+  it('has test-writer report back the rule-to-test pairs', async () => {
+    const testWriter = await readFile(path.join(universal, 'agents', 'test-writer.md'), 'utf8');
+    const howYouWork =
+      testWriter.slice(
+        testWriter.indexOf('## How you work'),
+        testWriter.indexOf('## Judgment lines'),
+      ) || '';
+
+    expect(howYouWork).toMatch(/rule-to-test/i);
+  });
+
+  // RP-448: the Codex projection is generated verbatim from this Claude spec
+  // body (sync-codex-adapter.mjs), so the same two phrases must survive into
+  // developer_instructions — codex.test.ts's own sync check only catches
+  // DRIFT between the two files, not an instruction absent from both.
+  it('carries the same per-rule-test instruction and rule-to-test report-back in the Codex projection', async () => {
+    const codexProfile = await readFile(
+      path.join(universal, '..', '.codex', 'agents', 'test-writer.toml'),
+      'utf8',
+    );
+
+    expect(codexProfile).toMatch(/only because of that rule/i);
+    expect(codexProfile).toMatch(/rule-to-test/i);
+  });
 });

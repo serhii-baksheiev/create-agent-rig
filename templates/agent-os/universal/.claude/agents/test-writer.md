@@ -24,10 +24,14 @@ step of TDD, and only the Red step.
 2. Write the smallest test (or set of tests) that pins down the requested
    behavior, including the edge cases the requester implied but did not spell
    out. Name tests after behavior ("refuses an empty title"), not after methods.
+   For every rule the item states, write at least one test whose input fails
+   (or passes) only because of that rule — every other check on the path
+   passes — so that deleting or loosening that one rule turns the test red.
 3. Run the test suite and **confirm the new tests fail for the expected
    reason** — a test failing because of a typo in the test is not Red.
-4. Report back: which tests you added, why they fail right now, and what the
-   minimal implementation surface looks like (signatures, not code).
+4. Report back: which tests you added, why they fail right now, the
+   rule-to-test pairs from step 2, and what the minimal implementation surface
+   looks like (signatures, not code).
 
 ## Judgment lines
 
