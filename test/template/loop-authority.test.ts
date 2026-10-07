@@ -302,4 +302,23 @@ describe('loop skill §2 — the evidence record is committed alongside the clai
     const section60 = section60Only(content);
     expect(section60).not.toMatch(COMMIT_EVIDENCE);
   });
+
+  // RP-437, prose-reviewer finding: §2's evidence-commit sentence never says
+  // the commit must stand alone, while §6.0 tells the session to commit
+  // `.rig/decisions/<ticket>.jsonl` with the item's branch — the natural
+  // reading bundles the two, reintroducing the current-head staleness
+  // `docs/decisions/artifact-evidence.md` ("Current-head staleness") says a
+  // commit carrying anything beyond `.rig/evidence/` causes. The instruction
+  // must require a commit of its own and point to that doc so the reader can
+  // find why.
+  it('requires the evidence commit to carry nothing outside .rig/evidence/, and names docs/decisions/artifact-evidence.md', async () => {
+    const content = await readFile(skillPath, 'utf8');
+    const section2 = sectionByLinePrefix(content, '## 2.', '## 3.');
+    const match = COMMIT_EVIDENCE.exec(section2);
+    expect(match, 'COMMIT_EVIDENCE must match in §2').not.toBeNull();
+    const followOn = section2.slice(match!.index, match!.index + match![0].length + 400);
+    const OWN_COMMIT = /(a\s+commit\s+of\s+its\s+own|its\s+own\s+commit|alone)/i;
+    expect(followOn).toMatch(OWN_COMMIT);
+    expect(followOn).toContain('artifact-evidence.md');
+  });
 });
