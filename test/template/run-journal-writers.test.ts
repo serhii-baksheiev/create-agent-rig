@@ -243,16 +243,18 @@ describe('a stale lock is reclaimed rather than honoured forever', () => {
 // likely rather than merely possible.
 describe('a stale lock reclaimed by two writers at once must not double-admit', () => {
   it('runs the eight-writer race against a pre-planted stale lock repeatedly, and readRun never breaks', async () => {
-    // Kept well under this project's testTimeout: 15_000 — measured at
-    // 5.0-6.6s total for all 20 iterations on this host (5 runs), leaving
-    // comfortable headroom. The race itself is probabilistic, not guaranteed
-    // per iteration — measured at 1 of 20, 2 of 20 across 5 runs on this host,
-    // one run clean — so the count below is chosen to make a genuine
-    // interleaving LIKELY across the run, not to guarantee one every time; a
+    // RP-438: 20 iterations hit this project's testTimeout (15_000) once on
+    // the hosted macOS runner (e2e.yml run 37575066233, attempt 1, job
+    // 112642003632, at least 15_017ms); a re-run of the same head took
+    // 9_426ms. Lowered to 10 — the number to lower, not the budget — which by
+    // proportion to those two runs should take roughly 4.7-7.5s there (an
+    // estimate, not a measurement). The race is probabilistic: against a copy
+    // of the module with the stale-lock fix reverted, 10 iterations still
+    // caught the double-admit in most runs, though less often than 20. A
     // single clean run is a property of the race, not a sign the fixture is
-    // wrong. If a slower host needs more headroom, the number to lower is this
-    // one, not the budget.
-    const iterations = 20;
+    // wrong. If a slower host needs more headroom still, lower this number,
+    // not the budget.
+    const iterations = 10;
     const failures: string[] = [];
 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
