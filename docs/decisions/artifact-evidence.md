@@ -49,8 +49,10 @@ carries a credential-shaped value is refused rather than stored. Free-text
 fields go through the same redaction as every other journaled field.
 
 **Current-head staleness.** Evidence is bound to the `headSha` it was attached
-at. Evidence bound to another head is stale: it does not satisfy current-head
-coverage, and new evidence has to be attached at the new head.
+at. `lib/gate-coverage.mjs` splits a run's journaled evidence into `current`
+(attached at exactly the commit asked about) and `stale` (any other head), and
+`verdict.mjs coverage` prints the counts: evidence bound to another head does
+not count as current, and new evidence has to be attached at the new head.
 
 **Degradation.** An unavailable provider or evidence source is not a failure
 by itself. Evidence only matters where an existing applicability rule
@@ -79,7 +81,9 @@ schema extension.
 
 ## Consequences
 
-Producers integrate by calling one command with one descriptor; a later
-session or another clone reads the item's evidence back with `list`. The
+Producers integrate by calling one command with one descriptor. The `loop`
+skill commits `.rig/evidence/<ticket>.jsonl` with the item's branch, as it does
+`.rig/decisions/`, and once committed a later session or another clone reads
+the item's evidence back with `list`. The
 evidence never edits the run's gate record, so coverage stays decided by
 Rig's own reviewers and checks.

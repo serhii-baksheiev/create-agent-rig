@@ -841,6 +841,8 @@ resolutions":
   check will hold on it (§9 says how to record that outcome). Commit
   `.rig/decisions/<ticket>.jsonl` with the item's branch, as `.rig/claims/`
   is, or a resume on another machine has nothing to read.
+  Commit `.rig/evidence/<ticket>.jsonl` the same way whenever the item
+  attached artifact evidence (`evidence-attach.mjs`).
 
   If `record` exits non-zero, read `delegated-decision.mjs list --ticket <id>`
   before deciding anything: a decision listed there was made and only

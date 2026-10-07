@@ -176,6 +176,33 @@ const witnessOf = (decisions, events, launched) => {
   return witness;
 };
 
+/** The `kind` `evidence-attach.mjs` journals an artifact descriptor under (RP-312). */
+const ARTIFACT_EVIDENCE = 'artifact-evidence';
+
+/**
+ * The ADVISORY `evidence` answer (RP-312, `docs/decisions/artifact-evidence.md`):
+ * every journaled artifact descriptor, split by whether it was attached at
+ * exactly the commit asked about. Only the full id counts as current — evidence
+ * bound to any other head, a prefix of this one included, is stale. It never
+ * touches `ok`: no applicability rule here requires an artifact category, so an
+ * external `pass` cannot stand in for a reviewer and an external `fail` cannot
+ * hold a round that is otherwise covered.
+ */
+const evidenceOf = (events, headSha) => {
+  const current = [];
+  const stale = [];
+  const target = typeof headSha === 'string' ? headSha.toLowerCase() : '';
+  for (const event of Array.isArray(events) ? events : []) {
+    if (event?.kind !== ARTIFACT_EVIDENCE) continue;
+    const descriptor = event.data;
+    if (typeof descriptor !== 'object' || descriptor === null) continue;
+    if (typeof descriptor.headSha !== 'string') continue;
+    if (target !== '' && descriptor.headSha.toLowerCase() === target) current.push(descriptor);
+    else stale.push(descriptor);
+  }
+  return { current, stale };
+};
+
 /**
  * Which reviewers are outstanding for `headSha`, and in which of the four ways.
  *
@@ -191,7 +218,7 @@ const witnessOf = (decisions, events, launched) => {
  *   witness?: Record<string, 'witnessed'|'unwitnessed'|'unavailable'>,
  * }}
  */
-export const coverageOf = ({ records, headSha, events } = {}) => {
+const coverageCore = ({ records, headSha, events } = {}) => {
   const journal = Array.isArray(records) ? records : [];
   const target = typeof headSha === 'string' ? headSha : '';
 
@@ -362,3 +389,14 @@ export const coverageOf = ({ records, headSha, events } = {}) => {
         }),
   };
 };
+
+/**
+ * {@link coverageCore}'s answer plus the advisory `evidence` split, on every
+ * return path alike.
+ *
+ * @param {{ records?: unknown, headSha?: unknown, events?: unknown }} input
+ */
+export const coverageOf = (input = {}) => ({
+  ...coverageCore(input),
+  evidence: evidenceOf(input?.events, input?.headSha),
+});

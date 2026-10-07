@@ -6,11 +6,12 @@
 // RP-312 slice (a) extracted the filesystem-safety mechanism for
 // (`.claude/scripts/lib/item-records.mjs`, see `item-records.test.ts`).
 //
-// Neither the module nor its decision record
-// (`docs/decisions/artifact-evidence.md`) exists yet. Every test below is
-// expected to fail for exactly one of two reasons: the module cannot be
-// imported/spawned (`Cannot find module`/`ERR_MODULE_NOT_FOUND`), or the
-// decision-record file does not exist — never for any other reason.
+// Both the module and its decision record (`docs/decisions/artifact-evidence.md`)
+// exist. This file also pins the RP-312 gate-round-2 follow-ups: `attach`
+// refuses unless the run journal already records the ticket as SELECTed
+// (`queue/index.mjs`'s own `selectedIn` predicate), `--ref` accepts only a
+// remote reference, `--advisory-summary` is capped like `delegated-decision.mjs`'s
+// `summary`, and a refusal message never carries a raw control character.
 //
 // The CLI this file assumes (Jira RP-312, design comment 23333):
 //
@@ -38,7 +39,7 @@
 // never carries a committable secret shape.
 import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, symlink, truncate, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -209,12 +210,42 @@ const expectDidNotCrash = (result: RunResult) => {
   );
 };
 
+/**
+ * The run-journal predicate `queue/index.mjs`'s `selectedIn` applies at SELECT
+ * (~line 830): a `revalidation` EVENT whose `data.point === 'SELECT'`,
+ * `String(data.ticket) === ticket`, `data.result` is a string and
+ * `data.sourcePointer` is a string. `attach` is required to refuse a ticket
+ * this has not been journalled for — RP-312 gate round 2, "mechanically
+ * resolved item".
+ */
+const journalSelect = async (
+  runDir: string,
+  ticket: string,
+  now: string = new Date().toISOString(),
+): Promise<void> => {
+  const { recordEvent } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+    recordEvent: (input: Record<string, unknown>) => unknown;
+  };
+  recordEvent({
+    runDir,
+    kind: 'revalidation',
+    data: {
+      point: 'SELECT',
+      ticket,
+      result: 'BASELINE_CREATED',
+      sourcePointer: `.rig/claims/${ticket}.json`,
+    },
+    now,
+  });
+};
+
 // --- A: flag parsing -------------------------------------------------------
 
 describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses an unknown flag', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli([...attachArgs(VALID_REF), '--mystery', 'x'], dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expectDidNotCrash(result);
@@ -224,6 +255,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses a repeated flag', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       [...attachArgs(VALID_REF), '--ticket', 'RP-2'],
       dir,
@@ -236,6 +268,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it.each(REQUIRED_FLAGS)('refuses with %s missing, and writes nothing', async (flag) => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(omit(VALID_REF, flag)), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expectDidNotCrash(result);
@@ -245,6 +278,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses when both --file and --ref are given', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     await writeFile(path.join(dir, 'report.json'), '{}\n');
     const result = await runCli(
       attachArgs({ ...omit(VALID_REF, 'ref'), file: 'report.json', ref: 'also-this' }),
@@ -259,6 +293,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses when neither --file nor --ref is given', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(omit(VALID_REF, 'ref')), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expectDidNotCrash(result);
@@ -277,6 +312,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
     it.each(BAD_TOKENS)(`refuses a bad token %j for ${flag}`, async (bad) => {
       const { dir } = await newProject();
       const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
       const result = await runCli(attachArgs({ ...VALID_REF, [flag]: bad }), dir, envFor(runDir));
       expect(result.code, result.out).toBe(1);
       expectDidNotCrash(result);
@@ -288,6 +324,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it.each(UNSAFE_TICKETS)('refuses the unsafe ticket %j', async (ticket) => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, ticket);
     const result = await runCli(attachArgs({ ...VALID_REF, ticket }), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expectDidNotCrash(result);
@@ -296,6 +333,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses the Windows reserved device name CON used as a ticket', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'CON');
     const result = await runCli(attachArgs({ ...VALID_REF, ticket: 'CON' }), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expectDidNotCrash(result);
@@ -304,6 +342,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses a credential-shaped ticket, assembled at runtime', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, GITHUB_PAT);
     const result = await runCli(
       attachArgs({ ...VALID_REF, ticket: GITHUB_PAT }),
       dir,
@@ -316,6 +355,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses an --advisory-decision outside pass|concerns|fail (uppercase SHIP)', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...VALID_REF, advisoryDecision: 'SHIP' }),
       dir,
@@ -329,6 +369,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
   it('refuses an --advisory-decision outside pass|concerns|fail ("ok")', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...VALID_REF, advisoryDecision: 'ok' }),
       dir,
@@ -345,6 +386,7 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
     async (authorityClass) => {
       const { dir } = await newProject();
       const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
       const result = await runCli(
         attachArgs({ ...VALID_REF, authorityClass }),
         dir,
@@ -382,6 +424,7 @@ describe('evidence-attach.mjs attach — RIG_RUN_DIR and git preconditions', () 
   it('a run directory with no state.json at all still succeeds — no authority requirement', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
     expect(result.code, result.out).toBe(0);
   });
@@ -389,6 +432,7 @@ describe('evidence-attach.mjs attach — RIG_RUN_DIR and git preconditions', () 
   it('refuses when cwd is not a git repository at all', async () => {
     const dir = await newNonGitDir();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expectDidNotCrash(result);
@@ -397,9 +441,81 @@ describe('evidence-attach.mjs attach — RIG_RUN_DIR and git preconditions', () 
   it('refuses when the git repository has no commit yet (unborn HEAD)', async () => {
     const dir = await newUncommittedProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expectDidNotCrash(result);
+  });
+});
+
+// --- A: journal-first selection (mechanically resolved item) ----------------
+
+describe('evidence-attach.mjs attach — requires the ticket to already be SELECTed in this run', () => {
+  it('refuses when the run journal records no SELECT event at all, naming the reason', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).toMatch(/select/i);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses when the only SELECT event recorded belongs to a different ticket', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-999');
+    const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).toMatch(/select/i);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('succeeds once a SELECT event for this exact ticket is journalled', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+  });
+
+  it('refuses a SELECT event missing `result` as a string — the predicate checks every field, not just `point`/`ticket`', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    const { recordEvent } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+    };
+    recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: { point: 'SELECT', ticket: 'RP-1', sourcePointer: '.rig/claims/RP-1.json' },
+      now: new Date().toISOString(),
+    });
+    const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).toMatch(/select/i);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a SELECT event missing `sourcePointer` as a string', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    const { recordEvent } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+      recordEvent: (input: Record<string, unknown>) => unknown;
+    };
+    recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: { point: 'SELECT', ticket: 'RP-1', result: 'BASELINE_CREATED' },
+      now: new Date().toISOString(),
+    });
+    const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).toMatch(/select/i);
+    await expectNothingWritten(dir, 'RP-1');
   });
 });
 
@@ -409,6 +525,7 @@ describe('evidence-attach.mjs attach — success, --ref mode', () => {
   it('writes the journal event first, then the evidence line, deep-equal to each other', async () => {
     const { dir, head } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const before = Date.now();
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
     const after = Date.now();
@@ -443,14 +560,20 @@ describe('evidence-attach.mjs attach — success, --ref mode', () => {
       };
     };
     const { events } = readRun({ runDir });
-    expect(events).toHaveLength(1);
-    expect(events[0]?.kind).toBe('artifact-evidence');
-    expect(events[0]?.data).toEqual(stored);
+    // The SELECT fixture event this test journalled is now `events[0]`; the
+    // CLI's own `artifact-evidence` event is filtered for by kind rather than
+    // assumed to be the first record in the run.
+    expect(events).toHaveLength(2);
+    expect(events[0]?.kind).toBe('revalidation');
+    const evidenceEvents = events.filter((event) => event.kind === 'artifact-evidence');
+    expect(evidenceEvents).toHaveLength(1);
+    expect(evidenceEvents[0]?.data).toEqual(stored);
   });
 
   it('--json prints exactly the descriptor on stdout', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs({ ...VALID_REF, json: true }), dir, envFor(runDir));
     expect(result.code, result.out).toBe(0);
     const printed = JSON.parse(result.stdout) as Record<string, unknown>;
@@ -461,6 +584,7 @@ describe('evidence-attach.mjs attach — success, --ref mode', () => {
   it('omits subject.version entirely when --subject-version is not given', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
     expect(result.code, result.out).toBe(0);
     const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<{
@@ -472,6 +596,7 @@ describe('evidence-attach.mjs attach — success, --ref mode', () => {
   it('carries subject.version when --subject-version is given', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...VALID_REF, subjectVersion: 'v2' }),
       dir,
@@ -487,6 +612,7 @@ describe('evidence-attach.mjs attach — success, --ref mode', () => {
   it('omits advisory entirely when --advisory-decision is not given', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
     expect(result.code, result.out).toBe(0);
     const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
@@ -496,6 +622,7 @@ describe('evidence-attach.mjs attach — success, --ref mode', () => {
   it('carries advisory: { decision } with no summary key when --advisory-summary is not given', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...VALID_REF, advisoryDecision: 'concerns' }),
       dir,
@@ -511,6 +638,7 @@ describe('evidence-attach.mjs attach — success, --ref mode', () => {
   it('carries advisory: { decision, summary } when both are given', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...VALID_REF, advisoryDecision: 'pass', advisorySummary: 'looks fine' }),
       dir,
@@ -537,6 +665,7 @@ describe('evidence-attach.mjs attach — success, --file mode', () => {
   it('a relative --file with a "./" prefix resolves to a repo-relative POSIX ref and a matching sha256', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const content = 'report-body-one\n';
     await writeReport(dir, path.join('reports', 'run.json'), content);
     const result = await runCli(
@@ -556,6 +685,7 @@ describe('evidence-attach.mjs attach — success, --file mode', () => {
   it('an absolute --file path inside the repo resolves to the same repo-relative POSIX ref', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const content = 'report-body-two\n';
     const abs = await writeReport(dir, path.join('reports', 'run.json'), content);
     const result = await runCli(
@@ -579,6 +709,7 @@ describe('evidence-attach.mjs attach — --file refusals', () => {
   it('refuses a --file outside the project given as an absolute path', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const outsideDir = await mkdtemp(path.join(tmpdir(), 'evidence-attach-outside-'));
     const outsideFile = path.join(outsideDir, 'victim.json');
     await writeFile(outsideFile, '{}\n');
@@ -595,6 +726,7 @@ describe('evidence-attach.mjs attach — --file refusals', () => {
   it('refuses a --file outside the project given as a relative "../" path', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const outsideFile = path.join(path.dirname(dir), 'evidence-attach-sibling-outside.json');
     await writeFile(outsideFile, '{}\n');
     try {
@@ -614,6 +746,7 @@ describe('evidence-attach.mjs attach — --file refusals', () => {
   it('refuses a --file that does not exist', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...omit(VALID_REF, 'ref'), file: 'nope.json' }),
       dir,
@@ -627,6 +760,7 @@ describe('evidence-attach.mjs attach — --file refusals', () => {
   it('refuses a --file that is a directory', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     await mkdir(path.join(dir, 'a-directory'));
     const result = await runCli(
       attachArgs({ ...omit(VALID_REF, 'ref'), file: 'a-directory' }),
@@ -642,6 +776,7 @@ describe('evidence-attach.mjs attach — --file refusals', () => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const outsideDir = await mkdtemp(path.join(tmpdir(), 'evidence-attach-outside-'));
     const outsideFile = path.join(outsideDir, 'target.json');
     await writeFile(outsideFile, '{}\n');
@@ -660,6 +795,7 @@ describe('evidence-attach.mjs attach — --file refusals', () => {
   it('refuses a --file naming a credential-shaped path (.env)', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     await writeFile(path.join(dir, '.env'), 'NOT_A_REAL_SECRET=placeholder\n');
     const result = await runCli(
       attachArgs({ ...omit(VALID_REF, 'ref'), file: '.env' }),
@@ -678,6 +814,7 @@ describe('evidence-attach.mjs attach — --ref refusals', () => {
   it('refuses a credential-shaped --ref, assembled at runtime', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const ref = `https://ci.example.invalid/run/123?token=${GITHUB_PAT}`;
     const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
@@ -688,6 +825,7 @@ describe('evidence-attach.mjs attach — --ref refusals', () => {
   it('refuses a --ref longer than 2048 characters', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const ref = `https://ci.example.invalid/${'a'.repeat(2049)}`;
     const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
@@ -698,10 +836,185 @@ describe('evidence-attach.mjs attach — --ref refusals', () => {
   it('accepts a --ref at exactly 2048 characters', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const ref = `https://ci.example.invalid/${'a'.repeat(2048 - 'https://ci.example.invalid/'.length)}`;
     expect(ref).toHaveLength(2048);
     const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
     expect(result.code, result.out).toBe(0);
+  });
+});
+
+// --- A: --ref is a remote reference only ------------------------------------
+
+describe('evidence-attach.mjs attach — --ref is a remote reference only', () => {
+  it('accepts an http:// scheme, not only https://', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'http://ci.example.invalid/run/123';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+  });
+
+  it('accepts a non-http scheme with an authority (s3://bucket/key)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 's3://bucket/key';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+  });
+
+  it('refuses a --ref carrying URL userinfo with a password, assembled at runtime', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = `https://bot:${GITHUB_PAT}@ci.example.invalid/r`;
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a --ref carrying URL userinfo with a username and no password', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'https://bot@ci.example.invalid/r';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a file:// reference', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'file:///tmp/x';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses an absolute path given as --ref — local files go through --file', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = '/tmp/report.json';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a Windows absolute path given as --ref', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'C:\\reports\\r.json';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a relative path given as --ref — local files go through --file and get hashed', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'reports/run.json';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a scheme with no // authority (mailto:)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'mailto:x@example.invalid';
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+});
+
+// --- A: more refusals (RP-312 gate round 2) ----------------------------------
+
+describe('evidence-attach.mjs attach — more refusals (RP-312 gate round 2)', () => {
+  it('refuses a --file larger than 64 MiB', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const big = path.join(dir, 'big-report.json');
+    await writeFile(big, '');
+    await truncate(big, 64 * 1024 * 1024 + 1);
+    const result = await runCli(
+      attachArgs({ ...omit(VALID_REF, 'ref'), file: 'big-report.json' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses --advisory-summary given without --advisory-decision', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, advisorySummary: 'no decision given' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a --kind carrying a C1 control character (U+009B) and an ESC (U+001B), echoing neither raw byte in the refusal', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ESC = String.fromCharCode(0x1b);
+    const C1 = String.fromCharCode(0x9b);
+    const kind = `test-report${ESC}${C1}[2K`;
+    const result = await runCli(attachArgs({ ...VALID_REF, kind }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).not.toContain(ESC);
+    expect(result.out).not.toContain(C1);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+});
+
+// --- A: advisory.summary is capped like delegated-decision.mjs's summary ---
+
+describe("evidence-attach.mjs attach — advisory.summary is capped like delegated-decision.mjs's summary", () => {
+  it('stores a 2000-character plain summary at no more than 500 characters, ending with the truncation marker', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const summary = 'a'.repeat(2000);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, advisoryDecision: 'pass', advisorySummary: summary }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<{
+      advisory: { summary: string };
+    }>;
+    expect(record!.advisory.summary.length).toBeLessThanOrEqual(500);
+    // The exact marker `continuation.mjs`'s `composeCappedTextField` appends —
+    // asserted literally rather than imported, so this test cannot be
+    // satisfied merely by the module checking its own constant.
+    expect(record!.advisory.summary.endsWith('[truncated]')).toBe(true);
   });
 });
 
@@ -711,6 +1024,7 @@ describe('evidence-attach.mjs attach — subject-id/advisory-summary/subject-ver
   it('stores a credential-shaped --subject-id as exactly [redacted], never the raw value', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...VALID_REF, subjectId: GITHUB_PAT }),
       dir,
@@ -727,6 +1041,7 @@ describe('evidence-attach.mjs attach — subject-id/advisory-summary/subject-ver
   it('stores a credential-shaped --subject-version as exactly [redacted]', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({ ...VALID_REF, subjectVersion: GITHUB_PAT }),
       dir,
@@ -743,6 +1058,7 @@ describe('evidence-attach.mjs attach — subject-id/advisory-summary/subject-ver
   it('stores a credential-shaped --advisory-summary as exactly [redacted]', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(
       attachArgs({
         ...VALID_REF,
@@ -767,6 +1083,7 @@ describe('evidence-attach.mjs attach — journal-first ordering', () => {
   it('journals the event even when the evidence file write is refused (the path is a directory)', async () => {
     const { dir, head } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     await mkdir(evidenceFile(dir, 'RP-1'), { recursive: true });
 
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
@@ -780,9 +1097,13 @@ describe('evidence-attach.mjs attach — journal-first ordering', () => {
       };
     };
     const { events } = readRun({ runDir });
-    expect(events).toHaveLength(1);
-    expect(events[0]?.kind).toBe('artifact-evidence');
-    const data = events[0]?.data ?? {};
+    // As above: the SELECT fixture event is `events[0]`, so the CLI's own
+    // event is found by kind rather than by position.
+    expect(events).toHaveLength(2);
+    expect(events[0]?.kind).toBe('revalidation');
+    const evidenceEvents = events.filter((event) => event.kind === 'artifact-evidence');
+    expect(evidenceEvents).toHaveLength(1);
+    const data = evidenceEvents[0]?.data ?? {};
     expect(data).toMatchObject({
       schemaVersion: 1,
       kind: 'test-report',
@@ -837,6 +1158,7 @@ describe('evidence-attach.mjs list', () => {
   it('two attaches are listed back in file order, equal to what was attached', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     await runCli(attachArgs({ ...VALID_REF, kind: 'first-kind' }), dir, envFor(runDir));
     await runCli(attachArgs({ ...VALID_REF, kind: 'second-kind' }), dir, envFor(runDir));
 
@@ -929,6 +1251,82 @@ describe('evidence-attach.mjs list', () => {
   it('a record whose authorityClass is a Rig verdict word (hold) is unreadable — exit 2', async () => {
     const { dir } = await newProject();
     await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ authorityClass: 'hold' }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+  });
+
+  it('a record whose schemaVersion is 2 (not the only version this file knows) is unreadable — exit 2', async () => {
+    const { dir } = await newProject();
+    await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ schemaVersion: 2 }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+  });
+
+  it('a record whose sha256 is not hex ("nothex") is unreadable — exit 2', async () => {
+    const { dir } = await newProject();
+    await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ sha256: 'nothex' }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+  });
+
+  it('a record whose headSha is not a commit id ("xyz") is unreadable — exit 2', async () => {
+    const { dir } = await newProject();
+    await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ headSha: 'xyz' }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+  });
+
+  it('a record whose producedAt is not a timestamp ("not-a-date") is unreadable — exit 2', async () => {
+    const { dir } = await newProject();
+    await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ producedAt: 'not-a-date' }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+  });
+
+  it('a record whose subject is a bare string (not { kind, id }) is unreadable — exit 2', async () => {
+    const { dir } = await newProject();
+    await writeForgedEvidence(dir, 'RP-9', forgedEvidenceLine({ subject: 'string' }));
+    const result = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(result.code, result.out).toBe(2);
+  });
+
+  it('a record whose subject.kind is not a lowercase token ("Bad Kind") is unreadable — exit 2', async () => {
+    const { dir } = await newProject();
+    await writeForgedEvidence(
+      dir,
+      'RP-9',
+      forgedEvidenceLine({ subject: { kind: 'Bad Kind', id: 'x' } }),
+    );
     const result = await run(
       process.execPath,
       [evidenceAttachScript, 'list', '--ticket', 'RP-9', '--json'],
@@ -1035,6 +1433,7 @@ describe('evidence-attach.mjs — bypasses no mechanical gate', () => {
   it('attach leaves <runDir>/decisions.jsonl absent — it writes a run EVENT, never a gate VERDICT', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
     const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
     expect(result.code, result.out).toBe(0);
 
@@ -1113,6 +1512,18 @@ describe('docs/decisions/artifact-evidence.md', () => {
     const content = await read();
     expect(content).toMatch(/non-goals/i);
     expect(content).toMatch(/provenance/i);
+  });
+
+  it('cites lib/gate-coverage.mjs as where the current-head staleness rule is now enforced', async () => {
+    const content = await read();
+    expect(content).toContain('lib/gate-coverage.mjs');
+  });
+
+  it("says the evidence file is committed with the item's branch", async () => {
+    const content = await read();
+    expect(content).toMatch(
+      /(?:\.rig\/evidence\/[\s\S]{0,200}\bcommit(?:ted)?\b|\bcommit(?:ted)?\b[\s\S]{0,200}\.rig\/evidence\/)/i,
+    );
   });
 
   it("is cited from evidence-attach.mjs's own source", async () => {

@@ -10,9 +10,9 @@
 //        [--advisory-decision <pass|concerns|fail>] [--advisory-summary <text>] [--json]
 //   node .claude/scripts/evidence-attach.mjs list --ticket <id> [--json]
 //
-// Why, and the rules this file enforces — the descriptor, current-head
-// staleness, advisory-only producer decisions, the identity boundary and the
-// non-goals: `docs/decisions/artifact-evidence.md`.
+// Why, the descriptor, advisory-only producer decisions, the identity
+// boundary and the non-goals: `docs/decisions/artifact-evidence.md`.
+// Current-head staleness is read by gate coverage, not here.
 //
 // `attach` needs a declared run (RIG_RUN_DIR) and a repository with a HEAD
 // commit; the descriptor binds the artifact to that item and that head. It
@@ -28,8 +28,7 @@
 // refuses a forged line (a field missing, another item, a verdict word where
 // only an advisory word or an authority class belongs) as unreadable, exit 2.
 //
-// See `test/template/evidence-attach.test.ts` (absent in a generated rig) for
-// every refusal, by name.
+// Tests: `test/template/evidence-attach.test.ts` (absent in a generated rig).
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, realpathSync } from 'node:fs';
@@ -37,8 +36,8 @@ import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from './git-env.mjs';
-import { composeTextField } from './continuation.mjs';
-import { recordEvent } from './run-journal.mjs';
+import { composeCappedTextField, composeTextField } from './continuation.mjs';
+import { readRun, recordEvent } from './run-journal.mjs';
 import { findSecretValues, isCredentialPath } from './lib/secrets.mjs';
 import { VERDICT_WORDS } from './lib/verdict.mjs';
 import {
@@ -74,6 +73,21 @@ const REQUIRED_KEYS = Object.freeze([
   'headSha',
   'producedAt',
 ]);
+
+/** `scheme://authority…` — group 1 the scheme, group 2 the authority. */
+const REMOTE_REF = /^([a-z][a-z0-9+.-]*):\/\/([^/?#\s]*)/i;
+
+/**
+ * The item a run took up: the SELECT revalidation event the queue journals at
+ * selection — the same predicate `queue/index.mjs` reads to tell a resume
+ * from a first selection.
+ */
+const isSelectionOf = (event, ticket) =>
+  event?.kind === 'revalidation' &&
+  event.data?.point === 'SELECT' &&
+  String(event.data?.ticket) === ticket &&
+  typeof event.data?.result === 'string' &&
+  typeof event.data?.sourcePointer === 'string';
 
 const isVerdictWord = (value) =>
   typeof value === 'string' && VERDICT_WORDS.includes(value.toUpperCase());
@@ -170,8 +184,14 @@ export const parseEvidence = (text, { ticket } = {}) => {
 
 // --- CLI -----------------------------------------------------------------
 
+// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+const ESCAPE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+const printable = (text) =>
+  String(text).replace(ESCAPE_CONTROL_CHARS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
+
+/** Refusals echo argv, so every control character is escaped before it reaches a terminal. */
 const refuse = (message) => {
-  process.stderr.write(`evidence-attach: ${message}\n`);
+  process.stderr.write(`evidence-attach: ${printable(message)}\n`);
   process.exit(1);
 };
 
@@ -323,11 +343,33 @@ const runAttach = (argv, cwd) => {
     if (findSecretValues(options.ref).length > 0) {
       return refuse('--ref carries a credential-shaped value; it is never recorded.');
     }
+    const remote = REMOTE_REF.exec(options.ref);
+    if (!remote || remote[1].toLowerCase() === 'file' || remote[2] === '') {
+      return refuse(
+        '--ref must be a remote reference (scheme://host/…); a local file goes through --file, which hashes it.',
+      );
+    }
+    if (remote[2].includes('@')) {
+      return refuse('--ref carries URL userinfo; credentials in a reference are never recorded.');
+    }
   }
 
   const runDir = process.env.RIG_RUN_DIR;
   if (!runDir) {
     return refuse('RIG_RUN_DIR is not set, so there is no run to journal this evidence in.');
+  }
+
+  let selected;
+  try {
+    selected = readRun({ runDir }).events.some((event) => isSelectionOf(event, options.ticket));
+  } catch (error) {
+    return refuse(`the run journal in RIG_RUN_DIR is unreadable — ${error.message}`);
+  }
+  if (!selected) {
+    return refuse(
+      `${options.ticket} was not selected in this run (no SELECT revalidation in the run journal); ` +
+        'evidence attaches only to an item the run took up.',
+    );
   }
 
   const projectRoot = gitValue(['rev-parse', '--show-toplevel'], cwd);
@@ -371,7 +413,7 @@ const runAttach = (argv, cwd) => {
   if (options.advisoryDecision !== undefined) {
     descriptor.advisory = { decision: options.advisoryDecision };
     if (options.advisorySummary !== undefined) {
-      descriptor.advisory.summary = composeTextField(options.advisorySummary);
+      descriptor.advisory.summary = composeCappedTextField(options.advisorySummary);
     }
   }
 
@@ -402,11 +444,6 @@ const runAttach = (argv, cwd) => {
   }
   process.exit(0);
 };
-
-// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
-const ESCAPE_CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
-const printable = (text) =>
-  String(text).replace(ESCAPE_CONTROL_CHARS, (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, '0')}`);
 
 const runList = (argv, cwd) => {
   const parsed = parseFlags(argv, LIST_FLAGS);

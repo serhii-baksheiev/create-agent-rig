@@ -242,3 +242,15 @@ describe('docs/decisions/decision-authority.md — the loop-integration follow-u
     expect(consequences).not.toMatch(/loop\s+starts\s+and\s+resumes/);
   });
 });
+
+// RP-312 gate round 2: the commit instruction next to `.rig/decisions/<ticket>.jsonl`
+// (§6, "decide-and-continue") is the natural home for the sibling instruction —
+// `.rig/evidence/<ticket>.jsonl` is written by `evidence-attach.mjs` the same
+// way, and a resume on another machine has nothing to read from either one
+// unless both are committed.
+describe('loop skill §6 — the evidence record is committed alongside the decision record', () => {
+  it('names .rig/evidence/<ticket>.jsonl in a commit instruction', async () => {
+    const content = await readFile(skillPath, 'utf8');
+    expect(content).toMatch(/[Cc]ommit[^\n]{0,120}\.rig\/evidence\//);
+  });
+});
