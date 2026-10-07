@@ -32,11 +32,54 @@
  * failure the whole schema exists to prevent, reintroduced by the reader.
  */
 
+import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 import { coverageOf } from './lib/gate-coverage.mjs';
 import { isCommitId, parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
 import { readRun } from './run-journal.mjs';
+import { withoutGitLocation } from './git-env.mjs';
+
+/** The one path a record-only commit may touch: the item's evidence record (RP-437). */
+const EVIDENCE_PREFIX = '.rig/evidence/';
+const MAX_RECORD_WALK = 32;
+
+/**
+ * The heads evidence may be bound to and still be current at `commit`: the
+ * commit itself, and — walking first parents — every commit reached through
+ * commits that change only `.rig/evidence/`, up to and
+ * including the first commit that changes anything else. Committing an
+ * evidence record moves HEAD without changing the code under review, so it
+ * must not make that evidence stale. Bounded; any git failure answers the
+ * commit alone, which can only make evidence read MORE stale, never less.
+ */
+const currentHeadsAt = (commit) => {
+  const git = (args) =>
+    execFileSync('git', args, {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: withoutGitLocation(),
+    });
+  try {
+    const chain = git(['rev-list', '--first-parent', `--max-count=${MAX_RECORD_WALK}`, commit])
+      .split('\n')
+      .filter(Boolean);
+    const heads = [];
+    for (const sha of chain) {
+      heads.push(sha);
+      const changed = git(['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha])
+        .split('\n')
+        .filter(Boolean);
+      const recordOnly =
+        changed.length > 0 &&
+        changed.every((file) => file.startsWith(EVIDENCE_PREFIX));
+      if (!recordOnly) break;
+    }
+    return heads.length > 0 ? heads : [commit];
+  } catch {
+    return [commit];
+  }
+};
 
 const USAGE =
   'usage: node .claude/scripts/verdict.mjs check <file> [gate]   ' +
@@ -131,7 +174,12 @@ if (subcommand === 'coverage') {
     );
   }
 
-  const coverage = coverageOf({ records: decisions, headSha: commit, events });
+  const coverage = coverageOf({
+    records: decisions,
+    headSha: commit,
+    events,
+    currentHeads: currentHeadsAt(commit),
+  });
 
   // RP-225 slice 2, advisory only — never affects the exit code or `coverage.ok`.
   // Named per reviewer so an operator sees exactly which launched name has no

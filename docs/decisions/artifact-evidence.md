@@ -52,9 +52,11 @@ fields go through the same redaction as every other journaled field.
 
 **Current-head staleness.** Evidence is bound to the `headSha` it was attached
 at. `lib/gate-coverage.mjs` splits a run's journaled evidence into `current`
-(attached at exactly the commit asked about) and `stale` (any other head), and
-`verdict.mjs coverage` prints the counts: evidence bound to another head does
-not count as current, and new evidence has to be attached at the new head.
+and `stale`, and `verdict.mjs coverage` prints the counts. Current means
+attached at the commit asked about, or at the code head behind a run of
+record-only commits on top of it — commits that change only `.rig/evidence/`,
+so that committing the record itself does not make it stale (RP-437). Any other commit makes earlier evidence stale, and new evidence
+has to be attached at the new head.
 
 **Degradation.** An unavailable provider or evidence source is not a failure
 by itself. Evidence only matters where an existing applicability rule

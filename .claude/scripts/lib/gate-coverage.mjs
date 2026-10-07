@@ -188,16 +188,22 @@ const ARTIFACT_EVIDENCE = 'artifact-evidence';
  * external `pass` cannot stand in for a reviewer and an external `fail` cannot
  * hold a round that is otherwise covered.
  */
-const evidenceOf = (events, headSha) => {
+const evidenceOf = (events, headSha, currentHeads) => {
   const current = [];
   const stale = [];
-  const target = typeof headSha === 'string' ? headSha.toLowerCase() : '';
+  // Full ids only, compared case-insensitively. `currentHeads` (RP-437) is the
+  // requested head plus the code head behind any record-only commits on top of
+  // it; without it, the requested head alone is current.
+  const heads = Array.isArray(currentHeads)
+    ? currentHeads.filter((head) => typeof head === 'string' && head !== '')
+    : [headSha].filter((head) => typeof head === 'string' && head !== '');
+  const targets = new Set(heads.map((head) => head.toLowerCase()));
   for (const event of Array.isArray(events) ? events : []) {
     if (event?.kind !== ARTIFACT_EVIDENCE) continue;
     const descriptor = event.data;
     if (typeof descriptor !== 'object' || descriptor === null) continue;
     if (typeof descriptor.headSha !== 'string') continue;
-    if (target !== '' && descriptor.headSha.toLowerCase() === target) current.push(descriptor);
+    if (targets.has(descriptor.headSha.toLowerCase())) current.push(descriptor);
     else stale.push(descriptor);
   }
   return { current, stale };
@@ -392,11 +398,12 @@ const coverageCore = ({ records, headSha, events } = {}) => {
 
 /**
  * {@link coverageCore}'s answer plus the advisory `evidence` split, on every
- * return path alike.
+ * return path alike. `currentHeads`, when given, is every commit id evidence
+ * may be bound to and still count as current (RP-437).
  *
- * @param {{ records?: unknown, headSha?: unknown, events?: unknown }} input
+ * @param {{ records?: unknown, headSha?: unknown, events?: unknown, currentHeads?: unknown }} input
  */
 export const coverageOf = (input = {}) => ({
   ...coverageCore(input),
-  evidence: evidenceOf(input?.events, input?.headSha),
+  evidence: evidenceOf(input?.events, input?.headSha, input?.currentHeads),
 });

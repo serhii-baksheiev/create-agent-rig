@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { afterAll, describe, expect, it } from 'vitest';
+
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR-79: three writers already record the three halves of a gate round — the
 // router journals the reviewer set the route ASKED FOR
@@ -27,6 +29,7 @@ const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.c
 const modulePath = path.join(scriptsDir, 'lib', 'gate-coverage.mjs');
 const cliPath = path.join(scriptsDir, 'verdict.mjs');
 const runJournalPath = path.join(scriptsDir, 'run-journal.mjs');
+const gitEnvPath = path.join(scriptsDir, 'git-env.mjs');
 const prShipPath = path.join(
   repoRoot,
   'templates',
@@ -1663,6 +1666,128 @@ describe('coverageOf — evidence current/stale matching is full-id, case-insens
   });
 });
 
+// RP-437: evidence is bound to the `headSha` it was attached at
+// (`docs/decisions/artifact-evidence.md`'s "Current-head staleness"), and the
+// loop then commits `.rig/evidence/<ticket>.jsonl`, which moves the code head
+// one commit past the one the evidence named — a record-only commit that
+// changes nothing a reviewer would read. Matching the single requested head
+// alone reads that evidence as stale on the very next round.
+//
+// `coverageOf` gains an optional `currentHeads: string[]` (Jira RP-437 comment
+// 23384): when absent it behaves exactly as today (`[headSha]`); when present,
+// a descriptor is `current` when its full `headSha` equals ANY id in
+// `currentHeads` — full-id, case-insensitive equality, never a prefix match,
+// exactly as the existing full-id evidence matching above already pins for the
+// single-head case. Computing the SET of current heads from git history is
+// `verdict.mjs coverage`'s job (the CLI-level describe further down); this
+// describe pins `coverageOf` itself, which stays pure and never touches git.
+describe('coverageOf — currentHeads: a descriptor is current against any member, never a prefix (RP-437)', () => {
+  /** A distinct 40-character commit id, built the same way the existing suite's `SIBLING_FULL` is. */
+  const RECORD_ONLY_HEAD = `${HEAD.slice(0, HEAD.length - 1)}2`;
+
+  /** A third, unrelated 40-character commit id — in nobody's `currentHeads`. */
+  const UNRELATED_HEAD = `${OLDER.slice(0, OLDER.length - 1)}3`;
+
+  const coverageOfWithCurrentHeads = async (
+    records: JournalRecord[],
+    headSha: string,
+    events: JournalRecord[],
+    currentHeads: string[],
+  ): Promise<CoverageWithEvidence> => {
+    const module = await load();
+    return (module.coverageOf as (input: Record<string, unknown>) => Coverage)({
+      records,
+      headSha,
+      events,
+      currentHeads,
+    }) as CoverageWithEvidence;
+  };
+
+  it('treats a descriptor attached at an earlier head as current when currentHeads names it', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD))];
+    const coverage = await coverageOfWithCurrentHeads(
+      okJournalForEvidence(),
+      RECORD_ONLY_HEAD,
+      events,
+      [RECORD_ONLY_HEAD, HEAD],
+    );
+    expect(coverage.evidence.current).toEqual([evidenceDescriptor(HEAD)]);
+    expect(coverage.evidence.stale).toEqual([]);
+  });
+
+  it('matches an uppercase member of currentHeads against a lowercase attached head', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD))];
+    const coverage = await coverageOfWithCurrentHeads(
+      okJournalForEvidence(),
+      RECORD_ONLY_HEAD,
+      events,
+      [RECORD_ONLY_HEAD, HEAD.toUpperCase()],
+    );
+    expect(coverage.evidence.current).toEqual([evidenceDescriptor(HEAD)]);
+    expect(coverage.evidence.stale).toEqual([]);
+  });
+
+  it('calls a descriptor stale when its attached head is not a member of currentHeads', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD))];
+    const coverage = await coverageOfWithCurrentHeads(
+      okJournalForEvidence(),
+      RECORD_ONLY_HEAD,
+      events,
+      [RECORD_ONLY_HEAD, UNRELATED_HEAD],
+    );
+    expect(coverage.evidence.stale).toEqual([evidenceDescriptor(HEAD)]);
+    expect(coverage.evidence.current).toEqual([]);
+  });
+
+  it('does not let a seven-character prefix of the attached head stand in as a member of currentHeads', async () => {
+    // Full-id equality only — the abbreviation rule `sameCommit` applies
+    // elsewhere in this module (fan-out/verdict matching) is deliberately NOT
+    // reused here; a prefix is not a commit id by itself.
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD))];
+    const coverage = await coverageOfWithCurrentHeads(
+      okJournalForEvidence(),
+      RECORD_ONLY_HEAD,
+      events,
+      [RECORD_ONLY_HEAD, HEAD.slice(0, 7)],
+    );
+    expect(coverage.evidence.current).toEqual([]);
+    expect(coverage.evidence.stale).toEqual([evidenceDescriptor(HEAD)]);
+  });
+
+  it('passing currentHeads: [headSha] reproduces today’s single-head answer exactly, for an existing fixture', async () => {
+    const events = [
+      artifactEvidenceEvent(1, evidenceDescriptor(HEAD)),
+      artifactEvidenceEvent(2, evidenceDescriptor(OLDER)),
+    ];
+    const module = await load();
+    const today = module.coverageOf({ records: okJournalForEvidence(), headSha: HEAD, events });
+    const withExplicitSingleton = await coverageOfWithCurrentHeads(
+      okJournalForEvidence(),
+      HEAD,
+      events,
+      [HEAD],
+    );
+    expect(withExplicitSingleton).toEqual(today);
+  });
+
+  it('omitting currentHeads entirely reproduces the same answer as passing [headSha]', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD))];
+    const module = await load();
+    const withoutKeyAtAll = module.coverageOf({
+      records: okJournalForEvidence(),
+      headSha: HEAD,
+      events,
+    });
+    const withExplicitSingleton = await coverageOfWithCurrentHeads(
+      okJournalForEvidence(),
+      HEAD,
+      events,
+      [HEAD],
+    );
+    expect(withExplicitSingleton).toEqual(withoutKeyAtAll);
+  });
+});
+
 describe('coverageOf — evidence never changes the rest of the answer', () => {
   it('ok/routed/launched/neverLaunched/unanswered/unattributed/stale/witness are identical with and without evidence events', async () => {
     const records = journal(
@@ -1736,5 +1861,234 @@ describe('`verdict.mjs coverage` prints the evidence line', () => {
     const withEvidenceResult = await runCli(['coverage', HEAD], withEvidenceRunDir);
 
     expect(withEvidenceResult.code).toBe(plainResult.code);
+  });
+});
+
+// RP-437, end-to-end: `verdict.mjs coverage <head>` through a REAL git
+// repository, so `currentHeads` is exercised as the CLI will actually compute
+// it — walking first parents from the requested head, where a commit whose
+// changed paths are ALL under `.rig/evidence/` joins the set and the walk
+// continues to its parent, and the first commit that changes anything else —
+// including a commit that touches ONLY `.rig/decisions/` — stops the walk and
+// is itself included.
+//
+// The exception is `.rig/evidence/` alone (delegated decision, Jira RP-437):
+// `.rig/decisions/` is NOT exempt, because `verdict.mjs` is forbidden from
+// referencing `.rig/decisions` or `delegated-decision` at all
+// (`test/template/delegated-decision.test.ts` › ".claude/scripts/verdict.mjs
+// never references .rig/decisions or delegated-decision") — a walker that
+// special-cased `.rig/decisions` paths would make the module name exactly
+// what that test forbids.
+//
+// Every commit id compared against below is read back from `git rev-parse
+// HEAD` after the fixture's own commits — never recomputed by calling the
+// walker this describe exists to pin, which is the independent-oracle rule
+// `invariants.md` states for a test of a governance mechanism: the expected
+// answer comes from git's own history, not from asking the production code
+// what it thinks the history means.
+describe('`verdict.mjs coverage` through a real git repository — record-only commits (RP-437)', () => {
+  const tempDirs: string[] = [];
+  afterAll(async () => {
+    await Promise.all(tempDirs.map((dir) => removeFixture(dir)));
+  });
+
+  const temp = async (prefix: string): Promise<string> => {
+    const dir = await mkdtemp(path.join(tmpdir(), prefix));
+    tempDirs.push(dir);
+    return dir;
+  };
+
+  const gitEnv = async (): Promise<NodeJS.ProcessEnv> => {
+    const { withoutGitLocation } = (await import(pathToFileURL(gitEnvPath).href)) as {
+      withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv;
+    };
+    return withoutGitLocation();
+  };
+
+  const runGit = (
+    args: string[],
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+  ): Promise<{ code: number; stdout: string; stderr: string }> =>
+    new Promise((resolve) => {
+      execFile('git', args, { cwd, env }, (error, stdout, stderr) => {
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout: String(stdout),
+          stderr: String(stderr),
+        });
+      });
+    });
+
+  /**
+   * A real, local, one-branch git repository — never `git clone`d, so no
+   * network access is needed or used. `commit` is the fixture's own write +
+   * `git add` + `git commit`, and it hands back the exact id `git rev-parse
+   * HEAD` prints, which is the only oracle this describe trusts.
+   */
+  const repo = async (): Promise<{
+    dir: string;
+    env: NodeJS.ProcessEnv;
+    commit: (files: Record<string, string>, message: string) => Promise<string>;
+  }> => {
+    const dir = await temp('rp437-repo-');
+    const env = await gitEnv();
+    const run = async (args: string[]): Promise<string> => {
+      const result = await runGit(args, dir, env);
+      if (result.code !== 0) {
+        throw new Error(`fixture: git ${args.join(' ')} failed: ${result.stderr}`);
+      }
+      return result.stdout.trim();
+    };
+    await run(['init', '-q', '-b', 'main']);
+    await run(['config', 'user.email', 'rp437-fixture@example.invalid']);
+    await run(['config', 'user.name', 'rp437 fixture']);
+
+    const commit = async (files: Record<string, string>, message: string): Promise<string> => {
+      for (const [rel, content] of Object.entries(files)) {
+        const filePath = path.join(dir, rel);
+        await mkdir(path.dirname(filePath), { recursive: true });
+        await writeFile(filePath, content);
+        await run(['add', rel]);
+      }
+      await run(['commit', '-q', '-m', message]);
+      return run(['rev-parse', 'HEAD']);
+    };
+
+    return { dir, env, commit };
+  };
+
+  /** One journal round — routed, launched and answered, all for `head` — so `coverage.ok` is true and the evidence line is the only thing worth reading. */
+  const addCoveredRound = async (runDir: string, head: string, seqStart: number): Promise<void> => {
+    const { recordDecision } = (await import(pathToFileURL(runJournalPath).href)) as {
+      recordDecision(input: Record<string, unknown>): unknown;
+    };
+    const records = journal(
+      routed(['code-reviewer']),
+      fanOut(['code-reviewer'], head),
+      answered('code-reviewer', { headSha: head }),
+    );
+    records.forEach((record, index) => {
+      const fields: Record<string, unknown> = { ...record };
+      delete fields['seq'];
+      delete fields['at'];
+      recordDecision({
+        runDir,
+        ...fields,
+        now: `2026-09-01T09:${String(seqStart + index).padStart(2, '0')}:00.000Z`,
+      });
+    });
+  };
+
+  const newRunDirWithEvidenceAt = async (head: string): Promise<string> => {
+    const runDir = await temp('rp437-run-');
+    const { recordEvent } = (await import(pathToFileURL(runJournalPath).href)) as {
+      recordEvent(input: Record<string, unknown>): unknown;
+    };
+    recordEvent({
+      runDir,
+      kind: 'artifact-evidence',
+      data: evidenceDescriptor(head),
+      now: '2026-09-01T08:00:00.000Z',
+    });
+    return runDir;
+  };
+
+  const runCoverageCli = (
+    args: string[],
+    cwd: string,
+    env: NodeJS.ProcessEnv,
+  ): Promise<CliResult> =>
+    new Promise((resolve) => {
+      execFile(process.execPath, [cliPath, ...args], { cwd, env }, (error, out, err) => {
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout: String(out),
+          stderr: String(err),
+          out: String(out) + String(err),
+        });
+      });
+    });
+
+  it(
+    '(a) evidence attached at the code head stays current across an evidence-only commit, and ' +
+      '(b) goes stale once a further code commit moves the code head past it',
+    async () => {
+      const { dir, env, commit } = await repo();
+
+      const codeHeadA = await commit({ 'src/a.txt': 'v1\n' }, 'code change A');
+      const evidenceHeadB = await commit(
+        { '.rig/evidence/T.jsonl': '{"seq":1}\n' },
+        'record-only evidence commit B',
+      );
+
+      // The fixture IS the case, so the shape of the two commits is asserted
+      // rather than assumed: two distinct ids, in a straight first-parent line.
+      expect(new Set([codeHeadA, evidenceHeadB]).size).toBe(2);
+
+      const runDir = await newRunDirWithEvidenceAt(codeHeadA);
+      const cliEnv = { ...env, RIG_RUN_DIR: runDir };
+
+      // (a): asked about the evidence-only head B, the evidence attached
+      // at the code head A — one record-only commit (B) away — is
+      // still CURRENT.
+      await addCoveredRound(runDir, evidenceHeadB, 1);
+      const atB = await runCoverageCli(['coverage', evidenceHeadB], dir, cliEnv);
+      expect(atB.code, atB.out).toBe(0);
+      expect(atB.stdout).toMatch(/^\s*evidence: 1 current, 0 stale/m);
+
+      // (b): a further commit that touches code (not evidence) moves the
+      // code head past A again, and the SAME evidence record is now STALE.
+      const codeHeadC = await commit({ 'src/a.txt': 'v2\n' }, 'code change C');
+      await addCoveredRound(runDir, codeHeadC, 10);
+      const atC = await runCoverageCli(['coverage', codeHeadC], dir, cliEnv);
+      expect(atC.code, atC.out).toBe(0);
+      expect(atC.stdout).toMatch(/^\s*evidence: 0 current, 1 stale/m);
+    },
+  );
+
+  it('(d) a commit that changes only `.rig/decisions/` does NOT stay in the record-only exception — decisions are not exempt', async () => {
+    const { dir, env, commit } = await repo();
+
+    const codeHeadA = await commit({ 'src/a.txt': 'v1\n' }, 'code change A');
+    const decisionsHeadE = await commit(
+      { '.rig/decisions/T.jsonl': '{"seq":1}\n' },
+      'record-only decisions commit E',
+    );
+    expect(decisionsHeadE).not.toBe(codeHeadA);
+
+    const runDir = await newRunDirWithEvidenceAt(codeHeadA);
+    const cliEnv = { ...env, RIG_RUN_DIR: runDir };
+
+    // (d): asked about the decisions-only head E, the evidence attached at
+    // the code head A reads STALE — a decisions-only commit stops the walk
+    // exactly like any other non-evidence change, because the record-only
+    // exception never covers `.rig/decisions/`.
+    await addCoveredRound(runDir, decisionsHeadE, 1);
+    const atE = await runCoverageCli(['coverage', decisionsHeadE], dir, cliEnv);
+    expect(atE.code, atE.out).toBe(0);
+    expect(atE.stdout).toMatch(/^\s*evidence: 0 current, 1 stale/m);
+  });
+
+  it('(c) a commit that changes BOTH an evidence file and a code file does not extend the record-only exception', async () => {
+    const { dir, env, commit } = await repo();
+
+    const codeHeadA2 = await commit({ 'src/b.txt': 'v1\n' }, 'code change A2');
+    const mixedHeadD = await commit(
+      { 'src/b.txt': 'v2\n', '.rig/evidence/T.jsonl': '{"seq":1}\n' },
+      'mixed code + evidence commit D',
+    );
+    expect(mixedHeadD).not.toBe(codeHeadA2);
+
+    const runDir = await newRunDirWithEvidenceAt(codeHeadA2);
+    const cliEnv = { ...env, RIG_RUN_DIR: runDir };
+
+    await addCoveredRound(runDir, mixedHeadD, 1);
+    const result = await runCoverageCli(['coverage', mixedHeadD], dir, cliEnv);
+    expect(result.code, result.out).toBe(0);
+    // D itself changes a non-evidence/decisions path, so the walk stops at D
+    // and never reaches A2 — the evidence attached at A2 is STALE, exactly as
+    // it would be with no record-only exception at all.
+    expect(result.stdout).toMatch(/^\s*evidence: 0 current, 1 stale/m);
   });
 });
