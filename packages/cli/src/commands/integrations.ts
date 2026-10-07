@@ -10,7 +10,12 @@ import {
   serializeDeclaration,
   type DeclaredIntegration,
 } from '../integrations/declaration.js';
-import { REGISTRY, type Harness, type ProviderDescriptor } from '../integrations/registry.js';
+import {
+  REGISTRY,
+  NON_MCP_PROVIDER_IDS,
+  type Harness,
+  type ProviderDescriptor,
+} from '../integrations/registry.js';
 import { PLAYWRIGHT_MCP_VERSION } from '../integrations/playwright.js';
 import { resolveReadableInside, resolveWritableInside } from '../lib/safe-path.js';
 import { hasControlCharacter } from '../lib/safe-text.js';
@@ -130,10 +135,7 @@ async function hasMachineMemoryManifest(env: NodeJS.ProcessEnv): Promise<boolean
 }
 function renderCodexConfig(base: string, entries: readonly DeclaredIntegration[]): Buffer {
   const sections = entries
-    .filter(
-      (entry) =>
-        entry.id !== 'spec-kit' && entry.id !== 'probity' && entry.harnesses?.includes('codex'),
-    )
+    .filter((entry) => !NON_MCP_PROVIDER_IDS.has(entry.id) && entry.harnesses?.includes('codex'))
     .map((entry) => codexSection(entry.id))
     .sort((a, b) => a.localeCompare(b));
   return Buffer.from(
@@ -482,9 +484,26 @@ export async function runIntegrationsCommand(
         ];
       }
     }
-    const selectedMcp = selected.filter(
-      (entry) => entry.id !== 'spec-kit' && entry.id !== 'probity',
-    );
+    // RP-315: BMAD TEA is an upstream-managed, advisory evidence provider —
+    // Rig declares it and reads the upstream installer's own state, but
+    // never installs, upgrades or removes it, and writes nothing beyond the
+    // declaration entry itself.
+    const bmadTea = selected.find((entry) => entry.id === 'bmad-tea');
+    let bmadTeaPlan: string[] = [];
+    if (bmadTea) {
+      if (verb === 'remove') {
+        entries = entries.filter((entry) => entry.id !== 'bmad-tea');
+        bmadTeaPlan = [
+          'BMAD TEA: remove the declaration entry only; Rig never installed it and touches nothing else.',
+        ];
+      } else {
+        bmadTeaPlan = [
+          'BMAD TEA: Rig declares it and reads its installation state, but never installs, upgrades or removes it.',
+          'Manual next step, not run by Rig: npx bmad-method install --modules tea',
+        ];
+      }
+    }
+    const selectedMcp = selected.filter((entry) => !NON_MCP_PROVIDER_IDS.has(entry.id));
     const needsClaude = selectedMcp.some((entry) => entry.harnesses?.includes('claude-code'));
     const servers = needsClaude ? { ...readConfig(mcpFile).mcpServers } : {};
     const mcpChanges = new Map<string, unknown | undefined>();
@@ -587,7 +606,7 @@ export async function runIntegrationsCommand(
     const mcpBoundary = selectedMcp.length
       ? ' MCP wiring does not verify authorization, connectivity or trust.'
       : '';
-    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}.${mcpBoundary}${basicBoundary}${playwrightBoundary}${coexistence}${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}${probityPlan.length ? '\n' + probityPlan.join('\n') : ''}`;
+    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}.${mcpBoundary}${basicBoundary}${playwrightBoundary}${coexistence}${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}${probityPlan.length ? '\n' + probityPlan.join('\n') : ''}${bmadTeaPlan.length ? '\n' + bmadTeaPlan.join('\n') : ''}`;
     if (values['dry-run'])
       return respond({ outcome: 'planned', dryRun: true, changed: false, plan }, plan);
     if (

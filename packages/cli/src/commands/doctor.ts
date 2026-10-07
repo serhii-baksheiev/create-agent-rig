@@ -6,13 +6,14 @@ import {
   MAX_DECLARATION_BYTES,
   parseDeclaration,
 } from '../integrations/declaration.js';
-import { REGISTRY, type Harness } from '../integrations/registry.js';
+import { REGISTRY, NON_MCP_PROVIDER_IDS, type Harness } from '../integrations/registry.js';
 import {
   inspectSpecKit,
   SPEC_KIT_VERSION,
   type SpecKitInspection,
 } from '../integrations/spec-kit.js';
 import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
+import { inspectBmadTea, BMAD_TEA_VERSION } from '../integrations/bmad-tea.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -72,6 +73,13 @@ type Check = {
    * NAMES appear only in `fix`).
    */
   trackerMissingVars?: string[];
+  /**
+   * `bmad-tea` only — the installed version `inspectBmadTea` observed,
+   * carried from the check only to build the `version-drift` fix text below
+   * (naming both the installed version and {@link BMAD_TEA_VERSION}) and
+   * stripped before the record reaches the report.
+   */
+  teaVersion?: string;
 };
 export type DoctorOptions = {
   cwd: string;
@@ -123,6 +131,19 @@ function probityFix(reason: string): string {
   if (reason === 'version-drift')
     return `Run npm install -D @nizos/probity@${PROBITY_VERSION} to match the pinned version.`;
   return "Wire the Probity gate hook into this harness's own hook configuration.";
+}
+
+/** `bmad-tea` fix text, by reason (RP-315). TEA evidence stays advisory either way. */
+function bmadTeaFix(reason: string, version: string | undefined): string {
+  if (reason === 'not-installed')
+    return 'Manual next step, not run by Rig: npx bmad-method install --modules tea.';
+  if (reason === 'version-unknown')
+    return '_bmad/_config/manifest.yaml lists a tea module entry with no version field; reinstall TEA to record one.';
+  if (reason === 'config-missing')
+    return '_bmad/tea/config.yaml is missing; reinstall TEA with npx bmad-method install --modules tea.';
+  if (reason === 'version-drift')
+    return `_bmad/_config/manifest.yaml reports tea installed at ${version ?? 'an unknown version'}, while Rig was checked against ${BMAD_TEA_VERSION}; TEA evidence stays advisory regardless.`;
+  return '_bmad/_config/manifest.yaml could not be read; verify the BMAD installation by hand.';
 }
 
 /** Bounded so a repository with an unusually large drift never grows `fix` without limit. */
@@ -485,6 +506,16 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       }
       continue;
     }
+    if (entry.id === 'bmad-tea') {
+      const inspection = await inspectBmadTea(options.cwd);
+      checks.push({
+        id: 'bmad-tea',
+        status: inspection.status,
+        reason: inspection.reason,
+        ...(inspection.version === undefined ? {} : { teaVersion: inspection.version }),
+      });
+      continue;
+    }
     for (const [harness, state] of Object.entries(entry.harnesses)) {
       checks.push({
         id: `${entry.id}:${harness}`,
@@ -518,7 +549,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     unreadable: 'unreadable',
   } as const;
   const integrations = wiring.integrations
-    .filter((entry) => entry.id !== 'spec-kit' && entry.id !== 'probity')
+    .filter((entry) => !NON_MCP_PROVIDER_IDS.has(entry.id))
     .map((entry) => ({
       id: entry.id,
       harnesses: Object.fromEntries(
@@ -543,38 +574,44 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   const report = {
     schemaVersion: 1,
     status: status === 'pass' ? 'ok' : status,
-    checks: checks.map(({ rigVersion, ownedFilePaths, trackerMissingVars, ...check }) => ({
-      ...check,
-      status: check.status === 'pass' ? 'ok' : check.status,
-      detail:
-        check.reason === 'workflow-verified'
-          ? 'Workflow and frozen revalidation scripts match this package; the owner-level decision this mechanism depends on is not observed by doctor.'
-          : check.id === 'rig-version' && rigVersion
-            ? `${check.reason.replaceAll('-', ' ')} (cli ${rigVersion.cli}, repository ${rigVersion.repository})`
-            : check.id === 'rig-owned-files' && check.counts
-              ? `${check.reason.replaceAll('-', ' ')} (absent ${check.counts.absent}, content drift ${check.counts.contentDrift}, line drift ${check.counts.lineDrift}, unreadable ${check.counts.unreadable})`
-              : check.reason.replaceAll('-', ' '),
-      fix:
-        check.status === 'pass'
-          ? ''
-          : check.id === 'rig-version'
-            ? rigVersionFix(check.reason, rigVersion ?? { cli: '', repository: '' })
-            : check.id === 'rig-owned-files' && ownedFilePaths
-              ? ownedFilesFix(ownedFilePaths)
-              : check.id === 'personal-tracker' && trackerMissingVars
-                ? `Set the missing tracker credential environment variable(s): ${trackerMissingVars.join(', ')}.`
-                : check.id === 'codex-hook-trust'
-                  ? "Open Codex's own /hooks view and review and trust the checked-in rig hooks there."
-                  : check.id.startsWith('rig-') || check.id === 'guards' || check.id === 'workflow'
-                    ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
-                    : check.id === 'custom-memory'
-                      ? 'Check the machine-scoped Memory installation and its compatible version.'
-                      : check.id === 'spec-kit'
-                        ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
-                        : check.id.startsWith('probity:')
-                          ? probityFix(check.reason)
-                          : 'Review create-agent-rig setup list and the intended provider wiring.',
-    })),
+    checks: checks.map(
+      ({ rigVersion, ownedFilePaths, trackerMissingVars, teaVersion, ...check }) => ({
+        ...check,
+        status: check.status === 'pass' ? 'ok' : check.status,
+        detail:
+          check.reason === 'workflow-verified'
+            ? 'Workflow and frozen revalidation scripts match this package; the owner-level decision this mechanism depends on is not observed by doctor.'
+            : check.id === 'rig-version' && rigVersion
+              ? `${check.reason.replaceAll('-', ' ')} (cli ${rigVersion.cli}, repository ${rigVersion.repository})`
+              : check.id === 'rig-owned-files' && check.counts
+                ? `${check.reason.replaceAll('-', ' ')} (absent ${check.counts.absent}, content drift ${check.counts.contentDrift}, line drift ${check.counts.lineDrift}, unreadable ${check.counts.unreadable})`
+                : check.reason.replaceAll('-', ' '),
+        fix:
+          check.status === 'pass'
+            ? ''
+            : check.id === 'rig-version'
+              ? rigVersionFix(check.reason, rigVersion ?? { cli: '', repository: '' })
+              : check.id === 'rig-owned-files' && ownedFilePaths
+                ? ownedFilesFix(ownedFilePaths)
+                : check.id === 'personal-tracker' && trackerMissingVars
+                  ? `Set the missing tracker credential environment variable(s): ${trackerMissingVars.join(', ')}.`
+                  : check.id === 'codex-hook-trust'
+                    ? "Open Codex's own /hooks view and review and trust the checked-in rig hooks there."
+                    : check.id.startsWith('rig-') ||
+                        check.id === 'guards' ||
+                        check.id === 'workflow'
+                      ? 'Review the installation with create-agent-rig upgrade before accepting changes.'
+                      : check.id === 'custom-memory'
+                        ? 'Check the machine-scoped Memory installation and its compatible version.'
+                        : check.id === 'spec-kit'
+                          ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
+                          : check.id.startsWith('probity:')
+                            ? probityFix(check.reason)
+                            : check.id === 'bmad-tea'
+                              ? bmadTeaFix(check.reason, teaVersion)
+                              : 'Review create-agent-rig setup list and the intended provider wiring.',
+      }),
+    ),
     integrations,
     unattended,
     authority,

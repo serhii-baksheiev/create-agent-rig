@@ -473,6 +473,24 @@ node .claude/scripts/evidence-attach.mjs attach --ticket <item-id> \
 The attachment is evidence for the reviewers, not a verdict: a required
 screenshot that is missing holds the PR the way any unmet acceptance line
 does, in review.
+When the item's acceptance names BMAD TEA output (`bmad-tea`; BMAD's own
+installer owns TEA, Rig only reads its installation state), attach the files
+TEA's workflows wrote — the trace workflow's `gate-decision.json` as
+`tea-trace`, an `nfr-assessment-*.md` as `tea-nfr-assessment`. The version is
+the `tea` entry's `version` in `_bmad/_config/manifest.yaml`:
+
+```sh
+node .claude/scripts/evidence-attach.mjs attach --ticket <item-id> \
+  --kind tea-trace --producer bmad-tea --producer-version <tea-version> \
+  --subject-kind story --subject-id <story-key> \
+  --authority-class automated --file <test-artifacts>/gate-decision.json \
+  --advisory-decision <gate-word>
+```
+
+TEA's gate word goes to `--advisory-decision` lowercased (`PASS`, `CONCERNS`,
+`FAIL`); `WAIVED` has no advisory word, so a waived decision is attached
+without one. Either way it is advisory data, never a verdict
+(`docs/decisions/artifact-evidence.md`).
 The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR and
 includes workflow state normalised to the state that checkpoint expects;
 `commentary` is observed there but becomes hold-authoritative only at

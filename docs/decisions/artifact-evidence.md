@@ -64,7 +64,9 @@ requires its category; where none does, its absence changes nothing.
 
 **Applicability.** A category of evidence is required when the queue item's
 own acceptance names it — browser evidence from Playwright MCP is the first
-such category (RP-313). A required artifact that is missing holds the change
+such category (RP-313). BMAD TEA is the second producer (RP-315): its trace
+gate and NFR assessment attach through the same descriptor, and its gate words
+are advisory only, as below. A required artifact that is missing holds the change
 the way any unmet acceptance line does: in the review of the item, never
 through the producer's own verdict.
 

@@ -23,7 +23,8 @@
       ],
       "integrations": [
         "spec-kit",
-        "playwright-mcp"
+        "playwright-mcp",
+        "bmad-tea"
       ]
     }
   }

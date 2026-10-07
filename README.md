@@ -223,14 +223,15 @@ npx create-agent-rig@latest setup remove figma-mcp
 `add`, `apply` and `remove` accept `--dry-run`. With `--json` they never
 prompt, and write only with `--yes`. Intent and ownership are recorded in `.rig/integrations.json`.
 
-| Integration     | ID               | What Rig does                                                                               |
-| --------------- | ---------------- | ------------------------------------------------------------------------------------------- |
-| Figma MCP       | `figma-mcp`      | Writes the hosted MCP entry for Claude Code and/or Codex                                    |
-| Atlassian MCP   | `atlassian-mcp`  | Same, for Atlassian's hosted MCP                                                            |
-| Playwright MCP  | `playwright-mcp` | Wires `npx @playwright/mcp@0.0.83` for attended browser verification; vendors nothing       |
-| Basic Memory    | `basic-memory`   | Preview. Wires `uvx basic-memory mcp`; never installs, reads or removes Basic Memory's data |
-| GitHub Spec Kit | `spec-kit`       | Runs Spec Kit's own pinned CLI (1.0.8) to set up Claude Code and Codex                      |
-| Probity         | `probity`        | Opt-in TDD enforcement: hands file-edit tool calls to `@nizos/probity` 1.10.1               |
+| Integration     | ID               | What Rig does                                                                                        |
+| --------------- | ---------------- | ---------------------------------------------------------------------------------------------------- |
+| Figma MCP       | `figma-mcp`      | Writes the hosted MCP entry for Claude Code and/or Codex                                             |
+| Atlassian MCP   | `atlassian-mcp`  | Same, for Atlassian's hosted MCP                                                                     |
+| Playwright MCP  | `playwright-mcp` | Wires `npx @playwright/mcp@0.0.83` for attended browser verification; vendors nothing                |
+| Basic Memory    | `basic-memory`   | Preview. Wires `uvx basic-memory mcp`; never installs, reads or removes Basic Memory's data          |
+| GitHub Spec Kit | `spec-kit`       | Runs Spec Kit's own pinned CLI (1.0.8) to set up Claude Code and Codex                               |
+| Probity         | `probity`        | Opt-in TDD enforcement: hands file-edit tool calls to `@nizos/probity` 1.10.1                        |
+| BMAD TEA        | `bmad-tea`       | Declares TEA and reads its install state; never installs it. Its outputs attach as advisory evidence |
 
 **MCP wiring is owned by Rig.** Rig writes the entries and removes only the ones
 it can prove it wrote; your own MCP entries are preserved. Signing in to a

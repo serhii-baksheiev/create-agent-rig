@@ -359,6 +359,7 @@ so what identifies a check is the id, never the call site:
 | `custom-memory`       | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                                                |
 | `integrations`        | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                                           |
 | `spec-kit`            | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                                          |
+| `bmad-tea`            | For a declared BMAD TEA integration, whether `_bmad/_config/manifest.yaml` lists the `tea` module with a version and `_bmad/tea/config.yaml` exists, and whether that version is 1.27.2. A warning at most, never a failure.                                    |
 | `personal-tracker`    | Presence-only report of the tracker credential env var NAMES this repository's `.claude/queue.json` adapter requires (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Absent from the report when there is nothing personal to check. |
 | `codex-hook-trust`    | Diagnostic-only pointer at Codex's own `/hooks` view, emitted only when `.codex/hooks.json` exists (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Never `ok`: trust is not something doctor observes.                               |
 
@@ -2265,6 +2266,17 @@ doctor looks for `npx.cmd` as well as `npx.exe`. The written entry runs a bare
 `npx`; on native Windows a harness may need a `cmd /c` wrapper to launch it,
 and this release does not verify the Playwright path on native Windows. The
 browser path is attended only (`docs/unattended-execution.md`).
+
+**BMAD TEA: nothing for Rig to run.** `setup add bmad-tea` writes only the
+declaration entry, and the plan names the manual step
+`npx bmad-method install --modules tea`: Rig never installs, upgrades or
+removes TEA — `packages/cli/test/integrations-bmad-tea.test.ts` › "the plan
+names TEA's own manual install step and never claims Rig installs it, and
+carries no MCP wiring disclaimer". Doctor reads `_bmad/_config/manifest.yaml`
+and `_bmad/tea/config.yaml` and reports a missing install, or a version other
+than 1.27.2, as a warning with a fix, never a failure —
+`packages/cli/test/integrations-bmad-tea.test.ts` › "emits a bmad-tea check
+mirroring inspectBmadTea, and exits 0 on a warn-only not-installed".
 
 **Platforms.** Linux, Windows and macOS (Apple silicon), each accepted on
 the exact packed release commit before publish, through the exact-SHA

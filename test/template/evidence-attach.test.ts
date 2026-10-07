@@ -148,6 +148,7 @@ type AttachOptions = {
   ticket?: string;
   kind?: string;
   producer?: string;
+  producerVersion?: string;
   subjectKind?: string;
   subjectId?: string;
   subjectVersion?: string;
@@ -163,6 +164,7 @@ const FLAG_OF: Record<keyof Omit<AttachOptions, 'json'>, string> = {
   ticket: '--ticket',
   kind: '--kind',
   producer: '--producer',
+  producerVersion: '--producer-version',
   subjectKind: '--subject-kind',
   subjectId: '--subject-id',
   subjectVersion: '--subject-version',
@@ -1362,6 +1364,151 @@ describe('evidence-attach.mjs attach — journal-first ordering', () => {
     } finally {
       await chmod(path.join(runDir, 'events.jsonl'), 0o644);
     }
+  });
+});
+
+// --- A: --producer-version (RP-315) -----------------------------------------
+
+/**
+ * RP-315 (BMAD TEA evidence) generalizes the producer axis: an attached
+ * artifact may name the exact version of the tool that produced it (e.g.
+ * `bmad-tea`'s TEA module, `1.27.2`), stored as `producerVersion` on the
+ * descriptor — one token, `/^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/`, absent by
+ * default so every existing descriptor (schema version 1, no such field)
+ * stays valid.
+ */
+describe('evidence-attach.mjs attach — --producer-version (RP-315)', () => {
+  const readEventsFor = async (runDir: string): Promise<Array<Record<string, unknown>>> => {
+    const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+      readRun: (input: { runDir: string }) => { events: Array<Record<string, unknown>> };
+    };
+    return readRun({ runDir }).events;
+  };
+
+  it('omits producerVersion entirely when --producer-version is not given', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(Object.hasOwn(record!, 'producerVersion')).toBe(false);
+  });
+
+  it('stores a well-formed --producer-version as producerVersion on the descriptor', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producerVersion: '1.27.2' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe('1.27.2');
+  });
+
+  const MALFORMED_PRODUCER_VERSIONS: Array<[string, string]> = [
+    ['a space inside the token', '1.0 beta'],
+    ['a path-traversal shape', '../x'],
+    ['the empty string', ''],
+    ['65 characters, one past the 64-character cap', 'a'.repeat(65)],
+  ];
+
+  it.each(MALFORMED_PRODUCER_VERSIONS)(
+    'refuses a malformed --producer-version (%s), naming the flag, and writes nothing',
+    async (_label, bad) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
+      const before = await readEventsFor(runDir);
+      const result = await runCli(
+        attachArgs({ ...VALID_REF, producerVersion: bad }),
+        dir,
+        envFor(runDir),
+      );
+      expect(result.code, result.out).toBe(1);
+      expectDidNotCrash(result);
+      expect(result.out).toContain('--producer-version');
+      await expectNothingWritten(dir, 'RP-1');
+      const after = await readEventsFor(runDir);
+      expect(after).toEqual(before);
+    },
+  );
+
+  it('accepts a --producer-version at exactly 64 characters', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const producerVersion = `1${'a'.repeat(63)}`;
+    expect(producerVersion).toHaveLength(64);
+    const result = await runCli(attachArgs({ ...VALID_REF, producerVersion }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+    const [record] = (await readEvidenceLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
+    expect(record!.producerVersion).toBe(producerVersion);
+  });
+});
+
+describe('evidence-attach.mjs — parseEvidence validates a stored producerVersion (RP-315)', () => {
+  type ParseEvidenceLike = (
+    text: string,
+    options?: { ticket?: string },
+  ) => { ok: true; records: unknown[] } | { ok: false; line: number; reason: string };
+
+  const loadParseEvidence = async (): Promise<ParseEvidenceLike> =>
+    (
+      (await import(pathToFileURL(evidenceAttachScript).href)) as {
+        parseEvidence: ParseEvidenceLike;
+      }
+    ).parseEvidence;
+
+  const baseRecord = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+    schemaVersion: 1,
+    kind: 'test-report',
+    subject: { kind: 'commit', id: 'abc123' },
+    authorityClass: 'automated',
+    producer: 'ci',
+    ref: 'https://ci.example.invalid/run/123',
+    sha256: null,
+    item: 'RP-1',
+    headSha: 'deadbeef',
+    producedAt: '2026-08-18T09:00:00.000Z',
+    ...overrides,
+  });
+
+  it('accepts a record with no producerVersion key at all (backward compatible)', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const result = parseEvidence(`${JSON.stringify(baseRecord())}\n`, { ticket: 'RP-1' });
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a record whose producerVersion is a well-formed token', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersion: '1.27.2' }))}\n`;
+    const result = parseEvidence(line, { ticket: 'RP-1' });
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a record whose producerVersion is present but not a string (a number)', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersion: 1 }))}\n`;
+    const result = parseEvidence(line, { ticket: 'RP-1' });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a record whose producerVersion string does not match the token shape ("1.0 beta")', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersion: '1.0 beta' }))}\n`;
+    const result = parseEvidence(line, { ticket: 'RP-1' });
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects a record whose producerVersion is the empty string', async () => {
+    const parseEvidence = await loadParseEvidence();
+    const line = `${JSON.stringify(baseRecord({ producerVersion: '' }))}\n`;
+    const result = parseEvidence(line, { ticket: 'RP-1' });
+    expect(result.ok).toBe(false);
   });
 });
 
