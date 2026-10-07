@@ -47,6 +47,6 @@ profile that grows its own state is the parallel state machine this repository
 avoids. Any future preset composes existing primitives, or justifies a new one
 separately; it does not add execution semantics through the preset.
 
-A preset that expects integrations this CLI does not yet register cannot ship:
-the browser-verification and QA bundles wait for their integrations (RP-313,
-RP-315).
+A preset that expects integrations this CLI does not yet register cannot ship.
+`composed` arrived with the Playwright MCP integration (RP-313) and expects
+Spec Kit and Playwright MCP; the QA bundle waits for its integration (RP-315).

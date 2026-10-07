@@ -4,6 +4,11 @@
 // one composes) rather than installed into a generated rig. This is a
 // data-validity test: every preset's own layers and integration ids must
 // actually exist in the catalogues that decide what they mean.
+//
+// RP-313 adds the `composed` preset (the `sdd` layer set plus the Spec Kit
+// AND Playwright MCP integration names) — the earlier "composed is
+// explicitly out of scope … before its time" comments this file carried
+// named exactly this item as the one that would add it.
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -20,13 +25,11 @@ async function loadProfiles(): Promise<Profiles> {
   return JSON.parse(await readFile(profilesPath, 'utf8')) as Profiles;
 }
 
-describe('templates/agent-os/profiles.json — the static preset data (RP-314)', () => {
-  it('declares schemaVersion 1 and ships exactly the minimal and sdd presets this item adds', async () => {
+describe('templates/agent-os/profiles.json — the static preset data (RP-314, RP-313)', () => {
+  it('declares schemaVersion 1 and ships exactly the minimal, sdd and composed presets', async () => {
     const profiles = await loadProfiles();
     expect(profiles.schemaVersion).toBe(1);
-    // `composed` is explicitly out of scope for this item (waits on RP-313/
-    // RP-315's integration ids) — its absence here is not an oversight.
-    expect(Object.keys(profiles.presets).sort()).toEqual(['minimal', 'sdd']);
+    expect(Object.keys(profiles.presets).sort()).toEqual(['composed', 'minimal', 'sdd']);
   });
 
   it('minimal installs the process layer only, with no integrations', async () => {
@@ -39,6 +42,16 @@ describe('templates/agent-os/profiles.json — the static preset data (RP-314)',
     expect(profiles.presets.sdd).toEqual({
       layers: ['process', 'workflow'],
       integrations: ['spec-kit'],
+    });
+  });
+
+  // RP-313: composed is exactly sdd's layer set, plus Playwright MCP's
+  // integration name alongside Spec Kit's — never replacing it.
+  it('composed installs the process and workflow layers plus the spec-kit and playwright-mcp integrations', async () => {
+    const profiles = await loadProfiles();
+    expect(profiles.presets.composed).toEqual({
+      layers: ['process', 'workflow'],
+      integrations: ['spec-kit', 'playwright-mcp'],
     });
   });
 
@@ -64,9 +77,8 @@ describe('templates/agent-os/profiles.json — the static preset data (RP-314)',
     expect(unknown).toEqual([]);
   });
 
-  it('declares no preset named after a reserved or ambiguous word ("profile", "composed" before its time)', async () => {
+  it('declares no preset named after a reserved or ambiguous word ("profile")', async () => {
     const profiles = await loadProfiles();
-    expect(Object.keys(profiles.presets)).not.toContain('composed');
     expect(Object.keys(profiles.presets)).not.toContain('profile');
   });
 });

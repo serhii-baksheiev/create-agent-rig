@@ -42,6 +42,10 @@ malformed and absent".
   beside its own checks. It changes neither doctor's own status nor its exit
   code: `packages/cli/test/doctor-unattended.test.ts` › "is additive: a rig
   not ready to run unattended still gets doctor’s own status and exit code".
+- **Browser verification is attended only.** The Playwright MCP integration
+  (`playwright-mcp`) is wired for an operator watching the session. This page's
+  contract does not cover a browser launched under an unattended or sandboxed
+  run, and nothing here claims it works there.
 - **Left to the harness, and said so.** Rig cannot observe the native sandbox
   mode, workspace trust, or whether the harness loaded its hooks this session.
   Doctor names that state as `unknown`, never as a pass:

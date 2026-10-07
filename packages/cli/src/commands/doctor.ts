@@ -584,7 +584,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     preset: {
       name: presetName,
       integrations: (knownPreset(presetName ?? undefined)?.integrations ?? []).map((id) => {
-        const check = checks.find((candidate) => candidate.id === id);
+        // A provider's check is `<id>` (Spec Kit) or `<id>:<harness>` (an MCP
+        // provider); with several harness checks, the worst one is reported.
+        const rank = { fail: 2, warn: 1, pass: 0 } as const;
+        const check = checks
+          .filter((candidate) => candidate.id === id || candidate.id.startsWith(`${id}:`))
+          .sort((a, b) => rank[b.status] - rank[a.status])[0];
         return {
           id,
           declared: intent?.entries.some((entry) => entry.id === id) ?? false,

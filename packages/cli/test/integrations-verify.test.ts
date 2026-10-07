@@ -11,6 +11,8 @@ const FIGMA = { type: 'http', url: 'https://mcp.figma.com/mcp' };
 const FIGMA_HASH = createHash('sha256').update(JSON.stringify(FIGMA)).digest('hex');
 const BASIC_MEMORY = { command: 'uvx', args: ['basic-memory', 'mcp'] };
 const BASIC_MEMORY_HASH = createHash('sha256').update(JSON.stringify(BASIC_MEMORY)).digest('hex');
+const PLAYWRIGHT = { command: 'npx', args: ['@playwright/mcp@0.0.83'] };
+const PLAYWRIGHT_HASH = createHash('sha256').update(JSON.stringify(PLAYWRIGHT)).digest('hex');
 const CODEX_BASE =
   '[agents]\ndefault_subagent_model = "gpt-5.6-terra"\n\n[mcp_servers.figma]\nurl = "https://mcp.figma.com/mcp"\n';
 
@@ -262,6 +264,81 @@ describe('integration doctor verification (RP-21)', () => {
       });
 
       expect(calls).toEqual(['uvx']);
+      expect(result.integrations[0]?.harnesses.codex?.launcher).toBe(expected);
+    },
+  );
+
+  // RP-313: Playwright MCP's launcher is `npx`, not `uvx` — this mirrors the
+  // Basic Memory launcher case above exactly, substituting the provider and
+  // its launcher name, to pin that doctor's launcher observation generalizes
+  // to a second npx-launched provider rather than being Basic Memory-specific.
+  it('calls the injected npx locator only to report Playwright MCP launcher wiring, never a verified runtime or connection', async () => {
+    await writeDeclaration({
+      schemaVersion: 1,
+      integrations: [
+        selected('playwright-mcp', ['claude-code'], {
+          'claude-code': { entryHash: PLAYWRIGHT_HASH },
+        }),
+      ],
+    });
+    await writeFile(
+      claudePath(),
+      `${JSON.stringify({ mcpServers: { playwright: PLAYWRIGHT } }, null, 2)}\n`,
+    );
+    const calls: string[] = [];
+
+    const result = await verifyIntegrations({
+      repoDir: repo,
+      locateLauncher: async (name: 'npx') => {
+        calls.push(name);
+        return '/fixtures/npx';
+      },
+    });
+
+    expect(calls).toEqual(['npx']);
+    expect(result.integrations).toEqual([
+      {
+        id: 'playwright-mcp',
+        harnesses: {
+          'claude-code': {
+            wiring: 'healthy',
+            launcher: 'observed',
+            runtime: 'unverified',
+            connectivity: 'not-observed',
+            trust: 'not-observed',
+          },
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ['observed', '/fixtures/npx'],
+    ['missing', null],
+  ] as const)(
+    'reports Playwright MCP Codex launcher %s through the same npx observation',
+    async (expected, located) => {
+      const config =
+        '[agents]\ndefault_subagent_model = "gpt-5.6-terra"\n\n' +
+        '[mcp_servers.playwright]\ncommand = "npx"\nargs = ["@playwright/mcp@0.0.83"]\n';
+      await mkdir(path.dirname(codexPath()), { recursive: true });
+      await writeFile(codexPath(), config);
+      await writeDeclaration({
+        schemaVersion: 1,
+        targets: { codex: { fileHash: createHash('sha256').update(config).digest('hex') } },
+        integrations: [selected('playwright-mcp', ['codex'])],
+      });
+      const calls: string[] = [];
+
+      const result = await verifyIntegrations({
+        repoDir: repo,
+        locateLauncher: async (name: 'npx') => {
+          calls.push(name);
+          return located;
+        },
+      });
+
+      expect(calls).toEqual(['npx']);
       expect(result.integrations[0]?.harnesses.codex?.launcher).toBe(expected);
     },
   );

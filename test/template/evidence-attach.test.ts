@@ -1804,6 +1804,18 @@ describe('docs/decisions/artifact-evidence.md', () => {
     expect(content).toMatch(/selected/i);
   });
 
+  // RP-313: browser evidence (Playwright MCP) is the first producer-specific
+  // applicability rule layered on this general mechanism — stated here as
+  // the rule, not as a Playwright-specific carve-out: a category of evidence
+  // is required exactly when the queue item's own acceptance names it, and a
+  // missing required artifact holds through the existing review of the item,
+  // never through a producer's own verdict.
+  it('states the applicability rule: evidence is required when the item’s acceptance names its category, and a missing one holds through review, not a producer verdict', async () => {
+    const content = await read();
+    expect(content).toMatch(/acceptance/i);
+    expect(content).toMatch(/browser/i);
+  });
+
   it("is cited from evidence-attach.mjs's own source", async () => {
     const source = await readFile(evidenceAttachScript, 'utf8');
     expect(source).toContain('docs/decisions/artifact-evidence.md');

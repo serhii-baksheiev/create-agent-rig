@@ -2,7 +2,7 @@
  * are deliberately outside Rig's declaration. */
 export type Harness = 'claude-code' | 'codex';
 export type ProviderDescriptor = {
-  id: 'figma-mcp' | 'atlassian-mcp' | 'basic-memory' | 'spec-kit' | 'probity';
+  id: 'figma-mcp' | 'atlassian-mcp' | 'playwright-mcp' | 'basic-memory' | 'spec-kit' | 'probity';
   displayName: string;
   routes: Partial<Record<Harness, 'automatic' | 'pending'>>;
 };
@@ -25,6 +25,11 @@ export const REGISTRY: readonly ProviderDescriptor[] = Object.freeze([
   Object.freeze({
     id: 'atlassian-mcp',
     displayName: 'Atlassian MCP',
+    routes: Object.freeze({ 'claude-code': 'automatic', codex: 'automatic' }),
+  }),
+  Object.freeze({
+    id: 'playwright-mcp',
+    displayName: 'Playwright MCP',
     routes: Object.freeze({ 'claude-code': 'automatic', codex: 'automatic' }),
   }),
   Object.freeze({

@@ -456,6 +456,13 @@ the task's branch: a later SELECT, BEFORE_PR or BEFORE_CLOSE refuses an
 untracked record, and a resumed checkpoint with no record is `UNVERIFIABLE`.
 Commit `.rig/evidence/<item-id>.jsonl` to the same branch whenever the task
 attached artifact evidence (`evidence-attach.mjs`).
+When the item's acceptance names browser evidence, capture it with the
+Playwright MCP integration (`playwright-mcp`, attended sessions only) and
+attach each file with `evidence-attach.mjs attach --kind browser-screenshot`
+(or `--kind browser-trace`) `--producer playwright-mcp --authority-class
+automated --file <path>`. The attachment is evidence for the reviewers, not a
+verdict: a required screenshot that is missing holds the PR the way any unmet
+acceptance line does, in review.
 The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR and
 includes workflow state normalised to the state that checkpoint expects;
 `commentary` is observed there but becomes hold-authoritative only at
