@@ -867,7 +867,11 @@ describe('`--help` on a subcommand (RP-239 A1)', () => {
 
     expect(run.code, run.stderr).toBe(0);
     expect(run.stderr).not.toMatch(/Unknown option/);
-    expect(run.stdout).toContain('create-agent-rig init [--dry-run] [--layer workflow]');
+    // RP-314: `--preset <name>` joins `--layer workflow` on init's own usage
+    // line.
+    expect(run.stdout).toContain(
+      'create-agent-rig init [--dry-run] [--layer workflow] [--preset <name>]',
+    );
     expect((await readdir(repo)).sort()).toEqual(before);
   });
 
@@ -1130,7 +1134,9 @@ describe('`--json` present: `--help`/`-h` is inert — never stripped, never sho
     expect(run.code, JSON.stringify({ stdout: run.stdout, stderr: run.stderr })).not.toBe(0);
     // Never round 1's usage text (pinned above, in "init --help prints usage
     // to stdout" — that pin is for `--help` WITHOUT `--json`).
-    expect(run.stdout).not.toContain('create-agent-rig init [--dry-run] [--layer workflow]');
+    expect(run.stdout).not.toContain(
+      'create-agent-rig init [--dry-run] [--layer workflow] [--preset <name>]',
+    );
     expect(await snapshot(repo)).toEqual(before);
   });
 

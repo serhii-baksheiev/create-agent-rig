@@ -2606,3 +2606,35 @@ describe('upgrade — an absent adopted-layer path is recorded, not forgotten (R
     }
   });
 });
+
+// RP-314: `preset` is built field-by-field into `plan.manifest` (see the
+// object literal in `planUpgrade` that explicitly carries `layers`/`kept`/
+// `regions` forward) — it is not something a spread of the previous manifest
+// gets for free. Both directions need their own pin: an upgrade never
+// INVENTS a preset a rig never recorded, and it never DROPS one a rig did.
+describe('preset — carried forward unchanged by upgrade, never invented (RP-314)', () => {
+  it('a manifest with no `preset` key gains none on upgrade — byte-identical manifest when nothing else changed', async () => {
+    await installRig();
+    const before = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
+    expect(before.preset).toBeUndefined();
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    await applyUpgrade(repo, plan);
+
+    const after = JSON.parse(await read(MANIFEST_REL)) as Record<string, unknown>;
+    expect(after.preset).toBeUndefined();
+  });
+
+  it('a manifest recording a preset keeps it, unchanged, across an upgrade', async () => {
+    await installRig();
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await writeManifest(repo, { ...manifest, preset: 'sdd' } as typeof manifest);
+
+    const plan = await planUpgrade(repo, { history: emptyHistory });
+    await applyUpgrade(repo, plan);
+
+    const after = (await readManifest(repo)) as unknown as { preset?: string } | null;
+    expect(after?.preset).toBe('sdd');
+  });
+});

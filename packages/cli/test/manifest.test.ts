@@ -372,3 +372,82 @@ describe('layers — which install-time layer(s) this manifest recorded (RP-180)
     expect(elapsed).toBeLessThan(200);
   });
 });
+
+// RP-314: `preset` is the optional name of the composition preset (`minimal`,
+// `sdd`, …) that `--preset <name>` installed, if any — additive like `kept`
+// and `regions`: absent on every manifest written before this field existed,
+// present only when a preset-driven install actually recorded one. A
+// manifest's own `version`/`project.name`/`stacks` values are substituted
+// into printed plan lines and executable template files (see the injection
+// fixtures above); `preset` is new, printable surface the same way, so it is
+// held to a named, closed shape on READ rather than "any string" — loose
+// enough that an older CLI reading a newer preset name it has never heard of
+// still parses the manifest (the preset catalogue can grow without voiding
+// every manifest a newer release wrote), strict enough that it can never
+// carry a newline, quote or shell metacharacter onto a screen or into a
+// generated script.
+describe('preset — which named composition preset (if any) installed this manifest (RP-314)', () => {
+  it('accepts a manifest with no `preset` field at all, exactly like every manifest on disk today', () => {
+    expect(parseManifest(JSON.stringify(sample()))).toEqual(sample());
+  });
+
+  it('parses a valid `preset` name and round-trips it through serializeManifest', () => {
+    const withPreset = { ...sample(), preset: 'sdd' } as RigManifest;
+    const serialised = serializeManifest(withPreset);
+    expect(parseManifest(serialised)).toEqual(withPreset);
+  });
+
+  it('omits the `preset` key entirely when absent — a clean install serialises byte-identical to today', () => {
+    const noPreset = serializeManifest(sample());
+    expect(noPreset).not.toContain('"preset"');
+  });
+
+  // The pin from the design comment: any non-empty string matching
+  // /^[a-z][a-z0-9-]{0,31}$/ is accepted on READ, so a preset catalogue
+  // addition in a later release never voids a manifest an older CLI (or a
+  // downgrade) has to re-read.
+  it('accepts every preset name shape this rig could ever write: lowercase, digits, hyphens, starting with a letter, up to 32 characters', () => {
+    for (const preset of ['minimal', 'sdd', 'a', 'a-b-2', 'x'.repeat(32)]) {
+      const parsed = parseManifest(JSON.stringify({ ...sample(), preset })) as unknown as {
+        preset?: string;
+      } | null;
+      expect(parsed, preset).not.toBeNull();
+      expect(parsed?.preset).toBe(preset);
+    }
+  });
+
+  it('voids the manifest when `preset` is present but not a non-empty string', () => {
+    const hostile = (preset: unknown) => parseManifest(JSON.stringify({ ...sample(), preset }));
+    expect(hostile(1)).toBeNull();
+    expect(hostile(null)).toBeNull();
+    expect(hostile(true)).toBeNull();
+    expect(hostile([])).toBeNull();
+    expect(hostile({})).toBeNull();
+    expect(hostile('')).toBeNull();
+  });
+
+  it('voids the manifest when `preset` does not match the accepted name shape', () => {
+    const hostile = (preset: string) => parseManifest(JSON.stringify({ ...sample(), preset }));
+    expect(hostile('Minimal')).toBeNull(); // uppercase
+    expect(hostile('1sdd')).toBeNull(); // leading digit
+    expect(hostile('-sdd')).toBeNull(); // leading hyphen
+    expect(hostile('sd_d')).toBeNull(); // underscore
+    expect(hostile('sdd ')).toBeNull(); // trailing space
+    expect(hostile('x'.repeat(33))).toBeNull(); // over the 32-character bound
+  });
+
+  // The same injection concern `version`/`project.name`/`stacks` are held to
+  // above: `preset` is a manifest value a maintainer reads on screen (doctor's
+  // report, a future upgrade plan line) and the accepted shape already
+  // excludes every one of these by construction — this is the regression
+  // fence proving the shape check actually rejects them, not merely that it
+  // happens to accept the legitimate cases.
+  it.each([
+    ['closes a string literal', "sdd'); process.exit(1); ('"],
+    ['carries a shell substitution', '$(id)'],
+    ['carries a newline', 'sdd\nevil'],
+    ['carries a NUL byte', 'sdd\u0000'],
+  ] as const)('voids the manifest when `preset` %s', (_label, payload) => {
+    expect(parseManifest(JSON.stringify({ ...sample(), preset: payload }))).toBeNull();
+  });
+});
