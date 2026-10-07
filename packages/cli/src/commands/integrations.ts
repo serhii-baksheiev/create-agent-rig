@@ -11,6 +11,7 @@ import {
   type DeclaredIntegration,
 } from '../integrations/declaration.js';
 import { REGISTRY, type Harness, type ProviderDescriptor } from '../integrations/registry.js';
+import { PLAYWRIGHT_MCP_VERSION } from '../integrations/playwright.js';
 import { resolveReadableInside, resolveWritableInside } from '../lib/safe-path.js';
 import { hasControlCharacter } from '../lib/safe-text.js';
 import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
@@ -61,6 +62,11 @@ function serverFor(id: string) {
     return { name: 'atlassian', server: { type: 'http', url: 'https://mcp.atlassian.com/v2/mcp' } };
   if (id === 'basic-memory')
     return { name: 'basic-memory', server: { command: 'uvx', args: ['basic-memory', 'mcp'] } };
+  if (id === 'playwright-mcp')
+    return {
+      name: 'playwright',
+      server: { command: 'npx', args: [`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`] },
+    };
   throw new Refusal('not-in-matrix');
 }
 function codexSection(id: string): string {
@@ -572,13 +578,16 @@ export async function runIntegrationsCommand(
     const basicBoundary = basicMemory
       ? ' Basic Memory is a wiring-only preview: it configures local, per-machine storage only; does not automatically access Memory; does not synchronize across machines; and uvx is a launcher, not a verified runtime.'
       : '';
+    const playwrightBoundary = selected.some((entry) => entry.id === 'playwright-mcp')
+      ? ` Playwright MCP is launched by npx at ${PLAYWRIGHT_MCP_VERSION}, fetched from the configured npm registry at the first harness launch; npx is a launcher, not a verified runtime, and browser verification through it is attended only.`
+      : '';
     // The MCP authorization/connectivity/trust disclaimer only applies to an
     // actual MCP provider selection — Probity is neither an MCP server nor
     // rendered into any MCP config, so a Probity-only plan never carries it.
     const mcpBoundary = selectedMcp.length
       ? ' MCP wiring does not verify authorization, connectivity or trust.'
       : '';
-    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}.${mcpBoundary}${basicBoundary}${coexistence}${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}${probityPlan.length ? '\n' + probityPlan.join('\n') : ''}`;
+    const plan = `${verb}: ${selected.map((entry) => entry.id).join(', ') || 'no integrations'}; write ${edits.map((edit) => edit.rel).join(', ') || 'nothing'}.${mcpBoundary}${basicBoundary}${playwrightBoundary}${coexistence}${upstreamPlan.length ? '\n' + upstreamPlan.join('\n') : ''}${probityPlan.length ? '\n' + probityPlan.join('\n') : ''}`;
     if (values['dry-run'])
       return respond({ outcome: 'planned', dryRun: true, changed: false, plan }, plan);
     if (

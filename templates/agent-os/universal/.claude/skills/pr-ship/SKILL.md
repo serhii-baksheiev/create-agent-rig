@@ -450,7 +450,11 @@ blockers.
 6. **DoD walk.** Check the Definition of Done list in
    `.claude/rules/workflow.md` item by item — test-first evidence, nothing
    skipped or weakened, boundaries respected, docs updated, autonomy tier
-   honored.
+   honored. When the item's acceptance names browser evidence, check that the
+   item's `.rig/evidence/<item-id>.jsonl` carries it — a `browser-screenshot`
+   or `browser-trace` from `playwright-mcp`, attached with
+   `evidence-attach.mjs` — and pass the item text to `code-reviewer` as usual:
+   a missing one is an unmet acceptance line, never a Playwright verdict.
 7. **Named checks only.** The merge criterion is the project's *named* required
    checks, all green. "Some checks passed" is not a criterion; an unnamed
    green wall hides a red brick. Two traps here, both observed in the wild:

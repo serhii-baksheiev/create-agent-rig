@@ -584,7 +584,21 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     preset: {
       name: presetName,
       integrations: (knownPreset(presetName ?? undefined)?.integrations ?? []).map((id) => {
-        const check = checks.find((candidate) => candidate.id === id);
+        // A provider's check is `<id>` (Spec Kit) or `<id>:<harness>` (an MCP
+        // provider); with several harness checks, the worst one is reported.
+        // Within `warn`, a wiring problem outranks a launcher merely absent
+        // from this machine's PATH: drift is the finding a reader must act on.
+        const rank = (candidate: Check) =>
+          candidate.status === 'fail'
+            ? 3
+            : candidate.status === 'warn'
+              ? candidate.reason === 'launcher-missing'
+                ? 1
+                : 2
+              : 0;
+        const check = checks
+          .filter((candidate) => candidate.id === id || candidate.id.startsWith(`${id}:`))
+          .sort((a, b) => rank(b) - rank(a))[0];
         return {
           id,
           declared: intent?.entries.some((entry) => entry.id === id) ?? false,

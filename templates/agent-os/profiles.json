@@ -1,7 +1,30 @@
 {
   "schemaVersion": 1,
   "presets": {
-    "minimal": { "layers": ["process"], "integrations": [] },
-    "sdd": { "layers": ["process", "workflow"], "integrations": ["spec-kit"] }
+    "minimal": {
+      "layers": [
+        "process"
+      ],
+      "integrations": []
+    },
+    "sdd": {
+      "layers": [
+        "process",
+        "workflow"
+      ],
+      "integrations": [
+        "spec-kit"
+      ]
+    },
+    "composed": {
+      "layers": [
+        "process",
+        "workflow"
+      ],
+      "integrations": [
+        "spec-kit",
+        "playwright-mcp"
+      ]
+    }
   }
 }

@@ -114,6 +114,16 @@ describe('loop skill (universal) — the driver the autonomy tiers were waiting 
     expect(two).toContain('failure-diagnostician');
     expect(two).toMatch(/claim mode/);
   });
+
+  // RP-313: when a queue item's acceptance names browser evidence, the loop
+  // captures it with Playwright MCP and attaches it through the existing
+  // evidence CLI — never a new recording mechanism.
+  it('names browser-screenshot, playwright-mcp and evidence-attach.mjs for required browser evidence', async () => {
+    const content = await readFile(skillPath('universal', '.claude', 'skills', 'loop'), 'utf8');
+    expect(content).toMatch(/browser-screenshot/);
+    expect(content).toMatch(/playwright-mcp/);
+    expect(content).toContain('evidence-attach.mjs');
+  });
 });
 
 // extraction brief §3 Tier A: the worktree lifecycle carries the mechanism and
@@ -487,6 +497,17 @@ describe('pr-ship skill (universal)', () => {
     const fm = frontmatterOf(content);
     expect(fm['name']).toBe('pr-ship');
     expect(fm['allowed-tools']).toBeTruthy();
+  });
+
+  // RP-313: missing required browser evidence holds through the existing
+  // "contradicts the item it claims to implement" review check (agents.test.ts),
+  // never through a standalone Playwright verdict — pr-ship names the
+  // capture/attach path so a gate round can tell the two apart.
+  it('names browser-screenshot, playwright-mcp and evidence-attach.mjs for required browser evidence', async () => {
+    const content = await readFile(skillPath('universal', '.claude', 'skills', 'pr-ship'), 'utf8');
+    expect(content).toMatch(/browser-screenshot/);
+    expect(content).toMatch(/playwright-mcp/);
+    expect(content).toContain('evidence-attach.mjs');
   });
 
   // RP-398: the Mechanical TDD evidence contract (RP-305/RP-306) was an owner

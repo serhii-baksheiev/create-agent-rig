@@ -231,6 +231,46 @@ describe('every runDoctor( call in this file threads a guardRunner (RP-261 stati
 });
 
 describe('aggregated doctor (RP-21)', () => {
+  // RP-313: mirrors the Basic Memory case immediately below, substituting
+  // Playwright MCP and its `npx` launcher — doctor's generic per-harness
+  // wiring/launcher loop (doctor.ts) must generalize to a second npx-launched
+  // provider, not stay Basic Memory-specific.
+  it('distinguishes owned wiring, missing launcher and unobserved runtime for both Playwright MCP targets', async () => {
+    await initProject(repo, {});
+    expect(
+      (
+        await runIntegrationsCommand({
+          cwd: repo,
+          verb: 'add',
+          args: ['playwright-mcp', '--harness', 'claude-code', '--harness', 'codex', '--yes'],
+        })
+      ).exitCode,
+    ).toBe(0);
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: '' },
+      guardRunner: passingGuardRunner,
+    });
+    const body = JSON.parse(result.stdout);
+    expect(body.status).toBe('warn');
+    for (const harness of ['claude-code', 'codex'])
+      expect(body.integrations[0].harnesses[harness]).toEqual({
+        wiring: 'wired',
+        launcher: 'missing',
+        runtime: 'unverified',
+        connectivity: 'not-observed',
+        trust: 'not-observed',
+      });
+    expect(body.checks).toContainEqual(
+      expect.objectContaining({
+        id: 'rig-owned-files',
+        status: 'ok',
+        reason: 'pristine',
+      }),
+    );
+  });
+
   it('distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets', async () => {
     await initProject(repo, {});
     expect(

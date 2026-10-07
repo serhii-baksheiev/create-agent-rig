@@ -34,7 +34,11 @@ export type VerifyIntegrationsResult = {
   integrations: IntegrationVerification[];
   issues: DoctorIssue[];
 };
-export type LauncherLocator = (name: 'uvx') => Promise<string | null>;
+// Declared as a method so a locator written for one launcher name (a test's
+// `(name: 'uvx') => …`) still satisfies the type that now names two.
+export type LauncherLocator = {
+  locate(name: 'uvx' | 'npx'): Promise<string | null>;
+}['locate'];
 export type VerifyIntegrationsOptions = {
   repoDir: string;
   locateLauncher?: LauncherLocator;
@@ -94,19 +98,29 @@ function decode(bytes: Buffer): string | null {
   }
 }
 
-async function defaultLocateLauncher(name: 'uvx', env = process.env): Promise<string | null> {
+/** The file names a launcher has on `platform`: Windows ships `uvx.exe` but `npx.cmd`. */
+export function launcherFileNames(name: 'uvx' | 'npx', platform: NodeJS.Platform): string[] {
+  return platform === 'win32' ? [`${name}.exe`, `${name}.cmd`] : [name];
+}
+
+async function defaultLocateLauncher(
+  name: 'uvx' | 'npx',
+  env = process.env,
+): Promise<string | null> {
   const variable = env.PATH ?? env.Path;
   if (variable === undefined) return null;
   for (const directory of variable.split(path.delimiter)) {
     if (!path.isAbsolute(directory)) continue;
-    const candidate = path.join(directory, process.platform === 'win32' ? `${name}.exe` : name);
-    try {
-      // Follow a machine-installed launcher symlink, but never execute it.
-      if (!(await stat(candidate)).isFile()) continue;
-      await access(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
-      return candidate;
-    } catch {
-      // A PATH member not present on this machine is not a diagnostic failure.
+    for (const file of launcherFileNames(name, process.platform)) {
+      const candidate = path.join(directory, file);
+      try {
+        // Follow a machine-installed launcher symlink, but never execute it.
+        if (!(await stat(candidate)).isFile()) continue;
+        await access(candidate, process.platform === 'win32' ? constants.F_OK : constants.X_OK);
+        return candidate;
+      } catch {
+        // A PATH member not present on this machine is not a diagnostic failure.
+      }
     }
   }
   return null;
@@ -122,10 +136,18 @@ function verification(wiring: WiringStatus, launcher: LauncherStatus): Verificat
   };
 }
 
+/** The stdio launcher an MCP provider's entry runs, for the providers that have one. */
+function launcherOf(id: string): 'uvx' | 'npx' | undefined {
+  if (id === 'basic-memory') return 'uvx';
+  if (id === 'playwright-mcp') return 'npx';
+  return undefined;
+}
+
 function mcpServerName(id: string): string | undefined {
   if (id === 'figma-mcp') return 'figma';
   if (id === 'atlassian-mcp') return 'atlassian';
   if (id === 'basic-memory') return 'basic-memory';
+  if (id === 'playwright-mcp') return 'playwright';
   return undefined;
 }
 
@@ -187,8 +209,9 @@ export async function verifyIntegrations(
         else wiring = sha256(claudeServers[name]) === entryHash ? 'healthy' : 'drift';
 
         let launcher: LauncherStatus = 'not-applicable';
-        if (entry.id === 'basic-memory' && wiring === 'healthy')
-          launcher = (await locator('uvx')) === null ? 'missing' : 'observed';
+        const launcherName = launcherOf(entry.id);
+        if (launcherName !== undefined && wiring === 'healthy')
+          launcher = (await locator(launcherName)) === null ? 'missing' : 'observed';
         harnesses[harness] = verification(wiring, launcher);
         if (wiring === 'unreadable')
           harnesses[harness].reason =
@@ -207,9 +230,10 @@ export async function verifyIntegrations(
               : codexHash === expectedHash
                 ? 'healthy'
                 : 'drift';
+      const launcherName = launcherOf(entry.id);
       const launcher =
-        entry.id === 'basic-memory' && wiring === 'healthy'
-          ? (await locator('uvx')) === null
+        launcherName !== undefined && wiring === 'healthy'
+          ? (await locator(launcherName)) === null
             ? 'missing'
             : 'observed'
           : 'not-applicable';

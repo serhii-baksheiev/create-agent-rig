@@ -12,11 +12,15 @@ const h = createHash('sha256')
   .digest('hex');
 describe('integration intent declaration', () => {
   it('has only the implemented release providers', () =>
+    // RP-313 adds `playwright-mcp` (Playwright MCP, routed `automatic` for
+    // both harnesses) grouped with the other plain MCP providers, ahead of
+    // `probity` which is neither an MCP server nor upstream-managed.
     expect(REGISTRY.map((x) => x.id)).toEqual([
       'basic-memory',
       'spec-kit',
       'figma-mcp',
       'atlassian-mcp',
+      'playwright-mcp',
       'probity',
     ]));
   it('round trips only finite intent and target hash fields', () =>

@@ -60,6 +60,12 @@ not count as current, and new evidence has to be attached at the new head.
 by itself. Evidence only matters where an existing applicability rule
 requires its category; where none does, its absence changes nothing.
 
+**Applicability.** A category of evidence is required when the queue item's
+own acceptance names it — browser evidence from Playwright MCP is the first
+such category (RP-313). A required artifact that is missing holds the change
+the way any unmet acceptance line does: in the review of the item, never
+through the producer's own verdict.
+
 **Advisory only.** A producer's `pass`, `concerns` or `fail` is evidence and
 never becomes a Rig SHIP or HOLD. An advisory `pass` cannot satisfy a gate Rig
 requires, and an advisory `fail` does not by itself turn a valid Rig verdict

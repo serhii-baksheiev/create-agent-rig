@@ -378,3 +378,47 @@ describe('create --preset sdd is exactly create --layer workflow, plus the recor
     expect(`${result.stdout}${result.stderr}`).toContain('setup add spec-kit');
   });
 });
+
+// RP-313: `composed` is exactly the `sdd` preset's payload — `--layer
+// workflow`, byte-identical — plus the recorded preset name and a second
+// printed next step for Playwright MCP alongside Spec Kit's. Mirrors the sdd
+// describe block above exactly, substituting the preset name and asserting
+// the extra next-step line.
+describe('--preset composed is exactly --layer workflow, plus the recorded name and two printed next steps (RP-313)', () => {
+  it('installs the same file tree and bytes as --layer workflow, manifest differing only by the added preset key, and writes no .rig/integrations.json', async () => {
+    const repoB = await freshRepoDir('caf-preset-e2e-composed-');
+    try {
+      const layerOnly = await runInit(['--layer', 'workflow'], repo);
+      expect(layerOnly.code, layerOnly.stderr).toBe(0);
+      const presetRun = await runInit(['--preset', 'composed'], repoB);
+      expect(presetRun.code, presetRun.stderr).toBe(0);
+
+      const treeA = await walk(repo);
+      const treeB = await walk(repoB);
+      expect(treeB).toEqual(treeA);
+
+      const nonManifest = treeA.filter((rel) => rel !== '.claude/.rig-manifest.json');
+      expect(await hashTree(repoB, nonManifest)).toEqual(await hashTree(repo, nonManifest));
+
+      const manifestA = await manifestOf(repo);
+      const manifestB = await manifestOf(repoB);
+      expect(manifestA.preset).toBeUndefined();
+      expect(manifestB.preset).toBe('composed');
+      expect({ ...manifestB, preset: undefined }).toEqual({ ...manifestA, preset: undefined });
+
+      await expect(
+        readFile(path.join(repoB, '.rig', 'integrations.json'), 'utf8'),
+      ).rejects.toThrow();
+    } finally {
+      await removeFixture(path.dirname(repoB));
+    }
+  });
+
+  it('tells the operator to run both setup add spec-kit and setup add playwright-mcp as next steps', async () => {
+    const result = await runInit(['--preset', 'composed']);
+    expect(result.code, result.stderr).toBe(0);
+    const out = `${result.stdout}${result.stderr}`;
+    expect(out).toContain('setup add spec-kit');
+    expect(out).toContain('setup add playwright-mcp');
+  });
+});
