@@ -31,11 +31,14 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  * Every scenario below is numbered to match the RP-344 acceptance brief. The
  * `it`s share one fixture repo and run across it as one controller session
  * (session A), because the brief is a journey — a cold start, an ordinary
- * decision, a non-delegable stop, the kill switch, the publication boundary —
- * ending in a SECOND, independent session (session B) reading session A's
- * durable evidence back. They therefore run in file order, intentionally —
- * one shared fixture across every scenario in this file, never isolated per
- * assertion.
+ * decision, a non-delegable stop, the kill switch and guard-bash's own
+ * Never-tier rule, the publication boundary — ending in a SECOND, independent
+ * session (session B) reading session A's durable evidence back. They
+ * therefore run in file order, intentionally — one shared fixture across
+ * every numbered scenario, never isolated per assertion. The one exception is
+ * the small, unnumbered `containsAnyMarker` suite below — a pure-function
+ * check with no fixture of its own, placed ahead of the journey on purpose so
+ * scenario 7, last, stays the journey's own closing assertion.
  *
  * `checkoutIdFor`/`plantedFlagPath` below are a deliberately separate,
  * hand-written reimplementation of `unattended-flag.mjs`'s own
@@ -89,9 +92,19 @@ const dodChecksPath = (): string => path.join(repo, '.claude', 'hooks', 'dod-che
 const decisionsFilePath = (ticket: string): string =>
   path.join(repo, '.rig', 'decisions', `${ticket}.jsonl`);
 
-/** Every spawn's base environment: the fake HOME, never the real one, and never a leaked RIG_RUN_DIR. */
+/**
+ * Every spawn's base environment: the fake HOME, never the real one, and
+ * never a leaked `CLAUDE_PROJECT_DIR`, `AGENT_LOOP_STOP` or `RIG_RUN_DIR` —
+ * `gitEnv()` copies all of `process.env`, so a live session this file happens
+ * to run inside (this very worktree checkout, a brake armed via the
+ * `AGENT_LOOP_STOP` env var rather than a file) would otherwise leak into
+ * every fixture process, and this suite must behave the same inside and
+ * outside one.
+ */
 function baseEnv(): NodeJS.ProcessEnv {
   const merged: NodeJS.ProcessEnv = { ...gitEnv(), HOME: home, USERPROFILE: home, APPDATA: home };
+  delete merged.CLAUDE_PROJECT_DIR;
+  delete merged.AGENT_LOOP_STOP;
   delete merged.RIG_RUN_DIR;
   return merged;
 }
@@ -154,6 +167,24 @@ async function makeRunDir(label: string): Promise<string> {
   return mkdtemp(path.join(repo, '.claude', 'runs', `${label}-`));
 }
 
+/**
+ * Every fixture commit's own `-c` identity, plus signing and hooks turned
+ * off for THIS commit only — never the real global git config a developer's
+ * machine has configured, which could carry a signing key `commit.gpgsign`
+ * would try to use, or a `core.hooksPath` that runs that machine's own hooks
+ * against this throwaway fixture tree.
+ */
+const FIXTURE_COMMIT_CONFIG = [
+  '-c',
+  'user.email=rp344-fixture@example.com',
+  '-c',
+  'user.name=RP-344 fixture',
+  '-c',
+  'commit.gpgsign=false',
+  '-c',
+  'core.hooksPath=',
+];
+
 async function projectName(): Promise<string> {
   const manifest = JSON.parse(
     await readFile(path.join(repo, '.claude', '.rig-manifest.json'), 'utf8'),
@@ -191,6 +222,31 @@ async function plantedFlagPath(forRepo: string = repo): Promise<string> {
 function containsAnyMarker(entries: string[], markers: string[]): boolean {
   return entries.some((entry) => markers.some((marker) => entry.includes(marker)));
 }
+
+// Exercised directly against a synthetic listing — independent of the
+// shared fixture below and of the real OS home — so scenario 7's negative
+// result (no marker found in the real `~/.claude`) is shown to come from a
+// check that really does go red on a planted match, not from a predicate
+// that can never return true.
+describe('containsAnyMarker (synthetic listing, independent of the real home)', () => {
+  it('is true when an entry carries a planted marker as a substring', () => {
+    expect(
+      containsAnyMarker(
+        ['some-other-dir', 'caf-delegated-authority-deadbeef-loop-STOP'],
+        ['caf-delegated-authority-deadbeef'],
+      ),
+    ).toBe(true);
+  });
+
+  it('is false when no entry carries any of the markers', () => {
+    expect(
+      containsAnyMarker(
+        ['some-other-dir', 'unrelated-project-abc123-loop-STOP'],
+        ['caf-delegated-authority-deadbeef'],
+      ),
+    ).toBe(false);
+  });
+});
 
 /**
  * A metadata-only listing of every file under `<root>/.claude` — never file
@@ -234,20 +290,10 @@ beforeAll(async () => {
   // file) to run anything at all, so the generated rig is committed here,
   // once, the way a real checkout would be.
   await exec('git', ['add', '-A'], { cwd: repo, env: gitEnv() });
-  await exec(
-    'git',
-    [
-      '-c',
-      'user.email=rp344-fixture@example.com',
-      '-c',
-      'user.name=RP-344 fixture',
-      'commit',
-      '-q',
-      '-m',
-      'generated rig scaffold',
-    ],
-    { cwd: repo, env: gitEnv() },
-  );
+  await exec('git', [...FIXTURE_COMMIT_CONFIG, 'commit', '-q', '-m', 'generated rig scaffold'], {
+    cwd: repo,
+    env: gitEnv(),
+  });
   await mkdir(path.join(repo, '.claude', 'runs'), { recursive: true });
 }, 120_000);
 
@@ -258,19 +304,65 @@ afterAll(async () => {
 
 describe('the 1.5.0 delegated-authority model end to end on a generated workflow rig (RP-344 acceptance)', () => {
   it('scenario 1: a cold start under delegated authority reports the full posture and declares the run', async () => {
-    const pre = await runJson([
+    const pre = (await runJson([
       preflightPath(),
       '--unattended',
       '--decision-authority',
       'delegated',
       '--json',
-    ]);
+    ])) as {
+      verdict: string;
+      checks: Record<string, { id: string; outcome: string }>;
+      uncheckedConditions: Array<{ id: string; outcome: string }>;
+      authority: unknown;
+    };
     expect(pre.authority).toEqual({
       schemaVersion: 1,
       executionMode: 'unattended',
       decisionAuthority: 'delegated',
       publicationAuthority: 'owner',
     });
+
+    // The rest of the full posture this same preflight call reports — the
+    // shape and the verdict `loop/SKILL.md` §1 reads before the first
+    // selection, never only the authority block alone. Each check's `id` is
+    // the posture contract's own (`lib/posture.mjs`), and the two conditions
+    // this script never scripts (`stray-worktree`, `budget-declared`) are
+    // named as `unknown`, never silently dropped.
+    const requiredPassing: Record<string, string> = {
+      killSwitch: 'kill-switch-armed',
+      runDirNotExported: 'run-dir-inherited',
+      unattendedFlag: 'unattended-flag-stale',
+      detectionContract: 'detection-contract-invalid',
+      queue: 'queue-unreadable',
+    };
+    const advisoryUnknown: Record<string, string> = {
+      defaultBranchFresh: 'default-branch-stale',
+      lastDeploy: 'last-deploy-failed',
+    };
+    expect(Object.keys(pre.checks).sort()).toEqual(
+      [...Object.keys(requiredPassing), ...Object.keys(advisoryUnknown)].sort(),
+    );
+    for (const [key, id] of Object.entries(requiredPassing)) {
+      expect(pre.checks[key], key).toMatchObject({ id, outcome: 'pass' });
+    }
+    for (const [key, id] of Object.entries(advisoryUnknown)) {
+      expect(pre.checks[key], key).toMatchObject({ id, outcome: 'unknown' });
+    }
+    expect(pre.uncheckedConditions.map((condition) => condition.id).sort()).toEqual([
+      'budget-declared',
+      'stray-worktree',
+    ]);
+    expect(pre.uncheckedConditions.every((condition) => condition.outcome === 'unknown')).toBe(
+      true,
+    );
+
+    // The verdict this exact fixture yields — a hand-written literal pinned
+    // by running this script against this fixture (no `origin` remote, no
+    // `gh`-reachable deploy workflow): both gaps are advisory, not required,
+    // so the two `unknown`s above produce CAUTION, never GO or STOP, per
+    // `lib/posture.mjs`'s `preflightVerdict`.
+    expect(pre.verdict).toBe('CAUTION');
 
     runDirA = await makeRunDir('session-a');
     const declared = await run([runStatePath(), 'authority', 'delegated'], {
@@ -484,11 +576,26 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       tool_input: { command: 'gh pr merge 1' },
       cwd: repo,
     });
+    // guard-bash's OWN Never-tier refusal, independent of the kill switch —
+    // `git push --force origin master` names a branch `PROTECTED_BRANCH`
+    // matches, the same rule `test/template/guard-bash.test.ts` pins for
+    // this exact branch name › "still sees a quoted branch name — quoting an
+    // argument does not hide it" (`git push --force origin 'master'`) and,
+    // unquoted, every case the file's `it.each(...)('denies %s', …)` list
+    // covers — exercised below with the brake ABSENT, to show the refusal
+    // is guard-bash's own rule and not merely the brake reading as set.
+    const forcePushPayload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: 'git push --force origin master' },
+      cwd: repo,
+    });
 
     const withStdin = (
       executable: string,
       args: string[],
       options: Parameters<typeof execFile>[2],
+      stdinPayload: string = payload,
     ): Promise<{ code: number }> =>
       new Promise((resolve, reject) => {
         const child = execFile(executable, args, options, (error) => {
@@ -499,14 +606,17 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
           reject(new Error('no stdin'));
           return;
         }
-        child.stdin.write(payload);
+        child.stdin.write(stdinPayload);
         child.stdin.end();
       });
 
-    const runClaudeGuard = (): Promise<{ code: number }> =>
-      withStdin(process.execPath, [guardPath], {
-        env: { ...baseEnv(), CLAUDE_PROJECT_DIR: repo, RIG_RUN_DIR: runDirA },
-      });
+    const runClaudeGuard = (stdinPayload: string = payload): Promise<{ code: number }> =>
+      withStdin(
+        process.execPath,
+        [guardPath],
+        { env: { ...baseEnv(), CLAUDE_PROJECT_DIR: repo, RIG_RUN_DIR: runDirA } },
+        stdinPayload,
+      );
 
     type CodexHookEntry = { command: string; commandWindows?: string };
 
@@ -525,7 +635,7 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
 
     /** The literal Codex `hooks.json` wiring, never a direct node call — mirrors
      * `unattended-posture.test.ts`'s `runCodexGuard` shape exactly. */
-    const runCodexGuard = async (): Promise<{ code: number }> => {
+    const runCodexGuard = async (stdinPayload: string = payload): Promise<{ code: number }> => {
       const entry = await findCodexGuardEntry();
       const guardEnv: NodeJS.ProcessEnv = { ...baseEnv(), RIG_RUN_DIR: runDirA };
       if (process.platform === 'win32') {
@@ -539,15 +649,26 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
           'powershell.exe',
           ['-NoProfile', '-NonInteractive', '-EncodedCommand', String(encoded)],
           { cwd: repo, env: guardEnv },
+          stdinPayload,
         );
       }
       delete guardEnv.CLAUDE_PROJECT_DIR;
-      return withStdin('/bin/sh', ['-c', entry.command], { cwd: repo, env: guardEnv });
+      return withStdin(
+        '/bin/sh',
+        ['-c', entry.command],
+        { cwd: repo, env: guardEnv },
+        stdinPayload,
+      );
     };
 
-    // Brake absent: allowed on both surfaces.
+    // Brake absent: an ordinary command is allowed on both surfaces...
     expect((await runClaudeGuard()).code).toBe(0);
     expect((await runCodexGuard()).code).toBe(0);
+    // ...and a Never-tier command is refused on both surfaces anyway — this
+    // is guard-bash's own force-push rule holding with no brake in play at
+    // all, not the kill-switch assertion below wearing a different payload.
+    expect((await runClaudeGuard(forcePushPayload)).code).toBe(2);
+    expect((await runCodexGuard(forcePushPayload)).code).toBe(2);
 
     // Hand-plant the brake under the FAKE home only — never via a helper that
     // mirrors into the real OS home, and never the real home itself.
@@ -600,15 +721,7 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
     await exec('git', ['add', '.rig/decisions/RP-1.jsonl'], { cwd: repo, env: gitEnv() });
     await exec(
       'git',
-      [
-        '-c',
-        'user.email=rp344-fixture@example.com',
-        '-c',
-        'user.name=RP-344 fixture',
-        'commit',
-        '-m',
-        'record the RP-1 delegated decision',
-      ],
+      [...FIXTURE_COMMIT_CONFIG, 'commit', '-m', 'record the RP-1 delegated decision'],
       { cwd: repo, env: gitEnv() },
     );
 
@@ -667,7 +780,7 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
     }
   }, 120_000);
 
-  it('scenario 7: nothing in this journey left a stray write under the fake HOME, and the real one carries no trace of this fixture', async () => {
+  it("scenario 7: nothing in this journey left a stray write under the fake HOME, and the top-level names of the real ~/.claude carry neither this fixture's project name nor its checkout id", async () => {
     // Every planted path across scenarios 4 and 5 was already asserted, at
     // the point it was built, to start with the fake `home`. This is the
     // complementary check on that same fake home: once every scenario above
@@ -705,12 +818,14 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       .replace(/[^a-z0-9._-]+/g, '-')
       .replace(/^[-.]+|[-.]+$/g, '');
     // `project` is a unique marker only when it actually derives from this
-    // fixture's own unique `mkdtemp` basename (`init.ts`'s `projectNameFor`);
-    // it does here, so both markers are checked. If a future change to
-    // `projectNameFor` broke that derivation, this would fall back to the
-    // checkout id alone, which stays unique per run regardless.
-    const uniqueMarkers =
-      project === expectedProjectSlug ? [project, checkoutIdFor(repo)] : [checkoutIdFor(repo)];
+    // fixture's own unique `mkdtemp` basename (`init.ts`'s `projectNameFor`).
+    // A silent fallback to the checkout id alone on mismatch would narrow
+    // what this check searches for without saying so — so a mismatch FAILS
+    // this test outright instead: `projectNameFor`'s derivation drifting
+    // out from under this test is itself a finding, not a reason to search
+    // for less.
+    expect(project).toBe(expectedProjectSlug);
+    const uniqueMarkers = [project, checkoutIdFor(repo)];
 
     expect(containsAnyMarker(realHomeClaudeEntries, uniqueMarkers)).toBe(false);
   });
