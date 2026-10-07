@@ -42,8 +42,12 @@ nothing else; it is never a Rig verdict, and a Rig verdict never waits on it.
 No Probity evidence kind is defined. Probity 1.10.1 persists nothing by
 default (`dist/bin.js` in the published package). Its only record is the opt-in `--debug <path>` JSONL, whose line shape
 is undocumented upstream and whose `request` field is the full hook payload —
-tool input and file contents — so attaching it would put source text and
-whatever an edit carried into the committed `.rig/evidence/` record. The
+tool input and file contents. `evidence-attach.mjs` records a local
+artifact's path and digest, and takes only a file inside the project
+(`test/template/evidence-attach.test.ts` › "refuses a --file outside the
+project given as an absolute path"), so attaching that log would mean keeping
+a file of full hook payloads in the working tree, one commit away from the
+repository. The
 generic `evidence-attach.mjs` path (RP-312) still accepts any producer's
 artifact a session chooses to attach; Rig defines no Probity-specific kind
 until upstream documents a bounded observation format.
