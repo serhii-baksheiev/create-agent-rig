@@ -235,6 +235,7 @@ describe('the scanners that can reach .claude/ use the shared list, and the rest
       'correspondence.test.ts',
       'decision-records.test.ts',
       'decision-router.test.ts',
+      'discipline-providers.test.ts', // RP-316: walks the template's .claude/scripts and hooks
       'e2e-install-network.test.ts',
       'e2e-pack.test.ts',
       'generator-neutrality.test.ts',
