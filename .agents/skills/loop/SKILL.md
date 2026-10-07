@@ -454,6 +454,8 @@ successful SELECT, `next` creates a versioned content-blind baseline at
 `.rig/claims/<item-id>.json` and reports `BASELINE_CREATED`. Add that record to
 the task's branch: a later SELECT, BEFORE_PR or BEFORE_CLOSE refuses an
 untracked record, and a resumed checkpoint with no record is `UNVERIFIABLE`.
+Commit `.rig/evidence/<item-id>.jsonl` to the same branch whenever the task
+attached artifact evidence (`evidence-attach.mjs`).
 The `scope` fingerprint set is authoritative at SELECT and BEFORE_PR and
 includes workflow state normalised to the state that checkpoint expects;
 `commentary` is observed there but becomes hold-authoritative only at

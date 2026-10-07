@@ -1527,3 +1527,214 @@ describe('`verdict.mjs coverage` prints the witness answer', () => {
     expect(result.stdout).toContain('code-reviewer');
   });
 });
+
+// RP-312 gate round 2, acceptance 2-5: `coverageOf` gains an ADVISORY
+// `evidence` field built from `events` whose `kind === 'artifact-evidence'`
+// (the event's own `data` IS the descriptor — `evidence-attach.mjs` journals
+// it that way, see `test/template/evidence-attach.test.ts`). `current` is
+// every descriptor whose `headSha` is the SAME commit (full id,
+// case-insensitive) as the answer's own `headSha`; everything else is
+// `stale`. It never affects `ok` or any of the other six fields — only the
+// reviewer fan-out/verdict trio decides those, exactly as before this slice.
+//
+// `lib/gate-coverage.mjs` already returns `evidence` at runtime (its own
+// `evidenceOf`, called from `coverageCore`'s result). What has NOT gained the
+// field is this FILE's own local `Coverage` TypeScript interface above, which
+// types every other test in this file and is never widened just for this one
+// slice's sake — so `withEvidence` below stays a local, test-only cast rather
+// than a change to that shared interface.
+type CoverageWithEvidence = Coverage & {
+  evidence: { current: Record<string, unknown>[]; stale: Record<string, unknown>[] };
+};
+const withEvidence = (c: Coverage): CoverageWithEvidence => c as CoverageWithEvidence;
+
+/** A well-formed artifact-evidence descriptor bound to `headSha`. */
+const evidenceDescriptor = (headSha: string, item = 'RP-1'): Record<string, unknown> => ({
+  schemaVersion: 1,
+  kind: 'test-report',
+  subject: { kind: 'commit', id: 'abc123' },
+  authorityClass: 'automated',
+  producer: 'ci',
+  ref: 'https://ci.example.invalid/run/123',
+  sha256: null,
+  item,
+  headSha,
+  producedAt: '2026-08-18T09:00:00.000Z',
+});
+
+/** One `artifact-evidence` EVENT, shaped exactly as `readRun(...).events` returns it. */
+const artifactEvidenceEvent = (seq: number, data: unknown): JournalRecord =>
+  JSON.parse(
+    JSON.stringify({
+      seq,
+      at: `2026-08-18T09:${String(seq).padStart(2, '0')}:00.000Z`,
+      kind: 'artifact-evidence',
+      data,
+    }),
+  ) as JournalRecord;
+
+/** A fully covered round — the "ok" fixture the evidence tests build on. */
+const okJournalForEvidence = (): JournalRecord[] =>
+  journal(routed(['code-reviewer']), fanOut(['code-reviewer']), answered('code-reviewer'));
+
+describe('coverageOf — evidence (RP-312 gate round 2, acceptance 2-5)', () => {
+  it('acceptance 2: a descriptor attached at the current head is current, and stale is empty', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD))];
+    const coverage = withEvidence(await coverageOf(okJournalForEvidence(), HEAD, events));
+    expect(coverage.evidence.current).toEqual([evidenceDescriptor(HEAD)]);
+    expect(coverage.evidence.stale).toEqual([]);
+  });
+
+  it('acceptance 3: the same descriptor is stale, not current, when coverage is asked about a different head', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD))];
+    const coverage = withEvidence(await coverageOf(okJournalForEvidence(), OLDER, events));
+    expect(coverage.evidence.stale).toEqual([evidenceDescriptor(HEAD)]);
+    expect(coverage.evidence.current).toEqual([]);
+  });
+
+  it('acceptance 4: an advisory pass descriptor at the current head does not make ok true when a launched reviewer never answered', async () => {
+    const unanswered = journal(routed(['code-reviewer']), fanOut(['code-reviewer']));
+    const withoutEvidence = await coverageOf(unanswered, HEAD, []);
+    const events = [
+      artifactEvidenceEvent(1, { ...evidenceDescriptor(HEAD), advisory: { decision: 'pass' } }),
+    ];
+    const withEvidenceResult = await coverageOf(unanswered, HEAD, events);
+    expect(withEvidenceResult.ok).toBe(withoutEvidence.ok);
+    expect(withEvidenceResult.unanswered).toEqual(withoutEvidence.unanswered);
+    expect(withEvidenceResult.reason).toEqual(withoutEvidence.reason);
+    expect(withEvidenceResult.ok).toBe(false);
+  });
+
+  it('acceptance 5: an advisory fail descriptor at the current head does not make ok false when coverage is otherwise complete', async () => {
+    const withoutEvidence = await coverageOf(okJournalForEvidence(), HEAD, []);
+    const events = [
+      artifactEvidenceEvent(1, { ...evidenceDescriptor(HEAD), advisory: { decision: 'fail' } }),
+    ];
+    const withEvidenceResult = await coverageOf(okJournalForEvidence(), HEAD, events);
+    expect(withEvidenceResult.ok).toBe(withoutEvidence.ok);
+    expect(withEvidenceResult.ok).toBe(true);
+    expect(withEvidenceResult.reason).toEqual(withoutEvidence.reason);
+  });
+});
+
+describe('coverageOf — evidence is present on every return, and is {current: [], stale: []} with no artifact-evidence events', () => {
+  it.each([
+    ['the ok path', () => okJournalForEvidence()],
+    ['no fan-out at all', () => journal(routed(['code-reviewer']), answered('code-reviewer'))],
+    [
+      'a fan-out on another head',
+      () =>
+        journal(
+          routed(['code-reviewer']),
+          fanOut(['code-reviewer'], OLDER),
+          answered('code-reviewer', { headSha: OLDER }),
+        ),
+    ],
+    ['an unanswered reviewer', () => journal(routed(['code-reviewer']), fanOut(['code-reviewer']))],
+  ])('%s', async (_label, build) => {
+    const coverage = withEvidence(await coverageOf(build(), HEAD, []));
+    expect(coverage.evidence).toEqual({ current: [], stale: [] });
+  });
+
+  it('ignores malformed evidence events (no data at all, and data missing headSha)', async () => {
+    const events = [
+      artifactEvidenceEvent(1, null),
+      { seq: 2, at: '2026-08-18T09:02:00.000Z', kind: 'artifact-evidence' },
+      artifactEvidenceEvent(3, { schemaVersion: 1, item: 'RP-1' }),
+    ];
+    const coverage = withEvidence(await coverageOf(okJournalForEvidence(), HEAD, events));
+    expect(coverage.evidence).toEqual({ current: [], stale: [] });
+  });
+});
+
+describe('coverageOf — evidence current/stale matching is full-id, case-insensitive', () => {
+  it('matches an uppercase full headSha as current for the same commit in lowercase', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD.toUpperCase()))];
+    const coverage = withEvidence(await coverageOf(okJournalForEvidence(), HEAD, events));
+    expect(coverage.evidence.current).toHaveLength(1);
+    expect(coverage.evidence.stale).toEqual([]);
+  });
+
+  it('does NOT count a 7-character prefix of the current head as current — pinned, not treated as an abbreviation', async () => {
+    const events = [artifactEvidenceEvent(1, evidenceDescriptor(HEAD.slice(0, 7)))];
+    const coverage = withEvidence(await coverageOf(okJournalForEvidence(), HEAD, events));
+    expect(coverage.evidence.current).toEqual([]);
+    expect(coverage.evidence.stale).toHaveLength(1);
+  });
+});
+
+describe('coverageOf — evidence never changes the rest of the answer', () => {
+  it('ok/routed/launched/neverLaunched/unanswered/unattributed/stale/witness are identical with and without evidence events', async () => {
+    const records = journal(
+      routed(['code-reviewer', 'prose-reviewer']),
+      fanOut(['code-reviewer', 'prose-reviewer']),
+      answered('code-reviewer', { verdict: 'HOLD', blockers: [{ rule: 'r', note: 'n' }] }),
+      answered('prose-reviewer'),
+    );
+    const without = await coverageOf(records, HEAD, []);
+    const events = [
+      artifactEvidenceEvent(1, evidenceDescriptor(HEAD)),
+      artifactEvidenceEvent(2, evidenceDescriptor(OLDER)),
+    ];
+    const withEvidenceResult = withEvidence(await coverageOf(records, HEAD, events));
+
+    // Drop `evidence` before comparing the rest of the answer — `delete`
+    // rather than a destructure-and-discard, which `no-unused-vars` refuses.
+    const withoutRest: Partial<CoverageWithEvidence> = { ...withEvidence(without) };
+    delete withoutRest.evidence;
+    const withRest: Partial<CoverageWithEvidence> = { ...withEvidenceResult };
+    delete withRest.evidence;
+    expect(withRest).toEqual(withoutRest);
+    expect(withEvidenceResult.evidence.current).toHaveLength(1);
+    expect(withEvidenceResult.evidence.stale).toHaveLength(1);
+  });
+});
+
+describe('`verdict.mjs coverage` prints the evidence line', () => {
+  /** Local to this describe, same shape as the witness describe's own helper above. */
+  const runDirWithEvidenceEvents = async (
+    decisions: JournalRecord[],
+    events: Array<{ kind: string; data: unknown }>,
+  ): Promise<string> => {
+    const dir = await runDirWith(decisions);
+    const { recordEvent } = (await import(pathToFileURL(runJournalPath).href)) as {
+      recordEvent(input: Record<string, unknown>): unknown;
+    };
+    events.forEach((event, index) => {
+      recordEvent({
+        runDir: dir,
+        kind: event.kind,
+        data: event.data,
+        now: `2026-08-18T11:${String(index).padStart(2, '0')}:00.000Z`,
+      });
+    });
+    return dir;
+  };
+
+  it('names the current and stale evidence counts', async () => {
+    const runDir = await runDirWithEvidenceEvents(okJournalForEvidence(), [
+      { kind: 'artifact-evidence', data: evidenceDescriptor(HEAD) },
+      { kind: 'artifact-evidence', data: evidenceDescriptor(OLDER) },
+    ]);
+    const result = await runCli(['coverage', HEAD], runDir);
+    expect(result.code, result.out).toBe(0);
+    expect(result.stdout).toMatch(/^ {0,4}evidence: 1 current, 1 stale/m);
+  });
+
+  it('does not change the exit code of an otherwise failing round', async () => {
+    const decisions = journal(
+      routed(['code-reviewer', 'security-scanner']),
+      fanOut(['code-reviewer']),
+      answered('code-reviewer'),
+    );
+    const plainRunDir = await runDirWith(decisions);
+    const plainResult = await runCli(['coverage', HEAD], plainRunDir);
+
+    const withEvidenceRunDir = await runDirWithEvidenceEvents(decisions, [
+      { kind: 'artifact-evidence', data: evidenceDescriptor(HEAD) },
+    ]);
+    const withEvidenceResult = await runCli(['coverage', HEAD], withEvidenceRunDir);
+
+    expect(withEvidenceResult.code).toBe(plainResult.code);
+  });
+});

@@ -73,6 +73,9 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/delegated-decision.mjs',
   // RP-312: shared item-owned record append/read
   '.claude/scripts/lib/item-records.mjs',
+  // RP-312: artifact evidence entry point and its decision record
+  '.claude/scripts/evidence-attach.mjs',
+  'docs/decisions/artifact-evidence.md',
   // the unattended run's own preflight, and the deploy verdict it reads
   '.claude/scripts/preflight.mjs',
   '.claude/scripts/run-state.mjs',

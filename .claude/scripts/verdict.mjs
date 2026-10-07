@@ -142,13 +142,21 @@ if (subcommand === 'coverage') {
           .map(([name, status]) => `${safeForDiagnosis(name)}=${status}`)
           .join(', ')}\n`
       : '';
+  // Advisory, like the witness line: printed only when the run journaled any
+  // artifact evidence, and it never changes the exit code (RP-312).
+  const evidence = coverage.evidence ?? { current: [], stale: [] };
+  const evidenceLine =
+    evidence.current.length + evidence.stale.length > 0
+      ? `  evidence: ${evidence.current.length} current, ${evidence.stale.length} stale\n`
+      : '';
 
   if (coverage.ok) {
     process.stdout.write(
       `verdict: coverage complete for ${safeForDiagnosis(commit)} — ` +
         `${coverage.launched.length} reviewer(s) launched, every one of them answered for ` +
         'that commit.\n' +
-        witnessLine,
+        witnessLine +
+        evidenceLine,
     );
     process.exit(0);
   }
@@ -165,7 +173,8 @@ if (subcommand === 'coverage') {
   refuse(
     `verdict: the fan-out for ${safeForDiagnosis(commit)} is not covered.\n` +
       `${lines.join('\n')}\n` +
-      witnessLine,
+      witnessLine +
+      evidenceLine,
   );
 }
 
