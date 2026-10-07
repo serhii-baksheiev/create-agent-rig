@@ -25,7 +25,7 @@ export const COMPARISON_RESULTS = Object.freeze(['comparable', 'not comparable',
 /** A value the evidence does not establish — never zero. */
 export const UNKNOWN = 'unknown';
 
-const BASE_COMPARABLE_ON = ['repository', 'signalVersion', 'population'];
+const BASE_COMPARABLE_ON = ['repository', 'signalVersion', 'population', 'lane'];
 
 export const SIGNALS = Object.freeze(
   [
@@ -41,7 +41,7 @@ export const SIGNALS = Object.freeze(
         'a successor or re-filed item starts its own "first" and can hide an earlier HOLD',
         'descriptive evidence, not a quality score',
       ],
-      comparableOn: [...BASE_COMPARABLE_ON, 'lane'],
+      comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: ['lane'],
     },
     {
@@ -52,7 +52,7 @@ export const SIGNALS = Object.freeze(
       population: 'merged branches whose gate rounds were recorded in the named runs',
       unknown: 'a branch whose gate evidence stayed local or was not recorded',
       limits: ['gate evidence kept only on one machine leaves historical runs unknown'],
-      comparableOn: [...BASE_COMPARABLE_ON, 'lane'],
+      comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: ['lane'],
     },
     {
@@ -60,7 +60,7 @@ export const SIGNALS = Object.freeze(
       signalVersion: 1,
       definition: 'The total wall time from an item’s claim to its merge.',
       source: 'the claim event in the run journal and the merge commit of the item’s change',
-      population: 'items with both a recorded claim and an authoritative merge',
+      population: 'items with a recorded claim in the named runs',
       unknown: 'an item without an authoritative merge endpoint, which is excluded rather than forced in',
       limits: [
         'total wall time includes waiting on CI and on reviews',

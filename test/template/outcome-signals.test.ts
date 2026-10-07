@@ -3,12 +3,9 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
-// RP-356 — the 1.7.0 Outcome Evidence contract. This file is TDD Red: it pins
-// the schema of a module that does not exist yet
-// (`templates/agent-os/universal/.claude/scripts/lib/outcome-signals.mjs`)
-// and two decision records that do not exist yet. Every test below is
-// expected to fail because its subject is absent, not because of a typo in
-// the test.
+// RP-356 — the 1.7.0 Outcome Evidence contract. This file pins the schema of
+// `templates/agent-os/universal/.claude/scripts/lib/outcome-signals.mjs` and
+// the two decision records it governs.
 //
 // Every path here is the TEMPLATE copy under `templates/agent-os/universal/`
 // — never a synced `.claude/` copy — because the template is the source RP-355
@@ -63,7 +60,7 @@ const SIGNAL_NAMES = [
   'tokens-per-ship',
 ] as const;
 
-describe('outcome-signals.mjs — the six Outcome Evidence signal definitions (RP-356, Red)', () => {
+describe('outcome-signals.mjs — the six Outcome Evidence signal definitions (RP-356)', () => {
   it('exports SIGNALS as a frozen array of exactly six frozen definitions, named and ordered as the contract states', async () => {
     const { SIGNALS } = await loadOutcomeSignals();
     expect(Object.isFrozen(SIGNALS)).toBe(true);
@@ -100,17 +97,24 @@ describe('outcome-signals.mjs — the six Outcome Evidence signal definitions (R
     }
   });
 
-  it('every signal declares comparableOn including repository, signalVersion and population, drawn from DIMENSIONS', async () => {
+  it('every signal declares comparableOn including repository, signalVersion, population and lane, drawn from DIMENSIONS', async () => {
     const { SIGNALS, DIMENSIONS } = await loadOutcomeSignals();
     for (const signal of SIGNALS) {
       expect(Array.isArray(signal.comparableOn), signal.name).toBe(true);
-      for (const dimension of ['repository', 'signalVersion', 'population']) {
+      for (const dimension of ['repository', 'signalVersion', 'population', 'lane']) {
         expect(signal.comparableOn, `${signal.name}.comparableOn`).toContain(dimension);
       }
       for (const dimension of signal.comparableOn) {
         expect(DIMENSIONS, `${signal.name}.comparableOn entry "${dimension}"`).toContain(dimension);
       }
     }
+  });
+
+  it("claim-to-merge's population does not require an authoritative merge, since its unknown case is exactly the item that has none", async () => {
+    const { SIGNALS } = await loadOutcomeSignals();
+    const claimToMerge = SIGNALS.find((signal) => signal.name === 'claim-to-merge');
+    expect(claimToMerge, 'claim-to-merge must exist').toBeDefined();
+    expect(claimToMerge?.population.toLowerCase()).not.toMatch(/merge/);
   });
 
   it('every signal declares groupBy (possibly empty) drawn from DIMENSIONS', async () => {
@@ -200,9 +204,28 @@ const PERSON_IDENTITY_VOCABULARY = [
 export const GUARD_TEST_NAME =
   'never groups, scores, ranks, or compares humans — no SIGNALS key or dimension value names a person';
 
+/**
+ * Splits `value` into lowercase tokens on every camelCase boundary (a
+ * lowercase-or-digit followed by an uppercase letter), `_`, `-`, `.`, space
+ * and digit run — so `authorId`, `author_id`, `author-id` and `author.id`
+ * all yield `['author', 'id']`. A whole-word match alone (the previous
+ * `\bterm\b` regex) missed every one of those shapes plus plurals; this is
+ * why `namesAPerson` below also tries each token with one trailing `s`
+ * stripped before comparing it to the vocabulary.
+ */
+const tokenize = (value: string): string[] =>
+  value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[^a-zA-Z]+/)
+    .map((token) => token.toLowerCase())
+    .filter((token) => token.length > 0);
+
 const namesAPerson = (value: string): boolean => {
-  const lowered = value.toLowerCase();
-  return PERSON_IDENTITY_VOCABULARY.some((term) => new RegExp(`\\b${term}\\b`).test(lowered));
+  const vocabulary: readonly string[] = PERSON_IDENTITY_VOCABULARY;
+  return tokenize(value).some((token) => {
+    const singular = token.endsWith('s') ? token.slice(0, -1) : token;
+    return vocabulary.includes(token) || vocabulary.includes(singular);
+  });
 };
 
 /** Every object key anywhere inside `value`, recursively, arrays included. */
@@ -217,7 +240,7 @@ const deepKeys = (value: unknown): string[] => {
   return [];
 };
 
-describe('the no-person invariant (RP-356, Red)', () => {
+describe('the no-person invariant (RP-356)', () => {
   it(GUARD_TEST_NAME, async () => {
     const { SIGNALS, DIMENSIONS } = await loadOutcomeSignals();
 
@@ -234,9 +257,58 @@ describe('the no-person invariant (RP-356, Red)', () => {
     const offendingDimensions = DIMENSIONS.filter((value) => namesAPerson(value));
     expect(offendingDimensions, 'DIMENSIONS must name no person').toEqual([]);
   });
+
+  it('the person check fires on camelCase, snake_case, kebab-case and plural shapes', () => {
+    const shapes = [
+      'authorId',
+      'author_id',
+      'authorLogin',
+      'reviewers',
+      'assignees',
+      'committerEmail',
+      'byAuthor',
+      'perUser',
+      'userId',
+      'user_name',
+      'teams',
+      'owners',
+    ];
+    for (const shape of shapes) {
+      expect(namesAPerson(shape), shape).toBe(true);
+    }
+  });
+
+  it('the person check stays silent on words that merely resemble vocabulary terms', () => {
+    // Deliberately chosen so that no token produced by `tokenize` — nor that
+    // token with a trailing `s` stripped — equals a PERSON_IDENTITY_VOCABULARY
+    // entry, even though some contain a vocabulary term as a substring.
+    const lookalikes = [
+      'population',
+      'signalVersion',
+      'comparableOn',
+      'groupBy',
+      'repository',
+      'lane',
+      'harness',
+    ];
+    for (const word of lookalikes) {
+      expect(namesAPerson(word), word).toBe(false);
+    }
+  });
+
+  it('the person check stays silent on every current SIGNALS key and DIMENSIONS value', async () => {
+    const { SIGNALS, DIMENSIONS } = await loadOutcomeSignals();
+
+    for (const key of deepKeys(SIGNALS)) {
+      expect(namesAPerson(key), key).toBe(false);
+    }
+    for (const dimension of DIMENSIONS) {
+      expect(namesAPerson(dimension), dimension).toBe(false);
+    }
+  });
 });
 
-describe('outcome-signals.mjs is listed in layers.json under the workflow layer (RP-356, Red)', () => {
+describe('outcome-signals.mjs is listed in layers.json under the workflow layer (RP-356)', () => {
   it('appears in the workflow array, not the process array', async () => {
     const manifest = JSON.parse(await read(layersJsonPath)) as {
       process: string[];
@@ -258,7 +330,7 @@ const signalTableRowsIn = (markdown: string): Map<string, string> => {
   return rows;
 };
 
-describe('outcome-signals.md decision record (RP-356, Red)', () => {
+describe('outcome-signals.md decision record (RP-356)', () => {
   it('carries one table row per signal, naming its signalVersion, in correspondence with SIGNALS both directions', async () => {
     const { SIGNALS } = await loadOutcomeSignals();
     const markdown = await read(outcomeSignalsRecordPath);
@@ -332,7 +404,7 @@ describe('outcome-signals.md decision record (RP-356, Red)', () => {
 
 // --- Part D: docs/decisions/outcome-interop.md (generator-only, repo root) ---
 
-describe('outcome-interop.md generator-only record (RP-356, Red)', () => {
+describe('outcome-interop.md generator-only record (RP-356)', () => {
   it('exists at the repo root, not under templates/agent-os/universal', async () => {
     const markdown = await read(outcomeInteropRecordPath);
     expect(markdown.length).toBeGreaterThan(0);

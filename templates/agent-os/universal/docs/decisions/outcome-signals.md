@@ -36,8 +36,8 @@ population, so a reader sees how much the figure stands on.
 
 **Comparisons are descriptive.** A baseline and a current value are each a
 named run set, never an implicit calendar window. They are compared only when
-the repository, the `signalVersion`, the population semantics and, where the
-signal lists them, the harness and the lane composition agree. A
+the repository, the `signalVersion`, the population semantics and the lane
+composition agree, and, where the signal lists it, the harness. A
 signalVersion mismatch is `not comparable`, and so are incompatible
 populations or lanes. Insufficient coverage is reported as `insufficient`. A
 numeric delta is descriptive: it reads as better or worse only when the
