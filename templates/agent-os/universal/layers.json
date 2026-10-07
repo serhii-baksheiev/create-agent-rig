@@ -75,6 +75,7 @@
     ".agents/skills/plan-slices/SKILL.md",
     ".agents/skills/release-propose/SKILL.md",
     ".claude/scripts/release-evidence.mjs",
+    ".claude/scripts/lib/outcome-signals.mjs",
     ".claude/scripts/token-report.mjs",
     ".claude/scripts/detect-missed-gate.mjs",
     ".claude/scripts/decision-router.mjs",
@@ -116,6 +117,7 @@
     "docs/decisions/spacing-rations-mechanisms.md",
     "docs/decisions/stop-conditions-in-a-file.md",
     "docs/decisions/two-empty-endings.md",
-    "docs/decisions/artifact-evidence.md"
+    "docs/decisions/artifact-evidence.md",
+    "docs/decisions/outcome-signals.md"
   ]
 }
