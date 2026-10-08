@@ -59,6 +59,7 @@ interface CommandResult {
 // 15 s case budget and above the scripts' own 10 s gh bound, so a stalled child
 // fails the case naming itself instead of a bare case timeout.
 const RUN_CHILD_TIMEOUT_MS = 12_000;
+const FIFO_REVALIDATION_CHILD_TIMEOUT_MS = 3_000;
 
 const run = (
   file: string,
@@ -89,8 +90,6 @@ const run = (
       });
     });
   });
-
-const FIFO_REVALIDATION_CHILD_TIMEOUT_MS = 3_000;
 
 const runFifo = (
   file: string,
@@ -2025,19 +2024,23 @@ describe('a tracked claim must match the Git index', () => {
 describe('run-state uncertainty preserves the revalidation brake', () => {
   it('reads an unchanged regular selection state without treating its open handle as replacement', async () => {
     const runDir = await mkdtemp(path.join(tmpdir(), 'stable-selection-state-'));
-    await writeFile(
-      path.join(runDir, 'state.json'),
-      JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' } }),
-    );
-    const runState = (await import(
-      `${pathToFileURL(runStateScript).href}?stable-state=${Date.now()}`
-    )) as {
-      readStateForSelection: (directory: string) => Record<string, unknown>;
-    };
+    try {
+      await writeFile(
+        path.join(runDir, 'state.json'),
+        JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' } }),
+      );
+      const runState = (await import(
+        `${pathToFileURL(runStateScript).href}?stable-state=${Date.now()}`
+      )) as {
+        readStateForSelection: (directory: string) => Record<string, unknown>;
+      };
 
-    expect(runState.readStateForSelection(runDir)).toMatchObject({
-      revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' },
-    });
+      expect(runState.readStateForSelection(runDir)).toMatchObject({
+        revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' },
+      });
+    } finally {
+      await removeFixture(runDir);
+    }
   });
 
   it(
