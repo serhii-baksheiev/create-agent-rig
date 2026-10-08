@@ -446,7 +446,10 @@ const appendDecisionRecord = (decisionsPath, line) => {
     if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1) {
       throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
     }
-    const currentFd = openSync(decisionsPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const currentFd = openSync(
+      decisionsPath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
     try {
       const currentOpened = fstatSync(currentFd);
       if (

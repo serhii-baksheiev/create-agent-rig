@@ -570,6 +570,99 @@ describe('delegated-decision.mjs record — a regular decisions file cannot be s
       await removeFixture(path.dirname(preload));
     }
   });
+
+  it('refuses promptly without appending when the decisions pathname becomes a FIFO after current lstat', async (ctx) => {
+    const fifos = fifosAvailable();
+    skipUnless(ctx, fifos.ok, fifos.reason);
+    const BOUND_MS = 3_000;
+    const { dir, env } = await delegatedFixture();
+    const file = decisionsFile(dir, 'RP-1');
+    const oldFile = `${file}.before-fifo`;
+    const fifo = `${file}.fifo`;
+    const trace = path.join(dir, '.fifo-trace');
+    const firstBytes = `${JSON.stringify({ original: 'first inode' })}\n`;
+    const preload = path.join(
+      await mkdtemp(path.join(tmpdir(), 'delegated-decision-fifo-preload-')),
+      'swap.mjs',
+    );
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, firstBytes);
+    execFileSync('mkfifo', [fifo]);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP451_FIFO_TARGET;',
+        'const oldFile = process.env.RP451_FIFO_OLD_FILE;',
+        'const fifo = process.env.RP451_FIFO_FILE;',
+        'const trace = process.env.RP451_FIFO_TRACE;',
+        'let targetLstats = 0;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  if (args[0] === target && ++targetLstats === 2) {',
+        '    renameSync(target, oldFile);',
+        '    renameSync(fifo, target);',
+        "    appendFileSync(trace, 'decisions-replaced-with-fifo-after-current-lstat\\n');",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await new Promise<RunResult & { killed: boolean }>((resolve) => {
+        execFile(
+          process.execPath,
+          [
+            '--import',
+            pathToFileURL(preload).href,
+            delegatedDecisionScript,
+            ...recordArgs({
+              ticket: 'RP-1',
+              decision: 'extra-gate-round',
+              summary: 'must not append after FIFO substitution',
+            }),
+          ],
+          {
+            cwd: dir,
+            env: {
+              ...env,
+              RP451_FIFO_TARGET: file,
+              RP451_FIFO_OLD_FILE: oldFile,
+              RP451_FIFO_FILE: fifo,
+              RP451_FIFO_TRACE: trace,
+            },
+            timeout: BOUND_MS,
+            killSignal: 'SIGKILL',
+          },
+          (error, stdout, stderr) => {
+            resolve({
+              code: error ? ((error as { code?: number }).code ?? 1) : 0,
+              stdout,
+              stderr,
+              out: stdout + stderr,
+              killed: Boolean((error as { signal?: string } | null)?.signal),
+            });
+          },
+        );
+      });
+
+      expect(await readFile(trace, 'utf8')).toBe(
+        'decisions-replaced-with-fifo-after-current-lstat\n',
+      );
+      expect(result.killed, result.out).toBe(false);
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/changed under the check/i);
+      expect(await readFile(oldFile, 'utf8')).toBe(firstBytes);
+      expect(await readdir(path.dirname(file))).toEqual(['RP-1.jsonl', 'RP-1.jsonl.before-fifo']);
+    } finally {
+      await removeFixture(path.dirname(preload));
+    }
+  }, 8_000);
 });
 
 describe('delegated-decision.mjs record — POSIX identity rejects an initial device mismatch', () => {
