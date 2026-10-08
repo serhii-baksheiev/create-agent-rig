@@ -1770,6 +1770,11 @@ describe('Codex apply_patch shape validation keeps its refusal remedy', () => {
 
   it('refuses a regular move source replaced between verification stat and second open', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    skipUnless(
+      ctx,
+      process.platform !== 'win32',
+      'on Windows Node renameSync returns EPERM while this fixture holds the original descriptor open, so the POSIX regular-file replacement race cannot be observed',
+    );
     const scratch = await mkdtemp(path.join(repoRoot, '.codex-second-open-replacement-'));
     const source = path.join(scratch, 'source.txt');
     const replacement = path.join(scratch, 'replacement.txt');
