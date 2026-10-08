@@ -436,8 +436,29 @@ const appendDecisionRecord = (decisionsPath, line) => {
     if (!stat.isFile() || stat.nlink !== 1) {
       throw new Error(`${decisionsPath} is not a regular file with a single name; refusing to write.`);
     }
-    if (pathStat && (stat.dev !== pathStat.dev || stat.ino !== pathStat.ino)) {
+    if (
+      pathStat &&
+      (stat.ino !== pathStat.ino || (process.platform !== 'win32' && stat.dev !== pathStat.dev))
+    ) {
       throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
+    }
+    const current = lstatSync(decisionsPath);
+    if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1) {
+      throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
+    }
+    const currentFd = openSync(decisionsPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const currentOpened = fstatSync(currentFd);
+      if (
+        !currentOpened.isFile() ||
+        currentOpened.nlink !== 1 ||
+        currentOpened.dev !== stat.dev ||
+        currentOpened.ino !== stat.ino
+      ) {
+        throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
+      }
+    } finally {
+      closeSync(currentFd);
     }
     writeSync(fd, line);
   } finally {

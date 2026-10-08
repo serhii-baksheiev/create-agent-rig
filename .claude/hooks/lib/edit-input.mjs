@@ -483,10 +483,25 @@ function movedFragment(current, budget) {
       }
       const verified = statSync(verifiedSource);
       if (!verified.isFile()) return inspectionRefusal(current, 'move source is not a regular file');
-      if (opened.dev !== verified.dev || opened.ino !== verified.ino) {
+      if (
+        opened.ino !== verified.ino ||
+        (process.platform !== 'win32' && opened.dev !== verified.dev)
+      ) {
         return inspectionRefusal(current, 'move source changed during inspection');
       }
-
+      const verifiedHandle = openSync(verifiedSource, constants.O_RDONLY | noFollow | nonBlocking);
+      try {
+        const verifiedOpened = fstatSync(verifiedHandle);
+        if (
+          !verifiedOpened.isFile() ||
+          verifiedOpened.dev !== opened.dev ||
+          verifiedOpened.ino !== opened.ino
+        ) {
+          return inspectionRefusal(current, 'move source changed during inspection');
+        }
+      } finally {
+        closeSync(verifiedHandle);
+      }
       let bytesRead = 0;
       const buffer = Buffer.allocUnsafe(MAX_MOVED_FILE_BYTES + 1);
       while (bytesRead < buffer.length) {

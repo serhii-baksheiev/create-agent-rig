@@ -56,6 +56,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { fifosAvailable, skipUnless, symlinksAvailable } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 import { stubCommand } from '../helpers/stub-command.js';
 import { GITHUB_PAT } from './secrets-fixtures.js';
 
@@ -499,6 +500,141 @@ describe('delegated-decision.mjs record — never follows a symlink out of the p
   });
 });
 
+describe('delegated-decision.mjs record — a regular decisions file cannot be swapped after validation', () => {
+  it('refuses when an existing regular decisions file is replaced before the writer opens it', async () => {
+    const { dir, env } = await delegatedFixture();
+    const file = decisionsFile(dir, 'RP-1');
+    await mkdir(path.dirname(file), { recursive: true });
+    const firstBytes = `${JSON.stringify({ original: 'first inode' })}\n`;
+    const replacementBytes = `${JSON.stringify({ replacement: 'second inode' })}\n`;
+    const replacement = `${file}.replacement`;
+    const trace = `${file}.swap-trace`;
+    const preload = path.join(
+      await mkdtemp(path.join(tmpdir(), 'delegated-decision-preload-')),
+      'swap.mjs',
+    );
+    await writeFile(file, firstBytes);
+    await writeFile(replacement, replacementBytes);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalOpenSync = fs.openSync;',
+        'const target = process.env.RP451_SWAP_TARGET;',
+        'const replacement = process.env.RP451_SWAP_REPLACEMENT;',
+        'const trace = process.env.RP451_SWAP_TRACE;',
+        'let swapped = false;',
+        'fs.openSync = (...args) => {',
+        '  if (!swapped && args[0] === target) {',
+        '    renameSync(target, `${target}.before-swap`);',
+        '    renameSync(replacement, target);',
+        "    appendFileSync(trace, 'swapped\\n');",
+        '    swapped = true;',
+        '  }',
+        '  return originalOpenSync(...args);',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await run(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preload).href,
+          delegatedDecisionScript,
+          ...recordArgs({
+            ticket: 'RP-1',
+            decision: 'extra-gate-round',
+            summary: 'must not reach replacement',
+          }),
+        ],
+        dir,
+        {
+          ...env,
+          RP451_SWAP_TARGET: file,
+          RP451_SWAP_REPLACEMENT: replacement,
+          RP451_SWAP_TRACE: trace,
+        },
+      );
+
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/changed under the check/i);
+      expect(await readFile(trace, 'utf8')).toBe('swapped\n');
+      expect(await readFile(file, 'utf8')).toBe(replacementBytes);
+      expect(await readFile(`${file}.before-swap`, 'utf8')).toBe(firstBytes);
+    } finally {
+      await removeFixture(path.dirname(preload));
+    }
+  });
+});
+
+describe('delegated-decision.mjs record — POSIX identity rejects an initial device mismatch', () => {
+  it('refuses before appending when the pre-open lstat device differs from the opened regular file', async () => {
+    const { dir, env } = await delegatedFixture();
+    const file = decisionsFile(dir, 'RP-1');
+    const original = `${JSON.stringify({ original: 'stable regular file' })}\n`;
+    const trace = `${file}.lstat-trace`;
+    const preload = path.join(
+      await mkdtemp(path.join(tmpdir(), 'delegated-decision-posix-preload-')),
+      'lstat.mjs',
+    );
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, original);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "Object.defineProperty(process, 'platform', { value: 'linux' });",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP451_POSIX_TARGET;',
+        'const trace = process.env.RP451_POSIX_TRACE;',
+        'let changed = false;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  if (!changed && args[0] === target) {',
+        '    changed = true;',
+        "    appendFileSync(trace, 'initial-lstat\\n');",
+        "    return new Proxy(stat, { get(value, property, receiver) { return property === 'dev' ? value.dev + 1 : Reflect.get(value, property, receiver); } });",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await run(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preload).href,
+          delegatedDecisionScript,
+          ...recordArgs({
+            ticket: 'RP-1',
+            decision: 'extra-gate-round',
+            summary: 'must not append after POSIX mismatch',
+          }),
+        ],
+        dir,
+        { ...env, RP451_POSIX_TARGET: file, RP451_POSIX_TRACE: trace },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('initial-lstat\n');
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/changed under the check/i);
+      expect(await readFile(file, 'utf8')).toBe(original);
+    } finally {
+      await removeFixture(path.dirname(preload));
+    }
+  });
+});
+
 // --- record: success ---------------------------------------------------
 
 describe('delegated-decision.mjs record — durable evidence on success', () => {
@@ -626,6 +762,28 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     expect(lines).toHaveLength(2);
     expect(lines[0]).toMatchObject({ decision: 'extra-gate-round', summary: 'first' });
     expect(lines[1]).toMatchObject({ decision: 'work-sequencing', summary: 'second' });
+  });
+
+  // A normal, unchanged decisions file must remain writable after the first
+  // append. This runs through the real lstat → open → fstat guard, rather
+  // than stubbing filesystem metadata: a platform may report the opened file
+  // with different device metadata while its identity and contents are stable.
+  it('appends to an unchanged regular decisions file and reports success for both writes', async () => {
+    const { dir, env } = await delegatedFixture();
+    const first = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'first' }),
+      dir,
+      env,
+    );
+    const second = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'work-sequencing', summary: 'second' }),
+      dir,
+      env,
+    );
+
+    expect(first.code, first.out).toBe(0);
+    expect(second.code, second.out).toBe(0);
+    expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
   });
 
   it('records --evidence verbatim (through the same redaction pipeline) when given', async () => {

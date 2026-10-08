@@ -131,10 +131,13 @@
 // is bounded on three axes at once: at
 // most 32 MiB read in total, at most 8 MiB in one line, at most 3s wall
 // time (checked between chunks) — a fixed-size buffer on an
-// `O_RDONLY|O_NONBLOCK` handle whose opened `fstatSync` is a regular file
-// with the same device and inode as the preceding regular-file `lstatSync`.
-// That comparison happens after `openSync`: it rejects a different opened file
-// before reading changed content, but does not prevent the open itself. See
+// `O_RDONLY|O_NONBLOCK` handle whose opened `fstatSync` is a regular file.
+// On POSIX its device and inode must match the preceding regular-file
+// `lstatSync`. Windows validates that initial inode, then opens the checked
+// pathname a second time and compares the two descriptor identities: Node 22
+// reports pathname and descriptor devices through incompatible APIs there.
+// Those comparisons happen after `openSync`: they reject a different opened
+// file before reading changed content, but do not prevent the open itself. See
 // dispatch-usage-codex.test.ts (absent in a generated rig) › "does not read a
 // rollout replaced with a symlink after lstatSync has accepted its regular
 // file". Crossing ANY bound, an unreadable file, an empty
@@ -858,10 +861,30 @@ function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 
     fd = openSync(file, OPEN_FLAGS);
     const opened = fstatSync(fd);
-    if (!opened.isFile() || opened.dev !== lst.dev || opened.ino !== lst.ino) {
+    if (
+      !opened.isFile() ||
+      opened.ino !== lst.ino ||
+      (process.platform !== 'win32' && opened.dev !== lst.dev)
+    ) {
       return 'transcript-unreadable';
     }
-
+    const current = lstatSync(file);
+    if (!current.isFile()) {
+      return 'transcript-unreadable';
+    }
+    const currentFd = openSync(file, OPEN_FLAGS | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const currentOpened = fstatSync(currentFd);
+      if (
+        !currentOpened.isFile() ||
+        currentOpened.dev !== opened.dev ||
+        currentOpened.ino !== opened.ino
+      ) {
+        return 'transcript-unreadable';
+      }
+    } finally {
+      closeSync(currentFd);
+    }
     const chunk = Buffer.alloc(TRANSCRIPT_READ_CHUNK_BYTES);
     // The pending partial line, carried across chunk reads as a list of
     // already-copied slices plus a running byte length — never

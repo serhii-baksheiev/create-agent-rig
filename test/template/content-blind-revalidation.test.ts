@@ -1991,6 +1991,23 @@ describe('a tracked claim must match the Git index', () => {
 });
 
 describe('run-state uncertainty preserves the revalidation brake', () => {
+  it('reads an unchanged regular selection state without treating its open handle as replacement', async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), 'stable-selection-state-'));
+    await writeFile(
+      path.join(runDir, 'state.json'),
+      JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' } }),
+    );
+    const runState = (await import(
+      `${pathToFileURL(runStateScript).href}?stable-state=${Date.now()}`
+    )) as {
+      readStateForSelection: (directory: string) => Record<string, unknown>;
+    };
+
+    expect(runState.readStateForSelection(runDir)).toMatchObject({
+      revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' },
+    });
+  });
+
   it('fails closed at selection when a corrupt state may contain revalidationHold', async () => {
     const p = await project();
     await writeFile(

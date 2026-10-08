@@ -1700,6 +1700,70 @@ describe('Codex apply_patch shape validation keeps its refusal remedy', () => {
   // queue/checkout — and this one did not, so `git rev-parse --show-toplevel`
   // answered about the HOOK's repository and the guard fell open. Same lesson the
   // baseline-commit incident already paid for.
+  it('classifies an initial POSIX move-source device mismatch as changed before it inspects a credential', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-posix-device-mismatch-'));
+    const source = path.join(scratch, 'secret.txt');
+    const trace = path.join(scratch, 'stat-trace');
+    const preload = path.join(scratch, 'preload.mjs');
+    await writeFile(source, `AWS_KEY=${CLOUD_ACCESS_KEY}\n`);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "Object.defineProperty(process, 'platform', { value: 'linux' });",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalStatSync = fs.statSync;',
+        'const target = process.env.RP451_POSIX_TARGET;',
+        'const trace = process.env.RP451_POSIX_TRACE;',
+        'let changed = false;',
+        'fs.statSync = (...args) => {',
+        '  const stat = originalStatSync(...args);',
+        '  if (!changed && args[0] === target) {',
+        '    changed = true;',
+        "    appendFileSync(trace, 'verified-stat\\n');",
+        "    return new Proxy(stat, { get(value, property, receiver) { return property === 'dev' ? value.dev + 1 : Reflect.get(value, property, receiver); } });",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await runGuardInput(
+        'guard-secret-file.mjs',
+        {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: [
+              '*** Begin Patch',
+              `*** Update File: ${path.relative(repoRoot, source)}`,
+              '*** Move to: notes.md',
+              '*** End Patch',
+            ].join('\n'),
+          },
+          cwd: repoRoot,
+        },
+        undefined,
+        {
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+          RP451_POSIX_TARGET: source,
+          RP451_POSIX_TRACE: trace,
+        },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('verified-stat\n');
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/move source changed during inspection/i);
+      expect(result.stderr).not.toMatch(/credential/i);
+    } finally {
+      await removeFixture(scratch);
+    }
+  });
+
   it('resolves the repository root even when a git hook has exported GIT_DIR', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     // A REAL repository, not an empty directory: with an invalid GIT_DIR the git
