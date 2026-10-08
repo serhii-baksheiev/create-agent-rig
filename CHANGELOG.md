@@ -62,13 +62,41 @@ records the decision and its consequences.
 
 ### Fixed
 
-- **Windows Node 22 file-identity validation** now accepts an unchanged file
-  while retaining POSIX device and inode checks where the platform supports
-  them (RP-451).
-- **State and decision-record reads** use nonblocking verification, so a FIFO
-  replacement is refused without a blocking open (RP-455).
-- **Windows Codex hook wrappers** use UTF-8 Git-root output and forward stdin
-  byte-for-byte without adding a BOM (RP-460).
+- Reject malformed delegated-decision schema versions, typed fields and
+  timestamps while retaining valid records (RP-439). Evidence:
+  `test/template/delegated-decision.test.ts` › "parseDecisions rejects an
+  unsupported decision-record schema version", › "parseDecisions rejects
+  malformed typed decision fields", and ›
+  "parseDecisions(text, { ticket }) still accepts a well-formed delegated
+  record of a delegable kind".
+- Refuse persistent linked or junction decisions directories and hard-linked
+  foreign decision evidence; ordinary records and safe absence retain their
+  behavior (RP-440). Evidence: `test/template/delegated-decision.test.ts` ›
+  "a .rig/decisions directory junction to a different checkout is unreadable —
+  exit 2, never that checkout's decision", › "a ticket file hard-linked from
+  another checkout is unreadable — exit 2, never that checkout's decision",
+  › "an unresolved ticket (no file at all) reports an empty array, exit 0",
+  and › "still lists a well-formed delegated record of a delegable kind";
+  `test/template/item-records.test.ts` › "reports exists: false for an absent
+  file".
+- Correct Windows Node 22 file-identity verification without dropping POSIX
+  device/inode checks, and use nonblocking opens so FIFO replacements are
+  rejected without waiting for a writer (RP-451, RP-455). Evidence:
+  `test/template/content-blind-revalidation.test.ts` › "reads an unchanged
+  regular selection state without treating its open handle as replacement",
+  › "refuses a selection state replaced after initial lstat instead of reading
+  the replacement stop", and › "fails closed promptly when the selection state
+  becomes a FIFO after initial lstat";
+  `test/template/delegated-decision.test.ts` › "refuses before appending when
+  the pre-open lstat device differs from the opened regular file", and ›
+  "refuses promptly without appending when the decisions pathname becomes a
+  FIFO after initial lstat".
+- Decode non-ASCII Git roots correctly in the Windows Codex Probity wrapper
+  and preserve raw input without adding a UTF-8 BOM (RP-460). Evidence:
+  `test/template/probity-windows-wrapper.test.ts` › "forwards exact Codex input
+  and relays the selected Probity block from a non-ASCII root", and › "forwards
+  exact Codex input without adding a BOM from a preamble-bearing console
+  encoding".
 
 ### Verification and limits
 
@@ -78,9 +106,17 @@ records the decision and its consequences.
   kill switch through both harnesses' hook invocations, the publication
   boundary in preflight and doctor, and reading a decision back from a second
   session and a second clone (RP-344).
-- Live Claude Code sessions were driven for RP-344; the evidence is on the
-  ticket. Live Codex acceptance was unavailable for this release (account
-  usage limit) and was not substituted.
+- Live Claude Code sessions were driven for the original RP-344 acceptance;
+  its historical Codex session was unavailable because of an account usage
+  limit. Independent replacement validation records deterministic Codex-path
+  execution separately from live observations; generated-hook tests do not
+  prove that a native Codex session loaded those hooks.
+- The record command writes decision evidence but does not stage or commit it.
+  Stage and commit `.rig/decisions/<ticket>.jsonl` for another clone to read it;
+  the per-run journal is local evidence (RP-452).
+- Decisions-directory containment is static. Concurrent replacement of that
+  directory during a read remains a known Low limitation; the reader is not
+  race-proof (RP-454).
 
 ## 1.4.0 (release candidate)
 

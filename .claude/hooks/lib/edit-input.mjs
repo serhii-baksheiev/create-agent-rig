@@ -489,7 +489,19 @@ function movedFragment(current, budget) {
       ) {
         return inspectionRefusal(current, 'move source changed during inspection');
       }
-
+      const verifiedHandle = openSync(verifiedSource, constants.O_RDONLY | noFollow | nonBlocking);
+      try {
+        const verifiedOpened = fstatSync(verifiedHandle);
+        if (
+          !verifiedOpened.isFile() ||
+          verifiedOpened.dev !== opened.dev ||
+          verifiedOpened.ino !== opened.ino
+        ) {
+          return inspectionRefusal(current, 'move source changed during inspection');
+        }
+      } finally {
+        closeSync(verifiedHandle);
+      }
       let bytesRead = 0;
       const buffer = Buffer.allocUnsafe(MAX_MOVED_FILE_BYTES + 1);
       while (bytesRead < buffer.length) {

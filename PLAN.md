@@ -7,9 +7,13 @@
 > **Status (1.3.0 published 6 Oct 2026):** 1.3.0 is `latest`, published from
 > `gitHead` `9c2508302e7a04b95c51edab2d256816cedddd82`. Versions 0.1.0 through
 > 1.3.0 are live; delivery is done through `1.3.0`, the current `latest`.
+> `1.3.1` is a frozen hotfix candidate at `release/1.3.1-rc`,
+> `19a9dc64`, and is not published; its readiness gate is complete.
 > `1.4.0` is a frozen release candidate — the unattended-execution posture
-> contract on the 1.3 line, frozen as `release/1.4.0-rc` at `1e3db37f` — and
+> contract on the 1.3 line, frozen as `release/1.4.0-rc` at `a03c3eed` — and
 > is not published; the owner decides its publication.
+> Its original `1e3db37f` candidate remains preserved at
+> `validation/original-140-1e3db37`.
 > `1.5.0` is the release candidate being prepared — the controller authority
 > contract on the 1.4 line — and is not published.
 >
