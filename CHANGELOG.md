@@ -63,15 +63,39 @@ records the decision and its consequences.
 ### Fixed
 
 - Reject malformed delegated-decision schema versions, typed fields and
-  timestamps while retaining valid records (RP-439).
+  timestamps while retaining valid records (RP-439). Evidence:
+  `test/template/delegated-decision.test.ts` › "parseDecisions rejects an
+  unsupported decision-record schema version", › "parseDecisions rejects a
+  malformed %s field rather than treating it as delegated evidence", and ›
+  "parseDecisions(text, { ticket }) still accepts a well-formed delegated
+  record of a delegable kind".
 - Refuse persistent linked or junction decisions directories and hard-linked
   foreign decision evidence; ordinary records and safe absence retain their
-  behavior (RP-440).
+  behavior (RP-440). Evidence: `test/template/delegated-decision.test.ts` ›
+  "a .rig/decisions directory junction to a different checkout is unreadable —
+  exit 2, never that checkout's decision", › "a ticket file hard-linked from
+  another checkout is unreadable — exit 2, never that checkout's decision",
+  › "an unresolved ticket in an existing ordinary .rig/decisions directory
+  reports an empty array, exit 0", and › "still lists a well-formed delegated
+  record of a delegable kind".
 - Correct Windows Node 22 file-identity verification without dropping POSIX
   device/inode checks, and use nonblocking opens so FIFO replacements are
-  rejected without waiting for a writer (RP-451, RP-455).
+  rejected without waiting for a writer (RP-451, RP-455). Evidence:
+  `test/template/content-blind-revalidation.test.ts` › "reads an unchanged
+  regular selection state without treating its open handle as replacement",
+  › "refuses a selection state replaced after initial lstat instead of reading
+  the replacement stop", and › "fails closed promptly when the selection state
+  becomes a FIFO after initial lstat";
+  `test/template/delegated-decision.test.ts` › "refuses before appending when
+  the pre-open lstat device differs from the opened regular file", and ›
+  "refuses promptly without appending when the decisions pathname becomes a
+  FIFO after initial lstat".
 - Decode non-ASCII Git roots correctly in the Windows Codex Probity wrapper
-  and preserve raw input without adding a UTF-8 BOM (RP-460).
+  and preserve raw input without adding a UTF-8 BOM (RP-460). Evidence:
+  `test/template/probity-windows-wrapper.test.ts` › "forwards exact Codex input
+  and relays the selected Probity block from a non-ASCII root", and › "forwards
+  exact Codex input without adding a BOM from a preamble-bearing console
+  encoding".
 
 ### Verification and limits
 
