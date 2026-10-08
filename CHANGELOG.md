@@ -15,7 +15,25 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.3.0 (release candidate)
+## 1.3.1 (release candidate)
+
+Patch release prepared from the exact published 1.3.0 source. Publication remains
+an owner action.
+
+### Fixed
+
+- File identity checks accept an unchanged file on Windows with Node 22 while
+  retaining inode checks and POSIX device checks (RP-451).
+- State and claim readers refuse real FIFO replacements promptly, including
+  replacements before the first open and during final identity verification
+  (RP-455). The existing containment checks remain in place.
+- Windows Codex guard wrappers resolve Git roots directly, including UNC roots,
+  decode Git output as UTF-8 and refuse missing guards or Git failures (RP-321).
+- The Windows Codex Probity wrapper decodes non-ASCII Git roots as UTF-8 so it
+  reaches the selected provider under CP437. Input and response forwarding remain
+  byte-preserving (RP-460).
+
+## 1.3.0
 
 **1.3.0 is additive on the 1.2 line.** It adds upstream
 [Probity](https://github.com/nizos/probity) (`@nizos/probity` 1.10.1) as an

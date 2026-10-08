@@ -325,6 +325,7 @@ function windowsHookCommand(command) {
       ]
     : [
         "$ErrorActionPreference = 'Stop'",
+        '$OutputEncoding = [Console]::OutputEncoding = [Text.Encoding]::UTF8',
         '$repoRoot = git rev-parse --show-toplevel',
         'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
         '$env:CLAUDE_PROJECT_DIR = $repoRoot',
