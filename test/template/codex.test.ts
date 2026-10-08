@@ -287,7 +287,10 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           const windowsScript = Buffer.from(windowsCommand?.[1] ?? '', 'base64').toString(
             'utf16le',
           );
-          expect(windowsScript).toContain('git rev-parse --show-toplevel');
+          // RP-321 starts the bounded guards' resolved git.exe application
+          // directly, while non-bounded wrappers retain the shell form.
+          // Both express the root query without depending on its executable.
+          expect(windowsScript).toContain('rev-parse --show-toplevel');
           expect(windowsScript).toMatch(
             /Join-Path \$repoRoot '\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs'/,
           );
@@ -423,11 +426,11 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     },
   );
 
-  // Hygiene, from reviewer advisories accepted alongside the blocker above:
-  // CLIXML progress noise from a native command can land IN the block
-  // reason, and `cmd.exe` alone risks a cwd lookup / the user's AutoRun.
+  // CLIXML progress noise from a native command can land in the block reason.
+  // RP-321 resolves the absolute git.exe application before starting it: a
+  // shell would reintroduce lookup, AutoRun, and UNC working-directory risks.
   it.each(BOUNDED_STAGE_GUARDS)(
-    "keeps CLIXML progress noise out of %s's block reason and resolves git through ComSpec with AutoRun disabled (RP-266 follow-up)",
+    "keeps CLIXML progress noise out of %s's block reason and starts an absolute git.exe directly without shell lookup (RP-266 follow-up, RP-321)",
     async (guardFile) => {
       const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
         hooks: Record<
@@ -451,11 +454,21 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
 
       expect(
         windowsScript,
-        `${guardFile}: expected git resolved through $env:ComSpec (not a bare 'cmd.exe', which ` +
-          'risks a cwd lookup) with /d (skips the user AutoRun) before /c',
-      ).toMatch(/\$env:ComSpec/);
-      expect(windowsScript).toMatch(/\/d\b/);
-      expect(windowsScript).toContain('git rev-parse --show-toplevel');
+        `${guardFile}: expected the absolute git.exe application selected from PATH before it starts`,
+      ).toMatch(/\$gitExe\s*=\s*\(Get-Command git\.exe -CommandType Application/);
+      expect(windowsScript).toMatch(/\$gitInfo\.FileName\s*=\s*\$gitExe/);
+      expect(windowsScript).toMatch(/\$gitInfo\.UseShellExecute\s*=\s*\$false/);
+      expect(
+        windowsScript,
+        `${guardFile}: must not delegate the root query to cmd.exe or ComSpec`,
+      ).not.toMatch(/ComSpec|cmd\.exe/i);
+      expect(
+        windowsScript,
+        `${guardFile}: the direct git child must still refuse current-directory executable lookup`,
+      ).toMatch(
+        /\$gitInfo\.EnvironmentVariables\[['"]NoDefaultCurrentDirectoryInExePath['"]\]\s*=\s*['"]1['"]/,
+      );
+      expect(windowsScript).toContain("'rev-parse --show-toplevel'");
     },
   );
 

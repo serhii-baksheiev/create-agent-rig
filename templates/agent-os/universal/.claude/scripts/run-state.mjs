@@ -122,7 +122,10 @@ export const readStateForSelection = (runDir) => {
   if (!pathStat.isFile()) throw new Error('run state is invalid: expected a regular file');
   let fd;
   try {
-    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      statePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     throw new Error('run state is unreadable', { cause: error });
   }
@@ -130,14 +133,33 @@ export const readStateForSelection = (runDir) => {
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error('run state is invalid: expected a regular file');
+    if (
+      stat.ino !== pathStat.ino ||
+      (process.platform !== 'win32' && stat.dev !== pathStat.dev)
+    ) {
+      throw new Error('run state changed during validation');
+    }
     if (stat.size > MAX_STATE_BYTES) {
       throw new Error(`run state exceeds ${MAX_STATE_BYTES} bytes`);
     }
     const current = lstatSync(statePath);
     if (current.isSymbolicLink()) throw new Error('run state is a symlink');
     if (!current.isFile()) throw new Error('run state is invalid: expected a regular file');
-    if (current.dev !== stat.dev || current.ino !== stat.ino) {
-      throw new Error('run state changed during validation');
+    const currentFd = openSync(
+      statePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const currentOpened = fstatSync(currentFd);
+      if (
+        !currentOpened.isFile() ||
+        currentOpened.dev !== stat.dev ||
+        currentOpened.ino !== stat.ino
+      ) {
+        throw new Error('run state changed during validation');
+      }
+    } finally {
+      closeSync(currentFd);
     }
     raw = readFileSync(fd, 'utf8');
   } catch (error) {

@@ -483,7 +483,10 @@ function movedFragment(current, budget) {
       }
       const verified = statSync(verifiedSource);
       if (!verified.isFile()) return inspectionRefusal(current, 'move source is not a regular file');
-      if (opened.dev !== verified.dev || opened.ino !== verified.ino) {
+      if (
+        opened.ino !== verified.ino ||
+        (process.platform !== 'win32' && opened.dev !== verified.dev)
+      ) {
         return inspectionRefusal(current, 'move source changed during inspection');
       }
 
