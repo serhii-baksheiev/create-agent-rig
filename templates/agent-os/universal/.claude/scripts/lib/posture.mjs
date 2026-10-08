@@ -33,7 +33,7 @@ export const POSTURE_CONDITIONS = Object.freeze([
     'required',
     ['preflight', 'doctor'],
     'both',
-    'The kill-switch file is present in the home directory of the process that checks, or at a path AGENT_LOOP_STOP names.',
+    'The kill-switch file is present, or its path cannot be inspected, in the home directory of the process that checks, or at a path AGENT_LOOP_STOP names.',
   ),
   condition(
     'run-dir-inherited',

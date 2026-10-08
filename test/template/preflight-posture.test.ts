@@ -235,7 +235,7 @@ describe('preflight refuses an unattended flag already on disk for this checkout
 });
 
 describe('preflight treats an uninspectable kill-switch path as a failure, never a pass (RP-462)', () => {
-  // `existsSync` (the current `brakeIsOn` implementation) swallows EACCES into
+  // `existsSync` (what `brakeIsOn` used before RP-462) swallows EACCES into
   // `false` — a STOP file sitting behind a chmod-000 directory reads exactly
   // like no STOP file at all. This reproduces that against `checkKillSwitch`
   // directly, written against the literal expected shape — never derived by

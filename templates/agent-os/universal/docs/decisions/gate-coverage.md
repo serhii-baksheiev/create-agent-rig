@@ -35,8 +35,8 @@ the new one.
 **3. It needs to parse the journal in a guard that fails open.** The journal
 reader refuses a malformed line by throwing, which is right for a reader and
 fatal for a fail-open guard: the throw resolves to *allow*, again for every rule
-at once. `stop-flag.mjs` is not the precedent it resembles — that is `existsSync`
-over a capped list of fixed paths, not a parse.
+at once. `stop-flag.mjs` is not the precedent it resembles — that is one `stat`
+per path over a capped list of fixed paths, not a parse.
 
 **4. Its sweep half cannot exist.** The natural companion — audit merged PRs from
 outside — has nothing to read: the run directory is gitignored, and the sweep
