@@ -504,30 +504,56 @@ describe('RP-462: a STOP path that exists but cannot be inspected is denied, not
   );
 
   it.skipIf(!canChmodDeny)(
-    'control: AGENT_LOOP_STOP naming a path that does not exist (ENOENT) is allowed',
+    'names an uninspectable STOP path as such, and does not tell the caller to rm it',
     async () => {
-      const dir = await mkdtemp(path.join(tmpdir(), 'rp462-enoent-'));
+      const dir = await mkdtemp(path.join(tmpdir(), 'rp462-remedy-'));
+      const locked = path.join(dir, 'locked');
+      await mkdir(locked);
+      const flag = path.join(locked, 'STOP');
+      await writeFile(flag, '');
+      await chmod(locked, 0o000);
       try {
-        await allow('gh pr merge 12 --squash', { AGENT_LOOP_STOP: path.join(dir, 'absent-STOP') });
+        const stderr = await new Promise<string>((resolve) => {
+          const child = execFile(
+            process.execPath,
+            [hook],
+            { env: { ...process.env, AGENT_LOOP_STOP: flag }, timeout: 10_000 },
+            (_error, _stdout, err) => resolve(String(err)),
+          );
+          child.stdin?.end(
+            JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 12' } }),
+          );
+        });
+        expect(stderr).toMatch(/cannot be inspected \(EACCES\)/);
+        expect(stderr).not.toMatch(/Clear it with: rm/);
       } finally {
+        await chmod(locked, 0o755);
         await removeFixture(dir);
       }
     },
   );
 
-  it.skipIf(!canChmodDeny)(
-    'control: AGENT_LOOP_STOP whose parent component is a regular file (ENOTDIR) is allowed',
-    async () => {
-      const dir = await mkdtemp(path.join(tmpdir(), 'rp462-enotdir-'));
-      const regularFile = path.join(dir, 'not-a-directory');
-      await writeFile(regularFile, '');
-      try {
-        await allow('gh pr merge 12 --squash', { AGENT_LOOP_STOP: path.join(regularFile, 'STOP') });
-      } finally {
-        await removeFixture(dir);
-      }
-    },
-  );
+  // The two controls need no chmod, so they run everywhere — including on
+  // Windows and as root, where error codes differ most.
+  it('control: AGENT_LOOP_STOP naming a path that does not exist (ENOENT) is allowed', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'rp462-enoent-'));
+    try {
+      await allow('gh pr merge 12 --squash', { AGENT_LOOP_STOP: path.join(dir, 'absent-STOP') });
+    } finally {
+      await removeFixture(dir);
+    }
+  });
+
+  it('control: AGENT_LOOP_STOP whose parent component is a regular file (ENOTDIR) is allowed', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'rp462-enotdir-'));
+    const regularFile = path.join(dir, 'not-a-directory');
+    await writeFile(regularFile, '');
+    try {
+      await allow('gh pr merge 12 --squash', { AGENT_LOOP_STOP: path.join(regularFile, 'STOP') });
+    } finally {
+      await removeFixture(dir);
+    }
+  });
 });
 
 // ── The limits, and the rule that made this round necessary ──────────────────
