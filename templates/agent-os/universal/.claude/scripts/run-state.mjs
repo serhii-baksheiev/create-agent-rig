@@ -142,7 +142,10 @@ export const readStateForSelection = (runDir) => {
     const current = lstatSync(statePath);
     if (current.isSymbolicLink()) throw new Error('run state is a symlink');
     if (!current.isFile()) throw new Error('run state is invalid: expected a regular file');
-    const currentFd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const currentFd = openSync(
+      statePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
     try {
       const currentOpened = fstatSync(currentFd);
       if (
