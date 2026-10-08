@@ -29,7 +29,11 @@ const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const agentOs = path.join(repoRoot, 'templates', 'agent-os');
 const universal = path.join(agentOs, 'universal');
-const hooksDir = path.join(universal, '.claude', 'hooks');
+// RP-459: lets the same race oracle execute an archived hook tree without
+// changing that accepted source. Ordinary suite runs always use the template.
+const hooksDir = process.env.RP459_TEST_HOOKS_DIR
+  ? path.resolve(process.env.RP459_TEST_HOOKS_DIR)
+  : path.join(universal, '.claude', 'hooks');
 
 const text = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
 
@@ -1756,6 +1760,94 @@ describe('Codex apply_patch shape validation keeps its refusal remedy', () => {
       );
 
       expect(await readFile(trace, 'utf8')).toBe('verified-stat\n');
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/move source changed during inspection/i);
+      expect(result.stderr).not.toMatch(/credential/i);
+    } finally {
+      await removeFixture(scratch);
+    }
+  });
+
+  it('refuses a regular move source replaced between verification stat and second open', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-second-open-replacement-'));
+    const source = path.join(scratch, 'source.txt');
+    const replacement = path.join(scratch, 'replacement.txt');
+    const trace = path.join(scratch, 'second-open-trace');
+    const preload = path.join(scratch, 'preload.mjs');
+    const original = 'ORIGINAL_HELD_DESCRIPTOR\n';
+    const replacementContent = `AWS_KEY=${CLOUD_ACCESS_KEY}\n`;
+    await writeFile(source, original);
+    await writeFile(replacement, replacementContent);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, readSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalOpenSync = fs.openSync;',
+        'const originalStatSync = fs.statSync;',
+        'const target = process.env.RP459_SECOND_OPEN_TARGET;',
+        'const replacement = process.env.RP459_SECOND_OPEN_REPLACEMENT;',
+        'const trace = process.env.RP459_SECOND_OPEN_TRACE;',
+        'let heldDescriptor;',
+        'let replaced = false;',
+        'fs.openSync = (...args) => {',
+        '  const descriptor = originalOpenSync(...args);',
+        '  if (args[0] === target && heldDescriptor === undefined) {',
+        '    heldDescriptor = descriptor;',
+        "    appendFileSync(trace, 'first-open\\n');",
+        '  }',
+        '  return descriptor;',
+        '};',
+        'fs.statSync = (...args) => {',
+        '  const stat = originalStatSync(...args);',
+        '  if (!replaced && args[0] === target && heldDescriptor !== undefined) {',
+        "    appendFileSync(trace, 'verified-stat\\n');",
+        '    renameSync(replacement, target);',
+        '    const bytes = Buffer.allocUnsafe(64);',
+        '    const count = readSync(heldDescriptor, bytes, 0, bytes.length, 0);',
+        "    appendFileSync(trace, `replaced\\nheld=${bytes.toString('utf8', 0, count)}`);",
+        '    replaced = true;',
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await runGuardInput(
+        'guard-secret-file.mjs',
+        {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: [
+              '*** Begin Patch',
+              `*** Update File: ${path.relative(repoRoot, source)}`,
+              '*** Move to: notes.md',
+              '*** End Patch',
+            ].join('\n'),
+          },
+          cwd: repoRoot,
+        },
+        undefined,
+        {
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+          RP459_SECOND_OPEN_TARGET: source,
+          RP459_SECOND_OPEN_REPLACEMENT: replacement,
+          RP459_SECOND_OPEN_TRACE: trace,
+        },
+      );
+
+      const recordedTrace = await readFile(trace, 'utf8');
+      if (process.env.RP459_TEST_TRACE_OUTPUT)
+        await writeFile(process.env.RP459_TEST_TRACE_OUTPUT, recordedTrace);
+      expect(recordedTrace).toBe(
+        'first-open\nverified-stat\nreplaced\nheld=ORIGINAL_HELD_DESCRIPTOR\n',
+      );
+      expect(await readFile(source, 'utf8')).toBe(replacementContent);
       expect(result.code).toBe(2);
       expect(result.stderr).toMatch(/move source changed during inspection/i);
       expect(result.stderr).not.toMatch(/credential/i);
