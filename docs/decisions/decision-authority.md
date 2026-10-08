@@ -88,11 +88,25 @@ The record command writes the decision file; it does not stage or commit it.
 Explicitly stage `.rig/decisions/<ticket>.jsonl` and commit it with the item's
 branch before expecting another clone to read the decision. Per-run journals
 under `.claude/runs/` are local evidence and do not replace that portable file.
+Generator evidence (absent in a generated rig):
+`test/e2e/delegated-authority.test.ts` › "scenario 6: a
+second controller session (B) reads session A's delegated decision back as
+durable evidence" explicitly stages and commits the file before cloning;
+`test/template/delegated-decision.test.ts` (absent in a generated rig) ›
+"journals exactly one run-journal
+EVENT (kind: delegated-decision), and writes NOTHING to decisions.jsonl"
+pins the separate local event.
 
 The reader refuses a persistently linked decisions directory or a multiply
 linked record file. These static containment checks assume the decisions
 directory is not concurrently replaced during the read; they do not provide
 race-proof containment against such replacement.
+The static refusals are pinned in the generator's
+`test/template/delegated-decision.test.ts` (absent in a generated rig) › "a
+.rig/decisions directory junction to a different checkout is unreadable — exit
+2, never that checkout's decision" and › "a ticket file hard-linked from
+another checkout is unreadable — exit 2, never that checkout's decision".
+Those checks do not establish protection against concurrent directory replacement.
 
 ## Consequences
 

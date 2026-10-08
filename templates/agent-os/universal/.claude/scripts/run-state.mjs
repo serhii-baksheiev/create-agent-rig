@@ -135,6 +135,12 @@ export const readStateForSelection = (runDir) => {
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error('run state is invalid: expected a regular file');
+    if (
+      stat.ino !== pathStat.ino ||
+      (process.platform !== 'win32' && stat.dev !== pathStat.dev)
+    ) {
+      throw new Error('run state changed during validation');
+    }
     if (stat.size > MAX_STATE_BYTES) {
       throw new Error(`run state exceeds ${MAX_STATE_BYTES} bytes`);
     }

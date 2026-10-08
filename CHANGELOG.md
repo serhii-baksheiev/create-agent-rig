@@ -142,6 +142,21 @@ says what it enforces, verifies and leaves to the harness.
 - **An `apply_patch` move whose source cannot be resolved** is now refused
   with wording that names the source, not the destination (RP-366).
 
+### Fixed
+
+- **Windows Node 22 file identity checks.** Run-state and claim readers now
+  compare two opened file handles; Codex rollout and patch-move checks retain
+  inode checks and apply pathname device checks on POSIX. This avoids false
+  refusals when Windows pathname and handle APIs report different device ids
+  for the same file (RP-451).
+- **FIFO evidence replacements fail promptly.** Run-state and claim-contract
+  readers use nonblocking opens before checking the opened file type, so a
+  regular file replaced by a FIFO cannot stall selection (RP-455).
+- **Selected Probity on Windows non-ASCII roots.** The Codex wrapper decodes
+  Git output as UTF-8, including when PowerShell starts under CP437, so it
+  reaches the selected provider. Forwarding preserves exact input without
+  adding a UTF-8 BOM and relays response bytes unchanged (RP-460).
+
 ### Verification and limits
 
 - An e2e acceptance test runs the contract's scenario matrix on a generated
@@ -153,7 +168,7 @@ says what it enforces, verifies and leaves to the harness.
   - a guard refusal under an armed run, through both harnesses' invocations;
   - no change to the repository or to the harness configuration in HOME.
 - Live Claude Code and Codex sessions were not driven for this release.
-- The Windows wrapper's non-ASCII repository root case did not reproduce on
+- The bounded guard wrapper's non-ASCII repository root case did not reproduce on
   the hosted Windows runner. It stays as a regression test.
 
 ## 1.3.0
