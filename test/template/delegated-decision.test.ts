@@ -1151,6 +1151,109 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
 // file this module reads for a fresh controller.
 
 describe('delegated-decision.mjs list — never follows a symlink, and never reads a non-regular file', () => {
+  it("a .rig directory junction to a different checkout is unreadable — exit 2, never that checkout's decision", async () => {
+    const { dir } = await newProject();
+    const outside = await mkdtemp(path.join(tmpdir(), 'delegated-decision-other-checkout-'));
+    const outsideDecisions = path.join(outside, 'decisions');
+    await mkdir(outsideDecisions);
+    await writeFile(
+      path.join(outsideDecisions, 'RP-9.jsonl'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        ticket: 'RP-9',
+        decision: 'extra-gate-round',
+        authority: 'delegated',
+        summary: 'belongs below the other checkout rig directory',
+        evidence: null,
+        branch: 'master',
+        head: 'deadbeef',
+        at: new Date().toISOString(),
+      })}\n`,
+    );
+    await symlink(
+      outside,
+      path.join(dir, '.rig'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const result = await run(
+      process.execPath,
+      [delegatedDecisionScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      withoutGitLocation(),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/unreadable/i);
+    expect(result.stdout).not.toContain('belongs below the other checkout rig directory');
+  });
+
+  it("a .rig/decisions directory junction to a different checkout is unreadable — exit 2, never that checkout's decision", async () => {
+    const { dir } = await newProject();
+    const outside = await mkdtemp(path.join(tmpdir(), 'delegated-decision-other-checkout-'));
+    await writeFile(
+      path.join(outside, 'RP-9.jsonl'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        ticket: 'RP-9',
+        decision: 'extra-gate-round',
+        authority: 'delegated',
+        summary: 'belongs to the other checkout',
+        evidence: null,
+        branch: 'master',
+        head: 'deadbeef',
+        at: new Date().toISOString(),
+      })}\n`,
+    );
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await symlink(
+      outside,
+      path.join(dir, '.rig', 'decisions'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const result = await run(
+      process.execPath,
+      [delegatedDecisionScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      withoutGitLocation(),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/unreadable/i);
+    expect(result.stdout).not.toContain('belongs to the other checkout');
+  });
+
+  it("a ticket file hard-linked from another checkout is unreadable — exit 2, never that checkout's decision", async () => {
+    const { dir } = await newProject();
+    const outside = await mkdtemp(path.join(tmpdir(), 'delegated-decision-other-checkout-'));
+    const outsideFile = path.join(outside, 'RP-9.jsonl');
+    await writeFile(
+      outsideFile,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        ticket: 'RP-9',
+        decision: 'extra-gate-round',
+        authority: 'delegated',
+        summary: 'hard-linked from the other checkout',
+        evidence: null,
+        branch: 'master',
+        head: 'deadbeef',
+        at: new Date().toISOString(),
+      })}\n`,
+    );
+    await mkdir(path.join(dir, '.rig', 'decisions'), { recursive: true });
+    await link(outsideFile, decisionsFile(dir, 'RP-9'));
+
+    const result = await run(
+      process.execPath,
+      [delegatedDecisionScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      withoutGitLocation(),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/unreadable/i);
+    expect(result.stdout).not.toContain('hard-linked from the other checkout');
+  });
+
   it("a symlink to a regular file elsewhere is unreadable — exit 2, never the target's own content", async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     const { dir } = await newProject();
