@@ -60,6 +60,19 @@ records the decision and its consequences.
   `authority` section is read from observed state — the unattended flag and
   the run it names — and never changes doctor's status or exit code (RP-343).
 
+### Fixed
+
+- Reject malformed delegated-decision schema versions, typed fields and
+  timestamps while retaining valid records (RP-439).
+- Refuse persistent linked or junction decisions directories and hard-linked
+  foreign decision evidence; ordinary records and safe absence retain their
+  behavior (RP-440).
+- Correct Windows Node 22 file-identity verification without dropping POSIX
+  device/inode checks, and use nonblocking opens so FIFO replacements are
+  rejected without waiting for a writer (RP-451, RP-455).
+- Decode non-ASCII Git roots correctly in the Windows Codex Probity wrapper
+  and preserve raw input without adding a UTF-8 BOM (RP-460).
+
 ### Verification and limits
 
 - An e2e acceptance test drives the authority model on a generated workflow
@@ -68,9 +81,17 @@ records the decision and its consequences.
   kill switch through both harnesses' hook invocations, the publication
   boundary in preflight and doctor, and reading a decision back from a second
   session and a second clone (RP-344).
-- Live Claude Code sessions were driven for RP-344; the evidence is on the
-  ticket. Live Codex acceptance was unavailable for this release (account
-  usage limit) and was not substituted.
+- Live Claude Code sessions were driven for the original RP-344 acceptance;
+  its historical Codex session was unavailable because of an account usage
+  limit. Independent replacement validation records deterministic Codex-path
+  execution separately from live observations; generated-hook tests do not
+  prove that a native Codex session loaded those hooks.
+- The record command writes decision evidence but does not stage or commit it.
+  Stage and commit `.rig/decisions/<ticket>.jsonl` for another clone to read it;
+  the per-run journal is local evidence (RP-452).
+- Decisions-directory containment is static. Concurrent replacement of that
+  directory during a read remains a known Low limitation; the reader is not
+  race-proof (RP-454).
 
 ## 1.4.0 (release candidate)
 

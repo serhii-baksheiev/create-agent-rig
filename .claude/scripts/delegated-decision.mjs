@@ -193,7 +193,7 @@ import {
   realpathSync,
   writeSync,
 } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from './git-env.mjs';
@@ -250,6 +250,7 @@ export const decisionsPathFor = (projectRoot, ticket) => {
 const REQUIRED_KEYS = Object.freeze([
   'schemaVersion',
   'ticket',
+  'release',
   'decision',
   'authority',
   'summary',
@@ -304,6 +305,38 @@ export const parseDecisions = (text, { ticket } = {}) => {
   // the record unreadable, the same as a structural defect.
   for (let index = 0; index < parsed.length; index += 1) {
     const record = parsed[index];
+    const invalid = (field) => ({
+      ok: false,
+      line: index + 1,
+      reason: `invalid ${field} field`,
+    });
+    if (record.schemaVersion !== 1) return invalid('schemaVersion');
+    if (
+      typeof record.ticket !== 'string' ||
+      !SAFE_TICKET.test(record.ticket) ||
+      WINDOWS_DEVICE_NAME.test(record.ticket) ||
+      composeTextField(record.ticket) !== record.ticket
+    ) {
+      return invalid('ticket');
+    }
+    if (
+      record.release !== null &&
+      record.release !== '[redacted]' &&
+      (typeof record.release !== 'string' || !RELEASE_LABEL.test(record.release))
+    ) {
+      return invalid('release');
+    }
+    if (typeof record.summary !== 'string' || record.summary.trim() === '') return invalid('summary');
+    if (record.evidence !== null && typeof record.evidence !== 'string') return invalid('evidence');
+    if (typeof record.branch !== 'string' || record.branch.trim() === '') return invalid('branch');
+    if (typeof record.head !== 'string' || record.head.trim() === '') return invalid('head');
+    if (
+      typeof record.at !== 'string' ||
+      Number.isNaN(Date.parse(record.at)) ||
+      new Date(record.at).toISOString() !== record.at
+    ) {
+      return invalid('at');
+    }
     if (record.authority !== 'delegated') {
       return {
         ok: false,
@@ -419,7 +452,8 @@ const appendDecisionRecord = (decisionsPath, line) => {
     (pathStat ? 0 : constants.O_CREAT | constants.O_EXCL) |
     // Undefined on Windows; the lstat above and the identity check below are
     // what hold there.
-    (constants.O_NOFOLLOW ?? 0);
+    (constants.O_NOFOLLOW ?? 0) |
+    (constants.O_NONBLOCK ?? 0);
   let fd;
   try {
     fd = openSync(decisionsPath, flags, 0o644);
@@ -436,8 +470,32 @@ const appendDecisionRecord = (decisionsPath, line) => {
     if (!stat.isFile() || stat.nlink !== 1) {
       throw new Error(`${decisionsPath} is not a regular file with a single name; refusing to write.`);
     }
-    if (pathStat && (stat.dev !== pathStat.dev || stat.ino !== pathStat.ino)) {
+    if (
+      pathStat &&
+      (stat.ino !== pathStat.ino || (process.platform !== 'win32' && stat.dev !== pathStat.dev))
+    ) {
       throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
+    }
+    const current = lstatSync(decisionsPath);
+    if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1) {
+      throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
+    }
+    const currentFd = openSync(
+      decisionsPath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const currentOpened = fstatSync(currentFd);
+      if (
+        !currentOpened.isFile() ||
+        currentOpened.nlink !== 1 ||
+        currentOpened.dev !== stat.dev ||
+        currentOpened.ino !== stat.ino
+      ) {
+        throw new Error(`${decisionsPath} changed under the check; refusing to write.`);
+      }
+    } finally {
+      closeSync(currentFd);
     }
     writeSync(fd, line);
   } finally {
@@ -457,6 +515,36 @@ const appendDecisionRecord = (decisionsPath, line) => {
  * the 256 KiB bound, before any byte is read.
  */
 const readDecisionsFile = (decisionsPath) => {
+  const decisionsDir = dirname(decisionsPath);
+  const rigDir = dirname(decisionsDir);
+  let rigStat;
+  try {
+    rigStat = lstatSync(rigDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw new Error(error.message, { cause: error });
+  }
+  if (rigStat.isSymbolicLink()) {
+    throw new Error(`${rigDir} is a symlink; refusing to follow it.`);
+  }
+  if (!rigStat.isDirectory()) {
+    throw new Error(`${rigDir} is not a directory.`);
+  }
+
+  let decisionsStat;
+  try {
+    decisionsStat = lstatSync(decisionsDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw new Error(error.message, { cause: error });
+  }
+  if (decisionsStat.isSymbolicLink()) {
+    throw new Error(`${decisionsDir} is a symlink; refusing to follow it.`);
+  }
+  if (!decisionsStat.isDirectory()) {
+    throw new Error(`${decisionsDir} is not a directory.`);
+  }
+
   let pathStat;
   try {
     pathStat = lstatSync(decisionsPath);
@@ -467,20 +555,23 @@ const readDecisionsFile = (decisionsPath) => {
   if (pathStat.isSymbolicLink()) {
     throw new Error('is a symlink; refusing to follow it.');
   }
-  if (!pathStat.isFile()) {
-    throw new Error('is not a regular file.');
+  if (!pathStat.isFile() || pathStat.nlink !== 1) {
+    throw new Error('is not a regular file with a single name.');
   }
 
   let fd;
   try {
-    fd = openSync(decisionsPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      decisionsPath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     throw new Error(error.message, { cause: error });
   }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) {
-      throw new Error('is not a regular file.');
+    if (!stat.isFile() || stat.nlink !== 1) {
+      throw new Error('is not a regular file with a single name.');
     }
     // Checked on the OPEN HANDLE, before any read, never partially: see the
     // module header's "Limits" section.
@@ -606,8 +697,8 @@ const runRecord = async (argv, cwd) => {
   if (typeof parsed.decision !== 'string' || parsed.decision === '') {
     return refuse('record: --decision is required.');
   }
-  if (typeof parsed.summary !== 'string' || parsed.summary === '') {
-    return refuse('record: --summary is required and may not be empty.');
+  if (typeof parsed.summary !== 'string' || parsed.summary.trim() === '') {
+    return refuse('record: --summary is required and may not be empty or whitespace.');
   }
   if (parsed.release !== undefined && !RELEASE_LABEL.test(parsed.release)) {
     return refuse(

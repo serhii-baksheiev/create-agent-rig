@@ -84,6 +84,16 @@ still open — › "a FRESH run directory (a different controller session) still
 reads the made decision". The gates read their own inputs and never this
 record, so a recorded decision bypasses none of them.
 
+The record command writes the decision file; it does not stage or commit it.
+Explicitly stage `.rig/decisions/<ticket>.jsonl` and commit it with the item's
+branch before expecting another clone to read the decision. Per-run journals
+under `.claude/runs/` are local evidence and do not replace that portable file.
+
+The reader refuses a persistently linked decisions directory or a multiply
+linked record file. These static containment checks assume the decisions
+directory is not concurrently replaced during the read; they do not provide
+race-proof containment against such replacement.
+
 ## Consequences
 
 Preflight and doctor report the posture, and the loop declares the authority
