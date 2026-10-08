@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { skipUnless } from '../helpers/env.js';
 import { stubCommand } from '../helpers/stub-command.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -1991,6 +1992,174 @@ describe('a tracked claim must match the Git index', () => {
 });
 
 describe('run-state uncertainty preserves the revalidation brake', () => {
+  it('reads an unchanged regular selection state without treating its open handle as replacement', async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), 'stable-selection-state-'));
+    await writeFile(
+      path.join(runDir, 'state.json'),
+      JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' } }),
+    );
+    const runState = (await import(
+      `${pathToFileURL(runStateScript).href}?stable-state=${Date.now()}`
+    )) as {
+      readStateForSelection: (directory: string) => Record<string, unknown>;
+    };
+
+    expect(runState.readStateForSelection(runDir)).toMatchObject({
+      revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' },
+    });
+  });
+
+  it('refuses a selection state replaced after initial lstat instead of reading the replacement stop', async () => {
+    const fixture = await mkdtemp(path.join(tmpdir(), 'selection-state-initial-identity-'));
+    const runDir = path.join(fixture, 'run');
+    const statePath = path.join(runDir, 'state.json');
+    const replacement = path.join(fixture, 'replacement.json');
+    const preload = path.join(fixture, 'preload.mjs');
+    const runner = path.join(fixture, 'read-selection-state.mjs');
+    const trace = path.join(fixture, 'trace');
+    const replacementTicket = 'RP-STATE-B-MUST-NOT-BE-READ';
+    await mkdir(runDir);
+    await writeFile(
+      statePath,
+      JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-STATE-A' } }),
+    );
+    await writeFile(
+      replacement,
+      JSON.stringify({
+        revalidationHold: { kind: 'revalidation-hold', ticket: replacementTicket },
+      }),
+    );
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP451_INITIAL_STATE_PATH;',
+        'const replacement = process.env.RP451_REPLACEMENT_STATE_PATH;',
+        'const trace = process.env.RP451_STATE_TRACE;',
+        'let replaced = false;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  if (!replaced && args[0] === target) {',
+        '    replaced = true;',
+        '    renameSync(replacement, target);',
+        "    appendFileSync(trace, 'replaced-after-initial-lstat\\n');",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    await writeFile(
+      runner,
+      [
+        `import { readStateForSelection } from ${JSON.stringify(pathToFileURL(runStateScript).href)};`,
+        'process.stdout.write(JSON.stringify(readStateForSelection(process.env.RP451_RUN_DIR)));',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await run(
+        process.execPath,
+        ['--import', pathToFileURL(preload).href, runner],
+        runDir,
+        {
+          ...process.env,
+          RP451_INITIAL_STATE_PATH: statePath,
+          RP451_REPLACEMENT_STATE_PATH: replacement,
+          RP451_STATE_TRACE: trace,
+          RP451_RUN_DIR: runDir,
+        },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('replaced-after-initial-lstat\n');
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/run state changed during validation/i);
+      expect(result.stdout).not.toContain(replacementTicket);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  // Win32 denies replacing a pathname while this reader holds it open without
+  // delete sharing; the same real-file interleave runs where POSIX permits it.
+  it('refuses a selection state replaced after current lstat instead of reading from the stale descriptor', async (ctx) => {
+    skipUnless(ctx, process.platform !== 'win32', 'Win32 open handles deny delete sharing (EPERM)');
+    const fixture = await mkdtemp(path.join(tmpdir(), 'selection-state-current-identity-'));
+    const runDir = path.join(fixture, 'run');
+    const statePath = path.join(runDir, 'state.json');
+    const replacement = path.join(fixture, 'replacement.json');
+    const preload = path.join(fixture, 'preload.mjs');
+    const runner = path.join(fixture, 'read-selection-state.mjs');
+    const trace = path.join(fixture, 'trace');
+    const originalTicket = 'RP-STATE-A-MUST-NOT-BE-READ';
+    const replacementTicket = 'RP-STATE-B-MUST-REMAIN-PRESENT';
+    const replacementBytes = JSON.stringify({
+      revalidationHold: { kind: 'revalidation-hold', ticket: replacementTicket },
+    });
+    await mkdir(runDir);
+    await writeFile(
+      statePath,
+      JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: originalTicket } }),
+    );
+    await writeFile(replacement, replacementBytes);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP451_CURRENT_STATE_PATH;',
+        'const replacement = process.env.RP451_CURRENT_REPLACEMENT_PATH;',
+        'const trace = process.env.RP451_CURRENT_STATE_TRACE;',
+        'let targetLstats = 0;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  targetLstats += 1;',
+        '  if (targetLstats === 2) {',
+        '    renameSync(replacement, target);',
+        "    appendFileSync(trace, 'replaced-after-current-lstat\\n');",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    await writeFile(
+      runner,
+      [
+        `import { readStateForSelection } from ${JSON.stringify(pathToFileURL(runStateScript).href)};`,
+        'process.stdout.write(JSON.stringify(readStateForSelection(process.env.RP451_RUN_DIR)));',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await run(
+        process.execPath,
+        ['--import', pathToFileURL(preload).href, runner],
+        runDir,
+        {
+          ...process.env,
+          RP451_CURRENT_STATE_PATH: statePath,
+          RP451_CURRENT_REPLACEMENT_PATH: replacement,
+          RP451_CURRENT_STATE_TRACE: trace,
+          RP451_RUN_DIR: runDir,
+        },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('replaced-after-current-lstat\n');
+      expect(await readFile(statePath, 'utf8')).toBe(replacementBytes);
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/run state changed during validation/i);
+      expect(result.stdout).not.toContain(originalTicket);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
   it('fails closed at selection when a corrupt state may contain revalidationHold', async () => {
     const p = await project();
     await writeFile(

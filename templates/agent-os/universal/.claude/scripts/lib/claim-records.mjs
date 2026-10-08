@@ -105,8 +105,18 @@ const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
     const current = lstatSync(path);
     if (current.isSymbolicLink()) throw new Error(`${label} is a symlink`);
     if (!current.isFile()) throw new Error(`${label} is not a regular file`);
-    if (current.dev !== opened.dev || current.ino !== opened.ino) {
-      throw new Error(`${label} changed during validation`);
+    const currentFd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const currentOpened = fstatSync(currentFd);
+      if (
+        !currentOpened.isFile() ||
+        currentOpened.dev !== opened.dev ||
+        currentOpened.ino !== opened.ino
+      ) {
+        throw new Error(`${label} changed during validation`);
+      }
+    } finally {
+      closeSync(currentFd);
     }
     return readFileSync(fd);
   } catch (error) {

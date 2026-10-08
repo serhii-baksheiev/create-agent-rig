@@ -64,6 +64,14 @@ says what it enforces, verifies and leaves to the harness.
 - **An `apply_patch` move whose source cannot be resolved** is now refused
   with wording that names the source, not the destination (RP-366).
 
+### Fixed
+
+- **Windows Node 22 file identity checks.** Run-state and claim readers now
+  compare two opened file handles; Codex rollout and patch-move checks retain
+  inode checks and apply pathname device checks on POSIX. This avoids false
+  refusals when Windows pathname and handle APIs report different device ids
+  for the same file (RP-451).
+
 ### Verification and limits
 
 - An e2e acceptance test runs the contract's scenario matrix on a generated
