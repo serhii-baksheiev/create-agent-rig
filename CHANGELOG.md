@@ -76,8 +76,8 @@ says what it enforces, verifies and leaves to the harness.
   regular file replaced by a FIFO cannot stall selection (RP-455).
 - **Selected Probity on Windows non-ASCII roots.** The Codex wrapper decodes
   Git output as UTF-8, including when PowerShell starts under CP437, so it
-  reaches the selected provider. Exact input and response bytes are preserved
-  (RP-460).
+  reaches the selected provider. Forwarding preserves exact input without
+  adding a UTF-8 BOM and relays response bytes unchanged (RP-460).
 
 ### Verification and limits
 

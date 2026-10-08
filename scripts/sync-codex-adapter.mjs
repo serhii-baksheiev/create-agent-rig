@@ -351,6 +351,7 @@ function windowsHookCommand(command) {
         argumentsLine,
         '$startInfo.UseShellExecute = $false',
         '$startInfo.RedirectStandardInput = $true',
+        '[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)',
         '$child = [System.Diagnostics.Process]::Start($startInfo)',
         '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
         '$child.StandardInput.Close()',

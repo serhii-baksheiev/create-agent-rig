@@ -93,6 +93,14 @@ function withCp437ConsoleOutput(encoded: string): string {
   ).toString('base64');
 }
 
+function withBomConsoleInput(encoded: string): string {
+  const wrapper = Buffer.from(encoded, 'base64').toString('utf16le');
+  return Buffer.from(
+    `[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($true); ${wrapper}`,
+    'utf16le',
+  ).toString('base64');
+}
+
 async function selectedProbityProject(root: string): Promise<void> {
   await exec('git', ['init', '-q', root], { env: withoutGitLocation() });
   await cp(path.join(universal, '.claude'), path.join(root, '.claude'), { recursive: true });
@@ -203,6 +211,71 @@ describe('the generated Windows Codex Probity wrapper preserves selected enforce
         const encoded = await probityWrapper();
         expect(encoded).toBeDefined();
         const result = await runWrapper(withCp437ConsoleOutput(encoded!), payload, root, {
+          ...process.env,
+          PATH: `${path.dirname(process.execPath)};${process.env.PATH ?? ''}`,
+          [FAKE_MARKER_ENV]: marker,
+        });
+        expect(result.code, result.stderr.toString('utf8')).toBe(0);
+        expect(result.stdout).toEqual(Buffer.from(RELAY));
+        expect(JSON.parse(await readFile(marker, 'utf8'))).toEqual({
+          argv: ['--agent', 'codex'],
+          stdinBase64: payload.toString('base64'),
+        });
+      } finally {
+        await removeFixture(root);
+      }
+    },
+  );
+
+  it(
+    'forwards exact Codex input without adding a BOM from a preamble-bearing console encoding',
+    { timeout: CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const root = await mkdtemp(path.join(tmpdir(), 'probity-wrapper-bom-input-'));
+      const marker = path.join(root, 'probity-forwarded.json');
+      const payload = Buffer.from(
+        ` { "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_input": { "input": "fixture-\u0442\u0435\u0441\u0442" }, "cwd": ${JSON.stringify(root)} }\n`,
+      );
+      try {
+        await selectedProbityProject(root);
+        const encoded = await probityWrapper();
+        expect(encoded).toBeDefined();
+        const result = await runWrapper(withBomConsoleInput(encoded!), payload, root, {
+          ...process.env,
+          PATH: `${path.dirname(process.execPath)};${process.env.PATH ?? ''}`,
+          [FAKE_MARKER_ENV]: marker,
+        });
+        expect(result.code, result.stderr.toString('utf8')).toBe(0);
+        expect(result.stdout).toEqual(Buffer.from(RELAY));
+        expect(JSON.parse(await readFile(marker, 'utf8'))).toEqual({
+          argv: ['--agent', 'codex'],
+          stdinBase64: payload.toString('base64'),
+        });
+      } finally {
+        await removeFixture(root);
+      }
+    },
+  );
+
+  it(
+    'preserves an intentional input BOM when forwarding the selected Probity request',
+    { timeout: CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const root = await mkdtemp(path.join(tmpdir(), 'probity-wrapper-intentional-bom-'));
+      const marker = path.join(root, 'probity-forwarded.json');
+      const payload = Buffer.concat([
+        Buffer.from([0xef, 0xbb, 0xbf]),
+        Buffer.from(
+          ` { "hook_event_name": "PreToolUse", "tool_name": "apply_patch", "tool_input": { "input": "fixture-\u0442\u0435\u0441\u0442" }, "cwd": ${JSON.stringify(root)} }\n`,
+        ),
+      ]);
+      try {
+        await selectedProbityProject(root);
+        const encoded = await probityWrapper();
+        expect(encoded).toBeDefined();
+        const result = await runWrapper(encoded!, payload, root, {
           ...process.env,
           PATH: `${path.dirname(process.execPath)};${process.env.PATH ?? ''}`,
           [FAKE_MARKER_ENV]: marker,
