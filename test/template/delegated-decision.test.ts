@@ -1161,6 +1161,7 @@ describe('delegated-decision.mjs list — never follows a symlink, and never rea
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary: 'belongs below the other checkout rig directory',
@@ -1195,6 +1196,7 @@ describe('delegated-decision.mjs list — never follows a symlink, and never rea
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary: 'belongs to the other checkout',
@@ -1231,6 +1233,7 @@ describe('delegated-decision.mjs list — never follows a symlink, and never rea
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary: 'hard-linked from the other checkout',
