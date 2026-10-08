@@ -151,7 +151,8 @@ export const appendItemRecordLine = (recordPath, line) => {
     (pathStat ? 0 : constants.O_CREAT | constants.O_EXCL) |
     // Undefined on Windows; the lstat above and the identity check below are
     // what hold there.
-    (constants.O_NOFOLLOW ?? 0);
+    (constants.O_NOFOLLOW ?? 0) |
+    (constants.O_NONBLOCK ?? 0);
   let fd;
   try {
     fd = openSync(recordPath, flags, 0o644);
@@ -168,7 +169,10 @@ export const appendItemRecordLine = (recordPath, line) => {
     if (!stat.isFile() || stat.nlink !== 1) {
       throw new Error(`${recordPath} is not a regular file with a single name; refusing to write.`);
     }
-    if (pathStat && (stat.dev !== pathStat.dev || stat.ino !== pathStat.ino)) {
+    if (
+      pathStat &&
+      (stat.ino !== pathStat.ino || (process.platform !== 'win32' && stat.dev !== pathStat.dev))
+    ) {
       throw new Error(`${recordPath} changed under the check; refusing to write.`);
     }
     writeSync(fd, line);
@@ -242,7 +246,10 @@ export const readItemRecordFile = (recordPath, options) => {
 
   let fd;
   try {
-    fd = openSync(recordPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      recordPath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     throw new Error(error.message, { cause: error });
   }
