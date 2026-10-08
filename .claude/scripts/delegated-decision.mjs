@@ -145,9 +145,10 @@
 // - `parseDecisions` validates in three passes, never interleaved line by
 //   line. First, every line's JSON syntax, in order — the first
 //   syntactically invalid line ends the scan immediately. Second, once every
-//   line parses, every record's nine required keys, in order, reporting the
+//   line parses, every record's ten required keys, in order, reporting the
 //   first record missing one. Third, once every record carries every key,
 //   whether the record could be a GENUINE delegated decision at all: its
+//   schema version and field types must match the writer's record shape; its
 //   `authority` must be exactly `"delegated"`, its `ticket` must match the
 //   one requested (when a ticket was given to check against), and its
 //   `decision` must be a delegable id under the RP-339 contract
@@ -216,6 +217,7 @@ export const decisionsPathFor = (projectRoot, ticket) =>
 const REQUIRED_KEYS = Object.freeze([
   'schemaVersion',
   'ticket',
+  'release',
   'decision',
   'authority',
   'summary',
@@ -270,6 +272,31 @@ export const parseDecisions = (text, { ticket } = {}) => {
   // the record unreadable, the same as a structural defect.
   for (let index = 0; index < parsed.length; index += 1) {
     const record = parsed[index];
+    const invalid = (field) => ({ ok: false, line: index + 1, reason: `invalid ${field} field` });
+    if (record.schemaVersion !== 1) return invalid('schemaVersion');
+    try {
+      itemRecordPathFor('.', 'decisions', record.ticket);
+    } catch {
+      return invalid('ticket');
+    }
+    if (
+      record.release !== null &&
+      record.release !== '[redacted]' &&
+      (typeof record.release !== 'string' || !RELEASE_LABEL.test(record.release))
+    ) {
+      return invalid('release');
+    }
+    if (typeof record.summary !== 'string' || record.summary.trim() === '') return invalid('summary');
+    if (record.evidence !== null && typeof record.evidence !== 'string') return invalid('evidence');
+    if (typeof record.branch !== 'string' || record.branch.trim() === '') return invalid('branch');
+    if (typeof record.head !== 'string' || record.head.trim() === '') return invalid('head');
+    if (
+      typeof record.at !== 'string' ||
+      Number.isNaN(Date.parse(record.at)) ||
+      new Date(record.at).toISOString() !== record.at
+    ) {
+      return invalid('at');
+    }
     if (record.authority !== 'delegated') {
       return {
         ok: false,
@@ -417,8 +444,8 @@ const runRecord = async (argv, cwd) => {
   if (typeof parsed.decision !== 'string' || parsed.decision === '') {
     return refuse('record: --decision is required.');
   }
-  if (typeof parsed.summary !== 'string' || parsed.summary === '') {
-    return refuse('record: --summary is required and may not be empty.');
+  if (typeof parsed.summary !== 'string' || parsed.summary.trim() === '') {
+    return refuse('record: --summary is required and may not be empty or whitespace.');
   }
   if (parsed.release !== undefined && !RELEASE_LABEL.test(parsed.release)) {
     return refuse(

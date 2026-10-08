@@ -329,6 +329,22 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     );
   });
 
+  it('refuses a whitespace-only --summary before writing a decision or journal event', async () => {
+    const { dir, runDir, env } = await delegatedFixture();
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: '   ' }),
+      dir,
+      env,
+    );
+    expect(result.code, result.out).toBe(1);
+    await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+
+    const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+      readRun: (input: { runDir: string }) => { decisions: unknown[]; events: unknown[] };
+    };
+    expect(readRun({ runDir })).toMatchObject({ decisions: [], events: [] });
+  });
+
   it('a refused call journals nothing into the run directory either', async () => {
     const { dir, runDir, env } = await delegatedFixture();
     const result = await runCli(
@@ -1268,6 +1284,7 @@ describe('delegated-decision.mjs list — never follows a symlink, and never rea
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary: 'ok',
@@ -1351,6 +1368,7 @@ describe('delegated-decision.mjs list — refuses a forged record as unreadable'
     const record = {
       schemaVersion: 1,
       ticket,
+      release: null,
       decision: 'extra-gate-round',
       authority: 'delegated',
       summary: 'ok',
@@ -1383,6 +1401,7 @@ describe('delegated-decision.mjs list — refuses a forged record as unreadable'
     const record = {
       schemaVersion: 1,
       ticket: 'RP-2',
+      release: null,
       decision: 'extra-gate-round',
       authority: 'delegated',
       summary: 'ok',
@@ -1434,7 +1453,7 @@ describe('delegated-decision.mjs list — refuses a forged record as unreadable'
 
   it('still lists a well-formed delegated record of a delegable kind', async () => {
     const { dir } = await newProject();
-    await writeForgedLine(dir, 'RP-9', {});
+    await writeForgedLine(dir, 'RP-9', { release: null });
 
     const result = await run(
       process.execPath,
@@ -1460,6 +1479,7 @@ describe('delegated-decision.mjs list — human (non-JSON) output escapes contro
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary,
@@ -1520,6 +1540,7 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
       JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-1',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary,
@@ -1575,6 +1596,7 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
     `${JSON.stringify({
       schemaVersion: 1,
       ticket: 'RP-1',
+      release: null,
       decision: 'extra-gate-round',
       authority: 'delegated',
       summary: 'ok',
@@ -1584,6 +1606,48 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
       at: new Date().toISOString(),
       ...overrides,
     })}\n`;
+
+  it('parseDecisions(text) rejects unsafe ticket values even without a requested ticket', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    for (const value of [23, '', '../RP-1', 'CON', GITHUB_PAT]) {
+      const result = parseDecisions(forgedLine({ ticket: value }));
+      expect(result).toMatchObject({
+        ok: false,
+        line: 1,
+        reason: expect.stringMatching(/ticket/i),
+      });
+    }
+  });
+
+  it('parseDecisions rejects a record that omits release, which the writer always persists', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const record = JSON.parse(forgedLine({})) as Record<string, unknown>;
+    delete record.release;
+    const result = parseDecisions(`${JSON.stringify(record)}\n`, { ticket: 'RP-1' });
+    expect(result).toMatchObject({
+      ok: false,
+      line: 1,
+      reason: expect.stringMatching(/release/i),
+    });
+  });
+
+  it('parseDecisions rejects malformed release values', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    for (const value of [23, {}, [], '', '   ', '../1.5.0']) {
+      const result = parseDecisions(forgedLine({ release: value }), { ticket: 'RP-1' });
+      expect(result).toMatchObject({
+        ok: false,
+        line: 1,
+        reason: expect.stringMatching(/release/i),
+      });
+    }
+  });
 
   it('parseDecisions(text, { ticket }) rejects a record whose authority is not exactly "delegated"', async () => {
     const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
@@ -1626,6 +1690,109 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
     const result = parseDecisions(forgedLine({}), { ticket: 'RP-1' });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.records).toHaveLength(1);
+  });
+
+  it('parseDecisions rejects an unsupported decision-record schema version', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const result = parseDecisions(forgedLine({ schemaVersion: 999 }), { ticket: 'RP-1' });
+    expect(result).toMatchObject({ ok: false, line: 1, reason: expect.stringMatching(/schema/i) });
+  });
+
+  it('parseDecisions rejects malformed typed decision fields', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const malformedFields: Array<['summary' | 'evidence' | 'branch' | 'head' | 'at', unknown]> = [
+      ['summary', null],
+      ['summary', ''],
+      ['summary', '   '],
+      ['evidence', {}],
+      ['evidence', 23],
+      ['branch', 23],
+      ['branch', null],
+      ['branch', ''],
+      ['head', null],
+      ['head', 23],
+      ['head', ''],
+      ['at', 'not-a-date'],
+      ['at', null],
+      ['at', '2026-02-30T00:00:00.000Z'],
+    ];
+    for (const [field, value] of malformedFields) {
+      const result = parseDecisions(forgedLine({ [field]: value }), { ticket: 'RP-1' });
+      expect(result).toMatchObject({
+        ok: false,
+        line: 1,
+        reason: expect.stringMatching(new RegExp(field, 'i')),
+      });
+    }
+  });
+
+  it('parseDecisions accepts a record produced by record, including null evidence and release', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const { dir, env } = await delegatedFixture();
+    const recorded = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'writer shape' }),
+      dir,
+      env,
+    );
+    expect(recorded.code, recorded.out).toBe(0);
+
+    const result = parseDecisions(await readFile(decisionsFile(dir, 'RP-1'), 'utf8'), {
+      ticket: 'RP-1',
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0]).toMatchObject({ evidence: null, release: null });
+    }
+  });
+
+  it('parseDecisions accepts the exact release redaction the writer persists', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const { dir, env } = await delegatedFixture();
+    const recorded = await runCli(
+      recordArgs({
+        ticket: 'RP-1',
+        decision: 'extra-gate-round',
+        summary: 'writer redacts a credential-shaped release',
+        release: GITHUB_PAT,
+      }),
+      dir,
+      env,
+    );
+    expect(recorded.code, recorded.out).toBe(0);
+    const text = await readFile(decisionsFile(dir, 'RP-1'), 'utf8');
+    expect(text).not.toContain(GITHUB_PAT);
+
+    const result = parseDecisions(text, { ticket: 'RP-1' });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) expect(result.records[0]).toMatchObject({ release: '[redacted]' });
+  });
+
+  it('parseDecisions reports invalid JSON before it evaluates missing or malformed fields', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const incompleteMalformedFirstLine = JSON.stringify({
+      schemaVersion: 999,
+      ticket: 'RP-1',
+      decision: 'extra-gate-round',
+      authority: 'delegated',
+      branch: 23,
+      head: null,
+      at: 'not-a-date',
+    });
+    const result = parseDecisions(`${incompleteMalformedFirstLine}\nnot json\n`, {
+      ticket: 'RP-1',
+    });
+    expect(result).toEqual({ ok: false, line: 2, reason: 'invalid JSON' });
   });
 });
 
