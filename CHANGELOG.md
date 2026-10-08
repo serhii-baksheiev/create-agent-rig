@@ -30,8 +30,8 @@ an owner action.
 - Windows Codex guard wrappers resolve Git roots directly, including UNC roots,
   decode Git output as UTF-8 and refuse missing guards or Git failures (RP-321).
 - The Windows Codex Probity wrapper decodes non-ASCII Git roots as UTF-8 so it
-  reaches the selected provider under CP437. Input and response forwarding remain
-  byte-preserving (RP-460).
+  reaches the selected provider under CP437. Byte-preserving forwarding avoids
+  adding a UTF-8 BOM to the input and relays response bytes unchanged (RP-460).
 
 ## 1.3.0
 
