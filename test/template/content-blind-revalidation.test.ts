@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { fifosAvailable, skipUnless } from '../helpers/env.js';
 import { stubCommand } from '../helpers/stub-command.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -58,6 +59,7 @@ interface CommandResult {
 // 15 s case budget and above the scripts' own 10 s gh bound, so a stalled child
 // fails the case naming itself instead of a bare case timeout.
 const RUN_CHILD_TIMEOUT_MS = 12_000;
+const FIFO_REVALIDATION_CHILD_TIMEOUT_MS = 3_000;
 
 const run = (
   file: string,
@@ -87,6 +89,35 @@ const run = (
             : ''),
       });
     });
+  });
+
+const runFifo = (
+  file: string,
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+): Promise<CommandResult> =>
+  new Promise((resolve) => {
+    execFile(
+      file,
+      args,
+      { cwd, env, timeout: FIFO_REVALIDATION_CHILD_TIMEOUT_MS },
+      (error, stdout, stderr) => {
+        const timedOut =
+          (error as { killed?: boolean; code?: string } | null)?.killed === true &&
+          (error as { code?: string } | null)?.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout,
+          out:
+            stdout +
+            stderr +
+            (timedOut
+              ? `\n[runFifo(): ${file} ${args.join(' ')} timed out after ${FIFO_REVALIDATION_CHILD_TIMEOUT_MS} ms]`
+              : ''),
+        });
+      },
+    );
   });
 
 const git = async (args: string[], cwd: string): Promise<string> => {
@@ -1991,6 +2022,354 @@ describe('a tracked claim must match the Git index', () => {
 });
 
 describe('run-state uncertainty preserves the revalidation brake', () => {
+  it('reads an unchanged regular selection state without treating its open handle as replacement', async () => {
+    const runDir = await mkdtemp(path.join(tmpdir(), 'stable-selection-state-'));
+    try {
+      await writeFile(
+        path.join(runDir, 'state.json'),
+        JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' } }),
+      );
+      const runState = (await import(
+        `${pathToFileURL(runStateScript).href}?stable-state=${Date.now()}`
+      )) as {
+        readStateForSelection: (directory: string) => Record<string, unknown>;
+      };
+
+      expect(runState.readStateForSelection(runDir)).toMatchObject({
+        revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' },
+      });
+    } finally {
+      await removeFixture(runDir);
+    }
+  });
+
+  it(
+    'fails closed promptly when the selection state becomes a FIFO after initial lstat',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const fixture = await mkdtemp(
+        path.join(tmpdir(), 'selection-state-fifo-after-initial-lstat-'),
+      );
+      const runDir = path.join(fixture, 'run');
+      const statePath = path.join(runDir, 'state.json');
+      const oldStatePath = path.join(runDir, 'old-state.json');
+      const fifoPath = path.join(runDir, 'state.fifo');
+      const preload = path.join(fixture, 'preload.mjs');
+      const runner = path.join(fixture, 'read-selection-state.mjs');
+      const trace = path.join(fixture, 'trace');
+      const stateBytes = JSON.stringify({
+        revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' },
+      });
+      await mkdir(runDir);
+      await writeFile(statePath, stateBytes);
+      execFileSync('mkfifo', [fifoPath]);
+      await writeFile(
+        preload,
+        [
+          "import { appendFileSync, renameSync } from 'node:fs';",
+          "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+          "const fs = createRequire(import.meta.url)('node:fs');",
+          'const originalLstatSync = fs.lstatSync;',
+          'const target = process.env.RP455_FIFO_STATE_PATH;',
+          'const oldState = process.env.RP455_FIFO_OLD_STATE_PATH;',
+          'const fifo = process.env.RP455_FIFO_PATH;',
+          'const trace = process.env.RP455_FIFO_TRACE;',
+          'let targetLstats = 0;',
+          'fs.lstatSync = (...args) => {',
+          '  const stat = originalLstatSync(...args);',
+          '  if (args[0] === target && ++targetLstats === 1) {',
+          '    renameSync(target, oldState);',
+          '    renameSync(fifo, target);',
+          "    appendFileSync(trace, 'state-replaced-with-fifo-after-initial-lstat\\n');",
+          '  }',
+          '  return stat;',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      await writeFile(
+        runner,
+        [
+          `import { readStateForSelection } from ${JSON.stringify(pathToFileURL(runStateScript).href)};`,
+          'process.stdout.write(JSON.stringify(readStateForSelection(process.env.RP455_FIFO_RUN_DIR)));',
+        ].join('\n'),
+      );
+
+      try {
+        const result = await runFifo(
+          process.execPath,
+          ['--import', pathToFileURL(preload).href, runner],
+          runDir,
+          {
+            ...process.env,
+            RP455_FIFO_STATE_PATH: statePath,
+            RP455_FIFO_OLD_STATE_PATH: oldStatePath,
+            RP455_FIFO_PATH: fifoPath,
+            RP455_FIFO_TRACE: trace,
+            RP455_FIFO_RUN_DIR: runDir,
+          },
+        );
+        expect(await readFile(trace, 'utf8')).toBe(
+          'state-replaced-with-fifo-after-initial-lstat\n',
+        );
+        expect(result.out).not.toContain(
+          `timed out after ${FIFO_REVALIDATION_CHILD_TIMEOUT_MS} ms`,
+        );
+        expect(result.code, result.out).toBe(1);
+        expect(result.out).toMatch(/run state (is unreadable|is invalid)/i);
+        expect(await readFile(oldStatePath, 'utf8')).toBe(stateBytes);
+      } finally {
+        await removeFixture(fixture);
+      }
+    },
+    FIFO_REVALIDATION_CHILD_TIMEOUT_MS + 5_000,
+  );
+
+  it(
+    'fails closed promptly when the selection state becomes a FIFO after current lstat',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const fixture = await mkdtemp(
+        path.join(tmpdir(), 'selection-state-fifo-after-current-lstat-'),
+      );
+      const runDir = path.join(fixture, 'run');
+      const statePath = path.join(runDir, 'state.json');
+      const oldStatePath = path.join(runDir, 'old-state.json');
+      const fifoPath = path.join(runDir, 'state.fifo');
+      const preload = path.join(fixture, 'preload.mjs');
+      const runner = path.join(fixture, 'read-selection-state.mjs');
+      const trace = path.join(fixture, 'trace');
+      await mkdir(runDir);
+      await writeFile(
+        statePath,
+        JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-50' } }),
+      );
+      execFileSync('mkfifo', [fifoPath]);
+      await writeFile(
+        preload,
+        [
+          "import { appendFileSync, renameSync } from 'node:fs';",
+          "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+          "const fs = createRequire(import.meta.url)('node:fs');",
+          'const originalLstatSync = fs.lstatSync;',
+          'const target = process.env.RP451_FIFO_STATE_PATH;',
+          'const oldState = process.env.RP451_FIFO_OLD_STATE_PATH;',
+          'const fifo = process.env.RP451_FIFO_PATH;',
+          'const trace = process.env.RP451_FIFO_TRACE;',
+          'let targetLstats = 0;',
+          'fs.lstatSync = (...args) => {',
+          '  const stat = originalLstatSync(...args);',
+          '  if (args[0] === target && ++targetLstats === 2) {',
+          '    renameSync(target, oldState);',
+          '    renameSync(fifo, target);',
+          "    appendFileSync(trace, 'state-replaced-with-fifo-after-current-lstat\\n');",
+          '  }',
+          '  return stat;',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      await writeFile(
+        runner,
+        [
+          `import { readStateForSelection } from ${JSON.stringify(pathToFileURL(runStateScript).href)};`,
+          'process.stdout.write(JSON.stringify(readStateForSelection(process.env.RP451_FIFO_RUN_DIR)));',
+        ].join('\n'),
+      );
+
+      try {
+        const result = await runFifo(
+          process.execPath,
+          ['--import', pathToFileURL(preload).href, runner],
+          runDir,
+          {
+            ...process.env,
+            RP451_FIFO_STATE_PATH: statePath,
+            RP451_FIFO_OLD_STATE_PATH: oldStatePath,
+            RP451_FIFO_PATH: fifoPath,
+            RP451_FIFO_TRACE: trace,
+            RP451_FIFO_RUN_DIR: runDir,
+          },
+        );
+        expect(await readFile(trace, 'utf8')).toBe(
+          'state-replaced-with-fifo-after-current-lstat\n',
+        );
+        expect(result.out).not.toContain(
+          `timed out after ${FIFO_REVALIDATION_CHILD_TIMEOUT_MS} ms`,
+        );
+        expect(result.code, result.out).toBe(1);
+        expect(result.out).toMatch(/run state changed during validation/i);
+      } finally {
+        await removeFixture(fixture);
+      }
+    },
+    FIFO_REVALIDATION_CHILD_TIMEOUT_MS + 5_000,
+  );
+
+  it(
+    'fails closed promptly when the revalidation contract becomes a FIFO after initial lstat',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const fixture = await mkdtemp(path.join(tmpdir(), 'contract-fifo-after-initial-lstat-'));
+      const rigDir = path.join(fixture, '.rig');
+      const contractPath = path.join(rigDir, 'revalidation.json');
+      const oldContractPath = path.join(rigDir, 'old-revalidation.json');
+      const fifoPath = path.join(rigDir, 'revalidation.fifo');
+      const preload = path.join(fixture, 'preload.mjs');
+      const runner = path.join(fixture, 'read-contract.mjs');
+      const trace = path.join(fixture, 'trace');
+      const contractBytes = JSON.stringify({ ...VALID_CONTRACT, pairedFacts: [] });
+      await mkdir(rigDir);
+      await writeFile(contractPath, contractBytes);
+      execFileSync('mkfifo', [fifoPath]);
+      await writeFile(
+        preload,
+        [
+          "import { appendFileSync, renameSync } from 'node:fs';",
+          "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+          "const fs = createRequire(import.meta.url)('node:fs');",
+          'const originalLstatSync = fs.lstatSync;',
+          'const target = process.env.RP455_FIFO_CONTRACT_PATH;',
+          'const oldContract = process.env.RP455_FIFO_OLD_CONTRACT_PATH;',
+          'const fifo = process.env.RP455_FIFO_PATH;',
+          'const trace = process.env.RP455_FIFO_TRACE;',
+          'let targetLstats = 0;',
+          'fs.lstatSync = (...args) => {',
+          '  const stat = originalLstatSync(...args);',
+          '  if (args[0] === target && ++targetLstats === 1) {',
+          '    renameSync(target, oldContract);',
+          '    renameSync(fifo, target);',
+          "    appendFileSync(trace, 'contract-replaced-with-fifo-after-initial-lstat\\n');",
+          '  }',
+          '  return stat;',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      await writeFile(
+        runner,
+        [
+          `import { readRevalidationContract } from ${JSON.stringify(pathToFileURL(claimRecordsScript).href)};`,
+          'process.stdout.write(JSON.stringify(readRevalidationContract(process.env.RP455_FIFO_ROOT)));',
+        ].join('\n'),
+      );
+
+      try {
+        const result = await runFifo(
+          process.execPath,
+          ['--import', pathToFileURL(preload).href, runner],
+          fixture,
+          {
+            ...process.env,
+            RP455_FIFO_CONTRACT_PATH: contractPath,
+            RP455_FIFO_OLD_CONTRACT_PATH: oldContractPath,
+            RP455_FIFO_PATH: fifoPath,
+            RP455_FIFO_TRACE: trace,
+            RP455_FIFO_ROOT: fixture,
+          },
+        );
+        expect(await readFile(trace, 'utf8')).toBe(
+          'contract-replaced-with-fifo-after-initial-lstat\n',
+        );
+        expect(result.out).not.toContain(
+          `timed out after ${FIFO_REVALIDATION_CHILD_TIMEOUT_MS} ms`,
+        );
+        expect(result.code, result.out).toBe(1);
+        expect(result.out).toMatch(
+          /no-detection-contract: detection contract .*(unreadable|not a regular file)/i,
+        );
+        expect(await readFile(oldContractPath, 'utf8')).toBe(contractBytes);
+      } finally {
+        await removeFixture(fixture);
+      }
+    },
+    FIFO_REVALIDATION_CHILD_TIMEOUT_MS + 5_000,
+  );
+
+  it(
+    'fails closed promptly when the revalidation contract becomes a FIFO after current lstat',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const fixture = await mkdtemp(path.join(tmpdir(), 'contract-fifo-after-current-lstat-'));
+      const rigDir = path.join(fixture, '.rig');
+      const contractPath = path.join(rigDir, 'revalidation.json');
+      const oldContractPath = path.join(rigDir, 'old-revalidation.json');
+      const fifoPath = path.join(rigDir, 'revalidation.fifo');
+      const preload = path.join(fixture, 'preload.mjs');
+      const runner = path.join(fixture, 'read-contract.mjs');
+      const trace = path.join(fixture, 'trace');
+      const contractBytes = JSON.stringify({ ...VALID_CONTRACT, pairedFacts: [] });
+      await mkdir(rigDir);
+      await writeFile(contractPath, contractBytes);
+      execFileSync('mkfifo', [fifoPath]);
+      await writeFile(
+        preload,
+        [
+          "import { appendFileSync, renameSync } from 'node:fs';",
+          "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+          "const fs = createRequire(import.meta.url)('node:fs');",
+          'const originalLstatSync = fs.lstatSync;',
+          'const target = process.env.RP451_FIFO_CONTRACT_PATH;',
+          'const oldContract = process.env.RP451_FIFO_OLD_CONTRACT_PATH;',
+          'const fifo = process.env.RP451_FIFO_PATH;',
+          'const trace = process.env.RP451_FIFO_TRACE;',
+          'let targetLstats = 0;',
+          'fs.lstatSync = (...args) => {',
+          '  const stat = originalLstatSync(...args);',
+          '  if (args[0] === target && ++targetLstats === 3) {',
+          '    renameSync(target, oldContract);',
+          '    renameSync(fifo, target);',
+          "    appendFileSync(trace, 'contract-replaced-with-fifo-after-current-lstat\\n');",
+          '  }',
+          '  return stat;',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      await writeFile(
+        runner,
+        [
+          `import { readRevalidationContract } from ${JSON.stringify(pathToFileURL(claimRecordsScript).href)};`,
+          'process.stdout.write(JSON.stringify(readRevalidationContract(process.env.RP451_FIFO_ROOT)));',
+        ].join('\n'),
+      );
+
+      try {
+        const result = await runFifo(
+          process.execPath,
+          ['--import', pathToFileURL(preload).href, runner],
+          fixture,
+          {
+            ...process.env,
+            RP451_FIFO_CONTRACT_PATH: contractPath,
+            RP451_FIFO_OLD_CONTRACT_PATH: oldContractPath,
+            RP451_FIFO_PATH: fifoPath,
+            RP451_FIFO_TRACE: trace,
+            RP451_FIFO_ROOT: fixture,
+          },
+        );
+        expect(await readFile(trace, 'utf8')).toBe(
+          'contract-replaced-with-fifo-after-current-lstat\n',
+        );
+        expect(result.out).not.toContain(
+          `timed out after ${FIFO_REVALIDATION_CHILD_TIMEOUT_MS} ms`,
+        );
+        expect(result.code, result.out).toBe(1);
+        expect(result.out).toMatch(
+          /no-detection-contract: detection contract .*changed during validation/i,
+        );
+        expect(await readFile(oldContractPath, 'utf8')).toBe(contractBytes);
+      } finally {
+        await removeFixture(fixture);
+      }
+    },
+    FIFO_REVALIDATION_CHILD_TIMEOUT_MS + 5_000,
+  );
+
   it('fails closed at selection when a corrupt state may contain revalidationHold', async () => {
     const p = await project();
     await writeFile(

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-451",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "7f9e21a8901a4f11657673ed4bae613dcc5c0b8082683d6a4470e10efd8d2030",
+      "targetSha": "3b04293bcf620be4d7c595d58f70336763240352"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "3fa19366f17de7a21304cc92d14d5c4f71d5e8eee1ff0943a6c8f757ed79a0ca",
+      "count": 8
+    }
+  }
+}
