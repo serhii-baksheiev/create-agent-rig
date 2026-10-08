@@ -17,7 +17,7 @@
 // Machine-level, not repo-level, on purpose: a git worktree is its own project
 // root, so a flag dropped in the main checkout would be invisible to a session
 // running inside one. A brake that is silently absent is worse than no brake.
-import { existsSync } from 'node:fs';
+import { statSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { delimiter, join } from 'node:path';
 
@@ -58,12 +58,24 @@ export const stopFlags = (env = process.env) => {
   return [...new Set(paths)].slice(0, 64);
 };
 
-/** The armed flag file, or null. */
-export const brakeIsOn = (env = process.env) =>
-  stopFlags(env).find((path) => {
+/**
+ * The first of `paths` that arms the brake, as `{ path, code }` — `code` set
+ * when the flag could not be inspected — or null. Only ENOENT and ENOTDIR mean
+ * "no flag here": a flag that cannot be inspected (EACCES behind a chmod-000
+ * directory) arms the brake, where `existsSync` once read it as absent (RP-462).
+ */
+export const armedFlag = (paths) => {
+  for (const path of paths) {
     try {
-      return existsSync(path);
-    } catch {
-      return false;
+      statSync(path);
+      return { path, code: null };
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
+      return { path, code: error?.code ?? 'unknown error' };
     }
-  }) ?? null;
+  }
+  return null;
+};
+
+/** The armed flag file, or null. */
+export const brakeIsOn = (env = process.env) => armedFlag(stopFlags(env))?.path ?? null;
