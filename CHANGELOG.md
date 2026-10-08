@@ -180,6 +180,11 @@ says what it enforces, verifies and leaves to the harness.
   Git output as UTF-8, including when PowerShell starts under CP437, so it
   reaches the selected provider. Forwarding preserves exact input without
   adding a UTF-8 BOM and relays response bytes unchanged (RP-460).
+- **A kill switch that cannot be inspected reads as set.** A STOP path that
+  exists but cannot be inspected, for example behind a directory without
+  search permission, now arms the brake in `guard-bash` and fails
+  `kill-switch-armed` in preflight and doctor. Only a missing path reads as
+  absent (RP-462).
 
 ### Verification and limits
 

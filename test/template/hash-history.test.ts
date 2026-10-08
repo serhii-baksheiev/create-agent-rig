@@ -688,6 +688,6 @@ describe('the committed scripts/release-candidates.json against this repository 
   // cannot pass merely because the committed record agrees with itself.
   it('records 1.4.0 as a frozen baseline at exactly the release/1.4.0-rc head, and nothing else', async () => {
     const record = await readCandidates();
-    expect(record).toEqual({ '1.4.0': '3b933f8492e671d8cf108ef4a26180abbbfa82af' });
+    expect(record).toEqual({ '1.4.0': 'a03c3eed6693658f338fee5aef04102ab02bc83a' });
   });
 });

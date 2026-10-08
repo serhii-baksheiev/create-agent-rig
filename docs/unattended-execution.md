@@ -106,7 +106,9 @@ allowed: `test/template/guard-bash.test.ts` › "denies gh pr merge while the fl
 exists" and › "allows everything short of the merge while the flag exists".
 Preflight and doctor both report the armed brake as a failure. Remove the file
 to release it: `test/template/guard-bash.test.ts` › "allows the merge once the
-flag is gone".
+flag is gone". A flag path that cannot be inspected counts as armed:
+`test/template/guard-hardening.test.ts` › "denies gh pr merge when
+AGENT_LOOP_STOP names a STOP file whose directory is chmod 000".
 
 The loop's own stop conditions, and how a run turns its unattended flag off
 when it stops, are in the `loop` skill.
