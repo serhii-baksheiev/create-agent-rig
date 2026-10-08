@@ -60,6 +60,16 @@ records the decision and its consequences.
   `authority` section is read from observed state — the unattended flag and
   the run it names — and never changes doctor's status or exit code (RP-343).
 
+### Fixed
+
+- **Windows Node 22 file-identity validation** now accepts an unchanged file
+  while retaining POSIX device and inode checks where the platform supports
+  them (RP-451).
+- **State and decision-record reads** use nonblocking verification, so a FIFO
+  replacement is refused without a blocking open (RP-455).
+- **Windows Codex hook wrappers** use UTF-8 Git-root output and forward stdin
+  byte-for-byte without adding a BOM (RP-460).
+
 ### Verification and limits
 
 - An e2e acceptance test drives the authority model on a generated workflow
