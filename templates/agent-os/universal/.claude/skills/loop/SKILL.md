@@ -867,7 +867,10 @@ and the authority contract — the generator's
 resolutions":
 
 - `decide-and-continue` — the run may make this decision itself. Record it
-  first, then carry on with the same item:
+  first, then carry on with the same item (for `gate-round-cap` the decision is
+  `extra-gate-round`, recorded with `--head "$(git rev-parse HEAD)"`; `record`
+  refuses once the owner's `options.maxDelegatedRounds` in `.claude/queue.json`,
+  default 1, is spent on this branch, and the stop then escalates):
 
   ```bash
   RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/delegated-decision.mjs record \

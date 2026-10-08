@@ -25,7 +25,12 @@ blockers.
    - **0** — proceed to step 1.
    - **2** — the rounds are spent. Return `HOLD` with one blocker whose `rule`
      is *gate rounds exhausted*, quoting the round count in its `note`. Do not
-     run the fan-out.
+     run the fan-out. Under a delegated run authority this is the loop's
+     `gate-round-cap` stop: when it records an `extra-gate-round` authorization
+     (loop §6.0), commit `.rig/decisions/<item-id>.jsonl` alone, push, and run
+     step 0 again with `--ticket <item-id> --authorized`. That buys one round
+     for the authorized head; exit 2 from it means the delegated budget is
+     spent and the stop belongs to the owner.
    - **1** — the command itself failed (unreadable config, unreadable counter,
      detached checkout), **or the checkout cannot ship**: a dirty working tree,
      a branch with no upstream, or commits the upstream has not seen. Nothing

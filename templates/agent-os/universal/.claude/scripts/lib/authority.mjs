@@ -49,7 +49,7 @@ export const DELEGABLE_DECISIONS = Object.freeze([
   ),
   decision(
     'extra-gate-round',
-    'Authorise another review round past the configured cap when a concrete blocker justifies it.',
+    'Authorise one more review round past the configured cap for one exact ticket, branch and head, within the owner’s options.maxDelegatedRounds budget (default 1).',
   ),
   decision(
     'elevated-change-acceptance',

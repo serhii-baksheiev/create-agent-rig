@@ -82,7 +82,32 @@ generated rig) › "refuses when the run authority is absent (reads as owner),
 naming owner". A recorded decision is made; no record means the decision is
 still open — › "a FRESH run directory (a different controller session) still
 reads the made decision". The gates read their own inputs and never this
-record, so a recorded decision bypasses none of them.
+record, so a recorded decision bypasses none of them — with one bounded
+exception, the gate-round counter, described next.
+
+## Extra gate rounds are bounded (opt-in workflow layer)
+
+The delegable decision to run an extra gate round buys one review round past
+`maxGateRounds` for one exact ticket, branch and head, never a standing
+permission. The owner's
+`options.maxDelegatedRounds` in `.claude/queue.json` (default 1) bounds how
+many such authorizations a branch may hold, whatever ticket each names, and
+both `record` and the counter read it from there, so a controller cannot
+enlarge it by recording decisions — the generator's
+`test/template/delegated-rounds.test.ts` (absent in a generated rig) ›
+"absent maxDelegatedRounds defaults to 1: a first record succeeds, a second
+for the same ticket+branch is refused". The authorization is committed with
+the branch; `gate-round --authorized` counts the round only while no review
+verdict exists on the head it covers, and that verdict is the only record that
+the round was spent — › "exits 2 on a second --authorized call at the same
+head once a reviewer verdict is recorded for it". A new head earns nothing on
+its own — › "exits 2 on a fix commit past the default budget — no second
+authorization exists to match". With the default budget a run therefore stops
+at the owner after three base rounds and one delegated round, however the
+records are edited — › "an in-place rewrite of the single counted record to a
+new, unverdicted head cannot buy a round past the total cap (probe 3)". Consumption is
+read from this checkout's run journals; a second clone with no verdicts of its
+own does not see it spent.
 
 ## Consequences
 

@@ -90,8 +90,9 @@
 // `--post` is the only thing that touches the network, resolved exactly the
 // way `continuation.mjs --post` resolves it — `queue/index.mjs`'s
 // `loadConfig` + `resolveAdapter`, then that adapter's `comment()`. Without
-// it, `record` never reads `.claude/queue.json` and never resolves an
-// adapter at all; a project with no such file records perfectly well — ›
+// it, `record` never resolves an adapter, and reads `.claude/queue.json` only
+// for an `extra-gate-round` decision's `options.maxDelegatedRounds` (RP-442);
+// a project with no such file records perfectly well — ›
 // "works with no .claude/queue.json present at all when --post is not
 // given". The posted body is a fixed, line-oriented shape — › "(d) the
 // posted comment body starts with \"rig-delegated-decision v1\" and carries
@@ -183,7 +184,7 @@
 // See `test/template/delegated-decision.test.ts` (absent in a generated rig)
 // for every case above, by name, next to the assertion that proves it.
 import { execFileSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -193,6 +194,8 @@ import { readState } from './run-state.mjs';
 import { DECISION_AUTHORITIES, mayResolve, parseDecisionAuthority } from './lib/authority.mjs';
 import { recordEvent } from './run-journal.mjs';
 import { ITEM_STOPS, resolutionOf } from './queue/stop-class.mjs';
+import { loadConfig } from './queue/queue-config.mjs';
+import { mainCheckoutRoot } from './queue/checkout.mjs';
 import {
   appendItemRecordLine,
   ensureItemRecordDir,
@@ -201,6 +204,9 @@ import {
 } from './lib/item-records.mjs';
 
 const MAX_DECISIONS_BYTES = 256 * 1024;
+
+/** The owner's delegated-round budget when `.claude/queue.json` names none (RP-442). */
+export const DEFAULT_MAX_DELEGATED_ROUNDS = 1;
 
 /** 1-64 characters; starts with a letter or digit; the rest letters, digits, `_`, `-` or `.`. */
 const RELEASE_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -323,12 +329,210 @@ const gitValue = (args, cwd) => {
 
 const projectRootOf = (cwd) => gitValue(['rev-parse', '--show-toplevel'], cwd) ?? cwd;
 
+/**
+ * The owner's budget of delegated gate rounds per branch, whatever ticket each record names:
+ * `options.maxDelegatedRounds` from the queue config, an owner-composed file,
+ * so a controller cannot enlarge it by recording decisions (RP-442).
+ */
+export const delegatedRoundBudget = (config) => {
+  const raw = config?.options?.maxDelegatedRounds;
+  if (raw === undefined) return DEFAULT_MAX_DELEGATED_ROUNDS;
+  if (!Number.isInteger(raw) || raw < 0) {
+    throw new Error(
+      `options.maxDelegatedRounds ${JSON.stringify(raw)} is not a non-negative integer.`,
+    );
+  }
+  return raw;
+};
+
+/**
+ * Every `extra-gate-round` authorization recorded on one branch, whatever
+ * ticket each names — the budget belongs to the branch, so a second ticket id
+ * cannot buy another round (RP-442 round 2).
+ */
+export const extraGateRoundsOnBranch = ({ projectRoot, branch }) => {
+  const dir = join(projectRoot, '.rig', 'decisions');
+  let names;
+  try {
+    names = readdirSync(dir).filter((name) => name.endsWith('.jsonl'));
+  } catch (error) {
+    if (error?.code === 'ENOENT') return [];
+    throw error;
+  }
+  return names.flatMap((name) =>
+    extraGateRoundsFor({ projectRoot, ticket: name.slice(0, -'.jsonl'.length), branch }),
+  );
+};
+
+/** The `extra-gate-round` authorizations recorded for one ticket on one branch. */
+export const extraGateRoundsFor = ({ projectRoot, ticket, branch }) => {
+  const file = readItemRecordFile(decisionsPathFor(projectRoot, ticket), {
+    maxBytes: MAX_DECISIONS_BYTES,
+  });
+  if (!file.exists) return [];
+  const result = parseDecisions(file.text, { ticket });
+  if (!result.ok) {
+    throw new Error(`the decisions record line ${result.line} is unreadable — ${result.reason}`);
+  }
+  return result.records.filter(
+    (record) => record.decision === 'extra-gate-round' && record.branch === branch,
+  );
+};
+
+const DECISIONS_PREFIX = '.rig/decisions/';
+const MAX_RECORD_WALK = 32;
+const MAX_RUN_DIRS = 200;
+const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
+/** Gates whose verdict on a head means a review round ran there. */
+const REVIEW_GATES = new Set(['pr-ship', 'code-reviewer', 'prose-reviewer', 'security-scanner']);
+
+/**
+ * The heads one authorization covers: its own head, then every first-parent
+ * commit on top of it that changes only `.rig/decisions/` — committing the
+ * record itself must not move the round off the head it was decided for.
+ * `null` when HEAD is not such a descendant within the bound.
+ */
+const recordOnlyChain = (projectRoot, from, to) => {
+  if (from === to) return [to];
+  let list;
+  try {
+    list = execFileSync('git', ['rev-list', '--first-parent', `--max-count=${MAX_RECORD_WALK}`, to], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: withoutGitLocation(),
+    })
+      .split('\n')
+      .filter(Boolean);
+  } catch {
+    return null;
+  }
+  const chain = [];
+  for (const sha of list) {
+    if (sha === from) return [from, ...chain];
+    let changed;
+    try {
+      changed = execFileSync('git', ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: withoutGitLocation(),
+      })
+        .split('\n')
+        .filter(Boolean);
+    } catch {
+      return null;
+    }
+    if (changed.length === 0 || !changed.every((path) => path.startsWith(DECISIONS_PREFIX))) return null;
+    chain.unshift(sha);
+  }
+  return null;
+};
+
+/** Every `decisions.jsonl` this checkout's runs hold, bounded; throws when one cannot be read. */
+const journalDecisionTexts = (projectRoot, runDir) => {
+  const dirs = new Set();
+  const runsRoot = join(mainCheckoutRoot(projectRoot), '.claude', 'runs');
+  let names = [];
+  try {
+    names = readdirSync(runsRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+  }
+  // The newest runs by name (run dirs are timestamp-named): a round spent on
+  // the head under review is recent, and an old checkout must not lose
+  // delegated rounds for good once it has accumulated many runs.
+  for (const name of names.sort().reverse().slice(0, MAX_RUN_DIRS)) dirs.add(join(runsRoot, name));
+  if (typeof runDir === 'string' && runDir !== '') dirs.add(runDir);
+  const texts = [];
+  for (const dir of dirs) {
+    const file = join(dir, 'decisions.jsonl');
+    let size;
+    try {
+      size = statSync(file).size;
+    } catch (error) {
+      if (error?.code === 'ENOENT') continue;
+      throw error;
+    }
+    if (size > MAX_JOURNAL_BYTES) throw new Error(`${file} is over ${MAX_JOURNAL_BYTES} bytes.`);
+    texts.push(readFileSync(file, 'utf8'));
+  }
+  return texts;
+};
+
+/**
+ * Whether `gate-round --authorized` may run one round past the base cap
+ * (RP-442): a durable `extra-gate-round` authorization for this ticket and
+ * branch whose head is HEAD, or HEAD's record-only descendant, and no review
+ * verdict yet on any head that authorization covers. That verdict set is the
+ * only consumption fact — there is no consumed-state file.
+ */
+export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
+  if (typeof ticket !== 'string' || ticket === '') {
+    return { ok: false, why: '--authorized needs --ticket <id>, the item the authorization was recorded for.' };
+  }
+  const head = gitValue(['rev-parse', 'HEAD'], projectRoot);
+  if (!head) return { ok: false, why: 'HEAD could not be read.' };
+  let records;
+  let texts;
+  let onBranch;
+  let budget;
+  try {
+    records = extraGateRoundsFor({ projectRoot, ticket, branch });
+    onBranch = extraGateRoundsOnBranch({ projectRoot, branch }).length;
+    budget = delegatedRoundBudget(loadConfig(join(projectRoot, '.claude', 'queue.json')));
+    texts = journalDecisionTexts(projectRoot, runDir);
+  } catch (error) {
+    return { ok: false, why: `the authorization or its consumption could not be read — ${error.message}` };
+  }
+  // More authorizations than the owner's budget can only come from outside
+  // `record`; none of them is honoured.
+  if (onBranch > budget) {
+    return {
+      ok: false,
+      why: `${branch} holds ${onBranch} extra-gate-round authorizations, more than the budget of ${budget}.`,
+    };
+  }
+  for (const record of records) {
+    const covered = recordOnlyChain(projectRoot, record.head, head);
+    if (covered === null) continue;
+    const heads = new Set(covered.map((sha) => sha.toLowerCase()));
+    const answered = texts.some((text) =>
+      text.split('\n').some((line) => {
+        if (line === '') return false;
+        let decision;
+        try {
+          decision = JSON.parse(line);
+        } catch {
+          return false;
+        }
+        return (
+          REVIEW_GATES.has(decision?.gate) &&
+          typeof decision?.headSha === 'string' &&
+          heads.has(decision.headSha.toLowerCase())
+        );
+      }),
+    );
+    if (answered) {
+      return { ok: false, why: `the authorization for ${record.head} is already spent — a review answered on it.` };
+    }
+    return { ok: true, head: record.head };
+  }
+  return {
+    ok: false,
+    why: `no extra-gate-round authorization for ${ticket} on ${branch} matches HEAD ${head}.`,
+  };
+};
+
 const VALUE_FLAGS = Object.freeze({
   '--ticket': 'ticket',
   '--decision': 'decision',
   '--summary': 'summary',
   '--evidence': 'evidence',
   '--release': 'release',
+  '--head': 'head',
 });
 
 const parseRecordArgs = (argv) => {
@@ -338,6 +542,7 @@ const parseRecordArgs = (argv) => {
     summary: undefined,
     evidence: undefined,
     release: undefined,
+    head: undefined,
     post: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -466,6 +671,39 @@ const runRecord = async (argv, cwd) => {
   const branch = gitValue(['rev-parse', '--abbrev-ref', 'HEAD'], cwd);
   const head = gitValue(['rev-parse', 'HEAD'], cwd);
 
+  let delegatedRound = null;
+  // RP-442: an extra gate round is bound to the exact head and branch it was
+  // decided for, and to the owner's budget — checked before anything is written.
+  if (parsed.decision === 'extra-gate-round') {
+    if (parsed.head === undefined) {
+      return refuse('record: extra-gate-round requires --head <sha>, the head the round is for.');
+    }
+    if (!branch || branch === 'HEAD') {
+      return refuse('record: extra-gate-round needs a named branch; this checkout is detached.');
+    }
+    if (parsed.head !== head) {
+      return refuse(
+        `record: --head ${JSON.stringify(parsed.head)} is not this checkout's HEAD (${head}); ` +
+          'an extra gate round is decided for the head under review.',
+      );
+    }
+    let budget;
+    let recorded;
+    try {
+      budget = delegatedRoundBudget(loadConfig(join(projectRoot, '.claude', 'queue.json')));
+      recorded = extraGateRoundsOnBranch({ projectRoot, branch }).length;
+    } catch (error) {
+      return refuse(`record: ${error.message}`);
+    }
+    delegatedRound = `delegated round ${recorded + 1} of ${budget} on ${branch}`;
+    if (recorded >= budget) {
+      return refuse(
+        `record: the delegated gate-round budget is spent — ${recorded} of ${budget} on ` +
+          `${branch}. The next decision belongs to the owner.`,
+      );
+    }
+  }
+
   const record = {
     schemaVersion: 1,
     ticket: composeTextField(parsed.ticket),
@@ -515,6 +753,7 @@ const runRecord = async (argv, cwd) => {
 
   const relativePath = relative(projectRoot, decisionsPath);
   process.stdout.write(`recorded ${parsed.decision} for ${parsed.ticket} -> ${relativePath}\n`);
+  if (delegatedRound !== null) process.stdout.write(`${delegatedRound}\n`);
 
   // `--post` is the ONLY branch that resolves a queue adapter or touches the
   // network — exactly the way `continuation.mjs --post` resolves one.

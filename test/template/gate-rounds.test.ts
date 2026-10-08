@@ -357,10 +357,32 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
 
     const fourth = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     expect(fourth.code).toBe(2);
-    expect(fourth.stderr).toMatch(/4 rounds on fix\/a, cap is 3/);
+    // RP-442: an exhausted call is not counted, so the number stated is the
+    // rounds actually SPENT (3), not a phantom fourth round nothing recorded.
+    expect(fourth.stderr).toMatch(/3 rounds on fix\/a, cap is 3/);
     expect(fourth.stderr).not.toMatch(/converg/i);
     expect(fourth.stderr).not.toMatch(/thrash/i);
     expect(fourth.stderr).toMatch(/this command measured only the count/);
+  });
+
+  // RP-442: an exhausted call is not a round. Repeating it must never move
+  // the counter past the cap it exists to enforce — a retried `pr-ship`
+  // step 0 (its own plain, pre-authorization call) must find the branch
+  // exactly where the cap left it, however many times it is repeated.
+  it('a fourth plain call exits 2 and never moves the counter, however many times it is repeated', async () => {
+    const cfg = await config();
+    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    expect(JSON.parse(await readFile(countsFile(cfg), 'utf8'))).toEqual({ 'fix/a': 3 });
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+      expect(result.code, `attempt ${attempt}`).toBe(2);
+      expect(JSON.parse(await readFile(countsFile(cfg), 'utf8')), `attempt ${attempt}`).toEqual({
+        'fix/a': 3,
+      });
+    }
   });
 
   it('exits 1 on its own failures, and says it is not an exhausted cap', async () => {
