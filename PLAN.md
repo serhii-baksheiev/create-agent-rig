@@ -10,7 +10,7 @@
 > `1.3.1` is a frozen hotfix candidate at `release/1.3.1-rc`,
 > `19a9dc64`, and is not published; its readiness gate is complete.
 > `1.4.0` is a frozen release candidate — the unattended-execution posture
-> contract on the 1.3 line, frozen as `release/1.4.0-rc` at `3b933f84` — and
+> contract on the 1.3 line, frozen as `release/1.4.0-rc` at `a03c3eed` — and
 > is not published; the owner decides its publication.
 > Its original `1e3db37f` candidate remains preserved at
 > `validation/original-140-1e3db37`.

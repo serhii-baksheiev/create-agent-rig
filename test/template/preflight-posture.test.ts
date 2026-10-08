@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -232,4 +232,68 @@ describe('preflight refuses an unattended flag already on disk for this checkout
       expect(parsed.verdict).toBe('STOP');
     });
   }, 60_000);
+});
+
+describe('preflight treats an uninspectable kill-switch path as a failure, never a pass (RP-462)', () => {
+  // `existsSync` (what `brakeIsOn` used before RP-462) swallows EACCES into
+  // `false` — a STOP file sitting behind a chmod-000 directory reads exactly
+  // like no STOP file at all. This reproduces that against `checkKillSwitch`
+  // directly, written against the literal expected shape — never derived by
+  // calling `brakeIsOn`/`stopFlags` to compute what "should" come out, which
+  // is exactly how this bug hid (`.claude/rules/invariants.md`, the
+  // independent-oracle invariant).
+  //
+  // Same platform/root limits as guard-hardening.test.ts's matching RP-462
+  // describe: chmod 000 denies nothing on Windows or for root.
+  const canChmodDeny = process.platform !== 'win32' && process.getuid?.() !== 0;
+
+  it.skipIf(!canChmodDeny)(
+    'reports fail — detail names "cannot be inspected" and the EACCES code — and the verdict is STOP',
+    async () => {
+      const { checkKillSwitch, report } = await load('preflight.mjs');
+      const dir = await mkdtemp(path.join(tmpdir(), 'rp462-preflight-locked-'));
+      const locked = path.join(dir, 'locked');
+      await mkdir(locked);
+      const flag = path.join(locked, 'STOP');
+      await writeFile(flag, '');
+      await chmod(locked, 0o000);
+      const previous = process.env.AGENT_LOOP_STOP;
+      process.env.AGENT_LOOP_STOP = flag;
+      try {
+        const check = (checkKillSwitch as () => Check)();
+        expect(check.ok).toBe(false);
+        expect(check.detail ?? '').toMatch(/cannot be inspected/);
+        expect(check.detail ?? '').toMatch(/EACCES/);
+        const result = report({ ...allPass(), killSwitch: check }) as Report;
+        expect(result.checks.killSwitch?.outcome).toBe('fail');
+        expect(result.verdict).toBe('STOP');
+      } finally {
+        if (previous === undefined) delete process.env.AGENT_LOOP_STOP;
+        else process.env.AGENT_LOOP_STOP = previous;
+        // Restore before cleanup, or removing `dir` recursively has to read
+        // `locked` to empty it first and fails the same way the bug does.
+        await chmod(locked, 0o755);
+        await removeFixture(dir);
+      }
+    },
+  );
+
+  it.skipIf(!canChmodDeny)(
+    'control: AGENT_LOOP_STOP naming a path that does not exist (ENOENT) stays pass/absent',
+    async () => {
+      const { checkKillSwitch } = await load('preflight.mjs');
+      const dir = await mkdtemp(path.join(tmpdir(), 'rp462-preflight-enoent-'));
+      const previous = process.env.AGENT_LOOP_STOP;
+      process.env.AGENT_LOOP_STOP = path.join(dir, 'absent-STOP');
+      try {
+        const check = (checkKillSwitch as () => Check)();
+        expect(check.ok).toBe(true);
+        expect(check.detail).toBe('absent');
+      } finally {
+        if (previous === undefined) delete process.env.AGENT_LOOP_STOP;
+        else process.env.AGENT_LOOP_STOP = previous;
+        await removeFixture(dir);
+      }
+    },
+  );
 });
