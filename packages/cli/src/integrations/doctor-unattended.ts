@@ -1,4 +1,3 @@
-import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { MANIFEST_REL, parseManifest, type RigManifest } from '../lib/manifest.js';
@@ -28,7 +27,10 @@ type PostureModule = {
   doctorStatus: (id: string, outcome: Outcome) => UnattendedStatus;
 };
 
-type StopFlagModule = { stopFlags: (env: NodeJS.ProcessEnv) => string[] };
+type StopFlagModule = {
+  stopFlags: (env: NodeJS.ProcessEnv) => string[];
+  armedFlag: (paths: string[]) => { path: string; code: string | null } | null;
+};
 
 const PROJECT_PLACEHOLDER = ['__PROJECT', 'NAME__'].join('_');
 
@@ -44,17 +46,11 @@ const loadScript = async <T>(...rel: string[]): Promise<T> =>
  */
 async function killSwitch(env: NodeJS.ProcessEnv, project: string | undefined): Promise<Outcome> {
   if (project === undefined) return 'unknown';
-  const { stopFlags } = await loadScript<StopFlagModule>('stop-flag.mjs');
-  const armed = stopFlags(env)
-    .map((flag) => flag.replaceAll(PROJECT_PLACEHOLDER, project))
-    .some((flag) => {
-      try {
-        return existsSync(flag);
-      } catch {
-        return false;
-      }
-    });
-  return armed ? 'fail' : 'pass';
+  const { stopFlags, armedFlag } = await loadScript<StopFlagModule>('stop-flag.mjs');
+  const armed = armedFlag(
+    stopFlags(env).map((flag) => flag.replaceAll(PROJECT_PLACEHOLDER, project)),
+  );
+  return armed === null ? 'pass' : 'fail';
 }
 
 type ClaimRecordsModule = { readRevalidationContract: (projectRoot: string) => unknown };
