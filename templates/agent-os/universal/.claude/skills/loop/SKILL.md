@@ -168,6 +168,17 @@ It refuses a missing word and writes nothing — the generator's
 `test/template/run-state-authority.test.ts` (absent in a generated rig) ›
 "refuses with no word at all, and writes nothing".
 
+Then record which external-provider versions this run works with, once:
+
+```bash
+RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/run-state.mjs providers
+```
+
+It journals Probity's selected, declared and installed versions as read, and
+a second call in the same run records nothing new — the generator's
+`test/template/run-state-authority.test.ts` (absent in a generated rig) ›
+"a second call in the same run records nothing new and exits 0".
+
 🔴 **The session must be started from the checkout whose run directory it
 declares.** The controller and the loop's own `RIG_RUN_DIR`/unattended flag
 have to live in the SAME checkout — a controller-session pilot run measured

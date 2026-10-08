@@ -88,6 +88,7 @@ export const UNCHECKED = UNCHECKED_CONDITIONS.map(({ detail }) => detail);
  */
 export { withoutGitLocation } from './git-env.mjs';
 import { withoutGitLocation } from './git-env.mjs';
+import { probityProvenance } from './lib/provider-provenance.mjs';
 
 /**
  * RP-255: `checkLastDeploy` shells out to `gh run list` through this same
@@ -301,7 +302,9 @@ export const verdictOf = (checks, unchecked = []) =>
 // RP-343: `authority`, when passed, is `lib/authority.mjs`'s own
 // `authorityPosture` object — report() never computes or restates it, only
 // renders the three lines a caller's posture already carries.
-export const report = (checks, { unchecked = UNCHECKED_CONDITIONS, authority } = {}) => {
+// RP-443: `providers`, when passed, is the provider provenance the run will
+// journal (`lib/provider-provenance.mjs`) — informational, never a verdict input.
+export const report = (checks, { unchecked = UNCHECKED_CONDITIONS, authority, providers } = {}) => {
   const verdict = verdictOf(checks, unchecked);
   const identified = Object.fromEntries(
     Object.entries(checks).map(([key, check]) => [
@@ -339,6 +342,7 @@ export const report = (checks, { unchecked = UNCHECKED_CONDITIONS, authority } =
     uncheckedConditions: unchecked.map(({ id, detail }) => ({ id, outcome: 'unknown', detail })),
     rendered: lines.join('\n'),
     ...(authority ? { authority } : {}),
+    ...(providers ? { providers } : {}),
   };
 };
 
@@ -412,7 +416,8 @@ if (invokedDirectly()) {
     defaultBranchFresh: checkDefaultBranchFresh(),
     lastDeploy: checkLastDeploy(),
   };
-  const result = report(checks, { authority });
+  const providers = { probity: await probityProvenance(projectRoot) };
+  const result = report(checks, { authority, providers });
   process.stdout.write(
     argv.includes('--json') ? `${JSON.stringify(result, null, 2)}\n` : `${result.rendered}\n`,
   );

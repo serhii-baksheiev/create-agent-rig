@@ -30,7 +30,7 @@
 // satisfied merely by the CLI and the contract module agreeing with each
 // other while both drift from what RP-339 actually named.
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -70,6 +70,17 @@ const envFor = (runDir: string | undefined): NodeJS.ProcessEnv => {
   else delete env.RIG_RUN_DIR;
   return env;
 };
+
+/** A minimal git init — RP-443 B3's test needs a real toplevel to resolve from a subdirectory. */
+const git = (args: string[], cwd: string): Promise<void> =>
+  new Promise((resolve, reject) => {
+    execFile(
+      'git',
+      ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args],
+      { cwd, env: withoutGitLocation() },
+      (error) => (error ? reject(error) : resolve()),
+    );
+  });
 
 const stateOf = async (runDir: string): Promise<Record<string, unknown>> =>
   JSON.parse(await readFile(path.join(runDir, 'state.json'), 'utf8')) as Record<string, unknown>;
@@ -194,5 +205,126 @@ describe('run-state.mjs — the `authority` command (RP-340)', () => {
       readState: (runDir: string) => { decisionAuthority?: string };
     };
     expect(readState(runDir).decisionAuthority).toBeUndefined();
+  });
+});
+
+// RP-443 — `providers` journals ONE `provider-provenance` event for the run,
+// carrying this project's Probity provenance
+// (`lib/provider-provenance.mjs`'s `probityProvenance`, not yet implemented —
+// `provider-provenance.test.ts` pins its own shape). Unlike
+// `deploy`/`budget`/`authority`/`trigger`, it takes no word at all: the
+// provenance is read from the project, not supplied on argv. A second call in
+// the same run records nothing new and exits 0.
+describe('run-state.mjs — the `providers` command (RP-443)', () => {
+  const newProjectRoot = async (): Promise<string> =>
+    mkdtemp(path.join(tmpdir(), 'run-state-providers-'));
+
+  const eventsOf = async (runDir: string): Promise<Array<{ kind: string; data: unknown }>> => {
+    const { readRun } = (await import(
+      pathToFileURL(
+        path.join(
+          repoRoot,
+          'templates',
+          'agent-os',
+          'universal',
+          '.claude',
+          'scripts',
+          'run-journal.mjs',
+        ),
+      ).href
+    )) as {
+      readRun: (input: { runDir: string }) => { events: Array<{ kind: string; data: unknown }> };
+    };
+    return readRun({ runDir }).events;
+  };
+
+  it("journals one provider-provenance event naming this project's Probity provenance", async () => {
+    const projectRoot = await newProjectRoot();
+    const runDir = await newRunDir();
+    const result = await runCli(['providers'], projectRoot, envFor(runDir));
+
+    expect(result.code, result.out).toBe(0);
+    const events = await eventsOf(runDir);
+    const provenanceEvents = events.filter((event) => event.kind === 'provider-provenance');
+    expect(provenanceEvents).toHaveLength(1);
+    expect(provenanceEvents[0]!.data).toEqual({
+      probity: { selected: false, declared: null, installed: null },
+    });
+  });
+
+  it('a second call in the same run records nothing new and exits 0', async () => {
+    const projectRoot = await newProjectRoot();
+    const runDir = await newRunDir();
+    await runCli(['providers'], projectRoot, envFor(runDir));
+
+    const second = await runCli(['providers'], projectRoot, envFor(runDir));
+
+    expect(second.code, second.out).toBe(0);
+    const events = await eventsOf(runDir);
+    expect(events.filter((event) => event.kind === 'provider-provenance')).toHaveLength(1);
+  });
+
+  it('refuses with no RIG_RUN_DIR declared, naming the variable', async () => {
+    const projectRoot = await newProjectRoot();
+    const result = await runCli(['providers'], projectRoot, envFor(undefined));
+
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out).toMatch(/RIG_RUN_DIR/);
+  });
+
+  // RP-443 B3: `recordProviders` must read the project from the git toplevel
+  // of the cwd (as `evidence-attach.mjs` does) — not `process.cwd()` raw —
+  // so running from a subdirectory of the project records the same
+  // provenance as running from the root.
+  it('reads the same provenance from a subdirectory of the project as from its root', async () => {
+    const projectRoot = await newProjectRoot();
+    await git(['init', '-q', '-b', 'master'], projectRoot);
+    await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, '.rig', 'integrations.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        integrations: [{ id: 'probity', version: '1.10.1', selected: true }],
+      })}\n`,
+    );
+    const sub = path.join(projectRoot, 'sub');
+    await mkdir(sub, { recursive: true });
+    const runDir = await newRunDir();
+
+    const result = await runCli(['providers'], sub, envFor(runDir));
+
+    expect(result.code, result.out).toBe(0);
+    const events = await eventsOf(runDir);
+    const data = events.find((event) => event.kind === 'provider-provenance')?.data as {
+      probity: { selected: boolean; declared: string | null };
+    };
+    expect(data.probity.selected).toBe(true);
+    expect(data.probity.declared).toBe('1.10.1');
+  });
+
+  it('reads the real Probity provenance declared for the project it runs in', async () => {
+    const projectRoot = await newProjectRoot();
+    await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, '.rig', 'integrations.json'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        integrations: [{ id: 'probity', version: '1.10.1', selected: true }],
+      })}\n`,
+    );
+    await mkdir(path.join(projectRoot, 'node_modules', '@nizos', 'probity'), { recursive: true });
+    await writeFile(
+      path.join(projectRoot, 'node_modules', '@nizos', 'probity', 'package.json'),
+      `${JSON.stringify({ name: '@nizos/probity', version: '1.10.1' })}\n`,
+    );
+    const runDir = await newRunDir();
+
+    const result = await runCli(['providers'], projectRoot, envFor(runDir));
+
+    expect(result.code, result.out).toBe(0);
+    const events = await eventsOf(runDir);
+    expect(events.find((event) => event.kind === 'provider-provenance')?.data).toEqual({
+      probity: { selected: true, declared: '1.10.1', installed: '1.10.1' },
+    });
   });
 });

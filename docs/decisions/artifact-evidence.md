@@ -32,7 +32,8 @@ hold the queue's SELECT revalidation event for the ticket.
 | `subject` | what it is about: `{ kind, id, version? }` |
 | `authorityClass` | what kind of source produced it (`automated`, `human`, …) — provenance, not a grant; a Rig verdict word is refused |
 | `producer` | the tool or person that produced it |
-| `producerVersion` | optional: the producer's own version, one token (`1.27.2`, `0.0.83`) |
+| `producerVersion` | optional: the producer's own version, one token (`1.27.2`, `0.0.83`); required for `playwright-mcp`, stamped from the rig's own pin when not given, and for `bmad-tea` |
+| `producerVersionSource` | with `producerVersion`: `declared` (read from the rig's own wiring) or `stated` (given on the command line) |
 | `ref` | where it is: a repo-relative path, or a bounded remote reference |
 | `sha256` | the digest of a local artifact's bytes; `null` for a remote one |
 | `item` | the queue item it belongs to |

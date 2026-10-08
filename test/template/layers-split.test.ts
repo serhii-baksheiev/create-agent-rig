@@ -76,6 +76,9 @@ const EXPECTED_WORKFLOW = new Set([
   // RP-312: artifact evidence entry point and its decision record
   '.claude/scripts/evidence-attach.mjs',
   'docs/decisions/artifact-evidence.md',
+  // RP-443: external-provider version provenance, read-only evidence for
+  // the same lifecycle evidence-attach.mjs feeds
+  '.claude/scripts/lib/provider-provenance.mjs',
   // RP-356: the Outcome Evidence signal definitions and their decision record
   '.claude/scripts/lib/outcome-signals.mjs',
   'docs/decisions/outcome-signals.md',
