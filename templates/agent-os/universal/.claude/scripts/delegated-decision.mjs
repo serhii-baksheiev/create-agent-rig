@@ -193,7 +193,7 @@ import {
   realpathSync,
   writeSync,
 } from 'node:fs';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from './git-env.mjs';
@@ -457,6 +457,36 @@ const appendDecisionRecord = (decisionsPath, line) => {
  * the 256 KiB bound, before any byte is read.
  */
 const readDecisionsFile = (decisionsPath) => {
+  const decisionsDir = dirname(decisionsPath);
+  const rigDir = dirname(decisionsDir);
+  let rigStat;
+  try {
+    rigStat = lstatSync(rigDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw new Error(error.message, { cause: error });
+  }
+  if (rigStat.isSymbolicLink()) {
+    throw new Error(`${rigDir} is a symlink; refusing to follow it.`);
+  }
+  if (!rigStat.isDirectory()) {
+    throw new Error(`${rigDir} is not a directory.`);
+  }
+
+  let decisionsStat;
+  try {
+    decisionsStat = lstatSync(decisionsDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw new Error(error.message, { cause: error });
+  }
+  if (decisionsStat.isSymbolicLink()) {
+    throw new Error(`${decisionsDir} is a symlink; refusing to follow it.`);
+  }
+  if (!decisionsStat.isDirectory()) {
+    throw new Error(`${decisionsDir} is not a directory.`);
+  }
+
   let pathStat;
   try {
     pathStat = lstatSync(decisionsPath);
@@ -467,8 +497,8 @@ const readDecisionsFile = (decisionsPath) => {
   if (pathStat.isSymbolicLink()) {
     throw new Error('is a symlink; refusing to follow it.');
   }
-  if (!pathStat.isFile()) {
-    throw new Error('is not a regular file.');
+  if (!pathStat.isFile() || pathStat.nlink !== 1) {
+    throw new Error('is not a regular file with a single name.');
   }
 
   let fd;
@@ -479,8 +509,8 @@ const readDecisionsFile = (decisionsPath) => {
   }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) {
-      throw new Error('is not a regular file.');
+    if (!stat.isFile() || stat.nlink !== 1) {
+      throw new Error('is not a regular file with a single name.');
     }
     // Checked on the OPEN HANDLE, before any read, never partially: see the
     // module header's "Limits" section.
