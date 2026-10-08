@@ -145,9 +145,10 @@
 // - `parseDecisions` validates in three passes, never interleaved line by
 //   line. First, every line's JSON syntax, in order — the first
 //   syntactically invalid line ends the scan immediately. Second, once every
-//   line parses, every record's nine required keys, in order, reporting the
+//   line parses, every record's ten required keys, in order, reporting the
 //   first record missing one. Third, once every record carries every key,
 //   whether the record could be a GENUINE delegated decision at all: its
+//   schema version and field types must match the writer's record shape; its
 //   `authority` must be exactly `"delegated"`, its `ticket` must match the
 //   one requested (when a ticket was given to check against), and its
 //   `decision` must be a delegable id under the RP-339 contract
