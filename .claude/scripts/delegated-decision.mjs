@@ -250,6 +250,7 @@ export const decisionsPathFor = (projectRoot, ticket) => {
 const REQUIRED_KEYS = Object.freeze([
   'schemaVersion',
   'ticket',
+  'release',
   'decision',
   'authority',
   'summary',
@@ -304,6 +305,38 @@ export const parseDecisions = (text, { ticket } = {}) => {
   // the record unreadable, the same as a structural defect.
   for (let index = 0; index < parsed.length; index += 1) {
     const record = parsed[index];
+    const invalid = (field) => ({
+      ok: false,
+      line: index + 1,
+      reason: `invalid ${field} field`,
+    });
+    if (record.schemaVersion !== 1) return invalid('schemaVersion');
+    if (
+      typeof record.ticket !== 'string' ||
+      !SAFE_TICKET.test(record.ticket) ||
+      WINDOWS_DEVICE_NAME.test(record.ticket) ||
+      composeTextField(record.ticket) !== record.ticket
+    ) {
+      return invalid('ticket');
+    }
+    if (
+      record.release !== null &&
+      record.release !== '[redacted]' &&
+      (typeof record.release !== 'string' || !RELEASE_LABEL.test(record.release))
+    ) {
+      return invalid('release');
+    }
+    if (typeof record.summary !== 'string' || record.summary.trim() === '') return invalid('summary');
+    if (record.evidence !== null && typeof record.evidence !== 'string') return invalid('evidence');
+    if (typeof record.branch !== 'string' || record.branch.trim() === '') return invalid('branch');
+    if (typeof record.head !== 'string' || record.head.trim() === '') return invalid('head');
+    if (
+      typeof record.at !== 'string' ||
+      Number.isNaN(Date.parse(record.at)) ||
+      new Date(record.at).toISOString() !== record.at
+    ) {
+      return invalid('at');
+    }
     if (record.authority !== 'delegated') {
       return {
         ok: false,
@@ -606,8 +639,8 @@ const runRecord = async (argv, cwd) => {
   if (typeof parsed.decision !== 'string' || parsed.decision === '') {
     return refuse('record: --decision is required.');
   }
-  if (typeof parsed.summary !== 'string' || parsed.summary === '') {
-    return refuse('record: --summary is required and may not be empty.');
+  if (typeof parsed.summary !== 'string' || parsed.summary.trim() === '') {
+    return refuse('record: --summary is required and may not be empty or whitespace.');
   }
   if (parsed.release !== undefined && !RELEASE_LABEL.test(parsed.release)) {
     return refuse(
