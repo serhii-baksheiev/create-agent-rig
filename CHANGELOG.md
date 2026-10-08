@@ -71,6 +71,9 @@ says what it enforces, verifies and leaves to the harness.
   inode checks and apply pathname device checks on POSIX. This avoids false
   refusals when Windows pathname and handle APIs report different device ids
   for the same file (RP-451).
+- **FIFO evidence replacements fail promptly.** Run-state and claim-contract
+  readers use nonblocking opens before checking the opened file type, so a
+  regular file replaced by a FIFO cannot stall selection (RP-455).
 
 ### Verification and limits
 
