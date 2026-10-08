@@ -80,7 +80,10 @@ const readRepositoryFile = (projectRoot, path, { label, maxBytes }) => {
   if (!declared.isFile()) throw new Error(`${label} is not a regular file`);
   let fd;
   try {
-    fd = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      path,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     let symlink = false;
     try {

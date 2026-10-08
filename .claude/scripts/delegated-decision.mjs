@@ -419,7 +419,8 @@ const appendDecisionRecord = (decisionsPath, line) => {
     (pathStat ? 0 : constants.O_CREAT | constants.O_EXCL) |
     // Undefined on Windows; the lstat above and the identity check below are
     // what hold there.
-    (constants.O_NOFOLLOW ?? 0);
+    (constants.O_NOFOLLOW ?? 0) |
+    (constants.O_NONBLOCK ?? 0);
   let fd;
   try {
     fd = openSync(decisionsPath, flags, 0o644);
@@ -497,7 +498,10 @@ const readDecisionsFile = (decisionsPath) => {
 
   let fd;
   try {
-    fd = openSync(decisionsPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      decisionsPath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     throw new Error(error.message, { cause: error });
   }

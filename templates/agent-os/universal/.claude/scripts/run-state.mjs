@@ -124,7 +124,10 @@ export const readStateForSelection = (runDir) => {
   if (!pathStat.isFile()) throw new Error('run state is invalid: expected a regular file');
   let fd;
   try {
-    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      statePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     throw new Error('run state is unreadable', { cause: error });
   }
