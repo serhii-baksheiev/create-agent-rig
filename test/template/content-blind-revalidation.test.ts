@@ -2043,6 +2043,80 @@ describe('run-state uncertainty preserves the revalidation brake', () => {
     }
   });
 
+  it('refuses a selection state replaced after initial lstat instead of reading the replacement', async () => {
+    const fixture = await mkdtemp(path.join(tmpdir(), 'selection-state-initial-identity-'));
+    const runDir = path.join(fixture, 'run');
+    const statePath = path.join(runDir, 'state.json');
+    const replacement = path.join(fixture, 'replacement.json');
+    const preload = path.join(fixture, 'preload.mjs');
+    const runner = path.join(fixture, 'read-selection-state.mjs');
+    const trace = path.join(fixture, 'trace');
+    const replacementTicket = 'RP-STATE-B-MUST-NOT-BE-READ';
+    await mkdir(runDir);
+    await writeFile(
+      statePath,
+      JSON.stringify({ revalidationHold: { kind: 'revalidation-hold', ticket: 'RP-STATE-A' } }),
+    );
+    await writeFile(
+      replacement,
+      JSON.stringify({
+        revalidationHold: { kind: 'revalidation-hold', ticket: replacementTicket },
+      }),
+    );
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP451_INITIAL_STATE_PATH;',
+        'const replacement = process.env.RP451_REPLACEMENT_STATE_PATH;',
+        'const trace = process.env.RP451_STATE_TRACE;',
+        'let replaced = false;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  if (!replaced && args[0] === target) {',
+        '    replaced = true;',
+        '    renameSync(replacement, target);',
+        "    appendFileSync(trace, 'replaced-after-initial-lstat\\n');",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    await writeFile(
+      runner,
+      [
+        `import { readStateForSelection } from ${JSON.stringify(pathToFileURL(runStateScript).href)};`,
+        'process.stdout.write(JSON.stringify(readStateForSelection(process.env.RP451_RUN_DIR)));',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await run(
+        process.execPath,
+        ['--import', pathToFileURL(preload).href, runner],
+        runDir,
+        {
+          ...process.env,
+          RP451_INITIAL_STATE_PATH: statePath,
+          RP451_REPLACEMENT_STATE_PATH: replacement,
+          RP451_STATE_TRACE: trace,
+          RP451_RUN_DIR: runDir,
+        },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('replaced-after-initial-lstat\n');
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/run state changed during validation/i);
+      expect(result.stdout).not.toContain(replacementTicket);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
   it(
     'fails closed promptly when the selection state becomes a FIFO after initial lstat',
     async (ctx) => {
