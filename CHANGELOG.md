@@ -74,6 +74,10 @@ says what it enforces, verifies and leaves to the harness.
 - **FIFO evidence replacements fail promptly.** Run-state and claim-contract
   readers use nonblocking opens before checking the opened file type, so a
   regular file replaced by a FIFO cannot stall selection (RP-455).
+- **Selected Probity on Windows non-ASCII roots.** The Codex wrapper decodes
+  Git output as UTF-8, including when PowerShell starts under CP437, so it
+  reaches the selected provider. Exact input and response bytes are preserved
+  (RP-460).
 
 ### Verification and limits
 
@@ -86,7 +90,7 @@ says what it enforces, verifies and leaves to the harness.
   - a guard refusal under an armed run, through both harnesses' invocations;
   - no change to the repository or to the harness configuration in HOME.
 - Live Claude Code and Codex sessions were not driven for this release.
-- The Windows wrapper's non-ASCII repository root case did not reproduce on
+- The bounded guard wrapper's non-ASCII repository root case did not reproduce on
   the hosted Windows runner. It stays as a regression test.
 
 ## 1.3.0
