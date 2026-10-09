@@ -26,6 +26,7 @@ import { runIntegrationsCommand } from '../src/commands/integrations.js';
 import { runDoctor } from '../src/commands/doctor.js';
 import { readManifest, writeManifest } from '../src/lib/manifest.js';
 import type { RigManifest } from '../src/lib/manifest.js';
+import type { ProviderProcessResult } from '../src/integrations/spawn.js';
 import { SPEC_KIT_VERSION } from '../src/integrations/spec-kit.js';
 import { PLAYWRIGHT_MCP_VERSION } from '../src/integrations/playwright.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -36,6 +37,13 @@ const PLAYWRIGHT_ENTRY_HASH = createHash('sha256')
   .digest('hex');
 
 const DECLARATION_REL = '.rig/integrations.json';
+
+const passingGuardRunner = async (): Promise<ProviderProcessResult> => ({
+  status: 'ok',
+  exitCode: 0,
+  stdout: '',
+  stderr: '',
+});
 
 let repo: string;
 let home: string;
@@ -59,6 +67,8 @@ async function doctor(): Promise<{
     args: ['--json'],
     // An empty PATH: no real `uv`/`uvx` is ever found here, on any machine.
     env: { HOME: home, APPDATA: home, PATH: home },
+    // Real guard-process behavior is covered independently in doctor-guards.test.ts.
+    guardRunner: passingGuardRunner,
   });
   return { result, body: JSON.parse(result.stdout) as Record<string, unknown> };
 }
