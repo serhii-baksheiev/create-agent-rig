@@ -9,6 +9,9 @@ copies.
 What is here is the one thing that checklist could not carry: a command, and the
 reasoning behind the boundary it stops at.
 
+When several accepted candidates await publication, follow the publication
+ordering and dist-tag guidance in CHANGELOG.md, "Releasing", step 8.
+
 ## Before step 8
 
 ```sh
@@ -108,6 +111,11 @@ recorded sha that disagrees with what the ledger says was published stops the
 build rather than trusting either one silently — pinned in
 `test/template/hash-history.test.ts` › "flags a published ledger gitHead, or
 null, that disagrees with the frozen RC sha".
+
+The baseline record remains as historical provenance after publication; it
+does not declare that the package is still unpublished. For example, 1.4.0's
+preserved candidate SHA now agrees with its published ledger row. Published
+state comes from the ledger and the reconciled changelog heading.
 
 ## Exact-SHA network acceptance
 

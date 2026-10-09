@@ -118,7 +118,7 @@ records the decision and its consequences.
   directory during a read remains a known Low limitation; the reader is not
   race-proof (RP-454).
 
-## 1.4.0 (release candidate)
+## 1.4.0
 
 **1.4.0 is additive on the 1.3 line.** It adds one contract for the conditions
 that decide whether a checkout is ready to run unattended, and reports it on
@@ -200,6 +200,18 @@ says what it enforces, verifies and leaves to the harness.
 - Live Claude Code and Codex sessions were not driven for this release.
 - The bounded guard wrapper's non-ASCII repository root case did not reproduce on
   the hosted Windows runner. It stays as a regression test.
+
+## 1.3.1
+
+### Fixed
+
+- Windows Node 22 file identity checks in run-state and claim readers (RP-451).
+- FIFO replacements fail promptly in state and claim readers (RP-455).
+- Windows Codex guards resolve UNC roots and selected Probity on non-ASCII
+  roots without adding a UTF-8 BOM (RP-321, RP-460).
+
+Published from `19a9dc648b336732b495d5dd98eb2e32dd8e3b1f`. This records the
+completed hotfix publication; its source candidate remains unchanged.
 
 ## 1.3.0
 
@@ -2829,6 +2841,13 @@ sometimes earlier (step 6). Everything before that is mechanical:
    `node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>`
    instead — see `docs/releasing.md`, "Preflighting a frozen, unpublished
    release candidate".
+
+   When several accepted candidates await publication, publish in increasing
+   version order. Publishing an older patch after a newer minor requires an
+   explicit non-`latest` tag, for example `npm publish --tag v1.4-patch`:
+   an ordinary publish moves `latest` to the version just published. Check
+   `npm view create-agent-rig dist-tags --json` before and after publication.
+   Publication and dist-tag changes remain owner-only.
 
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and
