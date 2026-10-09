@@ -4,8 +4,10 @@
 // as the root, so every glob starts with `**` (Probity anchors any other glob
 // to this file's directory). Prose, rules and fixtures stay outside the gate.
 import { defineConfig, enforceTdd } from '@nizos/probity';
+import { createProbityAi } from './tools/dogfood/probity-ai.mjs';
 
 export default defineConfig({
+  ai: createProbityAi(),
   rules: [
     {
       files: [
