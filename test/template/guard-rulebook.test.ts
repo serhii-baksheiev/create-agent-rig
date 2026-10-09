@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import {
   chmod,
   mkdir,
@@ -1360,6 +1360,162 @@ describe('guard-rulebook: apply_patch never hides a rulebook removal (RP-214)', 
  * silently allowed (RP-244 round 2)` further down this file; it needs no real
  * filesystem, so it runs on every platform.
  */
+// RP-463: a Codex patch may spell a path absolutely. The same root resolver
+// serves every patch verb, so these public-hook cases cover a safe absolute
+// destination, a removal, and both sides of a move without importing the
+// resolver the hooks use.
+describe('guard-rulebook: applies the same unattended allow-list to contained absolute apply_patch paths (RP-463)', () => {
+  beforeEach(() => {
+    execFileSync('git', ['init', '-q', root], { env: withoutGitLocation() });
+  });
+
+  const absolute = (relative: string) => path.join(root, ...relative.split('/'));
+  const applyPatch = (command: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    cwd: root,
+    tool_input: { command },
+  });
+
+  it.each(['Add', 'Update', 'Delete'] as const)(
+    'allows an absolute %s path that resolves inside an allowed src/ prefix',
+    async (verb) => {
+      const source = absolute('src/original.ts');
+      await mkdir(path.dirname(source), { recursive: true });
+      await writeFile(source, 'export const original = true;\n');
+      await armed(['src/']);
+
+      const command =
+        verb === 'Add'
+          ? `*** Begin Patch\n*** Add File: ${absolute('src/caf\u00e9-\u6771\u4eac.ts')}\n+export const added = true;\n*** End Patch\n`
+          : verb === 'Update'
+            ? `*** Begin Patch\n*** Update File: ${source}\n@@\n+export const updated = true;\n*** End Patch\n`
+            : `*** Begin Patch\n*** Delete File: ${source}\n*** End Patch\n`;
+      const result = await run(applyPatch(command));
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it('allows an absolute move only when both its source and destination resolve in the allowed prefix', async () => {
+    const source = absolute('src/original.ts');
+    await mkdir(path.dirname(source), { recursive: true });
+    await writeFile(source, 'export const original = true;\n');
+    await armed(['src/']);
+    const result = await run(
+      applyPatch(
+        `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${absolute('src/moved.ts')}\n@@\n+export const moved = true;\n*** End Patch\n`,
+      ),
+    );
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('does not let an absolute rulebook destination bypass the canonical relative allow-list', async () => {
+    await armed(['src/']);
+    const result = await run(
+      applyPatch(
+        `*** Begin Patch\n*** Add File: ${absolute('.claude/settings.json')}\n+{}\n*** End Patch\n`,
+      ),
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/rulebook|allow-list|AR-51/i);
+    expect(result.stderr).not.toMatch(/cannot be resolved safely|split/i);
+  });
+
+  it('does not let an absolute rulebook MOVE SOURCE bypass the canonical relative allow-list', async () => {
+    const source = absolute('.claude/hooks/guard-bash.mjs');
+    await mkdir(path.dirname(source), { recursive: true });
+    await writeFile(source, '// real hook\n');
+    await armed(['src/']);
+    const result = await run(
+      applyPatch(
+        `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${absolute('src/moved.mjs')}\n@@\n+// moved\n*** End Patch\n`,
+      ),
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/rulebook|allow-list|AR-51/i);
+    expect(result.stderr).not.toMatch(/cannot be resolved safely|split/i);
+  });
+
+  it('refuses an absolute path that escapes through a symlink or junction, even when its lexical prefix is allowed', async () => {
+    const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-outside-')));
+    try {
+      await mkdir(path.join(root, 'src'), { recursive: true });
+      await symlink(
+        outside,
+        path.join(root, 'src', 'escape'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      await armed(['src/']);
+      const result = await run(
+        applyPatch(
+          `*** Begin Patch\n*** Add File: ${absolute('src/escape/untrusted.ts')}\n+export const untrusted = true;\n*** End Patch\n`,
+        ),
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+      expect(result.stderr).not.toMatch(/split/i);
+    } finally {
+      await removeFixture(outside);
+    }
+  });
+
+  it('refuses an absolute path in the distinct NTFS sibling whose Unicode casing path.relative folds while unattended', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const parent = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-unicode-parent-')));
+    const repositoryLexical = path.join(parent, 'repo\u0130');
+    const outsideLexical = path.join(parent, 'repoi\u0307');
+    try {
+      await mkdir(repositoryLexical);
+      await mkdir(outsideLexical);
+      const repository = realpathSync.native(repositoryLexical);
+      const outside = realpathSync.native(outsideLexical);
+      expect(repository).not.toBe(outside);
+      execFileSync('git', ['init', '-q', repository], { env: withoutGitLocation() });
+
+      const fixtureEnv = { HOME: home, CLAUDE_PROJECT_DIR: repository };
+      const { unattendedFlags } = await import(
+        pathToFileURL(path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs')).href
+      );
+      const flag = unattendedFlags(fixtureEnv)[0];
+      await mkdir(path.dirname(flag), { recursive: true });
+      await writeFile(
+        flag,
+        JSON.stringify({
+          item: 'RP-463',
+          runDir: path.join(repository, '.rig-run'),
+          allow: ['src/'],
+        }),
+      );
+      const applyPatchAt = (filePath: string) => ({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        cwd: repository,
+        tool_input: {
+          command: `*** Begin Patch\n*** Add File: ${filePath}\n+export const safe = true;\n*** End Patch\n`,
+        },
+      });
+
+      const relativeControl = await runHookFull(
+        applyPatchAt('src/relative-control.ts'),
+        fixtureEnv,
+      );
+      expect(relativeControl.code, relativeControl.stderr).toBe(0);
+      const absoluteControl = await runHookFull(
+        applyPatchAt(path.join(repository, 'src', 'absolute-control.ts')),
+        fixtureEnv,
+      );
+      expect(absoluteControl.code, absoluteControl.stderr).toBe(0);
+
+      const result = await runHookFull(applyPatchAt(path.join(outside, 'payload.ts')), fixtureEnv);
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+      expect(result.stderr).not.toMatch(/split/i);
+    } finally {
+      await removeFixture(parent);
+    }
+  });
+});
+
 describe('guard-rulebook: a Win32 verbatim path does not bypass the guard (RP-244)', () => {
   const verbatimOf = (rel: string) => `\\\\?\\${root}\\${rel.replaceAll('/', '\\')}`;
 
