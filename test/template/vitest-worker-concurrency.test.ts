@@ -75,7 +75,7 @@ function resolveNativeVitestProjects(): Promise<NativeVitestProjects> {
     execFile(
       process.execPath,
       ['--input-type=module', '--eval', nativeVitestProjectProbe, configPath],
-      { cwd: repoRoot },
+      { cwd: repoRoot, env: probeEnv(process.env) },
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(`native Vitest configuration probe failed: ${stdout}${stderr}`));
