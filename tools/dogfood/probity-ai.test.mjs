@@ -1,12 +1,70 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { access } from 'node:fs/promises';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { test } from 'vitest';
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const configPath = path.join(repoRoot, 'probity.config.mjs');
+const probityBin = path.join(repoRoot, 'node_modules', '@nizos', 'probity', 'dist', 'bin.js');
+
+function configForProbityArgv(agentArguments) {
+  const program = [
+    `process.argv = ${JSON.stringify([process.execPath, probityBin, ...agentArguments])};`,
+    `const { default: config } = await import(${JSON.stringify(pathToFileURL(configPath).href)});`,
+    "process.stdout.write(JSON.stringify({ hasAi: Object.hasOwn(config, 'ai'), hasReason: typeof config.ai?.reason === 'function' }));",
+  ].join('\n');
+  const result = spawnSync(process.execPath, ['--input-type=module', '--eval', program], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+function runProbity(agentArguments) {
+  return spawnSync(process.execPath, [probityBin, ...agentArguments], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    input: '{',
+  });
+}
+
+test('uses the bounded Codex validator when the documented CLI argv selects codex', () => {
+  assert.deepEqual(configForProbityArgv(['--agent', 'codex']), {
+    hasAi: true,
+    hasReason: true,
+  });
+});
+
+test('leaves the Claude Code validator to Probity’s selected vendor', () => {
+  const config = configForProbityArgv(['--agent', 'claude-code']);
+
+  assert.equal(
+    config.hasAi,
+    false,
+    'Config.ai is global: declaring it replaces the official validator selected by --agent claude-code',
+  );
+});
+
+test('leaves Probity’s default validator available when no agent is selected', () => {
+  assert.equal(configForProbityArgv([]).hasAi, false);
+});
+
+test('uses the first documented --agent value when duplicate flags are supplied', () => {
+  const firstClaude = runProbity(['--agent', 'claude-code', '--agent', 'codex']);
+  assert.equal(firstClaude.status, 0, firstClaude.stderr);
+  assert.equal(JSON.parse(firstClaude.stdout).hookSpecificOutput?.permissionDecision, 'deny');
+
+  const firstCodex = runProbity(['--agent', 'codex', '--agent', 'claude-code']);
+  assert.equal(firstCodex.status, 0, firstCodex.stderr);
+  assert.equal(JSON.parse(firstCodex.stdout).decision, 'block');
+});
 
 test('creates isolated bounded Codex validators that preserve valid verdicts and fail closed', async () => {
   const { createProbityAi } = await import('./probity-ai.mjs');
-  const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
   const originalTimeout = AbortSignal.timeout;
   const timeoutCalls = [];
   const threadCalls = [];
