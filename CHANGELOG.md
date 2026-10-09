@@ -28,8 +28,9 @@ inspection without adding a new workflow capability.
   drive, UNC, device and alternate-stream paths, traversal, and linked escapes
   (RP-463).
 - Reopen a Move source after path verification and compare its file identity
-  before inspecting its content; refuse a changed or uninspectable source
-  (RP-459).
+  before inspecting its content; refuse a changed source or inspection errors
+  other than a missing file. A missing source emits a warning and retains
+  addition-only scanning (RP-459).
 
 ## 1.4.0
 
