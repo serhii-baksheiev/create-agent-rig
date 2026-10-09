@@ -773,7 +773,11 @@ function canonicalPatchPath(value) {
 
 function repositoryPatchPath(value, budget) {
   if (budget.repoRoot === null || budget.patchCwd === null) return null;
-  const rawValue = String(value ?? '');
+  // Normalise boundary whitespace before absolute-path classification so the
+  // guard checks the target written by the patch tool. JS `trim()` does not
+  // remove U+0085 NEL; refuse its boundary spelling rather than guess.
+  const rawValue = String(value ?? '').trim();
+  if (rawValue.startsWith('\u0085') || rawValue.endsWith('\u0085')) return null;
   // `apply_patch` normally names a repository-relative path. Codex may instead
   // emit an absolute spelling, but only one we can prove belongs to this
   // checkout is equivalent. Reject every traversal spelling before resolving:

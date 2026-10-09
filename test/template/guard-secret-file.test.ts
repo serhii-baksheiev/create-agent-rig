@@ -554,6 +554,153 @@ describe('guard-secret-file: apply_patch absolute paths are contained before cre
   });
 });
 
+// RP-478: trailing header whitespace must not hide an in-repository credential
+// target from the credential-file rule.
+describe('guard-secret-file: absolute apply_patch headers cannot hide credential filenames with trailing whitespace (RP-478)', () => {
+  const modes = [
+    ['attended', { RIG_UNATTENDED: '0' }],
+    ['unattended', { RIG_UNATTENDED: '1' }],
+  ] as const;
+  const headerWhitespace = [
+    ['space', ' '],
+    ['tab', '\t'],
+    ['non-breaking space', '\u00a0'],
+  ] as const;
+  const credentialPath = path.join(repoRoot, '.env').replaceAll(path.sep, '/');
+  const ordinaryPath = path
+    .join(repoRoot, 'src', 'ordinary file-\u6771\u4eac.ts')
+    .replaceAll(path.sep, '/');
+  const existingMoveSource = path.join(repoRoot, 'package.json').replaceAll(path.sep, '/');
+
+  const patch = (verb: 'Add' | 'Update', filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** ${verb} File: ${filePath}\n+export const safe = true;\n*** End Patch\n`,
+    },
+  });
+
+  const move = (source: string, destination: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${destination}\n@@\n+export const moved = true;\n*** End Patch\n`,
+    },
+  });
+
+  it.each(modes)(
+    'allows an absolute ordinary Unicode filename with an internal space in %s mode',
+    async (_mode, env) => {
+      const result = await runHook(patch('Add', ordinaryPath), env);
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it.each(
+    modes.flatMap(([mode, env]) =>
+      headerWhitespace.flatMap(([label, suffix]) =>
+        (['Add', 'Update'] as const).map((verb) => [verb, label, mode, env, suffix] as const),
+      ),
+    ),
+  )(
+    'refuses an absolute %s header whose credential filename ends with %s in %s mode',
+    async (verb, label, mode, env, suffix) => {
+      const result = await runHook(patch(verb, `${credentialPath}${suffix}`), env);
+      expect(result.code, `${verb}, ${label}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/credential file/i);
+    },
+  );
+
+  it.each(
+    modes.flatMap(([mode, env]) =>
+      headerWhitespace.map(([label, suffix]) => [label, mode, env, suffix] as const),
+    ),
+  )(
+    'refuses a Move destination whose absolute credential filename ends with %s in %s mode',
+    async (label, mode, env, suffix) => {
+      const result = await runHook(move(existingMoveSource, `${credentialPath}${suffix}`), env);
+      expect(result.code, `Move destination, ${label}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/credential file/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses a Move source with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(move(`${existingMoveSource}\u0085`, ordinaryPath), env);
+      expect(result.code, `Move source, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an Add destination with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(patch('Add', `${credentialPath}\u0085`), env);
+      expect(result.code, `Add destination, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an Update destination with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(patch('Update', `${credentialPath}\u0085`), env);
+      expect(result.code, `Update destination, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses a Move destination with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(move(existingMoveSource, `${credentialPath}\u0085`), env);
+      expect(result.code, `Move destination, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(
+    modes.flatMap(
+      ([mode, env]) =>
+        [
+          [
+            'id_rsa with space',
+            mode,
+            env,
+            path.join(repoRoot, 'keys', 'id_rsa'),
+            ' ',
+            'credential file',
+          ],
+          [
+            'cert.pem with NBSP',
+            mode,
+            env,
+            path.join(repoRoot, 'keys', 'cert.pem'),
+            '\u00a0',
+            'credential file',
+          ],
+          [
+            'cert.pem with NEL',
+            mode,
+            env,
+            path.join(repoRoot, 'keys', 'cert.pem'),
+            '\u0085',
+            'cannot safely inspect',
+          ],
+        ] as const,
+    ),
+  )(
+    'refuses %s in %s mode',
+    async (label, mode, env, credentialNamedPath, suffix, expectedReason) => {
+      const filePath = credentialNamedPath.replaceAll(path.sep, '/') + suffix;
+      const result = await runHook(patch('Add', filePath), env);
+      expect(result.code, `${label}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(new RegExp(expectedReason, 'i'));
+    },
+  );
+});
+
 describe('guard-secret-file: the ordinary work of the day stays allowed', () => {
   it('allows a Write to .env.example, which is how a project states what it needs', async () => {
     await allow(write('.env.example', `JIRA_API_TOKEN=${'your-token-here'}\n`), '.env.example');
