@@ -88,6 +88,10 @@ The record command writes the decision file; it does not stage or commit it.
 Explicitly stage `.rig/decisions/<ticket>.jsonl` and commit it with the item's
 branch before expecting another clone to read the decision. Per-run journals
 under `.claude/runs/` are local evidence and do not replace that portable file.
+Claim revalidation mechanically requires a versioned claim record; the
+delegated-decision reader reads the working-tree file without requiring a
+committed Git version. A successful decision read therefore does not prove
+that another clone can read it.
 Generator evidence (absent in a generated rig):
 `test/e2e/delegated-authority.test.ts` › "scenario 6: a
 second controller session (B) reads session A's delegated decision back as
