@@ -4,8 +4,15 @@
 // as the root, so every glob starts with `**` (Probity anchors any other glob
 // to this file's directory). Prose, rules and fixtures stay outside the gate.
 import { defineConfig, enforceTdd } from '@nizos/probity';
+import { createProbityAi } from './tools/dogfood/probity-ai.mjs';
+
+// Probity's public --agent flag uses its first separated value; Config.ai is global.
+const agentIndex = process.argv.indexOf('--agent');
+const codexValidator =
+  agentIndex !== -1 && process.argv[agentIndex + 1] === 'codex' ? { ai: createProbityAi() } : {};
 
 export default defineConfig({
+  ...codexValidator,
   rules: [
     {
       files: [
