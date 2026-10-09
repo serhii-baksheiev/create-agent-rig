@@ -23,7 +23,7 @@
  * argv after the command name, and returning `{ stdout?, exitCode? }` or
  * writing to stdout itself), so one description serves both platforms.
  */
-import { rmSync as nodeRmSync } from 'node:fs';
+import { constants as fsConstants, rmSync as nodeRmSync } from 'node:fs';
 import { chmod, copyFile, link, mkdtemp, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -60,7 +60,15 @@ export type StubDependencies = {
 const isBusyRemoval = (code: string | undefined): boolean =>
   code === 'EBUSY' || (code === 'EPERM' && process.platform === 'win32');
 
-// See stub-command.test.ts: same-volume identity, EXDEV fallback, and other errors.
+// On Windows, CreateHardLink can report an exhausted link count either as
+// EMLINK or as UNKNOWN with the original link syscall (RP-468). Keep UNKNOWN
+// narrow: it is only a fallback when the failed operation was the hard link.
+const shouldCopyAfterLinkFailure = (error: unknown): boolean => {
+  const { code, syscall } = error as NodeJS.ErrnoException;
+  return code === 'EXDEV' || code === 'EMLINK' || (code === 'UNKNOWN' && syscall === 'link');
+};
+
+// See stub-command.test.ts: same-volume identity, copy fallbacks, and other errors.
 export const materializeStubExecutable = async (
   source: string,
   destination: string,
@@ -69,8 +77,8 @@ export const materializeStubExecutable = async (
   try {
     await (dependencies.linkFile ?? link)(source, destination);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'EXDEV') throw error;
-    await (dependencies.copyFile ?? copyFile)(source, destination);
+    if (!shouldCopyAfterLinkFailure(error)) throw error;
+    await (dependencies.copyFile ?? copyFile)(source, destination, fsConstants.COPYFILE_EXCL);
   }
 };
 

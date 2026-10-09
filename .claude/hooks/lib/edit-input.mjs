@@ -343,6 +343,7 @@ function patchFragments(command, payloadCwd) {
           filePath: '',
           fragment: '',
           inspectionRefusal: 'patch destination is outside the repository or cannot be resolved safely',
+          remedy: 'Use a repository-relative path spelling; absolute paths must resolve inside this repository.',
           appliesToAll: true,
           // RP-214: a Delete File section has no destination — only the
           // removed path itself — so this refusal is about a removal too;
@@ -390,6 +391,8 @@ function patchFragments(command, payloadCwd) {
                   fragment: '',
                   inspectionRefusal:
                     'patch move source is outside the repository or cannot be resolved safely',
+                  remedy:
+                    'Use a repository-relative path spelling; absolute paths must resolve inside this repository.',
                   appliesToAll: true,
                   removes: true,
                 }
@@ -446,9 +449,9 @@ function patchFragments(command, payloadCwd) {
 
 function movedFragment(current, budget) {
   if (budget.exhausted !== null) return inspectionRefusal(current, budget.exhausted);
-  const sourcePath = canonicalPatchPath(current.sourcePath);
-  if (sourcePath === null) {
-    return inspectionRefusal(current, 'move source is outside the repository root');
+  const source = repositoryPatchPath(current.sourcePath, budget);
+  if (source === null) {
+    return inspectionRefusal(current, 'unsafe move source cannot be resolved safely');
   }
   if (budget.repoRoot === null) {
     return inspectionRefusal(current, 'cannot resolve the repository root with git rev-parse');
@@ -458,7 +461,7 @@ function movedFragment(current, budget) {
   }
   try {
     const repoRoot = budget.repoRoot;
-    const candidate = path.resolve(budget.patchCwd, sourcePath);
+    const candidate = source.candidate;
     if (!isWithin(repoRoot, candidate)) {
       return inspectionRefusal(current, 'move source is outside the repository root');
     }
@@ -489,7 +492,19 @@ function movedFragment(current, budget) {
       ) {
         return inspectionRefusal(current, 'move source changed during inspection');
       }
-
+      const verifiedHandle = openSync(verifiedSource, constants.O_RDONLY | noFollow | nonBlocking);
+      try {
+        const verifiedOpened = fstatSync(verifiedHandle);
+        if (
+          !verifiedOpened.isFile() ||
+          verifiedOpened.dev !== opened.dev ||
+          verifiedOpened.ino !== opened.ino
+        ) {
+          return inspectionRefusal(current, 'move source changed during inspection');
+        }
+      } finally {
+        closeSync(verifiedHandle);
+      }
       let bytesRead = 0;
       const buffer = Buffer.allocUnsafe(MAX_MOVED_FILE_BYTES + 1);
       while (bytesRead < buffer.length) {
@@ -598,11 +613,19 @@ function findSequence(lines, sequence, budget) {
 }
 
 function isWithin(root, candidate) {
-  const relative = path.relative(root, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  );
+  // `path.relative` is not a containment oracle on Windows: its case-folding
+  // treats some distinct Unicode NTFS names as the same component. Compare the
+  // resolved spellings at component boundaries instead. `repositoryPatchPath`
+  // separately realpath-resolves existing prefixes; this lexical check remains
+  // deliberately conservative and admits only the canonical spelling it was
+  // given, refusing an alternate case or Unicode-normalised absolute spelling.
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  if (resolvedCandidate === resolvedRoot) return true;
+  const separatorTerminatedRoot = resolvedRoot.endsWith(path.sep)
+    ? resolvedRoot
+    : `${resolvedRoot}${path.sep}`;
+  return resolvedCandidate.startsWith(separatorTerminatedRoot);
 }
 
 function inspectionRefusal(current, reason) {
@@ -749,15 +772,44 @@ function canonicalPatchPath(value) {
 }
 
 function repositoryPatchPath(value, budget) {
-  const patchPath = canonicalPatchPath(value);
-  if (patchPath === null || budget.repoRoot === null || budget.patchCwd === null) return null;
-  const candidate = path.resolve(budget.patchCwd, patchPath);
+  if (budget.repoRoot === null || budget.patchCwd === null) return null;
+  const rawValue = String(value ?? '');
+  // `apply_patch` normally names a repository-relative path. Codex may instead
+  // emit an absolute spelling, but only one we can prove belongs to this
+  // checkout is equivalent. Reject every traversal spelling before resolving:
+  // normalising first would turn an unsafe claim into an apparently contained
+  // one. UNC, device, drive-relative, and Windows root-relative forms stay
+  // unjudgeable here; a native fully-qualified path is the only alternate
+  // surface this resolver admits.
+  const hasTraversal = rawValue.split(/[\\/]/).some((part) => part === '..');
+  const isDeviceOrUnc =
+    /^[\\/]{2}[?.](?:[\\/]|$)/.test(rawValue) || /^[\\/]{2}/.test(rawValue);
+  const isWindowsRootRelative =
+    process.platform === 'win32' && /^[\\/](?![\\/])/.test(rawValue);
+  const absolute = path.isAbsolute(rawValue);
+  if (hasTraversal || isDeviceOrUnc || isWindowsRootRelative) return null;
+
+  const patchPath = absolute ? null : canonicalPatchPath(rawValue);
+  if (!absolute && patchPath === null) return null;
+  const candidate = absolute ? path.resolve(rawValue) : path.resolve(budget.patchCwd, patchPath);
   if (!isWithin(budget.repoRoot, candidate)) return null;
 
   // RP-60: the lexical repo-relative spelling, fixed BEFORE any symlink in the
   // path (a guarded prefix junctioned elsewhere inside the checkout, say) gets
   // resolved away below. One extra string, computed once — not a new loop.
   const raw = path.relative(budget.repoRoot, candidate).split(path.sep).join('/');
+  // A colon cannot name an ordinary Windows repository entry here: after the
+  // drive root has been removed, it is an alternate data stream spelling.
+  // Refuse it before resolving or caching an ancestor, so `.env::$DATA` cannot
+  // evade the credential-file path policy through its default-stream alias.
+  if (
+    raw === '' ||
+    raw === '..' ||
+    raw.startsWith('../') ||
+    (process.platform === 'win32' && raw.includes(':'))
+  ) {
+    return null;
+  }
 
   let existing = candidate;
   const suffix = [];
@@ -766,7 +818,11 @@ function repositoryPatchPath(value, budget) {
       const resolved = budget.resolvedDirectories.get(existing);
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
+      return {
+        raw,
+        candidate,
+        resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/'),
+      };
     }
     try {
       const resolved = realpathSync(existing);
@@ -782,7 +838,11 @@ function repositoryPatchPath(value, budget) {
       }
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
+      return {
+        raw,
+        candidate,
+        resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/'),
+      };
     } catch (error) {
       if (error?.code !== 'ENOENT') return null;
       try {

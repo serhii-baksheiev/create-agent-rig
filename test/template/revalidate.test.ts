@@ -126,18 +126,22 @@ const isAncestor = async (ancestor: string, descendant: string, cwd: string): Pr
   ).code === 0;
 
 /**
- * A bare `origin` and a working clone on a feature branch that edits `a.txt`.
- * `moveMain` lands a commit on master through a SECOND clone and fetches it into
- * the working clone, so `origin/master` moves without the branch doing anything.
+ * The seven git spawns (init, clone, add, commit, push, checkout, commit)
+ * that build an `origin.git` + feature-branch `clone` are identical on every
+ * call — no case parameterises them — so RP-426 builds that tree ONCE per
+ * file, lazily, on the first case that needs it, rather than once per case.
+ * Each case still gets its own fully independent repository: `gitFixture`
+ * below copies this template into a fresh `mkdtemp` and repoints the clone's
+ * `origin` remote, so no case can observe another's writes. Never written to
+ * directly — only copied from — and cleaned up the same way every other
+ * tmpdir in this file is: not at all; the OS reclaims it.
  */
-const gitFixture = async (): Promise<{
-  clone: string;
-  moveMain: (files: string[], options?: { fetch?: boolean }) => Promise<void>;
-}> => {
-  const root = await mkdtemp(path.join(tmpdir(), 'revalidate-git-'));
+let gitTemplateRoot: Promise<string> | null = null;
+
+const buildGitTemplate = async (): Promise<string> => {
+  const root = await mkdtemp(path.join(tmpdir(), 'revalidate-git-template-'));
   const origin = path.join(root, 'origin.git');
   const clone = path.join(root, 'clone');
-  const other = path.join(root, 'other');
   await mkdir(origin);
   await git(['init', '--bare', '-b', 'master'], origin);
   await git(['clone', '-q', origin, clone], root);
@@ -155,6 +159,28 @@ const gitFixture = async (): Promise<{
   await git(['checkout', '-q', '-b', 'feat/ar-1'], clone);
   await writeFile(path.join(clone, 'a.txt'), 'a.txt on the branch\n');
   await git(['commit', '-q', '-a', '-m', 'branch touches a.txt'], clone);
+  return root;
+};
+
+/**
+ * A bare `origin` and a working clone on a feature branch that edits `a.txt`.
+ * `moveMain` lands a commit on master through a SECOND clone and fetches it into
+ * the working clone, so `origin/master` moves without the branch doing anything.
+ */
+const gitFixture = async (): Promise<{
+  clone: string;
+  moveMain: (files: string[], options?: { fetch?: boolean }) => Promise<void>;
+}> => {
+  if (!gitTemplateRoot) gitTemplateRoot = buildGitTemplate();
+  const template = await gitTemplateRoot;
+  const root = await mkdtemp(path.join(tmpdir(), 'revalidate-git-'));
+  await cp(template, root, { recursive: true });
+  const origin = path.join(root, 'origin.git');
+  const clone = path.join(root, 'clone');
+  const other = path.join(root, 'other');
+  // The copy's `origin.git` sits at a NEW absolute path; the clone's remote
+  // still names the template's own `origin.git` until this repoints it.
+  await git(['remote', 'set-url', 'origin', origin], clone);
 
   const moveMain = async (files: string[], { fetch = true } = {}): Promise<void> => {
     if (!existsSync(other)) await git(['clone', '-q', origin, other], root);
@@ -327,12 +353,24 @@ describe('the git fixture itself', () => {
 
     expect(claims.targetShaOf(clone, 'origin/HEAD')).toBeNull();
     expect(claims.targetShaOf(clone)).toBe(remoteMaster);
+  });
 
-    await git(['branch', 'main', localMaster], clone);
+  it('keeps origin HEAD precedence and rejects ambiguous or tag-shadowed remote targets', async () => {
+    const { clone } = await gitFixture();
+    const localMaster = await git(['rev-parse', 'master'], clone);
+    const featureHead = await git(['rev-parse', 'HEAD'], clone);
+    expect(featureHead).not.toBe(localMaster);
+
+    const claims = (await loadScript('lib/claim-records.mjs')) as {
+      targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
+    };
+
+    await git(['branch', 'main', featureHead], clone);
     await git(['push', '-q', 'origin', 'main:main'], clone);
     await git(['fetch', '-q', 'origin'], clone);
     const remoteMain = await git(['rev-parse', 'origin/main'], clone);
-    expect(remoteMain).not.toBe(remoteMaster);
+    expect(remoteMain).toBe(featureHead);
+    expect(remoteMain).not.toBe(localMaster);
     await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
     const fetchedRemoteHead = await run(
       'git',
@@ -353,14 +391,33 @@ describe('the git fixture itself', () => {
       remoteMain,
     );
     expect(await git(['rev-parse', '--verify', 'refs/remotes/origin/master'], clone)).toBe(
-      remoteMaster,
+      localMaster,
     );
     expect(claims.targetShaOf(clone, 'origin/HEAD')).toBeNull();
     expect(claims.targetShaOf(clone)).toBeNull();
+  });
+
+  it('rejects shadowed explicit remote refs before falling back to the local master', async () => {
+    const { clone } = await gitFixture();
+    const localMaster = await git(['rev-parse', 'master'], clone);
+    const featureHead = await git(['rev-parse', 'HEAD'], clone);
+    expect(featureHead).not.toBe(localMaster);
+
+    const claims = (await loadScript('lib/claim-records.mjs')) as {
+      targetShaOf: (projectRoot: string, ref?: string | null) => string | null;
+    };
+
+    await git(['branch', 'main', featureHead], clone);
+    await git(['push', '-q', 'origin', 'main:main'], clone);
+    await git(['fetch', '-q', 'origin'], clone);
+    const remoteMain = await git(['rev-parse', 'origin/main'], clone);
+    expect(remoteMain).toBe(featureHead);
+    expect(remoteMain).not.toBe(localMaster);
+    await git(['update-ref', '--no-deref', '-d', 'refs/remotes/origin/HEAD'], clone);
 
     await git(['update-ref', '-d', 'refs/remotes/origin/master'], clone);
-    await git(['tag', '-f', 'origin/master', remoteMaster], clone);
-    expect(await git(['rev-parse', 'origin/master'], clone)).toBe(remoteMaster);
+    await git(['tag', '-f', 'origin/master', localMaster], clone);
+    expect(await git(['rev-parse', 'origin/master'], clone)).toBe(localMaster);
     expect(claims.targetShaOf(clone, 'origin/master')).toBeNull();
     expect(claims.targetShaOf(clone, 'origin/main')).toBe(remoteMain);
     expect(claims.targetShaOf(clone)).toBe(remoteMain);
@@ -371,6 +428,14 @@ describe('the git fixture itself', () => {
 
     await git(['remote', 'remove', 'origin'], clone);
     expect(claims.targetShaOf(clone)).toBe(localMaster);
+  });
+
+  it('keeps queue selection unverifiable until a unique target exists, then claims from the local target', async () => {
+    const { clone } = await gitFixture();
+    const localMaster = await git(['rev-parse', 'master'], clone);
+    const featureHead = await git(['rev-parse', 'HEAD'], clone);
+    expect(featureHead).not.toBe(localMaster);
+    await git(['remote', 'remove', 'origin'], clone);
 
     await mkdir(path.join(clone, '.claude'), { recursive: true });
     await cp(scriptsDir, path.join(clone, '.claude', 'scripts'), { recursive: true });
@@ -395,7 +460,7 @@ describe('the git fixture itself', () => {
     });
     expect(existsSync(claimPath)).toBe(false);
 
-    await git(['update-ref', 'refs/remotes/origin/master', remoteMaster], clone);
+    await git(['update-ref', 'refs/remotes/origin/master', featureHead], clone);
     await git(['update-ref', 'refs/remotes/origin/main', localMaster], clone);
     const ambiguousRemoteTarget = await select();
     expect(ambiguousRemoteTarget.code, ambiguousRemoteTarget.out).toBe(2);

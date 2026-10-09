@@ -1,14 +1,25 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 1.3.0. Live work, status, dependencies and acceptance
+> **Current release:** 1.4.0. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Status (1.3.0 published 6 Oct 2026):** 1.3.0 is `latest`, published from
-> `gitHead` `9c2508302e7a04b95c51edab2d256816cedddd82`. Versions 0.1.0 through
-> 1.3.0 are live; delivery is done through `1.3.0`, the current `latest`.
-> `1.4.0` is the release candidate being prepared — the unattended-execution
-> posture contract on the 1.3 line — and is not published.
+> **Registry reconciliation (9 Oct 2026):** npm contains published `1.3.1`
+> (`gitHead` `19a9dc648b336732b495d5dd98eb2e32dd8e3b1f`) and `1.4.0`
+> (`gitHead` `a03c3eed6693658f338fee5aef04102ab02bc83a`); `latest` is `1.4.0`.
+> Downloaded tarball SHA1/SHA512 match npm metadata. Their accepted source
+> candidates remain unchanged at `release/1.3.1-rc` and `release/1.4.0-rc`.
+> The original 1.4.0 `1e3db37f` candidate remains preserved at
+> `validation/original-140-1e3db37`.
+> `1.5.0` is accepted and frozen at `release/1.5.0-rc`,
+> `e041e52f16fa713abc41d635c782d58527fe986d`. A subsequent exact-candidate
+> probe reproduced RP-463; RP-471 now tracks a bounded replacement after
+> 1.4.1, preserving that accepted candidate and all prior evidence.
+> Its original `da3b12cf` remains at `validation/original-150-da3b12c`.
+> Exact three-OS release acceptance: Actions run `37813345254`; integration
+> PR #448 reached master `639e750a`. Current engineering proceeds with
+> `1.4.1` (RP-463/RP-470), then RP-471 and the Jira graph for `1.5.1` and later
+> releases. Preparing a patch after a frozen minor does not move that minor RC.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
