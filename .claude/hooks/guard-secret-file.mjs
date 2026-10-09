@@ -101,10 +101,10 @@ function main() {
 
   // RP-214: `editFragments` also reports a removal (a Delete File section, or
   // the source half of a Move) as its own fragment, `removes: true` — deleting
-  // a credential file is not writing one, so this guard never judges those,
-  // including an inspection refusal attached to one.
-  const fragments = editFragments(input).filter(({ removes }) => !removes);
-  const globalRefusal = fragments.find(
+  // a credential file is not writing one, so this guard excludes their content
+  // after it has applied a path-safety refusal to every fragment.
+  const allFragments = editFragments(input);
+  const globalRefusal = allFragments.find(
     ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
   );
   if (globalRefusal) {
@@ -117,6 +117,8 @@ function main() {
     );
     return 2;
   }
+
+  const fragments = allFragments.filter(({ removes }) => !removes);
 
   if (fragments.length === 0 || fragments.every(({ filePath }) => filePath === '')) {
     return 0; // nothing to judge; fail open
