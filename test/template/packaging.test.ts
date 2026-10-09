@@ -277,8 +277,6 @@ describe('the root manifest is publish-complete', () => {
     // Read from the public registry on 9 Oct 2026. Keep both identities
     // literal: the reconciliation must not turn a published-version claim into
     // a version-only claim.
-    const published131Sha = '19a9dc648b336732b495d5dd98eb2e32dd8e3b1f';
-    const published140Sha = 'a03c3eed6693658f338fee5aef04102ab02bc83a';
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -305,10 +303,12 @@ describe('the root manifest is publish-complete', () => {
     // at a time, so only the just-shipped version needs guarding; accumulating
     // those would grow a list forever against a shape that cannot recur.
     //
-    expect(plan).toMatch(/npm contains published `1\.3\.1`/);
-    expect(plan).toContain(published131Sha);
-    expect(plan).toMatch(/npm contains published[\s\S]*`1\.4\.0`/);
-    expect(plan).toContain(published140Sha);
+    expect(plan).toMatch(
+      /npm contains published `1\.3\.1`\s*\r?\n>\s*\(`gitHead` `19a9dc648b336732b495d5dd98eb2e32dd8e3b1f`\) and `1\.4\.0`/,
+    );
+    expect(plan).toMatch(
+      /and `1\.4\.0`\s*\r?\n>\s*\(`gitHead` `a03c3eed6693658f338fee5aef04102ab02bc83a`\); `latest` is `1\.4\.0`\./,
+    );
     expect(plan).toMatch(/`latest` is `1\.4\.0`/);
     expect(plan).toMatch(/Current release:\*\* 1\.4\.0/);
     // 1.3.1 and 1.4.0 are live, so neither may be described as pending.
