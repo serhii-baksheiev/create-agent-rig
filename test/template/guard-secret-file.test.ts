@@ -565,6 +565,37 @@ describe('guard-secret-file: absolute apply_patch headers cannot hide credential
     ['space', ' '],
     ['tab', '\t'],
     ['non-breaking space', '\u00a0'],
+    ['line separator', '\u2028'],
+    ['paragraph separator', '\u2029'],
+  ] as const;
+  // Rust `char::is_whitespace()` as used by Codex 0.161's patch parser. NEL
+  // stays conservatively denied below with its existing reason assertion.
+  const rustTrailingWhitespace = [
+    ['tab', '\u0009'],
+    ['line feed', '\u000a'],
+    ['vertical tab', '\u000b'],
+    ['form feed', '\u000c'],
+    ['carriage return', '\u000d'],
+    ['space', '\u0020'],
+    ['NEL', '\u0085'],
+    ['non-breaking space', '\u00a0'],
+    ['Ogham space mark', '\u1680'],
+    ['en quad', '\u2000'],
+    ['em quad', '\u2001'],
+    ['en space', '\u2002'],
+    ['em space', '\u2003'],
+    ['three-per-em space', '\u2004'],
+    ['four-per-em space', '\u2005'],
+    ['six-per-em space', '\u2006'],
+    ['figure space', '\u2007'],
+    ['punctuation space', '\u2008'],
+    ['thin space', '\u2009'],
+    ['hair space', '\u200a'],
+    ['line separator', '\u2028'],
+    ['paragraph separator', '\u2029'],
+    ['narrow non-breaking space', '\u202f'],
+    ['medium mathematical space', '\u205f'],
+    ['ideographic space', '\u3000'],
   ] as const;
   const credentialPath = path.join(repoRoot, '.env').replaceAll(path.sep, '/');
   const ordinaryPath = path
@@ -621,6 +652,14 @@ describe('guard-secret-file: absolute apply_patch headers cannot hide credential
       const result = await runHook(move(existingMoveSource, `${credentialPath}${suffix}`), env);
       expect(result.code, `Move destination, ${label}, ${mode}: ${result.stderr}`).toBe(2);
       expect(result.stderr).toMatch(/credential file/i);
+    },
+  );
+
+  it.each(rustTrailingWhitespace)(
+    'does not allow an absolute credential Add header ending with Rust whitespace %s',
+    async (_label, suffix) => {
+      const result = await runHook(patch('Add', `${credentialPath}${suffix}`));
+      expect(result.code, `Rust whitespace ${JSON.stringify(suffix)}: ${result.stderr}`).toBe(2);
     },
   );
 
@@ -697,6 +736,142 @@ describe('guard-secret-file: absolute apply_patch headers cannot hide credential
       const result = await runHook(patch('Add', filePath), env);
       expect(result.code, `${label}, ${mode}: ${result.stderr}`).toBe(2);
       expect(result.stderr).toMatch(new RegExp(expectedReason, 'i'));
+    },
+  );
+});
+
+// U+FEFF is deliberately separate from the ordinary header whitespace above:
+// the patch parser retains it in a pathname, while JavaScript `trim()` does not.
+// Treating it as formatting would resolve a different entry from the one the
+// patch writes, which can hide a symlink escape.
+describe('guard-secret-file: absolute apply_patch headers retain BOM path characters (RP-478)', () => {
+  const modes = [
+    ['attended', { RIG_UNATTENDED: '0' }],
+    ['unattended', { RIG_UNATTENDED: '1' }],
+  ] as const;
+  let fixtureRoot = '';
+  let outsideRoot = '';
+  let bomLink = '';
+  let ordinaryBomFile = '';
+  let outsideFile = '';
+
+  const patch = (verb: 'Add' | 'Update', filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** ${verb} File: ${filePath}\n+export const safe = true;\n*** End Patch\n`,
+    },
+  });
+
+  const move = (source: string, destination: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${destination}\n@@\n+export const moved = true;\n*** End Patch\n`,
+    },
+  });
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp478-bom-root-')));
+    outsideRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp478-bom-outside-')));
+    outsideFile = path.join(outsideRoot, 'harmless.ts');
+    bomLink = path.join(fixtureRoot, 'escape\ufeff');
+    ordinaryBomFile = path.join(fixtureRoot, 'harmless\ufeff');
+    await run('git', ['init', '-q', fixtureRoot]);
+    await writeFile(path.join(fixtureRoot, 'source.ts'), 'export const source = true;\n');
+    await writeFile(outsideFile, 'export const harmless = true;\n');
+    await writeFile(ordinaryBomFile, 'export const ordinaryBom = true;\n');
+    await symlink(outsideFile, bomLink, 'file');
+    await symlink(outsideFile, path.join(fixtureRoot, 'harmless'), 'file');
+    expect(await realpath(bomLink)).toBe(await realpath(outsideFile));
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+    await removeFixture(outsideRoot);
+  });
+
+  it.each(modes)(
+    'allows a lexical in-repository absolute control without a BOM in %s mode',
+    async (_mode, env) => {
+      const control = path.join(fixtureRoot, 'ordinary-control.ts');
+      const result = await runHook(
+        patch('Add', control),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it.each(modes)(
+    'allows an ordinary in-repository filename containing a retained BOM in %s mode',
+    async (_mode, env) => {
+      const result = await runHook(
+        patch('Add', ordinaryBomFile),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it.each(
+    modes.flatMap(([mode, env]) =>
+      (['Add', 'Update'] as const).map((verb) => [verb, mode, env] as const),
+    ),
+  )(
+    'refuses an absolute BOM-suffixed symlink escape through %s in %s mode',
+    async (verb, mode, env) => {
+      const result = await runHook(
+        patch(verb, bomLink),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `${verb}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an absolute BOM-suffixed symlink escape as a Move destination in %s mode',
+    async (mode, env) => {
+      const source = path.join(fixtureRoot, 'source.ts');
+      const result = await runHook(
+        move(source, bomLink),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `Move destination, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an absolute BOM-suffixed symlink escape as a Move source in %s mode',
+    async (mode, env) => {
+      const destination = path.join(fixtureRoot, 'ordinary-control.ts');
+      const result = await runHook(
+        move(bomLink, destination),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `Move source, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an absolute-looking Add header with a literal leading space in %s mode',
+    async (mode, env) => {
+      const control = path.join(fixtureRoot, 'ordinary-control.ts');
+      const result = await runHook(
+        patch('Add', ` ${control}`),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `leading space, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
     },
   );
 });
