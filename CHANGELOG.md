@@ -27,6 +27,10 @@ inspection without adding a new workflow capability.
   active in both attended and unattended modes, including Windows Unicode,
   drive, UNC, device and alternate-stream paths, traversal, and linked escapes
   (RP-463).
+- Match Codex's trailing patch-header whitespace while preserving FEFF and
+  leading pathname characters, so whitespace cannot hide an absolute
+  credential filename or change which linked file the guard inspects
+  (RP-478).
 - Reopen a Move source after path verification and compare its file identity
   before inspecting its content; refuse a changed source or inspection errors
   other than a missing file. A missing source emits a warning and retains
