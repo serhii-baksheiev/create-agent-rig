@@ -669,6 +669,131 @@ describe('guard-secret-file: an apply_patch command it cannot read is refused, n
   });
 });
 
+// RP-479. Codex's real parser (`codex-rs/apply-patch/src/streaming_parser.rs`,
+// `process_line`) recognises a section header OUTSIDE an `*** Update File:`
+// section (patch start, right after an Add File header or its `+` lines,
+// right after a Delete File header) after Rust `str::trim()` — leading AND
+// trailing whitespace stripped. `patchFragments`'s header regexes are anchored
+// at column 0 (`^\*\*\* …`), so an indented header such as `  *** Add File:
+// .env` is invisible to this file today: the line matches nothing, `current`
+// stays whatever it already was, and the credential-named section is dropped
+// on the floor rather than inspected — Codex still writes it.
+describe('guard-secret-file: an indented apply_patch section header still names the file it targets (RP-479)', () => {
+  const credentialLine = `DB_PASSWORD=${CLOUD_ACCESS_KEY}`;
+
+  it('refuses a two-space-indented Add File header naming a credential path', async () => {
+    const command = [
+      '*** Begin Patch',
+      '  *** Add File: .env',
+      `+${credentialLine}`,
+      '*** End Patch',
+    ].join('\n');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/credential file/i);
+    expect(result.stderr).toContain('.env');
+  });
+
+  it.each([
+    ['a tab', '\t'],
+    ['a non-breaking space', ' '],
+  ] as const)(
+    'refuses an Add File header indented with %s naming a credential path',
+    async (_label, indent) => {
+      const command = [
+        '*** Begin Patch',
+        `${indent}*** Add File: .env`,
+        `+${credentialLine}`,
+        '*** End Patch',
+      ].join('\n');
+      const result = await runHook({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        tool_input: { command },
+      });
+      expect(result.code, `indent ${JSON.stringify(indent)}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/credential file/i);
+      expect(result.stderr).toContain('.env');
+    },
+  );
+
+  // The credential path sits in a SECOND section, after an ordinary first
+  // section whose own header was already at column 0 — proving the bug is
+  // not merely "the first header of a patch", but every header the parser
+  // decides between while `current` already points somewhere else.
+  //
+  // The second section's content is ordinary, non-credential-shaped text on
+  // purpose: today's bug does not drop this section cleanly — the indented
+  // header line is silently ignored while `current` still points at the
+  // FIRST section, so the following `+` line is appended to src/a.txt's own
+  // content instead of starting a new one. A credential-shaped VALUE there
+  // would still be caught by the value scanner, for the wrong file and the
+  // wrong reason, which would make this case pass today for an unrelated
+  // bug rather than fail for this one.
+  it('refuses an indented Add File header for a credential path in a second section, after an ordinary first section', async () => {
+    const command = [
+      '*** Begin Patch',
+      '*** Add File: src/a.txt',
+      '+export const ordinary = true;',
+      '  *** Add File: .env',
+      '+export const alsoOrdinary = true;',
+      '*** End Patch',
+    ].join('\n');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/credential file/i);
+    expect(result.stderr).toContain('.env');
+  });
+});
+
+// RP-479 control, Codex parity. INSIDE an `*** Update File:` section, Codex's
+// parser applies only `trim_end()` before classifying a line — a line
+// retaining LEADING whitespace is a context line (the ordinary apply_patch
+// hunk convention: a line starting with a single space is unchanged context),
+// never a header, however much it resembles one. Getting this backwards —
+// treating every indented line as a header — would turn an ordinary context
+// line that happens to quote `*** Add File: .env` into a phantom write. This
+// must stay allowed both before and after the RP-479 fix.
+describe('guard-secret-file: a context line that merely resembles a header stays allowed (RP-479 control, Codex parity)', () => {
+  let fixtureRoot = '';
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp479-context-')));
+    await run('git', ['init', '-q', fixtureRoot]);
+    await mkdir(path.join(fixtureRoot, 'src'), { recursive: true });
+    await writeFile(path.join(fixtureRoot, 'src', 'a.txt'), 'ordinary content\n');
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+  });
+
+  it('allows an Update File hunk whose context line merely quotes an indented Add File header', async () => {
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: src/a.txt',
+      '@@',
+      ' *** Add File: .env',
+      '+export const safe = true;',
+      '*** End Patch',
+    ].join('\n');
+    const result = await runHook(
+      { hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { command } },
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
 // RP-463: Codex emits absolute paths in an apply_patch command. A path that
 // resolves inside the checkout is not unsafe merely because it is absolute;
 // the guard must still apply its credential policy to the resulting
