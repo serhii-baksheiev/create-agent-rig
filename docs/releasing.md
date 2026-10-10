@@ -36,9 +36,6 @@ credential sitting inside a file with an innocent name is invisible to it.
 reads **tracked** files rather than the tarball. Neither covers the other, and
 the script's own header says where each is blind.
 
-It is a preflight, not a gate: nothing runs it for you, and a green run is not a
-verdict on the release. Pinned in `test/template/release-preflight.test.ts`.
-
 ### Preflighting a frozen, unpublished release candidate
 
 A release candidate that was accepted and frozen under `release/<version>-rc`
