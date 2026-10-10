@@ -9,9 +9,6 @@ copies.
 What is here is the one thing that checklist could not carry: a command, and the
 reasoning behind the boundary it stops at.
 
-When several accepted candidates await publication, follow the publication
-ordering and dist-tag guidance in CHANGELOG.md, "Releasing", step 8.
-
 ## Before step 8
 
 ```sh
