@@ -86,7 +86,7 @@ describe('the root manifest is publish-complete', () => {
     expect(compareSemver(root.version, highestReleased)).toBeGreaterThan(0);
   });
 
-  it('puts the 1.5.0 release candidate first and preserves the published 1.4.0 and 1.3.1 changelog history', async () => {
+  it('puts the 1.5.0 replacement candidate first and preserves frozen 1.4.1 and published 1.4.0 and 1.3.1 history', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     // RP-374: the previous form of this regex required the heading's digits
     // to be followed immediately by a newline, so a "(release candidate)"
@@ -113,6 +113,25 @@ describe('the root manifest is publish-complete', () => {
     // entry must say so rather than silently omitting it.
     expect(first?.[2]).toMatch(/Codex/);
     expect(first?.[2]).toMatch(/unavailable/i);
+    const patch = changelog.match(
+      /^## 1\.4\.1 \(release candidate\)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m,
+    );
+    expect(patch).not.toBeNull();
+    // The named subjects of THIS release, not words any release note would
+    // contain — so an entry copied forward from 1.4.0 fails here. Each pin
+    // pairs the shipped behavior with the ticket that owns it.
+    expect(patch?.[1]).toMatch(/RP-463/);
+    expect(patch?.[1]).toMatch(/RP-459/);
+    // A patch must say why it is a patch, independently of the version digits.
+    expect(patch?.[1]).toMatch(/is a patch on the 1\.4 line/i);
+    // RP-463: absolute apply_patch paths remain safe only when containment and
+    // credential checks survive in both operating modes.
+    expect(patch?.[1]).toMatch(/absolute `apply_patch` paths/i);
+    expect(patch?.[1]).toMatch(/path containment and credential checks/i);
+    expect(patch?.[1]).toMatch(/attended and unattended modes/i);
+    // RP-459: a Move source must still be the verified file before inspection.
+    expect(patch?.[1]).toMatch(/Move source/i);
+    expect(patch?.[1]).toMatch(/compare its file identity/i);
     // 1.4.0 is published. Its frozen candidate remains the provenance record,
     // but publication reconciles the changelog heading to its plain form.
     const postureMinor = changelog.match(/^## 1\.4\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
@@ -379,7 +398,9 @@ describe('the root manifest is publish-complete', () => {
     expect(ledger['1.3.0']).toBe('9c2508302e7a04b95c51edab2d256816cedddd82');
     expect(ledger['1.3.1']).toBe('19a9dc648b336732b495d5dd98eb2e32dd8e3b1f');
     expect(ledger['1.4.0']).toBe('a03c3eed6693658f338fee5aef04102ab02bc83a');
-    // 1.5.0 remains frozen and unpublished, so it has no ledger row.
+    // 1.4.1 remains a release candidate and unpublished, so it has no ledger row.
+    expect(ledger).not.toHaveProperty('1.4.1');
+    // The corrected 1.5.0 candidate also remains unpublished.
     expect(ledger).not.toHaveProperty('1.5.0');
     // and every row is a full sha, never an abbreviation
     for (const [version, sha] of Object.entries(ledger)) {

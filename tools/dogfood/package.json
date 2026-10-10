@@ -3,6 +3,7 @@
   "private": true,
   "description": "Developer-only tools this repository dogfoods. A workspace package rather than root devDependencies, so the npx github: install path (npm, root package.json only) never downloads them.",
   "devDependencies": {
+    "@openai/codex-sdk": "0.161.0",
     "@nizos/probity": "1.10.1"
   }
 }

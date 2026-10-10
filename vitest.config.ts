@@ -40,7 +40,7 @@ export default defineConfig({
       {
         test: {
           name: 'template',
-          include: ['test/template/**/*.test.ts'],
+          include: ['test/template/**/*.test.ts', 'tools/dogfood/probity-ai.test.mjs'],
           exclude: [...configDefaults.exclude],
           setupFiles: ['test/setup-env.ts'],
           // RP-271: this is the project that currently arms the

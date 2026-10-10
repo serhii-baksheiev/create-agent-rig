@@ -9,9 +9,6 @@ copies.
 What is here is the one thing that checklist could not carry: a command, and the
 reasoning behind the boundary it stops at.
 
-When several accepted candidates await publication, follow the publication
-ordering and dist-tag guidance in CHANGELOG.md, "Releasing", step 8.
-
 ## Before step 8
 
 ```sh
@@ -38,9 +35,6 @@ credential sitting inside a file with an innocent name is invisible to it.
 `node scripts/validate-no-secrets.mjs` is the one that reads content, and it
 reads **tracked** files rather than the tarball. Neither covers the other, and
 the script's own header says where each is blind.
-
-It is a preflight, not a gate: nothing runs it for you, and a green run is not a
-verdict on the release. Pinned in `test/template/release-preflight.test.ts`.
 
 ### Preflighting a frozen, unpublished release candidate
 
@@ -85,6 +79,37 @@ npm", "reports a candidate that is not reachable from origin/master, and never
 reaches npm", and "reports origin/master as unresolvable rather than silently
 trusting a TAG that shadows its name".
 
+#### Replacing an unpublished candidate without moving its original ref
+
+Keep the original `release/<version>-rc` ref and its acceptance records. A
+corrected candidate needs fresh exact-source and packed acceptance; the old
+candidate's successful checks do not prove the changed bytes. Record the
+supersession explicitly, then preflight the replacement with:
+
+```sh
+node scripts/release-preflight.mjs --frozen-candidate <new-40-char-sha> --supersedes <original-40-char-sha>
+```
+
+Both SHAs must be distinct lowercase hexadecimal commit IDs. The replacement
+ref is derived from the package version and the new SHA:
+`refs/remotes/origin/release/<version>-rc-<new-40-char-sha>`.
+There is no arbitrary ref-name argument. The original canonical
+`refs/remotes/origin/release/<version>-rc` must still name the original SHA,
+whose package version must match and whose commit must be an ancestor of the
+replacement. The exact replacement HEAD, clean working tree, exact remote
+ref and ancestry in `origin/master` requirements still apply. Fetch the real
+remote refs before running the command; preflight itself does not fetch.
+Any git finding stops before packing. This command neither creates refs nor
+publishes a package.
+
+The real-Git contract is tested in
+`test/template/release-preflight-frozen-e2e.test.ts` › "accepts a replacement only through its SHA-derived ref while preserving the canonical original ref",
+› "rejects a replacement whose preserved canonical predecessor has another package version, before npm pack",
+› "rejects a replacement that does not descend from its preserved canonical predecessor, before npm pack",
+and › "rejects a replacement when the canonical original ref was moved, before npm pack".
+Argument validation is tested in `test/template/release-preflight.test.ts` ›
+"refuses replacement shorthand, malformed predecessor shas, duplicates, and self-supersession".
+
 #### A frozen predecessor RC, while a later one is being prepared on top of it
 
 The scenario above is about preflighting the frozen candidate itself. A
@@ -111,6 +136,23 @@ recorded sha that disagrees with what the ledger says was published stops the
 build rather than trusting either one silently — pinned in
 `test/template/hash-history.test.ts` › "flags a published ledger gitHead, or
 null, that disagrees with the frozen RC sha".
+
+For a later release that uses an accepted replacement as its unpublished
+baseline, record that version as
+`{ "sha": "<replacement-40-char-sha>", "supersedes": "<original-40-char-sha>" }`
+instead of a SHA string. The builder derives the same replacement ref and
+verifies the preserved canonical original, matching original package version
+and original-to-replacement ancestry, as well as the existing baseline checks.
+The object accepts only these two fields and distinct exact lowercase SHAs.
+Its replacement SHA supplies the baseline hashes and must agree with the
+ledger if the version later publishes. Do not add an unpublished candidate
+to the published ledger or predecessor-integrity record.
+
+See `test/template/hash-history.test.ts` › "accepts a strict replacement record and refuses loose, malformed, or self-superseding objects"
+and › "compares a published replacement baseline with its corrected sha, never its superseded predecessor";
+the real-Git path is tested in
+`test/template/build-hash-history-candidates-e2e.test.ts` › "accepts a replacement baseline through its SHA-addressed ref while preserving the canonical frozen ref"
+and › "reports a command error while verifying predecessor-to-replacement ancestry instead of calling it non-ancestry".
 
 The baseline record remains as historical provenance after publication; it
 does not declare that the package is still unpublished. For example, 1.4.0's
