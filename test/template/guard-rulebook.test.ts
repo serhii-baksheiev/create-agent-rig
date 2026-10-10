@@ -1085,6 +1085,51 @@ describe('guard-rulebook: a trailing dot or space on a rulebook path component d
   });
 });
 
+// RP-479. Codex's real parser (`codex-rs/apply-patch/src/streaming_parser.rs`,
+// `process_line`) recognises a header OUTSIDE an `*** Update File:` section
+// after Rust `str::trim()` — leading AND trailing whitespace stripped. Before
+// RP-479 `edit-input.mjs` anchored its header regexes at column 0, so an
+// indented header such as `  *** Add File: .claude/rules/x.md` produced no
+// fragment and an unattended rulebook edit through it was never judged
+// against the item's allow-list.
+describe('guard-rulebook: an indented apply_patch section header still names the rulebook path it targets (RP-479)', () => {
+  beforeEach(() => {
+    execFileSync('git', ['init', '-q', root], { env: withoutGitLocation() });
+  });
+
+  it('refuses a two-space-indented Add File header naming a rulebook path, with no allow-list entry covering it', async () => {
+    await armed(['src/']);
+    const result = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      cwd: root,
+      tool_input: {
+        command: '*** Begin Patch\n  *** Add File: .claude/rules/x.md\n+# x\n*** End Patch\n',
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('.claude/rules/x.md');
+    expect(result.stderr).toContain('AR-51');
+  });
+
+  it('refuses a tab-indented Delete File header naming a rulebook path, with no allow-list entry covering it', async () => {
+    const target = path.join(root, 'AGENTS.md');
+    await writeFile(target, '# rulebook\n');
+    await armed(['src/']);
+    const result = await run({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      cwd: root,
+      tool_input: {
+        command: '*** Begin Patch\n\t*** Delete File: AGENTS.md\n*** End Patch\n',
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('AGENTS.md');
+    expect(result.stderr).toContain('AR-51');
+  });
+});
+
 // RP-214. `edit-input.mjs`'s `patchFragments` only ever `flush()`es the
 // SECTION BEFORE a `*** Delete File:` or `*** Move to:` line — the removed
 // path itself never becomes a fragment, so guard-rulebook's fragment loop
