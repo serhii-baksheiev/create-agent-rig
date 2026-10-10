@@ -242,26 +242,30 @@ const announceCap = (label, limit) => {
  * queue-github-pagination.test.ts (absent in a generated rig) › "keeps an
  * older OPEN issue even when 100 CLOSED issues would fill a shared window".
  */
+const listWindows = (limit) => {
+  const openIssues = ghJson(['issue', 'list', '--state', 'open', '--limit', String(limit), '--json', FIELDS]);
+  if (openIssues.length === limit) announceCap('open', limit);
+  const closedIssues = ghJson([
+    'issue',
+    'list',
+    '--state',
+    'closed',
+    '--limit',
+    String(limit),
+    '--json',
+    FIELDS,
+  ]);
+  if (closedIssues.length === limit) announceCap('closed', limit);
+  return { openIssues, raw: [...openIssues, ...closedIssues] };
+};
+
 export const listEligible = ({ limit = 100, issues = null } = {}) => {
   let raw;
   let openIssues = null;
   if (issues) {
     raw = issues;
   } else {
-    openIssues = ghJson(['issue', 'list', '--state', 'open', '--limit', String(limit), '--json', FIELDS]);
-    if (openIssues.length === limit) announceCap('open', limit);
-    const closedIssues = ghJson([
-      'issue',
-      'list',
-      '--state',
-      'closed',
-      '--limit',
-      String(limit),
-      '--json',
-      FIELDS,
-    ]);
-    if (closedIssues.length === limit) announceCap('closed', limit);
-    raw = [...openIssues, ...closedIssues];
+    ({ openIssues, raw } = listWindows(limit));
   }
   const states = Object.fromEntries(raw.map((issue) => [String(issue.number), issue.state]));
   const blocks = blocksIndex(raw);
@@ -526,15 +530,27 @@ export const claim = (
 
 /**
  * One issue by number, closed included — `gh issue view` sees every state,
- * where `listEligible` drops CLOSED for selection's sake. The offline `issues`
- * seam is honoured. `blocks` is empty here: the cross-index needs the whole
- * list, and a single view does not carry it.
+ * where `listEligible` drops CLOSED for selection's sake — with the link view
+ * `listEligible` builds from the same two windows (`blocks` from the
+ * cross-index, each blocker's resolution from its state), so a SELECT baseline
+ * and a later read of an unedited item agree (RP-449). When the windows cannot
+ * be read, the issue comes back without that view, as a single view always
+ * did. The offline `issues` seam is honoured.
  */
-export const find = (id, { issues = null } = {}) => {
+export const find = (id, { limit = 100, issues = null } = {}) => {
   const raw = issues
     ? (issues.find((issue) => String(issue.number) === String(id)) ?? null)
     : ghJson(['issue', 'view', String(id), '--json', FIELDS]);
-  return raw ? toTicket(raw, {}) : null;
+  if (!raw) return null;
+  let all;
+  try {
+    all = issues ?? listWindows(limit).raw;
+  } catch {
+    return toTicket(raw, {});
+  }
+  const states = Object.fromEntries(all.map((issue) => [String(issue.number), issue.state]));
+  const ticket = toTicket(raw, states);
+  return { ...ticket, blocks: blocksIndex(all)[ticket.id] ?? [] };
 };
 
 export const close = (ticket, { prUrl = null } = {}) => {

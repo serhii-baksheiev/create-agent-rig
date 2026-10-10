@@ -1164,6 +1164,232 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
   });
 });
 
+// RP-449 — github-issues `find(id)` (the BEFORE_CLOSE read) carries no
+// cross-indexed `blocks` link at all: `toTicket` hard-codes `blocks: []` and
+// `find` never recomputes it the way `listEligible` does from the whole
+// issue list (github-issues.mjs, `toTicket` and `find`). The SELECT baseline
+// is built from `listEligible`, which DOES cross-index `blocks`. So any item
+// that blocks another item gets a `claim:scope` hold at BEFORE_CLOSE for a
+// link the read-side can never see — not for anything that changed.
+describe('RP-449 — a cross-indexed `blocks` link must not read as drift at BEFORE_CLOSE', () => {
+  const RP449_T2 = '2026-08-28T10:00:00.000Z';
+
+  // The item this describe block takes up and closes. No `Blocked by` line
+  // of its own — it is the BLOCKER, not the dependant — so its own
+  // `blockedBy` stays `[]` on every read, and the only thing that can move
+  // is its cross-indexed `blocks`.
+  const blockerIssue = (over: Record<string, unknown> = {}) => ({
+    number: 10,
+    title: 'the blocker',
+    body: '',
+    state: 'OPEN',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/10',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    // An explicit empty list, not an absent field: `toTicket`'s
+    // `commentary.complete` is `Array.isArray(issue.comments) && …` and an
+    // absent field makes every revalidation UNVERIFIABLE on commentary
+    // completeness alone, before this describe block's own question — the
+    // `blocks` link — is ever reached.
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+
+  // Never selected (it is blocked), never closed — present only so
+  // `listEligible`'s `blocksIndex` has something to cross-reference #10
+  // against.
+  const dependantIssue = (over: Record<string, unknown> = {}) => ({
+    number: 11,
+    title: 'the dependant',
+    body: 'Blocked by #10',
+    state: 'OPEN',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/11',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+
+  const writeIssues = (p: Project, issues: Array<Record<string, unknown>>) =>
+    writeFile(p.configPath, JSON.stringify({ adapter: 'github-issues', options: { issues } }));
+
+  // `queue/index.mjs next` calls `adapter.currentActor()` unconditionally
+  // (RP-255), even against the offline `options.issues` fixture — a fake
+  // login is all it needs.
+  const GH_CURRENT_ACTOR_STUB = `
+    if (args[0] === 'api' && args[1] === 'user') {
+      return { stdout: 'gh-fake-login\\n' };
+    }
+    return { stdout: '{}' };
+  `;
+
+  // The full `claim()` protocol (RP-220/RP-221): a pre-read of
+  // state/labels/updatedAt, a second read of assignees, the `--add-label`
+  // mutation, a post-edit labels read, this run's own login, and the
+  // `labeled` event that read-back looks for. Modelled on "GitHub claim
+  // records the durable transition that makes in-progress CURRENT", above.
+  const ghClaimStub = (snapshot: string) => `
+    if (args[0] === 'issue' && args[1] === 'view') {
+      const jsonIdx = args.indexOf('--json');
+      const fields = String(args[jsonIdx + 1] || '').split(',');
+      const isPreRead = fields.includes('state');
+      const out = {};
+      for (const f of fields) {
+        if (f === 'state') out.state = 'OPEN';
+        if (f === 'labels') out.labels = isPreRead ? [] : [{ name: 'in-progress' }];
+        if (f === 'updatedAt') out.updatedAt = ${JSON.stringify(snapshot)};
+      }
+      return { stdout: JSON.stringify(out) + '\\n' };
+    }
+    if (args[0] === 'issue' && args[1] === 'edit') {
+      return { stdout: '' };
+    }
+    if (args[0] === 'api' && args[1] === 'user') {
+      return { stdout: 'gh-fake-login\\n' };
+    }
+    if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
+      return {
+        stdout: JSON.stringify([
+          {
+            event: 'labeled',
+            label: { name: 'in-progress' },
+            actor: { login: 'gh-fake-login' },
+            created_at: ${JSON.stringify(RP449_T2)},
+          },
+        ]) + '\\n',
+      };
+    }
+    return { stdout: '{}' };
+  `;
+
+  const closeOf = (p: Project) =>
+    run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_CLOSE',
+        '--ticket',
+        '10',
+        '--base',
+        'master',
+        '--config',
+        p.configPath,
+        '--json',
+      ],
+      p.root,
+      p.env,
+    );
+
+  /**
+   * SELECT (via the real `listEligible` cross-index), track the baseline,
+   * then take the item up through the real `claim()` so the committed claim
+   * record carries a `workflowClaim` matching `in-progress` — the ONLY way
+   * `workflowPositionOf` can ever read the same at BEFORE_CLOSE as it did at
+   * SELECT (`claim-records.mjs`). Without this every BEFORE_CLOSE would hold
+   * on the workflow position alone, which would hide the `blocks` defect
+   * this describe block exists to isolate.
+   */
+  const takeUpLinkedBlocker = async (p: Project): Promise<void> => {
+    await writeIssues(p, [blockerIssue(), dependantIssue()]);
+
+    const actorStub = await stubCommand('gh', GH_CURRENT_ACTOR_STUB);
+    const withoutStub = p.env;
+    p.env = { ...p.env, ...actorStub.env };
+    let selection: CommandResult;
+    try {
+      selection = await next(p);
+    } finally {
+      actorStub.restore();
+      p.env = withoutStub;
+    }
+    expect(selection.code, selection.out).toBe(0);
+    const selected = jsonOf(selection);
+    expect(selected.revalidation).toMatchObject({ ticket: '10', result: 'BASELINE_CREATED' });
+    const ticket = selected.ticket as { id: string; updatedAt: string };
+
+    const claimPath = path.join(p.root, '.rig', 'claims', '10.json');
+    expect(existsSync(claimPath)).toBe(true);
+    await git(['add', '.rig/claims/10.json'], p.root);
+    await git(['commit', '-q', '-m', 'track 10 claim baseline'], p.root);
+
+    const claimStub = await stubCommand('gh', ghClaimStub(ticket.updatedAt));
+    try {
+      const github = await import(
+        `${pathToFileURL(path.join(scriptsDir, 'queue', 'github-issues.mjs')).href}?rp449-claim=${Date.now()}`
+      );
+      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
+    } finally {
+      claimStub.restore();
+    }
+    await git(['add', '.rig/claims/10.json'], p.root);
+    await git(['commit', '-q', '-m', 'record GitHub workflow claim for 10'], p.root);
+  };
+
+  it('two linked items, no edit after take-up: BEFORE_CLOSE reads CURRENT, not a hold on an unseen blocks link', async () => {
+    const p = await project();
+    await takeUpLinkedBlocker(p);
+
+    // No edit to either issue — only the label a real take-up would have
+    // added. The SELECT baseline's `blocks` came from `listEligible`'s
+    // cross-index (`['11']`); this BEFORE_CLOSE read goes through
+    // `find('10')`, which — today — always answers `blocks: []`.
+    await writeIssues(p, [blockerIssue({ labels: [{ name: 'in-progress' }] }), dependantIssue()]);
+
+    const close = await closeOf(p);
+
+    expect(close.code, close.out).toBe(0);
+    expect(jsonOf(close)).toMatchObject({
+      ticket: '10',
+      result: 'CURRENT',
+      action: 'continue',
+    });
+  });
+
+  it('a real scope edit between take-up and close still holds on claim:scope', async () => {
+    const p = await project();
+    await takeUpLinkedBlocker(p);
+
+    await writeIssues(p, [
+      blockerIssue({ labels: [{ name: 'in-progress' }], title: 'the blocker, retitled' }),
+      dependantIssue(),
+    ]);
+
+    const close = await closeOf(p);
+
+    expect(close.code, close.out).toBe(2);
+    const result = jsonOf(close);
+    expect(result).toMatchObject({ result: 'CHANGED', action: 'hold' });
+    expect(result.movedFingerprintSet).toContain('scope');
+    expect(result.source).toEqual(expect.arrayContaining(['claim:scope']));
+  });
+
+  it('a real link edit (a new blocker added) between take-up and close still holds on claim:scope', async () => {
+    const p = await project();
+    await takeUpLinkedBlocker(p);
+
+    const newBlockerIssue = {
+      ...blockerIssue({ number: 12, title: 'a newly added blocker' }),
+    };
+    await writeIssues(p, [
+      blockerIssue({ labels: [{ name: 'in-progress' }], body: 'Blocked by #12' }),
+      dependantIssue(),
+      newBlockerIssue,
+    ]);
+
+    const close = await closeOf(p);
+
+    expect(close.code, close.out).toBe(2);
+    const result = jsonOf(close);
+    expect(result).toMatchObject({ result: 'CHANGED', action: 'hold' });
+    expect(result.movedFingerprintSet).toContain('scope');
+    expect(result.source).toEqual(expect.arrayContaining(['claim:scope']));
+  });
+});
+
 describe('a missing durable claim blocks every resumed checkpoint', () => {
   it.each(['SELECT', 'BEFORE_PR', 'BEFORE_CLOSE'] as const)(
     '%s returns UNVERIFIABLE instead of progressing',
