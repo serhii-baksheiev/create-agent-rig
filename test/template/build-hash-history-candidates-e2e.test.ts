@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
+import { stubCommand } from '../helpers/stub-command.js';
 // @ts-expect-error — a plain .mjs rulebook script
 import { withoutGitLocation } from '../../.claude/scripts/git-env.mjs';
 
@@ -100,7 +101,7 @@ async function writeFixtureFiles(
     version: string;
     changelog: string;
     ledger?: Record<string, string | null>;
-    candidates?: Record<string, string>;
+    candidates?: Record<string, string | { sha: string; supersedes: string }>;
   },
 ): Promise<void> {
   await writeFile(
@@ -127,7 +128,7 @@ async function commitFixture(
     version: string;
     changelog: string;
     ledger?: Record<string, string | null>;
-    candidates?: Record<string, string>;
+    candidates?: Record<string, string | { sha: string; supersedes: string }>;
   },
   message: string,
 ): Promise<string> {
@@ -196,6 +197,127 @@ describe('build-hash-history main() — frozen release-candidate baseline wiring
       await readFile(path.join(work, 'templates', 'hash-history.json'), 'utf8'),
     ) as { versions: string[] };
     expect(history.versions).toEqual([]);
+  }, 30_000);
+
+  // RP-471: a correction after an accepted freeze cannot retarget the original
+  // canonical ref.  The replacement is a descendant at a SHA-addressed ref;
+  // the baseline records both commits so the builder can verify its exact
+  // successor without treating the historical candidate heading as published.
+  it('accepts a replacement baseline through its SHA-addressed ref while preserving the canonical frozen ref', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    const originalSha = await commitFixture(
+      work,
+      { version: '1.2.0', changelog: '## 1.2.0 (release candidate)\n\noriginal\n' },
+      'freeze the original 1.2.0 candidate',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    const replacementSha = await commitFixture(
+      work,
+      { version: '1.2.0', changelog: '## 1.2.0 (release candidate)\n\ncorrected\n' },
+      'correct the still-unpublished 1.2.0 candidate',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    const nextSha = await commitFixture(
+      work,
+      {
+        version: '1.2.1',
+        changelog: DUAL_HEADING_1_2_1,
+        candidates: { '1.2.0': { sha: replacementSha, supersedes: originalSha } },
+      },
+      'advance to 1.2.1 and record the 1.2.0 replacement baseline',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    git(['branch', 'release/1.2.0-rc', originalSha], work);
+    git(['push', 'origin', 'release/1.2.0-rc'], work);
+    git(['branch', `release/1.2.0-rc-${replacementSha}`, replacementSha], work);
+    git(['push', 'origin', `release/1.2.0-rc-${replacementSha}`], work);
+    git(['fetch', 'origin'], work);
+    git(['checkout', nextSha], work);
+
+    const result = await runScript(work);
+    expect(result.code, result.out).toBe(0);
+    expect(git(['rev-parse', RELEASE_REF], work)).toBe(originalSha);
+    const history = JSON.parse(
+      await readFile(path.join(work, 'templates', 'hash-history.json'), 'utf8'),
+    ) as { versions: string[] };
+    expect(history.versions).toEqual([]);
+  }, 30_000);
+
+  it('reports a command error while verifying predecessor-to-replacement ancestry instead of calling it non-ancestry', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    const originalSha = await commitFixture(
+      work,
+      { version: '1.2.0', changelog: '## 1.2.0 (release candidate)\n\noriginal\n' },
+      'freeze original 1.2.0',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    const replacementSha = await commitFixture(
+      work,
+      { version: '1.2.0', changelog: '## 1.2.0 (release candidate)\n\ncorrected\n' },
+      'correct the unpublished 1.2.0 candidate',
+    );
+    git(['push', 'origin', 'master'], work);
+
+    const nextSha = await commitFixture(
+      work,
+      {
+        version: '1.2.1',
+        changelog: DUAL_HEADING_1_2_1,
+        candidates: { '1.2.0': { sha: replacementSha, supersedes: originalSha } },
+      },
+      'advance to 1.2.1 with the corrected predecessor baseline',
+    );
+    git(['push', 'origin', 'master'], work);
+    git(['branch', 'release/1.2.0-rc', originalSha], work);
+    git(['push', 'origin', 'release/1.2.0-rc'], work);
+    git(['branch', `release/1.2.0-rc-${replacementSha}`, replacementSha], work);
+    git(['push', 'origin', `release/1.2.0-rc-${replacementSha}`], work);
+    git(['fetch', 'origin'], work);
+    git(['checkout', nextSha], work);
+
+    const finder = process.platform === 'win32' ? 'where.exe' : 'which';
+    const realGit = execFileSync(finder, [process.platform === 'win32' ? 'git.exe' : 'git'], {
+      encoding: 'utf8',
+    })
+      .split(/\r?\n/)[0]
+      ?.trim();
+    if (!realGit) throw new Error(`could not locate git using ${finder}`);
+    const savedRealGit = process.env.RP471_REAL_GIT;
+    const savedOriginalSha = process.env.RP471_ORIGINAL_SHA;
+    const savedReplacementSha = process.env.RP471_REPLACEMENT_SHA;
+    process.env.RP471_REAL_GIT = realGit;
+    process.env.RP471_ORIGINAL_SHA = originalSha;
+    process.env.RP471_REPLACEMENT_SHA = replacementSha;
+    const gitStub = await stubCommand(
+      'git',
+      `if (args[0] === 'merge-base' && args[1] === '--is-ancestor' && args[3] === process.env.RP471_ORIGINAL_SHA && args[4] === process.env.RP471_REPLACEMENT_SHA) {
+        process.stderr.write('simulated old-to-new merge-base command error\\n');
+        return { exitCode: 2 };
+      }
+      const child = require('node:child_process').spawnSync(process.env.RP471_REAL_GIT, args, { encoding: 'utf8' });
+      return { stdout: String(child.stdout ?? '') + String(child.stderr ?? ''), exitCode: child.status ?? 2 };`,
+    );
+    try {
+      const result = await runScript(work);
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out, result.out).toContain('git merge-base --is-ancestor');
+      expect(result.out, result.out).toContain('simulated old-to-new merge-base command error');
+      expect(result.out, result.out).not.toContain('is not an ancestor of replacement');
+    } finally {
+      gitStub.restore();
+      if (savedRealGit === undefined) delete process.env.RP471_REAL_GIT;
+      else process.env.RP471_REAL_GIT = savedRealGit;
+      if (savedOriginalSha === undefined) delete process.env.RP471_ORIGINAL_SHA;
+      else process.env.RP471_ORIGINAL_SHA = savedOriginalSha;
+      if (savedReplacementSha === undefined) delete process.env.RP471_REPLACEMENT_SHA;
+      else process.env.RP471_REPLACEMENT_SHA = savedReplacementSha;
+    }
   }, 30_000);
 
   // (2) The exact remote-tracking ref never exists; a TAG literally named the

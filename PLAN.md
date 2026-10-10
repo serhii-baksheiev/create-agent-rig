@@ -17,9 +17,10 @@
 > 1.4.1, preserving that accepted candidate and all prior evidence.
 > Its original `da3b12cf` remains at `validation/original-150-da3b12c`.
 > Exact three-OS release acceptance: Actions run `37813345254`; integration
-> PR #448 reached master `639e750a`. Current engineering proceeds with
-> `1.4.1` (RP-463/RP-470), then RP-471 and the Jira graph for `1.5.1` and later
-> releases. Preparing a patch after a frozen minor does not move that minor RC.
+> PR #448 reached master `639e750a`. The accepted 1.4.1 replacement is frozen at
+> `release/1.4.1-rc`, `92c801c5b5549aa20ed446548807f5f488c76f0f`.
+> Current engineering prepares the bounded RP-471 replacement, then follows
+> the Jira graph for `1.5.1` and later releases. Preparing a patch after a frozen minor does not move that minor RC.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,

@@ -60,7 +60,7 @@ const {
   // and is consulted only for a version the ledger has no row for yet; once a
   // ledger row exists the candidate is historical and git is not re-checked.
   candidateBaselineFindings: (
-    record: Record<string, string>,
+    record: Record<string, string | { sha: string; supersedes: string }>,
     options: {
       ledger: Record<string, string | null>;
       currentVersion: string;
@@ -76,7 +76,7 @@ const {
   // is the exact sha it was built from".
   candidateLedgerDisagreements: (
     ledger: Record<string, string | null>,
-    record: Record<string, string>,
+    record: Record<string, string | { sha: string; supersedes: string }>,
   ) => Array<{ version: string; ledger: string | null; candidate: string }>;
 };
 
@@ -593,6 +593,78 @@ describe('the frozen release-candidate baseline — verified from git, never gue
     ).toEqual([expect.stringMatching(/1\.3\.0/)]);
   });
 
+  // RP-471: a replacement retains the original canonical RC and records only
+  // a strict pair of shas. This pure seam checks the record shape before the
+  // script ever hands one of its values to git.
+  it('accepts a strict replacement record and refuses loose, malformed, or self-superseding objects', () => {
+    const replacement = { sha: RC_SHA, supersedes: RC_SHA_OTHER };
+    const replacementFacts = {
+      '1.2.0': {
+        refSha: RC_SHA,
+        packageVersion: '1.2.0',
+        isAncestor: true,
+        canonicalRefSha: RC_SHA_OTHER,
+        canonicalPackageVersion: '1.2.0',
+        supersededIsAncestor: true,
+      },
+    };
+    expect(
+      candidateBaselineFindings(
+        { '1.2.0': replacement },
+        { ledger: {}, currentVersion: '1.2.1', facts: replacementFacts },
+      ),
+    ).toEqual([]);
+
+    const malformedRecords: Record<string, unknown>[] = [
+      { '1.2.0': { sha: RC_SHA } },
+      { '1.2.0': { sha: RC_SHA, supersedes: RC_SHA_OTHER, extra: true } },
+      { '1.2.0': { sha: 'not-a-sha', supersedes: RC_SHA_OTHER } },
+      { '1.2.0': { sha: RC_SHA, supersedes: RC_SHA } },
+    ];
+    for (const record of malformedRecords) {
+      expect(
+        candidateBaselineFindings(
+          record as Record<string, string | { sha: string; supersedes: string }>,
+          { ledger: {}, currentVersion: '1.2.1', facts: {} },
+        ),
+        JSON.stringify(record),
+      ).not.toEqual([]);
+    }
+  });
+
+  it('requires replacement provenance from the preserved canonical ref as well as the corrected ref', () => {
+    const replacement = { sha: RC_SHA, supersedes: RC_SHA_OTHER };
+    const verified = {
+      refSha: RC_SHA,
+      packageVersion: '1.2.0',
+      isAncestor: true,
+      canonicalRefSha: RC_SHA_OTHER,
+      canonicalPackageVersion: '1.2.0',
+      supersededIsAncestor: true,
+    };
+    expect(
+      candidateBaselineFindings(
+        { '1.2.0': replacement },
+        { ledger: {}, currentVersion: '1.2.1', facts: { '1.2.0': verified } },
+      ),
+    ).toEqual([]);
+
+    for (const facts of [
+      { ...verified, canonicalRefSha: undefined },
+      { ...verified, canonicalRefSha: RC_SHA },
+      { ...verified, canonicalPackageVersion: '9.9.9' },
+      { ...verified, supersededIsAncestor: false },
+    ]) {
+      expect(
+        candidateBaselineFindings(
+          { '1.2.0': replacement },
+          { ledger: {}, currentVersion: '1.2.1', facts: { '1.2.0': facts } },
+        ),
+        JSON.stringify(facts),
+      ).not.toEqual([]);
+    }
+  });
+
   it('flags a published ledger gitHead, or null, that disagrees with the frozen RC sha', () => {
     const record = { '1.2.0': RC_SHA };
     expect(candidateLedgerDisagreements({ '1.2.0': SHA_A }, record)).toEqual([
@@ -603,6 +675,18 @@ describe('the frozen release-candidate baseline — verified from git, never gue
     ]);
     expect(candidateLedgerDisagreements({ '1.2.0': RC_SHA }, record)).toEqual([]);
     expect(candidateLedgerDisagreements({}, record)).toEqual([]);
+  });
+
+  it('compares a published replacement baseline with its corrected sha, never its superseded predecessor', () => {
+    const replacement = { sha: RC_SHA, supersedes: RC_SHA_OTHER };
+    const record = { '1.2.0': replacement };
+    expect(candidateLedgerDisagreements({ '1.2.0': RC_SHA }, record)).toEqual([]);
+    expect(candidateLedgerDisagreements({ '1.2.0': RC_SHA_OTHER }, record)).toEqual([
+      { version: '1.2.0', ledger: RC_SHA_OTHER, candidate: RC_SHA },
+    ]);
+    expect(candidateLedgerDisagreements({ '1.2.0': null }, record)).toEqual([
+      { version: '1.2.0', ledger: null, candidate: RC_SHA },
+    ]);
   });
 
   // `releasedFromLedger` is unchanged by RP-349 — it takes no baseline input
@@ -681,13 +765,16 @@ describe('the committed scripts/release-candidates.json against this repository 
     }
   });
 
-  // RP-434: 1.4.0 has no registry bytes, so it earns no ledger row — it is
-  // instead a frozen, unpublished baseline. The sha is written out here as a
-  // literal, independent of git and of production's own reading of the
-  // branch, rather than re-derived from `release/1.4.0-rc` — so this test
-  // cannot pass merely because the committed record agrees with itself.
-  it('records 1.4.0 as a frozen baseline at exactly the release/1.4.0-rc head, and nothing else', async () => {
+  // RP-434: published 1.4.0 remains historical baseline evidence. The accepted
+  // 1.4.1 candidate is still unpublished and must be recorded independently.
+  // Both shas are literal, independent of git and production's own reading of
+  // the branches, so this test cannot pass merely because the record agrees
+  // with itself.
+  it('preserves the historical 1.4.0 baseline and pins the accepted unpublished 1.4.1 candidate', async () => {
     const record = await readCandidates();
-    expect(record).toEqual({ '1.4.0': 'a03c3eed6693658f338fee5aef04102ab02bc83a' });
+    expect(record).toEqual({
+      '1.4.0': 'a03c3eed6693658f338fee5aef04102ab02bc83a',
+      '1.4.1': '92c801c5b5549aa20ed446548807f5f488c76f0f',
+    });
   });
 });
