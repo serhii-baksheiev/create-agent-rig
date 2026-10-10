@@ -69,8 +69,8 @@ records the decision and its consequences.
 - Reject malformed delegated-decision schema versions, typed fields and
   timestamps while retaining valid records (RP-439). Evidence:
   `test/template/delegated-decision.test.ts` › "parseDecisions rejects an
-  unsupported decision-record schema version", › "parseDecisions rejects a
-  malformed %s field rather than treating it as delegated evidence", and ›
+  unsupported decision-record schema version", › "parseDecisions rejects
+  malformed typed decision fields", and ›
   "parseDecisions(text, { ticket }) still accepts a well-formed delegated
   record of a delegable kind".
 - Refuse persistent linked or junction decisions directories and hard-linked
@@ -79,9 +79,10 @@ records the decision and its consequences.
   "a .rig/decisions directory junction to a different checkout is unreadable —
   exit 2, never that checkout's decision", › "a ticket file hard-linked from
   another checkout is unreadable — exit 2, never that checkout's decision",
-  › "an unresolved ticket in an existing ordinary .rig/decisions directory
-  reports an empty array, exit 0", and › "still lists a well-formed delegated
-  record of a delegable kind".
+  › "an unresolved ticket (no file at all) reports an empty array, exit 0",
+  and › "still lists a well-formed delegated record of a delegable kind";
+  `test/template/item-records.test.ts` › "reports exists: false for an absent
+  file".
 - Correct Windows Node 22 file-identity verification without dropping POSIX
   device/inode checks, and use nonblocking opens so FIFO replacements are
   rejected without waiting for a writer (RP-451, RP-455). Evidence:
@@ -2865,6 +2866,13 @@ sometimes earlier (step 6). Everything before that is mechanical:
    `node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>`
    instead — see `docs/releasing.md`, "Preflighting a frozen, unpublished
    release candidate".
+
+   When several accepted candidates await publication, publish in increasing
+   version order. Publishing an older patch after a newer minor requires an
+   explicit non-`latest` tag, for example `npm publish --tag v1.4-patch`:
+   an ordinary publish moves `latest` to the version just published. Check
+   `npm view create-agent-rig dist-tags --json` before and after publication.
+   Publication and dist-tag changes remain owner-only.
 
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and
