@@ -22,7 +22,9 @@
     "1.1.1",
     "1.2.0",
     "1.2.1",
-    "1.3.0"
+    "1.3.0",
+    "1.3.1",
+    "1.4.0"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -55,7 +57,8 @@
         "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a",
         "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3",
         "5b6c6a3838c5b8ca82ac796ade24aa40e1091913759592881737eea76c94ba16",
-        "9c4be42cee0e79505bf17646c7b644779b22acd7c20a5ef3ae2f8e99ad27cf06"
+        "9c4be42cee0e79505bf17646c7b644779b22acd7c20a5ef3ae2f8e99ad27cf06",
+        "9787fc1ddf832240042c0e0e2cd96966304fecfea27b5fa292fdf98681baa1b8"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -240,7 +243,8 @@
         "5782d91c6c54155ad8bf3e107b6574b3ad4c97baa7be673a5ed252c70b387300",
         "5ffaba69ffc9b6c39cd3c97c4f29b44627416d55793b50aa1a26ffe5efc45497",
         "35313d53e26d47665ecd9484acf0a94ebe4df742f0f51a72bd3d5b8c0775bead",
-        "8e3388bb0ba7bd7423e1c14ecd2953f67f6f614bcc18e1d51d9a08235216eb99"
+        "8e3388bb0ba7bd7423e1c14ecd2953f67f6f614bcc18e1d51d9a08235216eb99",
+        "d931a84bb976e5ac91f21fcc6d709190c912c1d3c542708166407d9ad498a32b"
       ]
     },
     ".claude/hooks/guard-core-purity.mjs": {
@@ -311,7 +315,9 @@
         "6695698d2b38c79a12292601048dd0082a0cd18bf9e69c047d47679c2e6ecf67",
         "79f400a6eccd1aa99fed2e5966f857c030fe8ba7a69df3f6819605e48277b202",
         "d4613667b58d9215320285e663b3db6902ba656c797ee3408b6ecbec885be218",
-        "a0921e77ef4dba818d6664b1b924be8cb87b019000f34e15726d411c3afdc1a1"
+        "a0921e77ef4dba818d6664b1b924be8cb87b019000f34e15726d411c3afdc1a1",
+        "54eade5b700cc2cd14b87899615e84080c2cabfde5c3caafeb4407459fc1179b",
+        "1ea233a68fba453b4a2dd3454b9d0ea412a9deafd5c5cd6f8eefa5d5b45b51a4"
       ]
     },
     ".claude/hooks/lib/hook-input.mjs": {
@@ -332,7 +338,8 @@
       "since": "1.1.0",
       "hashes": [
         "dbd17a93446b520740bde59af92eea28defc406e1d9884ef83a856610f5bc95f",
-        "52259c0f031fff68b7f4fe7b84af31bf43cfbf4eed0e6a66165aa0f3465b64a2"
+        "52259c0f031fff68b7f4fe7b84af31bf43cfbf4eed0e6a66165aa0f3465b64a2",
+        "2f61b7bdac796275ff68f0479aa4d49739770266e671476745e8287184837cc7"
       ]
     },
     ".claude/hooks/warn-subagent-routing.mjs": {
@@ -466,7 +473,8 @@
       "hashes": [
         "acb1d5702a826832977e7eb01b76c50cab19292528901f1b33693e561dbb0a24",
         "17101c99b7341dba7982570ac8b58bae6f97ddf346713c90d90e8ee484ff4c33",
-        "9fb6fd01031082db8c7e8196304d866af95f209ce26cfe1cb4abb8ff5ac8c189"
+        "9fb6fd01031082db8c7e8196304d866af95f209ce26cfe1cb4abb8ff5ac8c189",
+        "0e5b0461e733790e57aa28be5d1725219d335cb712b535732329547a09f97f99"
       ]
     },
     ".claude/scripts/lib/gate-coverage.mjs": {
@@ -474,6 +482,12 @@
       "hashes": [
         "1ef7f355071a747d8a8d9cd5e2072a19fe3d8c11a0e2a5f884d95a33fb95f12d",
         "942878c603d789d4bf17deefb764b961f28bc8794e64697ac7e0bf1b98e83ec3"
+      ]
+    },
+    ".claude/scripts/lib/posture.mjs": {
+      "since": "1.4.0",
+      "hashes": [
+        "245ffccef065dd9d3d5e99d8fd0b9adbde675f6aa8b55e306882f4252be91504"
       ]
     },
     ".claude/scripts/lib/revalidation-evidence.mjs": {
@@ -520,7 +534,8 @@
         "b3893c365de37ef6d9d04ab933296b9fcf09a0886197d7e12313fa63eacdbd89",
         "37eeb4bdb50d7f6b1427bd02ec9815f39ad9142f35691ffadd8c0b626c6cdb00",
         "82018ddda2e6760b1659089ad60b83c68257e760a3e9bbba734c4ff8562501a2",
-        "0d59154f89d299b4ea900e136ff3478b86391e74337d2b6544cdaba395bf82cf"
+        "0d59154f89d299b4ea900e136ff3478b86391e74337d2b6544cdaba395bf82cf",
+        "08aee3e285aa669af3ed260a954db46dea45f1b2145270ab7c1810741195bd93"
       ]
     },
     ".claude/scripts/queue/as-of.mjs": {
@@ -688,14 +703,16 @@
         "5682b4ef1e63b83e1398da4959d8b34f52aede38f896557c041687d101df015f",
         "82c83fe9a66ff1a48c9e23fdfe84eef7da0de337c420e8d870085e7078d6f5e2",
         "c502cefafdc720d178de685e8372d2c140cb2663517c9d88b5345a9f0c50d0de",
-        "aabc3708d4f72c8f42498c19ace549747ce5791030f0ec89f1aced50de09e326"
+        "aabc3708d4f72c8f42498c19ace549747ce5791030f0ec89f1aced50de09e326",
+        "dd870520caa2002be8dd0d29123112c2b1af01aeeeeb39d7bc5c73c68657fff2"
       ]
     },
     ".claude/scripts/stop-flag.mjs": {
       "since": "0.3.0",
       "hashes": [
         "ff4c8edbb715e7b552e8b5a5299e151871e85416568ce20ff8d8a0b4300a78a8",
-        "e31d7e6c437bc010d8e144fba64bb401fc6404401ca21bcb48d6a4634796b39a"
+        "e31d7e6c437bc010d8e144fba64bb401fc6404401ca21bcb48d6a4634796b39a",
+        "0e7bd12860b48f406ba28bcd9755015760d2f84dc71ba2dfdbfb07b8ec7401bf"
       ]
     },
     ".claude/scripts/token-report.mjs": {
@@ -774,7 +791,8 @@
         "02136cca64a6462086dcacf23ca66b6978969f1f4a4757dff0463f3250d08e4a",
         "6f602beaea52e19b6fd6d0388ab6c120d54369cd97f7225f924b8b1a4b43caa3",
         "5b6c6a3838c5b8ca82ac796ade24aa40e1091913759592881737eea76c94ba16",
-        "9c4be42cee0e79505bf17646c7b644779b22acd7c20a5ef3ae2f8e99ad27cf06"
+        "9c4be42cee0e79505bf17646c7b644779b22acd7c20a5ef3ae2f8e99ad27cf06",
+        "9787fc1ddf832240042c0e0e2cd96966304fecfea27b5fa292fdf98681baa1b8"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -929,7 +947,9 @@
         "f3eaf4a9a2c0af418a6ecf54b6d7d32065033909907ea237d51423c9129f44a7",
         "e1e595da8de22768ad65fd8ea4d4a9f1d2e4ebe33a5b3ce6058f9c2e7bd0c217",
         "7cc03a1235a99a18513740e16f6ea76498c55e65eaf5437bd4b690883a78ba86",
-        "5d8ec9c21abb513b607de933dc6c19d5685149cee887b8fbc16b4ead8f820b1f"
+        "5d8ec9c21abb513b607de933dc6c19d5685149cee887b8fbc16b4ead8f820b1f",
+        "83737ea4df3711583839f4f90d60e5c1a4514a9647b7eb3ab1a11b78a5870daa",
+        "dd692c79d77ffb54a714d7eb7f3ab56d75ff21fd6941e83315376a4c27ea6aea"
       ]
     },
     ".rig/revalidation.json": {
@@ -1009,7 +1029,8 @@
     "docs/decisions/gate-coverage.md": {
       "since": "0.6.0",
       "hashes": [
-        "ce5f093c19a8f9de700541bc1ac9031391dca46906dad15eb589a0fb5a021533"
+        "ce5f093c19a8f9de700541bc1ac9031391dca46906dad15eb589a0fb5a021533",
+        "8c2d6f3631a1a847f4d32a3063763d142509bb591debc3cc2974128d89d19a32"
       ]
     },
     "docs/decisions/review-lanes.md": {
@@ -1060,6 +1081,12 @@
         "312cfccb609f35f4ba42f8aabc9ac939cfc01f5c109a123d3087fce5d248b636",
         "e771888074498adc2d52e1f50f222056fd95433c4bb9c7e8aa0f3a730da449bd",
         "b630bcaf950248720373f9087688a922c563f3621e46c90a40016ad1e45a9a41"
+      ]
+    },
+    "docs/decisions/unattended-posture.md": {
+      "since": "1.4.0",
+      "hashes": [
+        "1cdd637ebf7b62f5b68932cd77cb96544f99dd935631fb87e04faef69611381a"
       ]
     },
     "docs/decisions/workflow-layer-split.md": {

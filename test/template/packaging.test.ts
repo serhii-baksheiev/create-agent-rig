@@ -86,7 +86,7 @@ describe('the root manifest is publish-complete', () => {
     expect(compareSemver(root.version, highestReleased)).toBeGreaterThan(0);
   });
 
-  it('puts the 1.5.0 release candidate first in the changelog and preserves 1.4.0, 1.3.0, 1.2.1, 1.2.0, 1.1.1, 1.1.0, 1.0.1 and 1.0.0 history', async () => {
+  it('puts the 1.5.0 replacement candidate first and preserves frozen 1.4.1 and published 1.4.0 and 1.3.1 history', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     // RP-374: the previous form of this regex required the heading's digits
     // to be followed immediately by a newline, so a "(release candidate)"
@@ -113,13 +113,28 @@ describe('the root manifest is publish-complete', () => {
     // entry must say so rather than silently omitting it.
     expect(first?.[2]).toMatch(/Codex/);
     expect(first?.[2]).toMatch(/unavailable/i);
-    // 1.4.0 has no registry bytes yet — it is a frozen, unpublished release
-    // candidate (RP-349's baseline mechanism, recorded in
-    // scripts/release-candidates.json), so its heading keeps the
-    // "(release candidate)" suffix even though it has moved one release down.
-    const postureMinor = changelog.match(
-      /^## 1\.4\.0 \(release candidate\)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m,
+    const patch = changelog.match(
+      /^## 1\.4\.1 \(release candidate\)\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m,
     );
+    expect(patch).not.toBeNull();
+    // The named subjects of THIS release, not words any release note would
+    // contain — so an entry copied forward from 1.4.0 fails here. Each pin
+    // pairs the shipped behavior with the ticket that owns it.
+    expect(patch?.[1]).toMatch(/RP-463/);
+    expect(patch?.[1]).toMatch(/RP-459/);
+    // A patch must say why it is a patch, independently of the version digits.
+    expect(patch?.[1]).toMatch(/is a patch on the 1\.4 line/i);
+    // RP-463: absolute apply_patch paths remain safe only when containment and
+    // credential checks survive in both operating modes.
+    expect(patch?.[1]).toMatch(/absolute `apply_patch` paths/i);
+    expect(patch?.[1]).toMatch(/path containment and credential checks/i);
+    expect(patch?.[1]).toMatch(/attended and unattended modes/i);
+    // RP-459: a Move source must still be the verified file before inspection.
+    expect(patch?.[1]).toMatch(/Move source/i);
+    expect(patch?.[1]).toMatch(/compare its file identity/i);
+    // 1.4.0 is published. Its frozen candidate remains the provenance record,
+    // but publication reconciles the changelog heading to its plain form.
+    const postureMinor = changelog.match(/^## 1\.4\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
     expect(postureMinor?.[1]).toMatch(/RP-280/);
     expect(postureMinor?.[1]).toMatch(/RP-281/);
     expect(postureMinor?.[1]).toMatch(/RP-282/);
@@ -127,6 +142,12 @@ describe('the root manifest is publish-complete', () => {
     expect(postureMinor?.[1]).toMatch(/RP-321/);
     expect(postureMinor?.[1]).toMatch(/posture\.mjs/);
     expect(postureMinor?.[1]).toMatch(/is additive on the 1\.3 line/i);
+    const hotfix = changelog.match(/^## 1\.3\.1\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    expect(hotfix?.[1]).toMatch(/RP-451/);
+    expect(hotfix?.[1]).toMatch(/RP-455/);
+    expect(hotfix?.[1]).toMatch(/RP-460/);
+    expect(hotfix?.[1]).toMatch(/19a9dc648b336732b495d5dd98eb2e32dd8e3b1f/);
+    expect(hotfix?.[1]).toMatch(/source candidate remains unchanged/i);
     // 1.3.0 is published, so its heading is reconciled to the plain form and
     // its pins move one release down.
     const probityMinor = changelog.match(/^## 1\.3\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
@@ -148,7 +169,8 @@ describe('the root manifest is publish-complete', () => {
     expect(reliabilityPatch?.[1]).toMatch(/RP-267/);
     const numbering = changelog.slice(0, changelog.search(/^## \d/m));
     expect(numbering).toMatch(/1\.2\.1 is the\s+third/);
-    expect(changelog.indexOf('## 1.4.0')).toBeLessThan(changelog.indexOf('## 1.3.0'));
+    expect(changelog.indexOf('## 1.4.0')).toBeLessThan(changelog.indexOf('## 1.3.1'));
+    expect(changelog.indexOf('## 1.3.1')).toBeLessThan(changelog.indexOf('## 1.3.0'));
     expect(changelog.indexOf('## 1.3.0')).toBeLessThan(changelog.indexOf('## 1.2.1'));
     // 1.2.0 is published, so its heading is reconciled to the plain form —
     // a leftover "(release candidate)" suffix does not match here.
@@ -269,10 +291,11 @@ describe('the root manifest is publish-complete', () => {
     );
   });
 
-  it('records 1.3.0 as the published `latest`, and every overtaken version as neither', async () => {
+  it('records published 1.3.1 and 1.4.0, with 1.4.0 as `latest` and every overtaken version as neither', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
-    // Measured from the public registry on 6 Oct 2026.
-    const publishedSha = '9c2508302e7a04b95c51edab2d256816cedddd82';
+    // Read from the public registry on 9 Oct 2026. Keep both identities
+    // literal: the reconciliation must not turn a published-version claim into
+    // a version-only claim.
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -299,24 +322,25 @@ describe('the root manifest is publish-complete', () => {
     // at a time, so only the just-shipped version needs guarding; accumulating
     // those would grow a list forever against a shape that cannot recur.
     //
-    // 1.3.0 shipped on 6 Oct 2026 and is the registry's current `latest`.
-    // These guards move with that fact instead of leaving the plan pending.
-    expect(plan).toMatch(/Status \(1\.3\.0 published/);
-    expect(plan).toMatch(/1\.3\.0 is `latest`/);
-    // The published identity is recorded, not just the version number — and it
-    // is asserted BESIDE `gitHead`, so a stray occurrence of those characters
-    // elsewhere in the file cannot satisfy it.
-    expect(plan).toMatch(new RegExp(`gitHead\`? \`?${publishedSha.slice(0, 8)}`));
-    // 1.3.0 is live, so it may not be described as pending anywhere — the
-    // 0.6.2 mistake, now pointed at the current release. This is the same fact
-    // the positive /`1\.3\.0` is the release candidate being prepared/ used to
-    // assert, inverted on the day the release reached the registry rather than
-    // deleted.
+    expect(plan).toMatch(
+      /npm contains published `1\.3\.1`\s*\r?\n>\s*\(`gitHead` `19a9dc648b336732b495d5dd98eb2e32dd8e3b1f`\) and `1\.4\.0`/,
+    );
+    expect(plan).toMatch(
+      /and `1\.4\.0`\s*\r?\n>\s*\(`gitHead` `a03c3eed6693658f338fee5aef04102ab02bc83a`\); `latest` is `1\.4\.0`\./,
+    );
+    expect(plan).toMatch(/`latest` is `1\.4\.0`/);
+    expect(plan).toMatch(/Current release:\*\* 1\.4\.0/);
+    // 1.3.1 and 1.4.0 are live, so neither may be described as pending.
     expect(plan).not.toMatch(
-      /`?1\.3\.0`? (?:is )?prepared|`?1\.3\.0`? is the release candidate|1\.3\.0 publish pending|owner publishes `?1\.3\.0`?|`?1\.3\.0`? is waiting on the owner/,
+      /`?1\.3\.1`? (?:is )?prepared|`?1\.3\.1`? is the release candidate|1\.3\.1 publish pending|owner publishes `?1\.3\.1`?|`?1\.3\.1`? is waiting on the owner/,
+    );
+    expect(plan).not.toMatch(
+      /`?1\.4\.0`? (?:is )?prepared|`?1\.4\.0`? is the release candidate|1\.4\.0 publish pending|owner publishes `?1\.4\.0`?|`?1\.4\.0`? is waiting on the owner/,
     );
     // and no superseded version may still be called `latest` — the 0.7.0
     // mistake, kept red for every version that has been overtaken.
+    expect(plan).not.toMatch(/`?1\.3\.1`? is `latest`/);
+    expect(plan).not.toMatch(/`?1\.3\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.2\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.2\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.1\.1`? is `latest`/);
@@ -331,26 +355,9 @@ describe('the root manifest is publish-complete', () => {
     expect(plan).not.toMatch(/`?0\.7\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.7\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
-    // the two places that carry it must agree: whatever §11 calls the
-    // current `latest` is what the status line calls live.
-    expect(plan).toMatch(/done through `1\.3\.0`, the current `latest`/);
-    // 1.4.0 has no registry bytes: it is a FROZEN, unpublished release
-    // candidate (the release/1.4.0-rc branch, held for validation), recorded
-    // in scripts/release-candidates.json rather than the ledger (RP-349) —
-    // not the candidate currently being prepared, so the "is the release
-    // candidate being prepared" phrasing moves to 1.5.0 below.
-    expect(plan).toMatch(/`1\.4\.0` is a frozen release candidate/);
-    expect(plan).not.toMatch(/Status \(1\.4\.0 published/);
-    expect(plan).not.toMatch(/`?1\.4\.0`? is `latest`/);
-    expect(plan).not.toMatch(/through `?1\.4\.0`? are live/);
-    expect(plan).not.toMatch(/done through `1\.4\.0`/);
-
-    // 1.5.0 is prepared, not published: its `is prepared` positive, and every
-    // voice that would announce it as shipped, until the registry says so.
-    // It is a release candidate rather than a finished patch waiting on the
-    // owner's publish, so the positive is phrased the way PLAN.md phrases a
-    // candidate: "is the release candidate being prepared".
-    expect(plan).toMatch(/`1\.5\.0` is the release candidate being prepared/);
+    // 1.5.0 is accepted and frozen, but remains unpublished. Its candidate
+    // status is provenance, never evidence of a registry publication.
+    expect(plan).toMatch(/`1\.5\.0` is accepted and frozen/);
     expect(plan).not.toMatch(/Status \(1\.5\.0 published/);
     expect(plan).not.toMatch(/`?1\.5\.0`? is `latest`/);
     expect(plan).not.toMatch(/through `?1\.5\.0`? are live/);
@@ -372,7 +379,7 @@ describe('the root manifest is publish-complete', () => {
   // 🔴 The ledger records where a version was published FROM, so a row may
   // exist only once that version is on the registry. 1.1.0's row is written
   // during 1.1.1 work from the measured public-registry gitHead.
-  it('records 1.1.0 in the ledger at the commit it was published from', async () => {
+  it('records each published release in the ledger at the commit it was published from', async () => {
     const ledger = JSON.parse(
       await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'),
     ) as Record<string, string | null>;
@@ -388,10 +395,11 @@ describe('the root manifest is publish-complete', () => {
     expect(ledger['0.8.0']).toBe('870f9a3ecae2881908ece8ec3e2ac13f84f505f5');
     expect(ledger['0.7.1']).toBe('52e879b6c103f6ba70493007b6a6466c57ea9824');
     expect(ledger['0.7.0']).toBe('6589db36e1daa63a99ec595191db1cccf7373196');
-    // 1.4.0 has no registry bytes: it is a frozen, unpublished release
-    // candidate recorded in scripts/release-candidates.json (RP-349), never a
-    // ledger row.
-    expect(ledger).not.toHaveProperty('1.4.0');
+    expect(ledger['1.3.0']).toBe('9c2508302e7a04b95c51edab2d256816cedddd82');
+    expect(ledger['1.3.1']).toBe('19a9dc648b336732b495d5dd98eb2e32dd8e3b1f');
+    expect(ledger['1.4.0']).toBe('a03c3eed6693658f338fee5aef04102ab02bc83a');
+    // 1.4.1 remains a release candidate and unpublished, so it has no ledger row.
+    expect(ledger).not.toHaveProperty('1.4.1');
     // and every row is a full sha, never an abbreviation
     for (const [version, sha] of Object.entries(ledger)) {
       if (sha !== null) expect(sha, `${version} is not a full sha`).toMatch(/^[0-9a-f]{40}$/);

@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
-import { access, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { realpathSync } from 'node:fs';
+import { access, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY, GITHUB_PAT, PEM_HEADER } from './secrets-fixtures.js';
 import { runNodeTimed } from '../helpers/child-timing.js';
-import { needsGitRoot, skipUnless } from '../helpers/env.js';
+import { needsGitRoot, onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 // AR-49(b), the PreToolUse half of the "both layers, one shared module" ruling.
@@ -42,12 +43,12 @@ interface HookResult {
 }
 
 /** Feed a synthetic hook payload to the hook, exactly as Claude Code does. */
-function runHook(payload: unknown, env: NodeJS.ProcessEnv = {}): Promise<HookResult> {
+function runHook(payload: unknown, env: NodeJS.ProcessEnv = {}, cwd?: string): Promise<HookResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       process.execPath,
       [hook],
-      { env: { ...process.env, ...env } },
+      { cwd, env: { ...process.env, ...env } },
       (error, _stdout, stderr) => {
         resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr });
       },
@@ -109,6 +110,365 @@ const allow = async (payload: unknown, why: string): Promise<HookResult> => {
   expect(result.code, `should ALLOW: ${why}\nstderr: ${result.stderr}`).toBe(0);
   return result;
 };
+
+// RP-463: Codex emits absolute paths in an apply_patch command. A path that
+// resolves inside the checkout is not unsafe merely because it is absolute;
+// the guard must apply its credential policy after proving containment.
+describe('guard-secret-file: accepts a contained absolute apply_patch destination (RP-463)', () => {
+  it('allows an absolute in-repository Add path with Unicode source text', async () => {
+    const inRepository = path
+      .join(repoRoot, 'src', 'caf\u00e9-\u6771\u4eac.ts')
+      .replaceAll(path.sep, '/');
+    await allow(applyPatch(inRepository, 'export const safe = true;'), 'contained absolute Add');
+  });
+});
+
+// RP-478: the parser removes its trailing Rust whitespace before it decides
+// which pathname to write. Credential policy must judge that same pathname;
+// U+FEFF is intentionally absent because the parser retains it as data.
+describe('guard-secret-file: trailing Rust header whitespace cannot hide an absolute .env target (RP-478)', () => {
+  const credentialPath = path.join(repoRoot, '.env').replaceAll(path.sep, '/');
+
+  it.each([
+    ['space', '\u0020'],
+    ['tab', '\u0009'],
+    ['non-breaking space', '\u00a0'],
+    ['NEL', '\u0085'],
+    ['line separator', '\u2028'],
+    ['paragraph separator', '\u2029'],
+  ] as const)(
+    'refuses an absolute Add whose .env header ends with Rust whitespace %s',
+    async (_label, suffix) => {
+      const result = await runHook(
+        applyPatch(`${credentialPath}${suffix}`, 'export const safe = true;'),
+      );
+      expect(result.code, `Rust whitespace ${JSON.stringify(suffix)}: ${result.stderr}`).toBe(2);
+    },
+  );
+});
+
+// RP-463: removals do not write a credential, but an unresolvable removal
+// still makes the entire patch unsafe. The global refusal must be considered
+// before removal fragments are excluded from credential-content policy.
+describe('guard-secret-file: unsafe absolute Delete paths remain global refusals (RP-463)', () => {
+  it('refuses an attended Delete of an outside absolute path', async () => {
+    const filePath = path.join(tmpdir(), 'rp463-delete-outside.ts').replaceAll(path.sep, '/');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command: `*** Begin Patch\n*** Delete File: ${filePath}\n*** End Patch\n` },
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses an attended Delete with a redundant absolute traversal segment', async () => {
+    const filePath = `${repoRoot.replaceAll('\\', '/')}/src/safe/../delete-outside.ts`;
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command: `*** Begin Patch\n*** Delete File: ${filePath}\n*** End Patch\n` },
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses an attended Delete through an ambiguous UNC path', async () => {
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: String.raw`*** Begin Patch
+*** Delete File: \\server\share\delete-outside.ts
+*** End Patch
+`,
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses an attended Delete through an absolute symlink or junction escape', async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-delete-root-')));
+    const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-delete-outside-')));
+    try {
+      await run('git', ['init', '-q', root]);
+      await mkdir(path.join(root, 'src'), { recursive: true });
+      await symlink(
+        outside,
+        path.join(root, 'src', 'escape'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      const escapedPath = path.join(root, 'src', 'escape', 'delete.ts').replaceAll(path.sep, '/');
+      const result = await runHook(
+        {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: `*** Begin Patch\n*** Delete File: ${escapedPath}\n*** End Patch\n`,
+          },
+        },
+        {},
+        root,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(root);
+      await removeFixture(outside);
+    }
+  });
+});
+
+describe('guard-secret-file: an absolute Move source remains subject to containment (RP-463)', () => {
+  it('refuses an attended Move whose absolute source is outside the repository even when its destination is safe', async () => {
+    const outside = path.join(tmpdir(), 'rp463-move-outside.ts').replaceAll(path.sep, '/');
+    const destination = path.join(repoRoot, 'src', 'moved.ts').replaceAll(path.sep, '/');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: `*** Begin Patch\n*** Update File: ${outside}\n*** Move to: ${destination}\n@@\n+export const moved = true;\n*** End Patch\n`,
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('allows an absolute in-repository Move source with a safe relative destination', async () => {
+    const source = path.join(repoRoot, 'package.json').replaceAll(path.sep, '/');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: src/moved.ts\n@@\n+export const moved = true;\n*** End Patch\n`,
+      },
+    });
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
+describe('guard-secret-file: Move headers use the same parser boundary as Add and Update (RP-478)', () => {
+  it('refuses a Move destination whose absolute .env header ends with a line separator', async () => {
+    const source = path.join(repoRoot, 'package.json').replaceAll(path.sep, '/');
+    const destination = `${path.join(repoRoot, '.env').replaceAll(path.sep, '/')}\u2028`;
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${destination}\n@@\n+export const moved = true;\n*** End Patch\n`,
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+});
+
+describe('guard-secret-file: NEL remains conservatively uninspectable (RP-478)', () => {
+  it('refuses an absolute Add destination with an uninspectable NEL header', async () => {
+    const credentialPath = path.join(repoRoot, '.env').replaceAll(path.sep, '/');
+    const result = await runHook(
+      applyPatch(`${credentialPath}\u0085`, 'export const safe = true;'),
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/cannot safely inspect/i);
+  });
+});
+
+describe('guard-secret-file: ambiguous Windows path spellings remain outside the repository (RP-463)', () => {
+  it('refuses a drive-relative Add path with a repository-relative remedy', async () => {
+    const result = await runHook(applyPatch('C:relative\\outside.ts', 'export const safe = true;'));
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+    expect(result.stderr).not.toMatch(/split/i);
+  });
+
+  it('refuses a device-namespace Add path with a repository-relative remedy', async () => {
+    const result = await runHook(
+      applyPatch(String.raw`\\?\C:\outside.ts`, 'export const safe = true;'),
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+    expect(result.stderr).not.toMatch(/split/i);
+  });
+
+  it('refuses a UNC Add path with a repository-relative remedy', async () => {
+    const result = await runHook(
+      applyPatch(String.raw`\\server\share\outside.ts`, 'export const safe = true;'),
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+    expect(result.stderr).not.toMatch(/split/i);
+  });
+});
+
+// A leading path character is not trailing parser formatting. In particular,
+// treating it as whitespace would validate a different pathname from Codex.
+describe(
+  'guard-secret-file:' + ' absolute-looking leading whitespace stays uninspectable (RP-478)',
+  () => {
+    let fixtureRoot = '';
+
+    beforeEach(async () => {
+      fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp478-leading-root-')));
+      await run('git', ['init', '-q', fixtureRoot]);
+    });
+
+    afterEach(async () => {
+      await removeFixture(fixtureRoot);
+    });
+
+    it('refuses an absolute-looking Add header with a literal leading space', async () => {
+      const control = path.join(fixtureRoot, 'ordinary-control.ts');
+      const result = await runHook(
+        applyPatch(` ${control}`, 'export const safe = true;'),
+        { CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    });
+  },
+);
+
+describe('guard-secret-file: absolute Unicode containment uses component identity (RP-463)', () => {
+  it('refuses an absolute path in the distinct NTFS sibling whose Unicode casing path.relative folds', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const parent = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-unicode-parent-')));
+    const repositoryLexical = path.join(parent, 'repo\u0130');
+    const outsideLexical = path.join(parent, 'repoi\u0307');
+    try {
+      await mkdir(repositoryLexical);
+      await mkdir(outsideLexical);
+      const repository = realpathSync.native(repositoryLexical);
+      const outside = realpathSync.native(outsideLexical);
+      expect(repository).not.toBe(outside);
+      await run('git', ['init', '-q', repository]);
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: repository };
+      const relativeControl = await runHook(
+        applyPatch('src/relative-control.ts', 'export const safe = true;'),
+        hookEnv,
+        repository,
+      );
+      expect(relativeControl.code, relativeControl.stderr).toBe(0);
+      const absoluteControl = await runHook(
+        applyPatch(
+          path.join(repository, 'src', 'absolute-control.ts'),
+          'export const safe = true;',
+        ),
+        hookEnv,
+        repository,
+      );
+      expect(absoluteControl.code, absoluteControl.stderr).toBe(0);
+
+      const result = await runHook(
+        applyPatch(path.join(outside, 'payload.ts'), 'export const safe = true;'),
+        hookEnv,
+        repository,
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+    } finally {
+      await removeFixture(parent);
+    }
+  });
+});
+
+describe('guard-secret-file: Windows alternate-data-stream paths remain uninspectable (RP-463)', () => {
+  it('refuses an absolute apply_patch spelling of the .env default data stream', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fixture = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp463-ads-root-')));
+    try {
+      await run('git', ['init', '-q', fixture]);
+      const hookEnv = { CLAUDE_PROJECT_DIR: fixture };
+      const relativeControl = await runHook(
+        applyPatch('notes-relative.ts', 'export const safe = true;'),
+        hookEnv,
+        fixture,
+      );
+      expect(relativeControl.code, relativeControl.stderr).toBe(0);
+      const absoluteControl = await runHook(
+        applyPatch(path.join(fixture, 'notes-absolute.ts'), 'export const safe = true;'),
+        hookEnv,
+        fixture,
+      );
+      expect(absoluteControl.code, absoluteControl.stderr).toBe(0);
+      const credentialControl = await runHook(
+        applyPatch(path.join(fixture, '.env'), 'export const safe = true;'),
+        hookEnv,
+        fixture,
+      );
+      expect(credentialControl.code, credentialControl.stderr).toBe(2);
+
+      const streamPath = path.join(fixture, '.env::$DATA');
+      const result = await runHook(
+        applyPatch(streamPath, 'export const safe = true;'),
+        hookEnv,
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr.trim()).not.toBe('');
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+});
+
+describe('guard-secret-file: BOM path characters remain identity-bearing (RP-478)', () => {
+  it('refuses an absolute BOM-suffixed symlink escape through Add', async () => {
+    const fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp478-bom-root-')));
+    const outsideRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp478-bom-outside-')));
+    try {
+      const outsideFile = path.join(outsideRoot, 'harmless.ts');
+      const bomLink = path.join(fixtureRoot, 'escape\ufeff');
+      await run('git', ['init', '-q', fixtureRoot]);
+      await writeFile(outsideFile, 'export const harmless = true;\n');
+      await symlink(outsideFile, bomLink, 'file');
+      expect(await realpath(bomLink)).toBe(await realpath(outsideFile));
+
+      const result = await runHook(
+        applyPatch(bomLink, 'export const safe = true;'),
+        { CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    } finally {
+      await removeFixture(fixtureRoot);
+      await removeFixture(outsideRoot);
+    }
+  });
+
+  it('refuses a relative BOM-suffixed symlink escape instead of trimming it to a safe sibling', async () => {
+    const fixtureRoot = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'rp478-relative-bom-root-')),
+    );
+    const outsideRoot = await realpath(
+      await mkdtemp(path.join(tmpdir(), 'rp478-relative-bom-outside-')),
+    );
+    try {
+      const outsideFile = path.join(outsideRoot, 'harmless.ts');
+      const ordinaryFile = path.join(fixtureRoot, 'safe.txt');
+      const bomLink = path.join(fixtureRoot, 'safe.txt\ufeff');
+      await run('git', ['init', '-q', fixtureRoot]);
+      await writeFile(ordinaryFile, 'export const ordinary = true;\n');
+      await writeFile(outsideFile, 'export const outside = true;\n');
+      await symlink(outsideFile, bomLink, 'file');
+      expect(await realpath(bomLink)).toBe(await realpath(outsideFile));
+      const ordinaryControl = await runHook(
+        applyPatch('safe.txt', 'export const safe = true;'),
+        { CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(ordinaryControl.code, ordinaryControl.stderr).toBe(0);
+      const result = await runHook(
+        applyPatch('safe.txt\ufeff', 'export const safe = true;'),
+        { CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    } finally {
+      await removeFixture(fixtureRoot);
+      await removeFixture(outsideRoot);
+    }
+  });
+});
 
 // Synthetic credentials, none of them real. They come from a shared module and
 // are ASSEMBLED rather than written literally — a fixture written out in full
@@ -307,6 +667,572 @@ describe('guard-secret-file: an apply_patch command it cannot read is refused, n
       'ordinary apply_patch',
     );
   });
+});
+
+// RP-463: Codex emits absolute paths in an apply_patch command. A path that
+// resolves inside the checkout is not unsafe merely because it is absolute;
+// the guard must still apply its credential policy to the resulting
+// repository-relative destination. Conversely, no path the hook cannot prove
+// is inside that checkout gets a "split the patch" answer: reducing a path
+// cannot establish containment, so the useful remedy is to name it relative
+// to the repository.
+describe('guard-secret-file: apply_patch absolute paths are contained before credential policy (RP-463)', () => {
+  const patch = (
+    verb: 'Add' | 'Update',
+    filePath: string,
+    addition = 'export const safe = true;',
+  ) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** ${verb} File: ${filePath}\n+${addition}\n*** End Patch\n`,
+    },
+  });
+
+  it.each(['Add', 'Update'] as const)(
+    'allows an absolute in-repository %s path with Unicode source text',
+    async (verb) => {
+      const inRepository = path
+        .join(repoRoot, 'src', 'caf\u00e9-\u6771\u4eac.ts')
+        .replaceAll(path.sep, '/');
+      await allow(patch(verb, inRepository), `${verb} through an absolute in-repository path`);
+    },
+  );
+
+  it('still refuses an absolute in-repository credential destination by its repository-relative policy', async () => {
+    const credentialPath = path
+      .join(repoRoot, 'config', 'secrets', 'prod.txt')
+      .replaceAll(path.sep, '/');
+    const result = await deny(patch('Add', credentialPath), 'absolute credential destination');
+    expect(result.stderr).toContain('config/secrets/prod.txt');
+    expect(result.stderr).toMatch(/credential file/i);
+    expect(result.stderr).not.toMatch(/split/i);
+  });
+
+  it.each([
+    [path.join(tmpdir(), 'rp463-outside.ts').replaceAll(path.sep, '/'), 'outside absolute path'],
+    [
+      `${repoRoot.replaceAll('\\', '/')}/src/safe/../outside.ts`,
+      'absolute path with even an internally redundant traversal segment',
+    ],
+    ['C:relative\\outside.ts', 'drive-relative path'],
+    ['C:\\', 'drive root'],
+    [String.raw`\\server\share\outside.ts`, 'UNC path'],
+    [String.raw`\\?\C:\outside.ts`, 'device-namespace path'],
+  ])(
+    'refuses %s (%s) with a repository-relative remedy, never a split remedy',
+    async (filePath, label) => {
+      const result = await deny(patch('Add', filePath), label);
+      expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+      expect(result.stderr).not.toMatch(/split/i);
+    },
+  );
+
+  const deletePatch = (filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: { command: `*** Begin Patch\n*** Delete File: ${filePath}\n*** End Patch\n` },
+  });
+
+  it('allows an attended Delete of an absolute ordinary path proved inside this repository', async () => {
+    const ordinaryPath = path.join(repoRoot, 'src', 'ordinary.ts').replaceAll(path.sep, '/');
+    await allow(deletePatch(ordinaryPath), 'safe absolute removal');
+  });
+
+  it('keeps an attended Delete of an in-repository credential path allowed because it writes no secret', async () => {
+    const credentialPath = path
+      .join(repoRoot, 'config', 'secrets', 'prod.txt')
+      .replaceAll(path.sep, '/');
+    await allow(deletePatch(credentialPath), 'credential removal is not a credential write');
+  });
+
+  it.each([
+    [
+      path.join(tmpdir(), 'rp463-delete-outside.ts').replaceAll(path.sep, '/'),
+      'outside absolute path',
+    ],
+    [
+      `${repoRoot.replaceAll('\\', '/')}/src/safe/../delete-outside.ts`,
+      'absolute path with a redundant traversal segment',
+    ],
+    [String.raw`\\server\share\delete-outside.ts`, 'ambiguous UNC path'],
+  ])('refuses an attended Delete of %s (%s)', async (filePath, label) => {
+    await deny(deletePatch(filePath), label);
+  });
+
+  it('refuses an attended Delete through an absolute symlink or junction escape', async () => {
+    const root = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-delete-root-')));
+    const outside = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-delete-outside-')));
+    try {
+      await run('git', ['init', '-q', root]);
+      await mkdir(path.join(root, 'src'), { recursive: true });
+      await symlink(
+        outside,
+        path.join(root, 'src', 'escape'),
+        process.platform === 'win32' ? 'junction' : 'dir',
+      );
+      const escapedPath = path.join(root, 'src', 'escape', 'delete.ts').replaceAll(path.sep, '/');
+      const result = await runHook({ ...deletePatch(escapedPath), cwd: root });
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(root);
+      await removeFixture(outside);
+    }
+  });
+
+  it('refuses an attended Move whose absolute source is outside the repository even when its destination is safe', async () => {
+    const outside = path.join(tmpdir(), 'rp463-move-outside.ts').replaceAll(path.sep, '/');
+    const destination = path.join(repoRoot, 'src', 'moved.ts').replaceAll(path.sep, '/');
+    const result = await runHook({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: {
+        command: `*** Begin Patch\n*** Update File: ${outside}\n*** Move to: ${destination}\n@@\n+export const moved = true;\n*** End Patch\n`,
+      },
+    });
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses an absolute path in the distinct NTFS sibling whose Unicode casing path.relative folds', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const parent = await realpath(await mkdtemp(path.join(tmpdir(), 'rp463-unicode-parent-')));
+    const repositoryLexical = path.join(parent, 'repo\u0130');
+    const outsideLexical = path.join(parent, 'repoi\u0307');
+    try {
+      await mkdir(repositoryLexical);
+      await mkdir(outsideLexical);
+      const repository = realpathSync.native(repositoryLexical);
+      const outside = realpathSync.native(outsideLexical);
+      expect(repository).not.toBe(outside);
+      await run('git', ['init', '-q', repository]);
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: repository };
+      const relativeControl = await runHook(
+        patch('Add', 'src/relative-control.ts'),
+        hookEnv,
+        repository,
+      );
+      expect(relativeControl.code, relativeControl.stderr).toBe(0);
+      const absoluteControl = await runHook(
+        patch('Add', path.join(repository, 'src', 'absolute-control.ts')),
+        hookEnv,
+        repository,
+      );
+      expect(absoluteControl.code, absoluteControl.stderr).toBe(0);
+
+      const result = await runHook(
+        patch('Add', path.join(outside, 'payload.ts')),
+        hookEnv,
+        repository,
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toMatch(/repository.relative|relative.*repository/i);
+    } finally {
+      await removeFixture(parent);
+    }
+  });
+
+  // `filename::$DATA` names the existing file's unnamed default NTFS stream.
+  // This is deliberately confined to the spelling reproduced by the direct
+  // Windows guard probe. A named alternate stream needs its own measured
+  // premise: it is not the same alias and must not be smuggled into this test.
+  const denyWindowsDefaultStream = async (
+    ctx: Parameters<typeof skipUnless>[0],
+    absolute: boolean,
+  ) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fixture = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp463-ads-root-')));
+    try {
+      await run('git', ['init', '-q', fixture]);
+      const hookEnv = { CLAUDE_PROJECT_DIR: fixture };
+      const relativeControl = await runHook(patch('Add', 'notes-relative.ts'), hookEnv, fixture);
+      expect(relativeControl.code, relativeControl.stderr).toBe(0);
+      const absoluteControl = await runHook(
+        patch('Add', path.join(fixture, 'notes-absolute.ts')),
+        hookEnv,
+        fixture,
+      );
+      expect(absoluteControl.code, absoluteControl.stderr).toBe(0);
+      const credentialControl = await runHook(
+        patch('Add', path.join(fixture, '.env')),
+        hookEnv,
+        fixture,
+      );
+      expect(credentialControl.code, credentialControl.stderr).toBe(2);
+
+      const streamPath = absolute ? path.join(fixture, '.env::$DATA') : '.env::$DATA';
+      const expectedPath = absolute ? `${fixture}${path.sep}.env::$DATA` : '.env::$DATA';
+      expect(streamPath).toBe(expectedPath);
+      const result = await runHook(patch('Add', streamPath), hookEnv, fixture);
+      expect(result.code, result.stderr).toBe(2);
+      expect(
+        result.stderr.trim(),
+        'a denial must explain how the stream spelling is unsafe',
+      ).not.toBe('');
+    } finally {
+      await removeFixture(fixture);
+    }
+  };
+
+  it('refuses a Windows relative apply_patch spelling of the .env default data stream', async (ctx) => {
+    await denyWindowsDefaultStream(ctx, false);
+  });
+
+  it('refuses a Windows absolute apply_patch spelling of the .env default data stream', async (ctx) => {
+    await denyWindowsDefaultStream(ctx, true);
+  });
+
+  const allowPosixColonPath = async (
+    ctx: Parameters<typeof skipUnless>[0],
+    filePath: (fixture: string) => string,
+  ) => {
+    skipUnless(
+      ctx,
+      process.platform !== 'win32',
+      'Windows reserves colon for stream and drive syntax',
+    );
+    const fixture = realpathSync.native(
+      await mkdtemp(path.join(tmpdir(), 'rp463-posix-colon-root-')),
+    );
+    try {
+      await run('git', ['init', '-q', fixture]);
+      const hookEnv = { CLAUDE_PROJECT_DIR: fixture };
+      const result = await runHook(patch('Add', filePath(fixture)), hookEnv, fixture);
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      await removeFixture(fixture);
+    }
+  };
+
+  it('keeps a POSIX relative colon filename writable', async (ctx) => {
+    await allowPosixColonPath(ctx, () => 'notes:metadata.txt');
+  });
+
+  it('keeps a POSIX contained absolute colon filename writable', async (ctx) => {
+    await allowPosixColonPath(ctx, (fixture) => path.join(fixture, 'notes:metadata.txt'));
+  });
+});
+
+// RP-478: trailing header whitespace must not hide an in-repository credential
+// target from the credential-file rule.
+describe('guard-secret-file: absolute apply_patch headers cannot hide credential filenames with trailing whitespace (RP-478)', () => {
+  const modes = [
+    ['attended', { RIG_UNATTENDED: '0' }],
+    ['unattended', { RIG_UNATTENDED: '1' }],
+  ] as const;
+  const headerWhitespace = [
+    ['space', ' '],
+    ['tab', '\t'],
+    ['non-breaking space', '\u00a0'],
+    ['line separator', '\u2028'],
+    ['paragraph separator', '\u2029'],
+  ] as const;
+  // Rust `char::is_whitespace()` as used by Codex 0.161's patch parser. NEL
+  // stays conservatively denied below with its existing reason assertion.
+  const rustTrailingWhitespace = [
+    ['tab', '\u0009'],
+    ['line feed', '\u000a'],
+    ['vertical tab', '\u000b'],
+    ['form feed', '\u000c'],
+    ['carriage return', '\u000d'],
+    ['space', '\u0020'],
+    ['NEL', '\u0085'],
+    ['non-breaking space', '\u00a0'],
+    ['Ogham space mark', '\u1680'],
+    ['en quad', '\u2000'],
+    ['em quad', '\u2001'],
+    ['en space', '\u2002'],
+    ['em space', '\u2003'],
+    ['three-per-em space', '\u2004'],
+    ['four-per-em space', '\u2005'],
+    ['six-per-em space', '\u2006'],
+    ['figure space', '\u2007'],
+    ['punctuation space', '\u2008'],
+    ['thin space', '\u2009'],
+    ['hair space', '\u200a'],
+    ['line separator', '\u2028'],
+    ['paragraph separator', '\u2029'],
+    ['narrow non-breaking space', '\u202f'],
+    ['medium mathematical space', '\u205f'],
+    ['ideographic space', '\u3000'],
+  ] as const;
+  const credentialPath = path.join(repoRoot, '.env').replaceAll(path.sep, '/');
+  const ordinaryPath = path
+    .join(repoRoot, 'src', 'ordinary file-\u6771\u4eac.ts')
+    .replaceAll(path.sep, '/');
+  const existingMoveSource = path.join(repoRoot, 'package.json').replaceAll(path.sep, '/');
+
+  const patch = (verb: 'Add' | 'Update', filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** ${verb} File: ${filePath}\n+export const safe = true;\n*** End Patch\n`,
+    },
+  });
+
+  const move = (source: string, destination: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${destination}\n@@\n+export const moved = true;\n*** End Patch\n`,
+    },
+  });
+
+  it.each(modes)(
+    'allows an absolute ordinary Unicode filename with an internal space in %s mode',
+    async (_mode, env) => {
+      const result = await runHook(patch('Add', ordinaryPath), env);
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it.each(
+    modes.flatMap(([mode, env]) =>
+      headerWhitespace.flatMap(([label, suffix]) =>
+        (['Add', 'Update'] as const).map((verb) => [verb, label, mode, env, suffix] as const),
+      ),
+    ),
+  )(
+    'refuses an absolute %s header whose credential filename ends with %s in %s mode',
+    async (verb, label, mode, env, suffix) => {
+      const result = await runHook(patch(verb, `${credentialPath}${suffix}`), env);
+      expect(result.code, `${verb}, ${label}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/credential file/i);
+    },
+  );
+
+  it.each(
+    modes.flatMap(([mode, env]) =>
+      headerWhitespace.map(([label, suffix]) => [label, mode, env, suffix] as const),
+    ),
+  )(
+    'refuses a Move destination whose absolute credential filename ends with %s in %s mode',
+    async (label, mode, env, suffix) => {
+      const result = await runHook(move(existingMoveSource, `${credentialPath}${suffix}`), env);
+      expect(result.code, `Move destination, ${label}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/credential file/i);
+    },
+  );
+
+  it.each(rustTrailingWhitespace)(
+    'does not allow an absolute credential Add header ending with Rust whitespace %s',
+    async (_label, suffix) => {
+      const result = await runHook(patch('Add', `${credentialPath}${suffix}`));
+      expect(result.code, `Rust whitespace ${JSON.stringify(suffix)}: ${result.stderr}`).toBe(2);
+    },
+  );
+
+  it.each(modes)(
+    'refuses a Move source with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(move(`${existingMoveSource}\u0085`, ordinaryPath), env);
+      expect(result.code, `Move source, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an Add destination with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(patch('Add', `${credentialPath}\u0085`), env);
+      expect(result.code, `Add destination, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an Update destination with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(patch('Update', `${credentialPath}\u0085`), env);
+      expect(result.code, `Update destination, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses a Move destination with an uninspectable absolute NEL header in %s mode',
+    async (mode, env) => {
+      const result = await runHook(move(existingMoveSource, `${credentialPath}\u0085`), env);
+      expect(result.code, `Move destination, NEL, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(
+    modes.flatMap(
+      ([mode, env]) =>
+        [
+          [
+            'id_rsa with space',
+            mode,
+            env,
+            path.join(repoRoot, 'keys', 'id_rsa'),
+            ' ',
+            'credential file',
+          ],
+          [
+            'cert.pem with NBSP',
+            mode,
+            env,
+            path.join(repoRoot, 'keys', 'cert.pem'),
+            '\u00a0',
+            'credential file',
+          ],
+          [
+            'cert.pem with NEL',
+            mode,
+            env,
+            path.join(repoRoot, 'keys', 'cert.pem'),
+            '\u0085',
+            'cannot safely inspect',
+          ],
+        ] as const,
+    ),
+  )(
+    'refuses %s in %s mode',
+    async (label, mode, env, credentialNamedPath, suffix, expectedReason) => {
+      const filePath = credentialNamedPath.replaceAll(path.sep, '/') + suffix;
+      const result = await runHook(patch('Add', filePath), env);
+      expect(result.code, `${label}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(new RegExp(expectedReason, 'i'));
+    },
+  );
+});
+
+// U+FEFF is deliberately separate from the ordinary header whitespace above:
+// the patch parser retains it in a pathname, while JavaScript `trim()` does not.
+// Treating it as formatting would resolve a different entry from the one the
+// patch writes, which can hide a symlink escape.
+describe('guard-secret-file: absolute apply_patch headers retain BOM path characters (RP-478)', () => {
+  const modes = [
+    ['attended', { RIG_UNATTENDED: '0' }],
+    ['unattended', { RIG_UNATTENDED: '1' }],
+  ] as const;
+  let fixtureRoot = '';
+  let outsideRoot = '';
+  let bomLink = '';
+  let ordinaryBomFile = '';
+  let outsideFile = '';
+
+  const patch = (verb: 'Add' | 'Update', filePath: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** ${verb} File: ${filePath}\n+export const safe = true;\n*** End Patch\n`,
+    },
+  });
+
+  const move = (source: string, destination: string) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: `*** Begin Patch\n*** Update File: ${source}\n*** Move to: ${destination}\n@@\n+export const moved = true;\n*** End Patch\n`,
+    },
+  });
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp478-bom-root-')));
+    outsideRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp478-bom-outside-')));
+    outsideFile = path.join(outsideRoot, 'harmless.ts');
+    bomLink = path.join(fixtureRoot, 'escape\ufeff');
+    ordinaryBomFile = path.join(fixtureRoot, 'harmless\ufeff');
+    await run('git', ['init', '-q', fixtureRoot]);
+    await writeFile(path.join(fixtureRoot, 'source.ts'), 'export const source = true;\n');
+    await writeFile(outsideFile, 'export const harmless = true;\n');
+    await writeFile(ordinaryBomFile, 'export const ordinaryBom = true;\n');
+    await symlink(outsideFile, bomLink, 'file');
+    await symlink(outsideFile, path.join(fixtureRoot, 'harmless'), 'file');
+    expect(await realpath(bomLink)).toBe(await realpath(outsideFile));
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+    await removeFixture(outsideRoot);
+  });
+
+  it.each(modes)(
+    'allows a lexical in-repository absolute control without a BOM in %s mode',
+    async (_mode, env) => {
+      const control = path.join(fixtureRoot, 'ordinary-control.ts');
+      const result = await runHook(
+        patch('Add', control),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it.each(modes)(
+    'allows an ordinary in-repository filename containing a retained BOM in %s mode',
+    async (_mode, env) => {
+      const result = await runHook(
+        patch('Add', ordinaryBomFile),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it.each(
+    modes.flatMap(([mode, env]) =>
+      (['Add', 'Update'] as const).map((verb) => [verb, mode, env] as const),
+    ),
+  )(
+    'refuses an absolute BOM-suffixed symlink escape through %s in %s mode',
+    async (verb, mode, env) => {
+      const result = await runHook(
+        patch(verb, bomLink),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `${verb}, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an absolute BOM-suffixed symlink escape as a Move destination in %s mode',
+    async (mode, env) => {
+      const source = path.join(fixtureRoot, 'source.ts');
+      const result = await runHook(
+        move(source, bomLink),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `Move destination, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an absolute BOM-suffixed symlink escape as a Move source in %s mode',
+    async (mode, env) => {
+      const destination = path.join(fixtureRoot, 'ordinary-control.ts');
+      const result = await runHook(
+        move(bomLink, destination),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `Move source, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
+
+  it.each(modes)(
+    'refuses an absolute-looking Add header with a literal leading space in %s mode',
+    async (mode, env) => {
+      const control = path.join(fixtureRoot, 'ordinary-control.ts');
+      const result = await runHook(
+        patch('Add', ` ${control}`),
+        { ...env, CLAUDE_PROJECT_DIR: fixtureRoot },
+        fixtureRoot,
+      );
+      expect(result.code, `leading space, ${mode}: ${result.stderr}`).toBe(2);
+      expect(result.stderr).toMatch(/cannot safely inspect/i);
+    },
+  );
 });
 
 describe('guard-secret-file: the ordinary work of the day stays allowed', () => {

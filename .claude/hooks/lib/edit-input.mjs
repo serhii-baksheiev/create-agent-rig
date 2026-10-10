@@ -343,6 +343,7 @@ function patchFragments(command, payloadCwd) {
           filePath: '',
           fragment: '',
           inspectionRefusal: 'patch destination is outside the repository or cannot be resolved safely',
+          remedy: 'Use a repository-relative path spelling; absolute paths must resolve inside this repository.',
           appliesToAll: true,
           // RP-214: a Delete File section has no destination — only the
           // removed path itself — so this refusal is about a removal too;
@@ -390,6 +391,8 @@ function patchFragments(command, payloadCwd) {
                   fragment: '',
                   inspectionRefusal:
                     'patch move source is outside the repository or cannot be resolved safely',
+                  remedy:
+                    'Use a repository-relative path spelling; absolute paths must resolve inside this repository.',
                   appliesToAll: true,
                   removes: true,
                 }
@@ -403,13 +406,16 @@ function patchFragments(command, payloadCwd) {
   };
 
   for (const line of command.split(/\r?\n/)) {
-    const file = /^\*\*\* (?:Add|Update) File: (.+)$/.exec(line);
+    // The downstream parser treats U+2028 and U+2029 as trailing whitespace,
+    // but JavaScript `.` does not match them. Retain every character here so
+    // `repositoryPatchPath` can apply that boundary rule before classification.
+    const file = /^\*\*\* (?:Add|Update) File: ([\s\S]+)$/.exec(line);
     if (file) {
       if (!flush()) break;
       current = { sourcePath: file[1], moveTo: null, additions: [], hunks: [], activeHunk: null };
       continue;
     }
-    const move = /^\*\*\* Move to: (.+)$/.exec(line);
+    const move = /^\*\*\* Move to: ([\s\S]+)$/.exec(line);
     if (move && current !== null) {
       current.moveTo = move[1];
       continue;
@@ -417,7 +423,7 @@ function patchFragments(command, payloadCwd) {
     // RP-214: a Delete File section becomes its own fragment — `removes:
     // true`, resolved through the same path the other verbs use — instead of
     // only flushing whatever section came before it.
-    const del = /^\*\*\* Delete File: (.+)$/.exec(line);
+    const del = /^\*\*\* Delete File: ([\s\S]+)$/.exec(line);
     if (del) {
       if (!flush()) break;
       current = { sourcePath: del[1], moveTo: null, additions: [], hunks: [], activeHunk: null, removes: true };
@@ -446,9 +452,9 @@ function patchFragments(command, payloadCwd) {
 
 function movedFragment(current, budget) {
   if (budget.exhausted !== null) return inspectionRefusal(current, budget.exhausted);
-  const sourcePath = canonicalPatchPath(current.sourcePath);
-  if (sourcePath === null) {
-    return inspectionRefusal(current, 'move source is outside the repository root');
+  const source = repositoryPatchPath(current.sourcePath, budget);
+  if (source === null) {
+    return inspectionRefusal(current, 'unsafe move source cannot be resolved safely');
   }
   if (budget.repoRoot === null) {
     return inspectionRefusal(current, 'cannot resolve the repository root with git rev-parse');
@@ -458,7 +464,7 @@ function movedFragment(current, budget) {
   }
   try {
     const repoRoot = budget.repoRoot;
-    const candidate = path.resolve(budget.patchCwd, sourcePath);
+    const candidate = source.candidate;
     if (!isWithin(repoRoot, candidate)) {
       return inspectionRefusal(current, 'move source is outside the repository root');
     }
@@ -610,11 +616,19 @@ function findSequence(lines, sequence, budget) {
 }
 
 function isWithin(root, candidate) {
-  const relative = path.relative(root, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  );
+  // `path.relative` is not a containment oracle on Windows: its case-folding
+  // treats some distinct Unicode NTFS names as the same component. Compare the
+  // resolved spellings at component boundaries instead. `repositoryPatchPath`
+  // separately realpath-resolves existing prefixes; this lexical check remains
+  // deliberately conservative and admits only the canonical spelling it was
+  // given, refusing an alternate case or Unicode-normalised absolute spelling.
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  if (resolvedCandidate === resolvedRoot) return true;
+  const separatorTerminatedRoot = resolvedRoot.endsWith(path.sep)
+    ? resolvedRoot
+    : `${resolvedRoot}${path.sep}`;
+  return resolvedCandidate.startsWith(separatorTerminatedRoot);
 }
 
 function inspectionRefusal(current, reason) {
@@ -706,8 +720,8 @@ function clampAtDriveRoot(slashed) {
   return path.posix.normalize(slashed);
 }
 
-function normalisePath(value) {
-  const raw = String(value ?? '').trim();
+function normalisePath(value, trimBoundaryWhitespace = true) {
+  const raw = trimBoundaryWhitespace ? String(value ?? '').trim() : String(value ?? '');
   if (raw === '') return '';
   // `null` here is a sentinel distinct from every valid return of this
   // function (including `''`) — `clampAtDriveRoot` returns it once its own
@@ -736,7 +750,7 @@ function normalisePath(value) {
 
 function canonicalPatchPath(value) {
   const raw = String(value ?? '').replaceAll('\\', '/');
-  const normalised = normalisePath(raw);
+  const normalised = normalisePath(raw, false);
   if (
     // RP-247: `normalisePath` returns `null`, not a string, once its own
     // component bound is crossed — reached here only in principle, since
@@ -760,16 +774,92 @@ function canonicalPatchPath(value) {
   return normalised.replace(/^\.\//, '');
 }
 
+function isRustWhitespace(character) {
+  const codePoint = character.charCodeAt(0);
+  return (
+    (codePoint >= 0x0009 && codePoint <= 0x000d) ||
+    codePoint === 0x0020 ||
+    codePoint === 0x0085 ||
+    codePoint === 0x00a0 ||
+    codePoint === 0x1680 ||
+    (codePoint >= 0x2000 && codePoint <= 0x200a) ||
+    codePoint === 0x2028 ||
+    codePoint === 0x2029 ||
+    codePoint === 0x202f ||
+    codePoint === 0x205f ||
+    codePoint === 0x3000
+  );
+}
+
+function trimRustTrailingWhitespace(value) {
+  let end = value.length;
+  while (end > 0) {
+    if (!isRustWhitespace(value.charAt(end - 1))) break;
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+function trimRustLeadingWhitespace(value) {
+  let start = 0;
+  while (start < value.length) {
+    if (!isRustWhitespace(value.charAt(start))) break;
+    start += 1;
+  }
+  return value.slice(start);
+}
+
 function repositoryPatchPath(value, budget) {
-  const patchPath = canonicalPatchPath(value);
-  if (patchPath === null || budget.repoRoot === null || budget.patchCwd === null) return null;
-  const candidate = path.resolve(budget.patchCwd, patchPath);
+  if (budget.repoRoot === null || budget.patchCwd === null) return null;
+  // The downstream parser removes Rust `char::is_whitespace()` from the
+  // trailing boundary. Keep the original spelling long enough to retain the
+  // existing conservative NEL refusal, then remove precisely that set.
+  // U+FEFF is not Rust whitespace and must remain part of the pathname.
+  const originalValue = String(value ?? '');
+  if (originalValue.startsWith('\u0085') || originalValue.endsWith('\u0085')) return null;
+  const rawValue = trimRustTrailingWhitespace(originalValue);
+  if (originalValue.startsWith('\u0085') || rawValue.endsWith('\u0085')) return null;
+  // Leading whitespace is a pathname character to Codex. If it makes a path
+  // look absolute only after trimming, we cannot prove the parser will target
+  // the same entry, so refuse instead of validating a safer spelling.
+  const withoutLeadingWhitespace = trimRustLeadingWhitespace(rawValue);
+  if (withoutLeadingWhitespace !== rawValue && path.isAbsolute(withoutLeadingWhitespace)) return null;
+  // `apply_patch` normally names a repository-relative path. Codex may instead
+  // emit an absolute spelling, but only one we can prove belongs to this
+  // checkout is equivalent. Reject every traversal spelling before resolving:
+  // normalising first would turn an unsafe claim into an apparently contained
+  // one. UNC, device, drive-relative, and Windows root-relative forms stay
+  // unjudgeable here; a native fully-qualified path is the only alternate
+  // surface this resolver admits.
+  const hasTraversal = rawValue.split(/[\\/]/).some((part) => part === '..');
+  const isDeviceOrUnc =
+    /^[\\/]{2}[?.](?:[\\/]|$)/.test(rawValue) || /^[\\/]{2}/.test(rawValue);
+  const isWindowsRootRelative =
+    process.platform === 'win32' && /^[\\/](?![\\/])/.test(rawValue);
+  const absolute = path.isAbsolute(rawValue);
+  if (hasTraversal || isDeviceOrUnc || isWindowsRootRelative) return null;
+
+  const patchPath = absolute ? null : canonicalPatchPath(rawValue);
+  if (!absolute && patchPath === null) return null;
+  const candidate = absolute ? path.resolve(rawValue) : path.resolve(budget.patchCwd, patchPath);
   if (!isWithin(budget.repoRoot, candidate)) return null;
 
   // RP-60: the lexical repo-relative spelling, fixed BEFORE any symlink in the
   // path (a guarded prefix junctioned elsewhere inside the checkout, say) gets
   // resolved away below. One extra string, computed once — not a new loop.
   const raw = path.relative(budget.repoRoot, candidate).split(path.sep).join('/');
+  // A colon cannot name an ordinary Windows repository entry here: after the
+  // drive root has been removed, it is an alternate data stream spelling.
+  // Refuse it before resolving or caching an ancestor, so `.env::$DATA` cannot
+  // evade the credential-file path policy through its default-stream alias.
+  if (
+    raw === '' ||
+    raw === '..' ||
+    raw.startsWith('../') ||
+    (process.platform === 'win32' && raw.includes(':'))
+  ) {
+    return null;
+  }
 
   let existing = candidate;
   const suffix = [];
@@ -778,7 +868,11 @@ function repositoryPatchPath(value, budget) {
       const resolved = budget.resolvedDirectories.get(existing);
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
+      return {
+        raw,
+        candidate,
+        resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/'),
+      };
     }
     try {
       const resolved = realpathSync(existing);
@@ -794,7 +888,11 @@ function repositoryPatchPath(value, budget) {
       }
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
+      return {
+        raw,
+        candidate,
+        resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/'),
+      };
     } catch (error) {
       if (error?.code !== 'ENOENT') return null;
       try {

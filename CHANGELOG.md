@@ -62,6 +62,10 @@ records the decision and its consequences.
 
 ### Fixed
 
+- Carry the accepted 1.4.1 absolute patch-path containment and Codex
+  patch-header whitespace corrections into the 1.5.0 line (RP-463, RP-478,
+  RP-471). The original frozen 1.5.0 candidate remains preserved; this
+  replacement requires its own exact-source and packed acceptance.
 - Reject malformed delegated-decision schema versions, typed fields and
   timestamps while retaining valid records (RP-439). Evidence:
   `test/template/delegated-decision.test.ts` › "parseDecisions rejects an
@@ -117,7 +121,28 @@ records the decision and its consequences.
   directory during a read remains a known Low limitation; the reader is not
   race-proof (RP-454).
 
-## 1.4.0 (release candidate)
+## 1.4.1 (release candidate)
+
+This is a patch on the 1.4 line: it corrects guard compatibility and source
+inspection without adding a new workflow capability.
+
+### Fixed
+
+- Accept absolute `apply_patch` paths only when they can be mechanically
+  resolved inside the repository. Keep path containment and credential checks
+  active in both attended and unattended modes, including Windows Unicode,
+  drive, UNC, device and alternate-stream paths, traversal, and linked escapes
+  (RP-463).
+- Match Codex's trailing patch-header whitespace while preserving FEFF and
+  leading pathname characters, so whitespace cannot hide an absolute
+  credential filename or change which linked file the guard inspects
+  (RP-478).
+- Reopen a Move source after path verification and compare its file identity
+  before inspecting its content; refuse a changed source or inspection errors
+  other than a missing file. A missing source emits a warning and retains
+  addition-only scanning (RP-459).
+
+## 1.4.0
 
 **1.4.0 is additive on the 1.3 line.** It adds one contract for the conditions
 that decide whether a checkout is ready to run unattended, and reports it on
@@ -199,6 +224,18 @@ says what it enforces, verifies and leaves to the harness.
 - Live Claude Code and Codex sessions were not driven for this release.
 - The bounded guard wrapper's non-ASCII repository root case did not reproduce on
   the hosted Windows runner. It stays as a regression test.
+
+## 1.3.1
+
+### Fixed
+
+- Windows Node 22 file identity checks in run-state and claim readers (RP-451).
+- FIFO replacements fail promptly in state and claim readers (RP-455).
+- Windows Codex guards resolve UNC roots and selected Probity on non-ASCII
+  roots without adding a UTF-8 BOM (RP-321, RP-460).
+
+Published from `19a9dc648b336732b495d5dd98eb2e32dd8e3b1f`. This records the
+completed hotfix publication; its source candidate remains unchanged.
 
 ## 1.3.0
 
