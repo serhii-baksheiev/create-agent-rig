@@ -62,11 +62,15 @@ records the decision and its consequences.
 
 ### Fixed
 
+- Carry the accepted 1.4.1 absolute patch-path containment and Codex
+  patch-header whitespace corrections into the 1.5.0 line (RP-463, RP-478,
+  RP-471). The original frozen 1.5.0 candidate remains preserved; this
+  replacement requires its own exact-source and packed acceptance.
 - Reject malformed delegated-decision schema versions, typed fields and
   timestamps while retaining valid records (RP-439). Evidence:
   `test/template/delegated-decision.test.ts` › "parseDecisions rejects an
-  unsupported decision-record schema version", › "parseDecisions rejects
-  malformed typed decision fields", and ›
+  unsupported decision-record schema version", › "parseDecisions rejects a
+  malformed %s field rather than treating it as delegated evidence", and ›
   "parseDecisions(text, { ticket }) still accepts a well-formed delegated
   record of a delegable kind".
 - Refuse persistent linked or junction decisions directories and hard-linked
@@ -75,10 +79,9 @@ records the decision and its consequences.
   "a .rig/decisions directory junction to a different checkout is unreadable —
   exit 2, never that checkout's decision", › "a ticket file hard-linked from
   another checkout is unreadable — exit 2, never that checkout's decision",
-  › "an unresolved ticket (no file at all) reports an empty array, exit 0",
-  and › "still lists a well-formed delegated record of a delegable kind";
-  `test/template/item-records.test.ts` › "reports exists: false for an absent
-  file".
+  › "an unresolved ticket in an existing ordinary .rig/decisions directory
+  reports an empty array, exit 0", and › "still lists a well-formed delegated
+  record of a delegable kind".
 - Correct Windows Node 22 file-identity verification without dropping POSIX
   device/inode checks, and use nonblocking opens so FIFO replacements are
   rejected without waiting for a writer (RP-451, RP-455). Evidence:
@@ -117,6 +120,27 @@ records the decision and its consequences.
 - Decisions-directory containment is static. Concurrent replacement of that
   directory during a read remains a known Low limitation; the reader is not
   race-proof (RP-454).
+
+## 1.4.1 (release candidate)
+
+This is a patch on the 1.4 line: it corrects guard compatibility and source
+inspection without adding a new workflow capability.
+
+### Fixed
+
+- Accept absolute `apply_patch` paths only when they can be mechanically
+  resolved inside the repository. Keep path containment and credential checks
+  active in both attended and unattended modes, including Windows Unicode,
+  drive, UNC, device and alternate-stream paths, traversal, and linked escapes
+  (RP-463).
+- Match Codex's trailing patch-header whitespace while preserving FEFF and
+  leading pathname characters, so whitespace cannot hide an absolute
+  credential filename or change which linked file the guard inspects
+  (RP-478).
+- Reopen a Move source after path verification and compare its file identity
+  before inspecting its content; refuse a changed source or inspection errors
+  other than a missing file. A missing source emits a warning and retains
+  addition-only scanning (RP-459).
 
 ## 1.4.0
 
@@ -2841,13 +2865,6 @@ sometimes earlier (step 6). Everything before that is mechanical:
    `node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>`
    instead — see `docs/releasing.md`, "Preflighting a frozen, unpublished
    release candidate".
-
-   When several accepted candidates await publication, publish in increasing
-   version order. Publishing an older patch after a newer minor requires an
-   explicit non-`latest` tag, for example `npm publish --tag v1.4-patch`:
-   an ordinary publish moves `latest` to the version just published. Check
-   `npm view create-agent-rig dist-tags --json` before and after publication.
-   Publication and dist-tag changes remain owner-only.
 
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and

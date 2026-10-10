@@ -232,8 +232,9 @@ export function assertCandidateHeadingsAreCurrent(
  * RP-349: the exact ref a frozen, unpublished release-candidate branch must
  * resolve through.
  */
-export function candidateRefName(version) {
-  return `refs/remotes/origin/release/${version}-rc`;
+export function candidateRefName(version, sha) {
+  const canonical = `refs/remotes/origin/release/${version}-rc`;
+  return sha === undefined ? canonical : `${canonical}-${sha}`;
 }
 
 const SHA = /^[0-9a-f]{40}$/;
@@ -251,19 +252,34 @@ const SHA = /^[0-9a-f]{40}$/;
  * recorded sha, that commit's `package.json` carrying exactly `version`, and
  * that commit being an ancestor of HEAD.
  */
+function candidateEntry(value) {
+  if (typeof value === 'string') {
+    return SHA.test(value) ? { sha: value, supersedes: null } : null;
+  }
+  if (value === null || Array.isArray(value) || typeof value !== 'object') return null;
+  const keys = Object.keys(value).sort();
+  if (keys.length !== 2 || keys[0] !== 'sha' || keys[1] !== 'supersedes') return null;
+  if (typeof value.sha !== 'string' || typeof value.supersedes !== 'string') return null;
+  if (!SHA.test(value.sha) || !SHA.test(value.supersedes) || value.sha === value.supersedes)
+    return null;
+  return { sha: value.sha, supersedes: value.supersedes };
+}
+
 export function candidateBaselineFindings(record, { ledger, currentVersion, facts }) {
   const findings = [];
-  for (const [version, sha] of Object.entries(record)) {
+  for (const [version, value] of Object.entries(record)) {
     if (!VERSION.test(version)) {
       findings.push(`scripts/release-candidates.json: "${version}" is not a version (X.Y.Z)`);
       continue;
     }
-    if (typeof sha !== 'string' || !SHA.test(sha)) {
+    const candidate = candidateEntry(value);
+    if (candidate === null) {
       findings.push(
-        `scripts/release-candidates.json: ${version} must be a 40-character lowercase commit sha`,
+        `scripts/release-candidates.json: ${version} must be a 40-character lowercase commit sha or a strict { sha, supersedes } replacement record`,
       );
       continue;
     }
+    const { sha, supersedes } = candidate;
     if (compareVersions(version, currentVersion) >= 0) {
       findings.push(
         `scripts/release-candidates.json: ${version} is not below the version being prepared ` +
@@ -273,7 +289,7 @@ export function candidateBaselineFindings(record, { ledger, currentVersion, fact
     }
     if (version in ledger) continue; // published — the candidate is historical, git unconsulted
 
-    const ref = candidateRefName(version);
+    const ref = candidateRefName(version, supersedes ? sha : undefined);
     const fact = facts[version];
     if (!fact || fact.refSha !== sha) {
       findings.push(
@@ -297,6 +313,26 @@ export function candidateBaselineFindings(record, { ledger, currentVersion, fact
     if (!fact.isAncestor) {
       findings.push(`${sha} (${version}) is not an ancestor of HEAD`);
     }
+    if (supersedes) {
+      const canonicalRef = candidateRefName(version);
+      if (fact.canonicalRefSha !== supersedes) {
+        findings.push(
+          fact.canonicalRefSha
+            ? `${canonicalRef} is ${fact.canonicalRefSha} but scripts/release-candidates.json records immutable predecessor ${supersedes} for ${version}`
+            : `${canonicalRef} could not be resolved — cannot verify immutable predecessor ${supersedes} for ${version}`,
+        );
+      }
+      if (fact.canonicalPackageVersion !== version) {
+        findings.push(
+          `${canonicalRef}'s package.json is version ${fact.canonicalPackageVersion ?? 'unknown'}, not ${version}`,
+        );
+      }
+      if (fact.supersededMergeBaseError) {
+        findings.push(`${supersedes} (${version}): ${fact.supersededMergeBaseError}`);
+      } else if (!fact.supersededIsAncestor) {
+        findings.push(`${supersedes} (${version}) is not an ancestor of replacement ${sha}`);
+      }
+    }
   }
   return findings;
 }
@@ -310,10 +346,14 @@ export function candidateBaselineFindings(record, { ledger, currentVersion, fact
  */
 export function candidateLedgerDisagreements(ledger, record) {
   const out = [];
-  for (const [version, sha] of Object.entries(record)) {
+  for (const [version, value] of Object.entries(record)) {
     if (!(version in ledger)) continue;
+    const candidate = candidateEntry(value);
+    if (candidate === null) continue;
     const ledgerValue = ledger[version];
-    if (ledgerValue !== sha) out.push({ version, ledger: ledgerValue, candidate: sha });
+    if (ledgerValue !== candidate.sha) {
+      out.push({ version, ledger: ledgerValue, candidate: candidate.sha });
+    }
   }
   return out;
 }
@@ -379,10 +419,11 @@ function readCandidatesRecord() {
  * ancestor): reporting that as "not an ancestor" would claim a comparison
  * that never actually happened.
  */
-function gatherCandidateFacts(version, sha) {
+function gatherCandidateFacts(version, candidate) {
+  const { sha, supersedes } = candidate;
   const refResult = spawnSync(
     'git',
-    ['show-ref', '--verify', '--hash', candidateRefName(version)],
+    ['show-ref', '--verify', '--hash', candidateRefName(version, supersedes ? sha : undefined)],
     {
       cwd: root,
     },
@@ -417,7 +458,56 @@ function gatherCandidateFacts(version, sha) {
       `${ancestorResult.stderr?.toString().trim() ?? ''}`;
   }
 
-  return { refSha, packageVersion, isAncestor, mergeBaseError };
+  if (!supersedes) return { refSha, packageVersion, isAncestor, mergeBaseError };
+
+  const canonicalResult = spawnSync(
+    'git',
+    ['show-ref', '--verify', '--hash', candidateRefName(version)],
+    {
+      cwd: root,
+    },
+  );
+  const canonicalRefSha =
+    canonicalResult.status === 0 ? canonicalResult.stdout.toString().trim() : null;
+
+  const canonicalPackage = spawnSync(
+    'git',
+    ['show', '--end-of-options', `${supersedes}:package.json`],
+    { cwd: root, maxBuffer: 256 * 1024 * 1024 },
+  );
+  let canonicalPackageVersion = null;
+  if (canonicalPackage.status === 0) {
+    try {
+      canonicalPackageVersion = JSON.parse(canonicalPackage.stdout.toString()).version ?? null;
+    } catch {
+      canonicalPackageVersion = null;
+    }
+  }
+
+  const supersededAncestor = spawnSync(
+    'git',
+    ['merge-base', '--is-ancestor', '--end-of-options', supersedes, sha],
+    { cwd: root },
+  );
+  let supersededIsAncestor = false;
+  let supersededMergeBaseError = null;
+  if (supersededAncestor.status === 0) {
+    supersededIsAncestor = true;
+  } else if (supersededAncestor.status !== 1) {
+    supersededMergeBaseError =
+      `git merge-base --is-ancestor ${supersedes} ${sha} failed: ` +
+      `${supersededAncestor.stderr?.toString().trim() ?? ''}`;
+  }
+  return {
+    refSha,
+    packageVersion,
+    isAncestor,
+    mergeBaseError,
+    canonicalRefSha,
+    canonicalPackageVersion,
+    supersededIsAncestor,
+    supersededMergeBaseError,
+  };
 }
 
 function main() {
@@ -446,12 +536,13 @@ function main() {
   // `gatherCandidateFacts` as a live git argument before its shape was ever
   // checked.
   const facts = {};
-  for (const [version, sha] of Object.entries(candidates)) {
+  for (const [version, value] of Object.entries(candidates)) {
     if (version in ledger) continue; // historical; not re-checked
     if (!VERSION.test(version)) continue;
-    if (typeof sha !== 'string' || !SHA.test(sha)) continue;
+    const candidate = candidateEntry(value);
+    if (candidate === null) continue;
     if (compareVersions(version, currentVersion) >= 0) continue;
-    facts[version] = gatherCandidateFacts(version, sha);
+    facts[version] = gatherCandidateFacts(version, candidate);
   }
 
   let released;
