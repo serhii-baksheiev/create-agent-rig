@@ -1085,15 +1085,13 @@ describe('guard-rulebook: a trailing dot or space on a rulebook path component d
   });
 });
 
-// RP-479. `edit-input.mjs`'s section-header regexes are anchored at column 0
-// (`^\*\*\* …`), but Codex's real parser (`codex-rs/apply-patch/src/
-// streaming_parser.rs`, `process_line`) recognises a header OUTSIDE an
-// `*** Update File:` section after Rust `str::trim()` — leading AND trailing
-// whitespace stripped. An indented header such as `  *** Add File:
-// .claude/rules/x.md` matches none of today's regexes, so `editFragments`
-// reports no fragment at all for that section — the same empty-fragment gap
-// `guard-secret-file.test.ts` pins — and an unattended edit to the rulebook
-// through an indented header is never judged against the item's allow-list.
+// RP-479. Codex's real parser (`codex-rs/apply-patch/src/streaming_parser.rs`,
+// `process_line`) recognises a header OUTSIDE an `*** Update File:` section
+// after Rust `str::trim()` — leading AND trailing whitespace stripped. Before
+// RP-479 `edit-input.mjs` anchored its header regexes at column 0, so an
+// indented header such as `  *** Add File: .claude/rules/x.md` produced no
+// fragment and an unattended rulebook edit through it was never judged
+// against the item's allow-list.
 describe('guard-rulebook: an indented apply_patch section header still names the rulebook path it targets (RP-479)', () => {
   beforeEach(() => {
     execFileSync('git', ['init', '-q', root], { env: withoutGitLocation() });

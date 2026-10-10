@@ -673,11 +673,10 @@ describe('guard-secret-file: an apply_patch command it cannot read is refused, n
 // `process_line`) recognises a section header OUTSIDE an `*** Update File:`
 // section (patch start, right after an Add File header or its `+` lines,
 // right after a Delete File header) after Rust `str::trim()` — leading AND
-// trailing whitespace stripped. `patchFragments`'s header regexes are anchored
-// at column 0 (`^\*\*\* …`), so an indented header such as `  *** Add File:
-// .env` is invisible to this file today: the line matches nothing, `current`
-// stays whatever it already was, and the credential-named section is dropped
-// on the floor rather than inspected — Codex still writes it.
+// trailing whitespace stripped. Before RP-479 `patchFragments`'s header
+// regexes were anchored at column 0 (`^\*\*\* …`), so an indented header such
+// as `  *** Add File: .env` matched nothing and the credential-named section
+// was never inspected — while Codex still wrote it.
 describe('guard-secret-file: an indented apply_patch section header still names the file it targets (RP-479)', () => {
   const credentialLine = `DB_PASSWORD=${CLOUD_ACCESS_KEY}`;
 
@@ -698,8 +697,13 @@ describe('guard-secret-file: an indented apply_patch section header still names 
     expect(result.stderr).toContain('.env');
   });
 
+  // NEL, U+3000 and U+2028 are Rust whitespace; JS `trimStart()` keeps NEL,
+  // so these cases pin Rust trim semantics rather than "some whitespace".
   it.each([
     ['a tab', '\t'],
+    ['a next-line (NEL, U+0085)', '\u0085'],
+    ['an ideographic space (U+3000)', '\u3000'],
+    ['a line separator (U+2028)', '\u2028'],
     ['a non-breaking space', ' '],
   ] as const)(
     'refuses an Add File header indented with %s naming a credential path',
@@ -727,13 +731,11 @@ describe('guard-secret-file: an indented apply_patch section header still names 
   // decides between while `current` already points somewhere else.
   //
   // The second section's content is ordinary, non-credential-shaped text on
-  // purpose: today's bug does not drop this section cleanly — the indented
-  // header line is silently ignored while `current` still points at the
-  // FIRST section, so the following `+` line is appended to src/a.txt's own
-  // content instead of starting a new one. A credential-shaped VALUE there
-  // would still be caught by the value scanner, for the wrong file and the
-  // wrong reason, which would make this case pass today for an unrelated
-  // bug rather than fail for this one.
+  // purpose: before RP-479 the indented header line was silently ignored
+  // while `current` still pointed at the FIRST section, so the following `+`
+  // line was appended to src/a.txt's own content. A credential-shaped VALUE
+  // there would have been caught by the value scanner, for the wrong file and
+  // the wrong reason, so this case could not have failed for this defect.
   it('refuses an indented Add File header for a credential path in a second section, after an ordinary first section', async () => {
     const command = [
       '*** Begin Patch',
