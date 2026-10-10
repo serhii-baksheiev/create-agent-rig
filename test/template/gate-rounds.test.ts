@@ -322,6 +322,130 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
         });
       }
     });
+
+    // RP-450: the loop's own stop (SKILL.md §7) writes "an entry ... at the TOP
+    // of `journal/YYYY-MM.md` — this month's file" and, with no item branch
+    // checked out, leaves that one file untracked on the default branch. The
+    // very next run's pr-ship step 0 then found the checkout dirty and refused
+    // — the controller had to stash the file for a whole session. These pin
+    // the fix: `checkoutIsShippable` ignores an untracked `journal/YYYY-MM.md`
+    // and nothing else.
+    describe("the previous stop's own untracked journal entry (RP-450)", () => {
+      it('passes gate-round on an untracked journal/YYYY-MM.md, and counts the round', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal'), { recursive: true });
+        await writeFile(path.join(dir, 'journal', '2026-10.md'), '## stop entry\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code, result.stderr).toBe(0);
+        expect(result.stdout).toMatch(/round 1 of 3/);
+      });
+
+      // Rule under test: the exemption is scoped to journal/ — an untracked
+      // file anywhere else is still an uncommitted head and still refuses.
+      it('still refuses on an untracked file outside journal/', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await writeFile(path.join(dir, 'notes.md'), 'scratch\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exemption is for an UNTRACKED stop entry only. A
+      // modified, already-committed journal file is a real edit to a head that
+      // has not been pushed, which is exactly the state AR-141 exists to catch
+      // — exempting it would let an in-progress edit to the journal slip a
+      // round through unreviewed.
+      it('still refuses on a modified, tracked journal/YYYY-MM.md', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal'), { recursive: true });
+        await writeFile(path.join(dir, 'journal', '2026-10.md'), '## first entry\n');
+        gitIn(dir, ['add', '-A']);
+        gitIn(dir, ['commit', '-q', '-m', 'journal: first entry']);
+        gitIn(dir, ['push', '-q']);
+        await writeFile(path.join(dir, 'journal', '2026-10.md'), '## edited entry\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exempt shape requires FLATNESS — directly under
+      // `journal/`, no subdirectory. SKILL.md §7 never describes the stop as
+      // writing into a subdirectory, so a nested file is not the stop's entry;
+      // widening the match to any depth would also excuse an unrelated
+      // untracked file nested anywhere under `journal/`. Nothing else in the
+      // tree is untracked, so a looser "any path under journal/" match is the
+      // only way this one could pass.
+      it('still refuses on a nested untracked file under journal/ (journal/sub/2026-10.md alone)', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal', 'sub'), { recursive: true });
+        await writeFile(path.join(dir, 'journal', 'sub', '2026-10.md'), 'nested\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exempt shape requires the `.md` EXTENSION.
+      // SKILL.md §7 never describes the stop as writing a non-markdown file,
+      // so a flat non-`.md` file under `journal/` is not the stop's entry;
+      // widening the match to any flat filename would also excuse an
+      // unrelated untracked file that merely happens to sit flat under
+      // `journal/`. The name keeps the exact YYYY-MM shape of a real entry —
+      // only the extension differs — so a looser match that dropped the
+      // extension check (while still requiring the YYYY-MM name) would also
+      // pass this file, and nothing else in the tree is untracked to make
+      // this one refuse for any other reason.
+      it('still refuses on a flat untracked journal/2026-10.txt (YYYY-MM name, wrong extension) alone', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal'), { recursive: true });
+        await writeFile(path.join(dir, 'journal', '2026-10.txt'), 'not markdown\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exempt shape requires the YYYY-MM NAME exactly —
+      // not merely "some `.md` file flat under `journal/`". SKILL.md §7 names
+      // the stop's own entry as this month's dated file, never a file named
+      // anything else; widening the match to any flat `.md` name would also
+      // excuse an unrelated untracked markdown file (a README, a stray note)
+      // that merely happens to sit flat under `journal/`. Nothing else in the
+      // tree is untracked, so a looser "any flat .md under journal/" match is
+      // the only way this one could pass.
+      it('still refuses on a flat untracked .md file under journal/ that is not YYYY-MM (journal/README.md alone)', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal'), { recursive: true });
+        await writeFile(path.join(dir, 'journal', 'README.md'), 'not a stop entry\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exemption covers the journal entry alone — it
+      // does not turn "the tree has an untracked journal entry" into "the
+      // tree is clean", so a second, unrelated untracked file still refuses.
+      it('still refuses when an untracked journal entry sits alongside another untracked file', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await mkdir(path.join(dir, 'journal'), { recursive: true });
+        await writeFile(path.join(dir, 'journal', '2026-10.md'), '## stop entry\n');
+        await writeFile(path.join(dir, 'scratch.txt'), 'uncommitted\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+    });
   });
 
   it('counts a round and exits 0 while inside the cap', async () => {
