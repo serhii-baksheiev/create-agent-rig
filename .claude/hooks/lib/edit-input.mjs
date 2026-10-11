@@ -581,10 +581,10 @@ function applyHunks(content, hunks, current, budget) {
     }
     budget.hunkLines += hunk.lines.length;
     if (budget.hunkLines > MAX_TOTAL_HUNK_LINES) return exhaustBudget(budget, current, `total move hunk lines exceed the ${MAX_TOTAL_HUNK_LINES}-line limit`);
-    const before = hunk.lines
+    let before = hunk.lines
       .filter(({ operation }) => operation !== '+')
       .map(({ text }) => text);
-    const after = hunk.lines
+    let after = hunk.lines
       .filter(({ operation }) => operation !== '-')
       .map(({ text }) => text);
 
@@ -595,7 +595,14 @@ function applyHunks(content, hunks, current, budget) {
       lines.splice(Math.max(0, lines.length - 1), 0, ...after);
       continue;
     }
-    const match = findSequence(lines, before, budget);
+    let match = findSequence(lines, before, budget);
+    if (!match.exhausted && match.index === -1 && before.at(-1) === '') {
+      // RP-482: Codex retries a chunk whose context ends in an empty line
+      // without that line, dropping a trailing empty line from the replacement too.
+      before = before.slice(0, -1);
+      if (after.at(-1) === '') after = after.slice(0, -1);
+      match = findSequence(lines, before, budget);
+    }
     if (match.exhausted) {
       return exhaustBudget(budget, current, 'move context comparison budget was exhausted');
     }
