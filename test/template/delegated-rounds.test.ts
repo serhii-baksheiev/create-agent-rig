@@ -2142,14 +2142,14 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
 
 // --- the consuming call's own commit and authority requirements -----------
 //
-// security-scanner, reproduced on 92edefbe: `authorizedRoundFor` reads
+// security-scanner, reproduced on 92edefbe: `authorizedRoundFor` read
 // `.rig/decisions/*.jsonl` from the WORKING TREE, not HEAD's committed tree,
-// and checks no authority of the consuming `--authorized` run at all. A
+// and checked no authority of the consuming `--authorized` run at all. A
 // record hand-written straight to disk — never through `record`, never
-// committed, never journalled — is still honoured, and so is a consuming run
-// that declares no delegated authority whatsoever.
+// committed, never journalled — was honoured, and so was a consuming run
+// that declared no delegated authority whatsoever.
 //
-// The fix this file pins (not implemented here): only a COMMITTED record
+// The rules these tests pin: only a COMMITTED record
 // counts, read from HEAD's own tree; and the consuming call must itself run
 // under a journalled delegated authority (`RIG_RUN_DIR` set, `run-state.mjs
 // authority delegated` declared) — the same authority check `record` already
