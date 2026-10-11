@@ -557,7 +557,7 @@ function movedFragment(current, budget) {
       // RP-484: Codex matches a Move's context fuzzily, so its output need not
       // be this rebuild; every line it writes is a source line or a patch
       // context or added line, carried beside the rebuild for a value scan.
-      return { ...rebuilt, possibleContent: `${current.additions.join('\n')}\n${content}` };
+      return { ...rebuilt, possibleContent: `${content}\n${current.additions.join('\n')}` };
     } finally {
       closeSync(handle);
     }
