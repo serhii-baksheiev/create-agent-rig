@@ -200,19 +200,20 @@ const isEnvFile = (basename) => {
  */
 export const isCredentialPath = (relativePath) => {
   const normalised = String(relativePath ?? '').replaceAll('\\', '/');
+  const withoutDrivePrefix =
+    process.platform === 'win32' ? normalised.replace(/^[A-Za-z]:/, '') : normalised;
   // 🔴 Lowercased once, and every arm below reads the lowered form. macOS and
   // Windows are case-insensitive filesystems, so `.ENV` and `.env` are the SAME
   // FILE — a case-sensitive check refuses one spelling and waves the other
   // through, while git records whichever one was typed.
-  const segments = normalised
+  const segments = withoutDrivePrefix
     .split('/')
     .filter((segment) => segment !== '')
     .map((segment) => {
-      // An ADS may name a file or a directory. Strip it before every
-      // credential-segment comparison on Windows, while retaining a drive
-      // prefix (`C:`) and every POSIX colon as literal pathname text.
-      const streamStart = /^[A-Za-z]:/.test(segment) ? 2 : 0;
-      const streamSeparator = process.platform === 'win32' ? segment.indexOf(':', streamStart) : -1;
+      // The leading Windows drive prefix is removed before splitting, so only
+      // a whole-path `C:relative` spelling is unwrapped. An ADS may name a
+      // file or directory; strip it before credential-segment comparisons.
+      const streamSeparator = process.platform === 'win32' ? segment.indexOf(':') : -1;
       return (streamSeparator < 0 ? segment : segment.slice(0, streamSeparator)).toLowerCase();
     });
   if (segments.length === 0) return false;
