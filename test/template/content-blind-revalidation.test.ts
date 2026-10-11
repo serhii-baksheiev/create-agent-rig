@@ -1164,6 +1164,652 @@ describe('GitHub commentary fingerprints require proof beyond the capped list wi
   });
 });
 
+// RP-449 — github-issues `find(id)` (the BEFORE_CLOSE read) carries no
+// cross-indexed `blocks` link at all: `toTicket` hard-codes `blocks: []` and
+// `find` never recomputes it the way `listEligible` does from the whole
+// issue list (github-issues.mjs, `toTicket` and `find`). The SELECT baseline
+// is built from `listEligible`, which DOES cross-index `blocks`. So any item
+// that blocks another item gets a `claim:scope` hold at BEFORE_CLOSE for a
+// link the read-side can never see — not for anything that changed.
+describe('RP-449 — a cross-indexed `blocks` link must not read as drift at BEFORE_CLOSE', () => {
+  const RP449_T2 = '2026-08-28T10:00:00.000Z';
+
+  // The item this describe block takes up and closes. No `Blocked by` line
+  // of its own — it is the BLOCKER, not the dependant — so its own
+  // `blockedBy` stays `[]` on every read, and the only thing that can move
+  // is its cross-indexed `blocks`.
+  const blockerIssue = (over: Record<string, unknown> = {}) => ({
+    number: 10,
+    title: 'the blocker',
+    body: '',
+    state: 'OPEN',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/10',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    // An explicit empty list, not an absent field: `toTicket`'s
+    // `commentary.complete` is `Array.isArray(issue.comments) && …` and an
+    // absent field makes every revalidation UNVERIFIABLE on commentary
+    // completeness alone, before this describe block's own question — the
+    // `blocks` link — is ever reached.
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+
+  // Never selected (it is blocked), never closed — present only so
+  // `listEligible`'s `blocksIndex` has something to cross-reference #10
+  // against.
+  const dependantIssue = (over: Record<string, unknown> = {}) => ({
+    number: 11,
+    title: 'the dependant',
+    body: 'Blocked by #10',
+    state: 'OPEN',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/11',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+
+  const writeIssues = (p: Project, issues: Array<Record<string, unknown>>) =>
+    writeFile(p.configPath, JSON.stringify({ adapter: 'github-issues', options: { issues } }));
+
+  // `queue/index.mjs next` calls `adapter.currentActor()` unconditionally
+  // (RP-255), even against the offline `options.issues` fixture — a fake
+  // login is all it needs.
+  const GH_CURRENT_ACTOR_STUB = `
+    if (args[0] === 'api' && args[1] === 'user') {
+      return { stdout: 'gh-fake-login\\n' };
+    }
+    return { stdout: '{}' };
+  `;
+
+  // The full `claim()` protocol (RP-220/RP-221): a pre-read of
+  // state/labels/updatedAt, a second read of assignees, the `--add-label`
+  // mutation, a post-edit labels read, this run's own login, and the
+  // `labeled` event that read-back looks for. Modelled on "GitHub claim
+  // records the durable transition that makes in-progress CURRENT", above.
+  const ghClaimStub = (snapshot: string) => `
+    if (args[0] === 'issue' && args[1] === 'view') {
+      const jsonIdx = args.indexOf('--json');
+      const fields = String(args[jsonIdx + 1] || '').split(',');
+      const isPreRead = fields.includes('state');
+      const out = {};
+      for (const f of fields) {
+        if (f === 'state') out.state = 'OPEN';
+        if (f === 'labels') out.labels = isPreRead ? [] : [{ name: 'in-progress' }];
+        if (f === 'updatedAt') out.updatedAt = ${JSON.stringify(snapshot)};
+      }
+      return { stdout: JSON.stringify(out) + '\\n' };
+    }
+    if (args[0] === 'issue' && args[1] === 'edit') {
+      return { stdout: '' };
+    }
+    if (args[0] === 'api' && args[1] === 'user') {
+      return { stdout: 'gh-fake-login\\n' };
+    }
+    if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
+      return {
+        stdout: JSON.stringify([
+          {
+            event: 'labeled',
+            label: { name: 'in-progress' },
+            actor: { login: 'gh-fake-login' },
+            created_at: ${JSON.stringify(RP449_T2)},
+          },
+        ]) + '\\n',
+      };
+    }
+    return { stdout: '{}' };
+  `;
+
+  const closeOf = (p: Project) =>
+    run(
+      process.execPath,
+      [
+        revalidateScript,
+        '--point',
+        'BEFORE_CLOSE',
+        '--ticket',
+        '10',
+        '--base',
+        'master',
+        '--config',
+        p.configPath,
+        '--json',
+      ],
+      p.root,
+      p.env,
+    );
+
+  /**
+   * SELECT (via the real `listEligible` cross-index), track the baseline,
+   * then take the item up through the real `claim()` so the committed claim
+   * record carries a `workflowClaim` matching `in-progress` — the ONLY way
+   * `workflowPositionOf` can ever read the same at BEFORE_CLOSE as it did at
+   * SELECT (`claim-records.mjs`). Without this every BEFORE_CLOSE would hold
+   * on the workflow position alone, which would hide the `blocks` defect
+   * this describe block exists to isolate.
+   */
+  const takeUpLinkedBlocker = async (p: Project): Promise<void> => {
+    await writeIssues(p, [blockerIssue(), dependantIssue()]);
+
+    const actorStub = await stubCommand('gh', GH_CURRENT_ACTOR_STUB);
+    const withoutStub = p.env;
+    p.env = { ...p.env, ...actorStub.env };
+    let selection: CommandResult;
+    try {
+      selection = await next(p);
+    } finally {
+      actorStub.restore();
+      p.env = withoutStub;
+    }
+    expect(selection.code, selection.out).toBe(0);
+    const selected = jsonOf(selection);
+    expect(selected.revalidation).toMatchObject({ ticket: '10', result: 'BASELINE_CREATED' });
+    const ticket = selected.ticket as { id: string; updatedAt: string };
+
+    const claimPath = path.join(p.root, '.rig', 'claims', '10.json');
+    expect(existsSync(claimPath)).toBe(true);
+    await git(['add', '.rig/claims/10.json'], p.root);
+    await git(['commit', '-q', '-m', 'track 10 claim baseline'], p.root);
+
+    const claimStub = await stubCommand('gh', ghClaimStub(ticket.updatedAt));
+    try {
+      const github = await import(
+        `${pathToFileURL(path.join(scriptsDir, 'queue', 'github-issues.mjs')).href}?rp449-claim=${Date.now()}`
+      );
+      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
+    } finally {
+      claimStub.restore();
+    }
+    await git(['add', '.rig/claims/10.json'], p.root);
+    await git(['commit', '-q', '-m', 'record GitHub workflow claim for 10'], p.root);
+  };
+
+  it('two linked items, no edit after take-up: BEFORE_CLOSE reads CURRENT, not a hold on an unseen blocks link', async () => {
+    const p = await project();
+    await takeUpLinkedBlocker(p);
+
+    // No edit to either issue — only the label a real take-up would have
+    // added. The SELECT baseline's `blocks` came from `listEligible`'s
+    // cross-index (`['11']`); this BEFORE_CLOSE read goes through
+    // `find('10')`, which now cross-indexes the same two list windows
+    // `listEligible` reads — see "a cross-indexed `blocks` link survives the
+    // live gh path, and a broken one fails closed" below for the live-gh and
+    // list-window-failure cases this offline seam cannot exercise.
+    await writeIssues(p, [blockerIssue({ labels: [{ name: 'in-progress' }] }), dependantIssue()]);
+
+    const close = await closeOf(p);
+
+    expect(close.code, close.out).toBe(0);
+    expect(jsonOf(close)).toMatchObject({
+      ticket: '10',
+      result: 'CURRENT',
+      action: 'continue',
+    });
+  });
+
+  it('a real scope edit between take-up and close still holds on claim:scope', async () => {
+    const p = await project();
+    await takeUpLinkedBlocker(p);
+
+    await writeIssues(p, [
+      blockerIssue({ labels: [{ name: 'in-progress' }], title: 'the blocker, retitled' }),
+      dependantIssue(),
+    ]);
+
+    const close = await closeOf(p);
+
+    expect(close.code, close.out).toBe(2);
+    const result = jsonOf(close);
+    expect(result).toMatchObject({ result: 'CHANGED', action: 'hold' });
+    expect(result.movedFingerprintSet).toContain('scope');
+    expect(result.source).toEqual(expect.arrayContaining(['claim:scope']));
+  });
+
+  it('a real link edit (a new blocker added) between take-up and close still holds on claim:scope', async () => {
+    const p = await project();
+    await takeUpLinkedBlocker(p);
+
+    const newBlockerIssue = {
+      ...blockerIssue({ number: 12, title: 'a newly added blocker' }),
+    };
+    await writeIssues(p, [
+      blockerIssue({ labels: [{ name: 'in-progress' }], body: 'Blocked by #12' }),
+      dependantIssue(),
+      newBlockerIssue,
+    ]);
+
+    const close = await closeOf(p);
+
+    expect(close.code, close.out).toBe(2);
+    const result = jsonOf(close);
+    expect(result).toMatchObject({ result: 'CHANGED', action: 'hold' });
+    expect(result.movedFingerprintSet).toContain('scope');
+    expect(result.source).toEqual(expect.arrayContaining(['claim:scope']));
+  });
+});
+
+// RP-449 round 1 (code-reviewer B1/B2/B3) — the describe block above proves
+// the cross-index through the OFFLINE `options.issues` seam only. `find(id)`
+// reaches the real `gh` binary whenever a project has no `issues` fixture in
+// its config, and that path — `gh issue view` plus the two `gh issue list`
+// windows `listWindows` shares with `listEligible` — had no test at all.
+// B3 is the fix this gap was hiding: `find` swallowed a failed list-window
+// read and answered a single-issue view with `blocks: []`, which is "I could
+// not check" silently repainted as "nothing blocks this" — the exact
+// fail-open shape `invariants.md` singles out.
+describe('a cross-indexed `blocks` link survives the live gh path, and a broken one fails closed', () => {
+  /**
+   * A tiny, STATEFUL `gh` fake: unlike the in-process fakes `jira.mjs`'s
+   * tests use, `github-issues.mjs` shells out via `execFileSync`, so each
+   * call is a fresh child process — there is no in-memory object a later
+   * call could read. State instead lives in one JSON file on disk
+   * (`statePath`), read fresh and (on a mutation) rewritten by every call,
+   * so `issue edit --add-label` done by `claim()` is visible to the very
+   * next `issue view`/`issue list` — the same persistence a real GitHub
+   * repository gives the adapter for free.
+   */
+  const EMPTY_ARRAY_FIELDS = ['labels', 'comments', 'assignees'];
+  const liveGithubFake = (statePath: string, initialIssues: Array<Record<string, unknown>>) => `
+    const fs = require('node:fs');
+    const statePath = ${JSON.stringify(statePath)};
+    let issues;
+    try {
+      issues = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    } catch {
+      issues = ${JSON.stringify(initialIssues)};
+    }
+    const emptyArrayFields = ${JSON.stringify(EMPTY_ARRAY_FIELDS)};
+    const fieldsOf = (idx) => (idx !== -1 ? String(args[idx + 1] || '').split(',') : []);
+    const project = (issue, fields) => {
+      const out = {};
+      for (const f of fields) {
+        out[f] = issue[f] !== undefined ? issue[f] : (emptyArrayFields.includes(f) ? [] : null);
+      }
+      return out;
+    };
+    if (args[0] === 'issue' && args[1] === 'view') {
+      const id = String(args[2]);
+      const issue = issues.find((i) => String(i.number) === id);
+      if (!issue) return { stdout: 'null\\n' };
+      return { stdout: JSON.stringify(project(issue, fieldsOf(args.indexOf('--json')))) + '\\n' };
+    }
+    if (args[0] === 'issue' && args[1] === 'list') {
+      const wantState = String(args[args.indexOf('--state') + 1] || '').toUpperCase();
+      const fields = fieldsOf(args.indexOf('--json'));
+      const matches = issues.filter((i) => String(i.state).toUpperCase() === wantState);
+      return { stdout: JSON.stringify(matches.map((issue) => project(issue, fields))) + '\\n' };
+    }
+    if (args[0] === 'issue' && args[1] === 'edit') {
+      const id = String(args[2]);
+      const issue = issues.find((i) => String(i.number) === id);
+      if (issue) {
+        const addIdx = args.indexOf('--add-label');
+        if (addIdx !== -1) {
+          const label = args[addIdx + 1];
+          issue.labels = [...(issue.labels || []).filter((l) => (l.name || l) !== label), { name: label }];
+        }
+        const removeIdx = args.indexOf('--remove-label');
+        if (removeIdx !== -1) {
+          const label = args[removeIdx + 1];
+          issue.labels = (issue.labels || []).filter((l) => (l.name || l) !== label);
+        }
+        fs.writeFileSync(statePath, JSON.stringify(issues));
+      }
+      return { stdout: '' };
+    }
+    if (args[0] === 'api' && args[1] === 'user') {
+      return { stdout: 'gh-fake-login\\n' };
+    }
+    if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
+      return {
+        stdout: JSON.stringify([
+          {
+            event: 'labeled',
+            label: { name: 'in-progress' },
+            actor: { login: 'gh-fake-login' },
+            created_at: new Date().toISOString(),
+          },
+        ]) + '\\n',
+      };
+    }
+    return { stdout: '{}' };
+  `;
+
+  const loadGithubAdapter = (tag: string) =>
+    import(
+      `${pathToFileURL(path.join(scriptsDir, 'queue', 'github-issues.mjs')).href}?rp449-r1-${tag}=${Date.now()}`
+    );
+
+  // B1 — the blocker (10) carries no `Blocked by` line of its own; the
+  // dependant (11) names it. Both OPEN, so both windows matter.
+  const liveBlockerIssue = (over: Record<string, unknown> = {}) => ({
+    number: 10,
+    title: 'the blocker',
+    body: '',
+    state: 'OPEN',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/10',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+  const liveDependantIssue = (over: Record<string, unknown> = {}) => ({
+    number: 11,
+    title: 'the dependant',
+    body: 'Blocked by #10',
+    state: 'OPEN',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/11',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+
+  it('B1: find(10) through the live gh path cross-indexes `blocks` from the open+closed list windows', async () => {
+    const stateDir = await mkdtemp(path.join(tmpdir(), 'rp449-r1-b1a-'));
+    const statePath = path.join(stateDir, 'issues.json');
+    const stub = await stubCommand(
+      'gh',
+      liveGithubFake(statePath, [liveBlockerIssue(), liveDependantIssue()]),
+    );
+    try {
+      const github = await loadGithubAdapter('b1a');
+      const found = github.find('10');
+      expect(found).toMatchObject({ id: '10', blocks: ['11'] });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('B1: SELECT via listEligible, a real take-up, no edit — BEFORE_CLOSE through the live gh windows reads CURRENT', async () => {
+    const p = await project();
+    await writeFile(p.configPath, JSON.stringify({ adapter: 'github-issues', options: {} }));
+    const stateDir = await mkdtemp(path.join(tmpdir(), 'rp449-r1-b1b-'));
+    const statePath = path.join(stateDir, 'issues.json');
+    const stub = await stubCommand(
+      'gh',
+      liveGithubFake(statePath, [liveBlockerIssue(), liveDependantIssue()]),
+    );
+    const withoutStub = p.env;
+    p.env = { ...p.env, ...stub.env };
+    try {
+      const selection = await next(p);
+      expect(selection.code, selection.out).toBe(0);
+      const selected = jsonOf(selection);
+      expect(selected.revalidation).toMatchObject({ ticket: '10', result: 'BASELINE_CREATED' });
+      const ticket = selected.ticket as { id: string; updatedAt: string };
+
+      const claimPath = path.join(p.root, '.rig', 'claims', '10.json');
+      expect(existsSync(claimPath)).toBe(true);
+      await git(['add', '.rig/claims/10.json'], p.root);
+      await git(['commit', '-q', '-m', 'track 10 claim baseline (live gh)'], p.root);
+
+      const github = await loadGithubAdapter('b1b');
+      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
+      await git(['add', '.rig/claims/10.json'], p.root);
+      await git(['commit', '-q', '-m', 'record GitHub workflow claim for 10 (live gh)'], p.root);
+
+      const close = await run(
+        process.execPath,
+        [
+          revalidateScript,
+          '--point',
+          'BEFORE_CLOSE',
+          '--ticket',
+          '10',
+          '--base',
+          'master',
+          '--config',
+          p.configPath,
+          '--json',
+        ],
+        p.root,
+        p.env,
+      );
+      expect(close.code, close.out).toBe(0);
+      expect(jsonOf(close)).toMatchObject({ ticket: '10', result: 'CURRENT', action: 'continue' });
+    } finally {
+      stub.restore();
+      p.env = withoutStub;
+    }
+  });
+
+  // B2 — the dependant (21) is blocked by a CLOSED issue (20): the unresolved
+  // half of `blockedBy`, which only the CLOSED window can prove.
+  const closedBlockerIssue = (over: Record<string, unknown> = {}) => ({
+    number: 20,
+    title: 'the closed blocker',
+    body: '',
+    state: 'CLOSED',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/20',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+  const dependantOnClosedIssue = (over: Record<string, unknown> = {}) => ({
+    number: 21,
+    title: 'the dependant on a closed blocker',
+    body: 'Blocked by #20',
+    state: 'OPEN',
+    labels: [] as Array<{ name: string }>,
+    url: 'https://example.invalid/issues/21',
+    createdAt: '2026-08-01T00:00:00Z',
+    updatedAt: T1,
+    comments: [] as Array<{ id: string }>,
+    ...over,
+  });
+
+  it('B2: find(21) through the offline seam resolves `blockedBy` against a CLOSED blocker', async () => {
+    const github = await loadGithubAdapter('b2a-seam');
+    const found = github.find('21', { issues: [closedBlockerIssue(), dependantOnClosedIssue()] });
+    expect(found).toMatchObject({ id: '21', blockedBy: [{ id: '20', resolved: true }] });
+  });
+
+  it('B2: find(21) through the live gh path resolves `blockedBy` against a CLOSED blocker in the closed window', async () => {
+    const stateDir = await mkdtemp(path.join(tmpdir(), 'rp449-r1-b2a-live-'));
+    const statePath = path.join(stateDir, 'issues.json');
+    const stub = await stubCommand(
+      'gh',
+      liveGithubFake(statePath, [closedBlockerIssue(), dependantOnClosedIssue()]),
+    );
+    try {
+      const github = await loadGithubAdapter('b2a-live');
+      const found = github.find('21');
+      expect(found).toMatchObject({ id: '21', blockedBy: [{ id: '20', resolved: true }] });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('B2: SELECT via listEligible, a real take-up, no edit — BEFORE_CLOSE for the item blocked by a CLOSED issue reads CURRENT', async () => {
+    const p = await project();
+    await writeFile(p.configPath, JSON.stringify({ adapter: 'github-issues', options: {} }));
+    const stateDir = await mkdtemp(path.join(tmpdir(), 'rp449-r1-b2b-'));
+    const statePath = path.join(stateDir, 'issues.json');
+    const stub = await stubCommand(
+      'gh',
+      liveGithubFake(statePath, [closedBlockerIssue(), dependantOnClosedIssue()]),
+    );
+    const withoutStub = p.env;
+    p.env = { ...p.env, ...stub.env };
+    try {
+      const selection = await next(p);
+      expect(selection.code, selection.out).toBe(0);
+      const selected = jsonOf(selection);
+      expect(selected.revalidation).toMatchObject({ ticket: '21', result: 'BASELINE_CREATED' });
+      const ticket = selected.ticket as { id: string; updatedAt: string };
+
+      const claimPath = path.join(p.root, '.rig', 'claims', '21.json');
+      expect(existsSync(claimPath)).toBe(true);
+      await git(['add', '.rig/claims/21.json'], p.root);
+      await git(['commit', '-q', '-m', 'track 21 claim baseline (live gh)'], p.root);
+
+      const github = await loadGithubAdapter('b2b');
+      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
+      await git(['add', '.rig/claims/21.json'], p.root);
+      await git(['commit', '-q', '-m', 'record GitHub workflow claim for 21 (live gh)'], p.root);
+
+      const close = await run(
+        process.execPath,
+        [
+          revalidateScript,
+          '--point',
+          'BEFORE_CLOSE',
+          '--ticket',
+          '21',
+          '--base',
+          'master',
+          '--config',
+          p.configPath,
+          '--json',
+        ],
+        p.root,
+        p.env,
+      );
+      expect(close.code, close.out).toBe(0);
+      expect(jsonOf(close)).toMatchObject({ ticket: '21', result: 'CURRENT', action: 'continue' });
+    } finally {
+      stub.restore();
+      p.env = withoutStub;
+    }
+  });
+
+  // B3 — the chosen fail-closed fix: when the two list windows cannot be
+  // read, `find` must THROW rather than answer a single-issue view with a
+  // silently empty `blocks: []` — which is the "it was handed something and
+  // could not read it" case `invariants.md` calls the refusal outcome, not
+  // the fail-open one. Today `find` catches that failure internally and
+  // falls back to `toTicket(raw, {})`, which is exactly the silent "could not
+  // check" → "nothing blocks this" repainting this pair of tests refuses.
+  it('B3: find(id) throws rather than silently falling back when the list windows cannot be read', async () => {
+    const stub = await stubCommand(
+      'gh',
+      `
+      if (args[0] === 'issue' && args[1] === 'view') {
+        return { stdout: '{"number":30,"title":"t","body":"","state":"OPEN","labels":[],"comments":[]}\\n' };
+      }
+      if (args[0] === 'issue' && args[1] === 'list') {
+        return { exitCode: 1 };
+      }
+      return { stdout: '{}' };
+      `,
+    );
+    try {
+      const github = await loadGithubAdapter('b3a');
+      expect(() => github.find('30')).toThrow();
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('B3: BEFORE_CLOSE reports UNVERIFIABLE — not CURRENT — when find cannot read the list windows', async () => {
+    const p = await project();
+    await writeFile(p.configPath, JSON.stringify({ adapter: 'github-issues', options: {} }));
+
+    const soloIssue = {
+      number: 40,
+      title: 'solo, no links',
+      body: '',
+      state: 'OPEN',
+      labels: [] as Array<{ name: string }>,
+      url: 'https://example.invalid/issues/40',
+      createdAt: '2026-08-01T00:00:00Z',
+      updatedAt: T1,
+      comments: [] as Array<{ id: string }>,
+    };
+    const stateDir = await mkdtemp(path.join(tmpdir(), 'rp449-r1-b3b-'));
+    const statePath = path.join(stateDir, 'issues.json');
+    const happyStub = await stubCommand('gh', liveGithubFake(statePath, [soloIssue]));
+    const withoutStub = p.env;
+    p.env = { ...p.env, ...happyStub.env };
+    let ticket: { id: string; updatedAt: string };
+    try {
+      const selection = await next(p);
+      expect(selection.code, selection.out).toBe(0);
+      const selected = jsonOf(selection);
+      expect(selected.revalidation).toMatchObject({
+        ticket: '40',
+        result: 'BASELINE_CREATED',
+      });
+      ticket = selected.ticket as { id: string; updatedAt: string };
+      await git(['add', '.rig/claims/40.json'], p.root);
+      await git(['commit', '-q', '-m', 'track 40 claim baseline'], p.root);
+
+      // The real take-up: without it, `workflowPositionOf` would hold on
+      // "expected in-progress, actual open" — a DIFFERENT drift than the one
+      // this test exists to isolate (see the describe block's B1 helper for
+      // why this step is load-bearing rather than optional).
+      const github = await loadGithubAdapter('b3b-claim');
+      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
+      await git(['add', '.rig/claims/40.json'], p.root);
+      await git(['commit', '-q', '-m', 'record GitHub workflow claim for 40'], p.root);
+    } finally {
+      happyStub.restore();
+    }
+
+    // No edit beyond the claim's own label — the issue view below carries
+    // exactly what the real take-up left behind, so only the broken `issue
+    // list` (not an unrelated workflow-position drift) can explain the result.
+    const brokenStub = await stubCommand(
+      'gh',
+      `
+      if (args[0] === 'issue' && args[1] === 'view') {
+        return {
+          stdout:
+            '{"number":40,"title":"solo, no links","body":"","state":"OPEN","labels":[{"name":"in-progress"}],"comments":[],"updatedAt":${JSON.stringify(T1)}}\\n',
+        };
+      }
+      if (args[0] === 'issue' && args[1] === 'list') {
+        return { exitCode: 1 };
+      }
+      return { stdout: '{}' };
+      `,
+    );
+    p.env = { ...p.env, ...brokenStub.env };
+    let close: CommandResult;
+    try {
+      close = await run(
+        process.execPath,
+        [
+          revalidateScript,
+          '--point',
+          'BEFORE_CLOSE',
+          '--ticket',
+          '40',
+          '--base',
+          'master',
+          '--config',
+          p.configPath,
+          '--json',
+        ],
+        p.root,
+        p.env,
+      );
+    } finally {
+      brokenStub.restore();
+      p.env = withoutStub;
+    }
+    expect(close.code, close.out).toBe(2);
+    expect(jsonOf(close)).toMatchObject({
+      ticket: '40',
+      result: 'UNVERIFIABLE',
+      action: 'unverifiable',
+    });
+  });
+});
+
 describe('a missing durable claim blocks every resumed checkpoint', () => {
   it.each(['SELECT', 'BEFORE_PR', 'BEFORE_CLOSE'] as const)(
     '%s returns UNVERIFIABLE instead of progressing',

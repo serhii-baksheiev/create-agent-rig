@@ -1416,10 +1416,7 @@ three poisons the only channel by which this project learns.
   exactly one BEFORE_CLOSE revalidation event after the BEFORE_PR one, and does
   not end the run", › "runs the BEFORE_CLOSE revalidation before the close call
   and reads a hold as a stop" and › "re-reads each dependant's state, and names
-  one the tracker no longer offers". On a `github-issues` queue that list is
-  empty: a single `gh issue view` carries no cross-index, so `find` answers no
-  `blocks` there (`test/template/close-transitioned.test.ts` (absent in a generated rig) › "github asks `gh
-  issue view` with the full field list and maps CLOSED to closed"). A
+  one the tracker no longer offers". A
   comment added to the item after the claim — your own progress notes posted
   through the adapter's `comment()` included — makes this point hold on
   `claim:commentary` (`test/template/content-blind-revalidation.test.ts`
