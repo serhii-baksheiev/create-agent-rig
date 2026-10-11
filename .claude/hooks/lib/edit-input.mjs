@@ -552,7 +552,12 @@ function movedFragment(current, budget) {
       }
 
       const content = buffer.toString('utf8', 0, bytesRead);
-      return applyHunks(content, current.hunks, current, budget);
+      const rebuilt = applyHunks(content, current.hunks, current, budget);
+      if (rebuilt.inspectionRefusal !== undefined) return rebuilt;
+      // RP-484: Codex matches a Move's context fuzzily, so its output need not
+      // be this rebuild; every line it writes is a source line or a patch
+      // context or added line, carried beside the rebuild for a value scan.
+      return { ...rebuilt, possibleContent: `${current.additions.join('\n')}\n${content}` };
     } finally {
       closeSync(handle);
     }
