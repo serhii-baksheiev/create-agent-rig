@@ -34,5 +34,9 @@
   "1.5.1": {
     "integrity": "sha512-pKyFtfGMlmISMER/+aMrs4JHTajTITQddS+PVhLRsxzRDAn5T8Ve2zvd/69X0IE41OrF6XnByBdu10bTutLLIQ==",
     "shasum": "19818c396ffa1c304958641233a94aab79c2aa3c"
+  },
+  "1.5.2": {
+    "integrity": "sha512-2qju+bn12GYHsXuydrzRgzo8T1+Hm/KGFu9zND5SUywCDYh6jXeMjQZQSE6QkvUITE+nrVbZGy/Y1jW1MkLbXw==",
+    "shasum": "30205561b653469961e010a06a9f2bfe8b7ac7b5"
   }
 }

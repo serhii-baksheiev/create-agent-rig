@@ -15,7 +15,108 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.5.2 (release candidate)
+## 1.6.0 (release candidate)
+
+**1.6.0 is additive on the 1.5 line — Composable Evidence & Capabilities.** It
+opens a bounded path for an externally produced verification artifact to
+attach to a queue item as advisory-only Rig evidence, adds the first two real
+producers behind that path, and adds named composition presets that install
+nothing on their own. The delegated extra-gate-round authority is now
+mechanically bounded, and the item-record read bound the 1.5.2 "Known
+limitations" note deferred to this release is now exact.
+
+### Added
+
+- **Advisory evidence for a queue item** (opt-in workflow layer).
+  `evidence-attach.mjs attach` binds an externally produced artifact — a local
+  file or a remote reference — to an item and to HEAD as a provenance-aware
+  descriptor in `.rig/evidence/<ticket>.jsonl`, sharing the `.rig/decisions/`
+  record mechanism (`lib/item-records.mjs`). It never writes a gate verdict
+  and never touches `decisions.jsonl` or gate coverage; `evidence-attach.mjs
+list` reads the record back bounded and refuses a forged line, naming it.
+  [`docs/decisions/artifact-evidence.md`](docs/decisions/artifact-evidence.md)
+  (RP-312).
+- **Playwright MCP** as the first attended, external verification producer
+  behind that path: `setup add/apply/remove playwright-mcp`, pinned through
+  `PLAYWRIGHT_MCP_VERSION`; the path stays npx-launcher only, never vendored
+  (RP-313).
+- **BMAD TEA** as a second, upstream-managed advisory evidence producer,
+  declaration-only — Rig never installs, upgrades or removes it, and writes
+  no MCP/Codex wiring for it (RP-315).
+- **Named composition presets with no runtime state.** `init --preset
+<name>` / `create <dir> --preset <name>` (`minimal`, `sdd`, `composed`),
+  backed by the static `templates/agent-os/profiles.json`. An integration is
+  never installed by a preset — `init` only prints the `setup add` step it
+  still needs; a repository without a preset upgrades byte-identically
+  (RP-314).
+- **`docs/decisions/discipline-providers.md`** states how Probity and
+  Superpowers coexist with the Rig loop: one authoritative loop, Probity's
+  block is the harness's own `permissionDecision` and never a Rig verdict,
+  and Superpowers orchestration stays unsupported inside a loop run
+  (RP-316).
+
+### Changed
+
+- **`maxDelegatedRounds`** in `.claude/queue.json` (default 1) makes the
+  delegated extra-gate-round authority mechanically bounded:
+  `delegated-decision.mjs record --decision extra-gate-round` refuses once
+  the branch already holds that many authorizations, whatever ticket each
+  names, and `gate-round --authorized` counts a round only when a
+  committed authorization covers HEAD and no review verdict exists yet on a
+  covered head (RP-442).
+- **`verdict.mjs coverage <head>`** now walks first parents through
+  record-only `.rig/evidence/` commits before the requested head, so
+  evidence attached and then committed by the loop is read as current at its
+  own PR head instead of stale (RP-437).
+- **Provider versions are recorded, never invented** (RP-443):
+  `evidence-attach.mjs attach --producer playwright-mcp` stamps the pinned
+  `@playwright/mcp` version as `declared` and refuses a stated
+  `--producer-version` that contradicts the pin; the Spec Kit import writes
+  the Spec Kit version into its projections; `run-state.mjs providers`
+  journals Probity's versions. All are read from files already on disk.
+- **`queue/checkout.mjs`** no longer treats an untracked `journal/YYYY-MM.md`
+  left by the previous loop stop as dirt blocking the next `gate-round`
+  (RP-450).
+- **`queue/github-issues.mjs` `find()`** reads the same open/closed link view
+  `listEligible`'s SELECT baseline reads, so an untouched linked item no
+  longer holds at `BEFORE_CLOSE` on an unseen `blocks` link (RP-449).
+- **`spec-kit-import.mjs`** bounds a projected GitHub issue title to 256
+  characters and names `gh`'s own failure reason instead of a bare exit code
+  (RP-441).
+- **`test-writer`** now pins each rule an item states with at least one test
+  that rule alone decides (RP-448).
+- **`docs/decisions/outcome-signals.md`** fixes the six Outcome Evidence
+  comparison signals for the 1.7.0 work ahead of any implementation — data
+  only, nothing computes a signal yet — with a no-person-dimension invariant
+  (RP-356).
+
+### Fixed
+
+- **`lib/item-records.mjs` `readItemRecordFile`** now reads one byte past its
+  documented bound; a file that grew after its `fstat` check is refused whole
+  instead of silently returning a truncated read. This closes the race the
+  1.5.2 "Known limitations" note named as deferred to 1.6.0 (RP-430).
+
+### Known limitations
+
+- The delegated `extra-gate-round` budget is consumed from this checkout's
+  own run journals — per-checkout, not shared across clones or machines
+  (RP-442, stated limit).
+- On Windows, the dispatch transcript reader (`record-dispatch.mjs`
+  `readBoundedLines`) and the item-record append
+  (`lib/item-records.mjs` `appendItemRecordLine`, also used by
+  `evidence-attach.mjs`) confirm file identity by inode only; they do not
+  re-open the path to compare devices as 1.5.0–1.5.2 did. POSIX is
+  unaffected: device and inode are both compared. Restoring the 1.5.x
+  check is tracked for 1.6.1 (RP-494).
+
+### Verification and limits
+
+- A macOS-only timing budget in the eight-writer journal-race fixture was
+  tightened without weakening its assertion; every iteration still runs to
+  completion (RP-438).
+
+## 1.5.2
 
 This is a bounded safety and authority patch on the 1.5 line, cut from the
 published 1.5.1, without adding a new workflow capability.
