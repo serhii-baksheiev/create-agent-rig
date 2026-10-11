@@ -413,7 +413,9 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
         env,
       );
       expect(result.code, result.out).toBe(1);
-      expect(result.out).toMatch(/journal/i);
+      // Only the append path says this: the earlier authority refusal also
+      // mentions the journal, so /journal/ alone cannot tell them apart.
+      expect(result.out).toMatch(/run journal refused it/);
       await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
     } finally {
       await chmod(path.join(runDir, 'events.jsonl'), 0o644);
