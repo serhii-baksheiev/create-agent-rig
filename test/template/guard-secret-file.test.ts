@@ -1849,22 +1849,12 @@ describe('guard-secret-file: a checkout is judged by its repo-relative path', ()
   });
 });
 
-// RP-480. `patchFragments` records a Move's hunk lines into `current.hunks`
-// only once an `@@` line has opened `current.activeHunk` (`edit-input.mjs`,
-// `patchFragments`, the `line.startsWith('@@')` branch). Codex's own streaming
-// parser opens a chunk itself, with no `@@` required: inside an
-// `*** Update File:` section, `codex-rs/apply-patch/src/streaming_parser.rs`
-// (the `UpdateFile` mode) starts a new chunk on a context (' '), addition
-// ('+'), removal ('-') or empty line whenever no chunk is open yet — see
-// /private/tmp/claude-501/-Users-eru-Documents-create-agent-rig/070c347b-6bb4-4594-bf5f-bd2d92c704f1/scratchpad/codex-streaming_parser.rs,
-// lines ~300-345.
-//
-// So a Move whose hunk never spells `@@` still has its `+` line applied by
-// the REAL Codex parser and written to the destination file — while this
-// guard's `current.hunks` stays empty (only `current.activeHunk`'s lines are
-// collected), `movedFragment` → `applyHunks` then has nothing to apply, and
-// the fragment it hands to the credential scanner is the UNCHANGED source
-// content. The credential the real write contains is never inspected.
+// RP-480. Before this fix `patchFragments` collected a Move's hunk lines only
+// after an `@@` line, while Codex's `UpdateFile` mode in
+// `codex-rs/apply-patch/src/streaming_parser.rs` opens a chunk on the first
+// context, added, removed or empty line. A Move with no `@@` therefore wrote
+// its `+` line to the destination while the scanned fragment was the unchanged
+// source.
 describe('guard-secret-file: a Move hunk opens implicitly without `@@`, matching Codex (RP-480)', () => {
   let fixtureRoot = '';
 
@@ -1919,6 +1909,11 @@ describe('guard-secret-file: a Move hunk opens implicitly without `@@`, matching
 
   it('allows a Move addition that carries no credential, with no `@@` header (control)', async () => {
     const result = await runHook(moveCommand(['+export const ordinary = true;']), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('allows a context-only Move with no `@@` header whose context matches the source (control)', async () => {
+    const result = await runHook(moveCommand([' hello']), {}, fixtureRoot);
     expect(result.code, result.stderr).toBe(0);
   });
 
