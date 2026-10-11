@@ -91,12 +91,6 @@ import { homesOf } from './stop-flag.mjs';
 export const FLAG_BASENAME = 'create-agent-rig-loop-UNATTENDED';
 export const MAX_FLAG_BYTES = 64 * 1024;
 export const MAX_ALLOW_ENTRIES = 64;
-// The directory scan `list` does below is bounded the same way every other
-// cap in this file is: a fixed ceiling on untrusted input, never an unbounded
-// walk — see `invariants.md`, "A guard that fails open must do provably
-// bounded work". `list` is not a guard, but it shares the module and the
-// same discipline is cheap to keep.
-export const MAX_LIST_ENTRIES = 256;
 
 // `scopedBasename` splits `FLAG_BASENAME` at this exact substring and inserts
 // the checkout id between the two halves; `list` needs the same split in
@@ -369,9 +363,7 @@ const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g;
  * Strip every C0/C1 control character (and DEL) before untrusted flag text
  * (an `item`, a `root`, a filename) reaches a terminal — same shape used
  * elsewhere in this rig (e.g. `token-report.mjs`), kept local here because
- * this file imports no shared text-sanitizing helper. The input is already
- * bounded by `MAX_FLAG_BYTES`/`readdirSync`'s own OS-level limits by the time
- * it reaches this function, so one linear pass stays bounded work.
+ * this file imports no shared text-sanitizing helper.
  */
 const printable = (text) => text.replace(CONTROL_CHARS, '');
 
@@ -790,12 +782,6 @@ if (invokedDirectly()) {
         lines.push(`${printable(dir)}: cannot be listed (${error?.code ?? 'read failed'})`);
         continue;
       }
-      if (entries.length > MAX_LIST_ENTRIES) {
-        lines.push(
-          `${printable(dir)}: ${entries.length} flags, only the first ${MAX_LIST_ENTRIES} are read`,
-        );
-        entries = entries.slice(0, MAX_LIST_ENTRIES);
-      }
       for (const entry of entries) {
         if (seenBasenames.has(entry)) continue;
         seenBasenames.add(entry);
@@ -825,16 +811,28 @@ if (invokedDirectly()) {
         }
         const item = typeof parsed.item === 'string' ? printable(parsed.item) : printable(entry);
         if (typeof parsed.root !== 'string') {
-          lines.push(`${item}: no recorded root (a flag armed before RP-421) — ${flagPath}`);
+          lines.push(`${item}: no recorded root (armed by an older version) — inspect ${flagPath}`);
           continue;
         }
-        const recordedRoot = printable(parsed.root);
-        if (existingDirectoryRealpath(parsed.root) !== null) {
-          lines.push(`${item}: active — root ${recordedRoot}`);
+        // The root is trusted only when it is the checkout this file's own
+        // name was derived from: anything else in it, and the remedy would
+        // disarm whichever checkout the text names.
+        const { root } = parsed;
+        const id = entry.slice(FLAG_PREFIX.length + 1, -FLAG_SUFFIX.length);
+        if (
+          !isAbsolute(root) ||
+          printable(root) !== root ||
+          createHash('sha256').update(root).digest('hex').slice(0, 16) !== id
+        ) {
+          lines.push(`${item}: root does not match its flag name — inspect ${flagPath}`);
+          continue;
+        }
+        if (existingDirectoryRealpath(root) !== null) {
+          lines.push(`${item}: active — root ${root}`);
         } else {
           lines.push(
-            `${item}: orphaned — recorded root ${recordedRoot} no longer exists. ` +
-              `Remedy: off --root ${recordedRoot}`,
+            `${item}: orphaned — recorded root ${root} no longer exists. ` +
+              `Remedy: node .claude/scripts/unattended-flag.mjs off --root ${JSON.stringify(root)}`,
           );
         }
       }

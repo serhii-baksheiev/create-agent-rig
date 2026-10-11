@@ -266,7 +266,61 @@ describe("unattended-flag.mjs list — read-only inventory of this project's che
     expect(result.stdout).toContain(root);
   });
 
-  it('marks a flag orphaned when its recorded root no longer exists, and names the remedy `off --root <root>`', async () => {
+  it('SECURITY: a flag whose filename id hashes a different path than its recorded `root` is reported as a mismatch, never `active`, and carries no `off --root` remedy', async () => {
+    const rootA = path.join(home, 'mismatch-root-a');
+    const rootB = path.join(home, 'mismatch-root-b');
+    await mkdir(rootB, { recursive: true }); // B exists on disk; A need not
+    const flagPath = await writeScopedFlag(rootB, 'RP-MISMATCH-A', {
+      basenameOverride: scopedFlagName(rootA),
+    });
+    const result = await runCli(['list'], home);
+    expect(result.code, result.stderr).toBe(0);
+    const idx = result.stdout.indexOf('RP-MISMATCH-A');
+    expect(idx, result.stdout).toBeGreaterThan(-1);
+    const window = result.stdout.slice(idx, idx + 400);
+    expect(window).toMatch(/does not match|mismatch/i);
+    expect(window).toContain(flagPath);
+    expect(window).not.toContain('off --root');
+    expect(window).not.toMatch(/\bactive\b/i);
+    expect(window).not.toMatch(/\borphaned\b/i);
+  });
+
+  it('SECURITY: a `root` carrying a control character appended to an otherwise-real directory is reported as a mismatch, never `orphaned`, even though the stripped-for-display root looks like an ordinary leftover', async () => {
+    const cleanDir = path.join(home, 'mismatch-control-dir');
+    await mkdir(cleanDir, { recursive: true });
+    const poisonedRoot = `${cleanDir}\u0007`;
+    const flagPath = await writeScopedFlag(poisonedRoot, 'RP-MISMATCH-B', {
+      basenameOverride: scopedFlagName(cleanDir),
+    });
+    const result = await runCli(['list'], home);
+    expect(result.code, result.stderr).toBe(0);
+    const idx = result.stdout.indexOf('RP-MISMATCH-B');
+    expect(idx, result.stdout).toBeGreaterThan(-1);
+    const window = result.stdout.slice(idx, idx + 400);
+    expect(window).toMatch(/does not match|mismatch/i);
+    expect(window).toContain(flagPath);
+    expect(window).not.toContain('off --root');
+    expect(window).not.toMatch(/\bactive\b/i);
+    expect(window).not.toMatch(/\borphaned\b/i);
+  });
+
+  it('SECURITY: a relative `root` ("."), even when its hash happens to match the filename id, is reported as a mismatch because it is not absolute', async () => {
+    const flagPath = await writeScopedFlag('.', 'RP-MISMATCH-C', {
+      basenameOverride: scopedFlagName('.'),
+    });
+    const result = await runCli(['list'], home);
+    expect(result.code, result.stderr).toBe(0);
+    const idx = result.stdout.indexOf('RP-MISMATCH-C');
+    expect(idx, result.stdout).toBeGreaterThan(-1);
+    const window = result.stdout.slice(idx, idx + 400);
+    expect(window).toMatch(/does not match|mismatch/i);
+    expect(window).toContain(flagPath);
+    expect(window).not.toContain('off --root');
+    expect(window).not.toMatch(/\bactive\b/i);
+    expect(window).not.toMatch(/\borphaned\b/i);
+  });
+
+  it('marks a flag orphaned when its recorded root no longer exists, and names the remedy as a complete, JSON-quoted runnable command', async () => {
     const root = path.join(home, 'gone-checkout');
     await writeScopedFlag(root, 'RP-ORPHAN'); // never created on disk at all
     const result = await runCli(['list'], home);
@@ -275,7 +329,7 @@ describe("unattended-flag.mjs list — read-only inventory of this project's che
     expect(idx, result.stdout).toBeGreaterThan(-1);
     const window = result.stdout.slice(idx, idx + 400);
     expect(window).toMatch(/orphaned/i);
-    expect(window).toContain(`off --root ${root}`);
+    expect(window).toContain(`node .claude/scripts/unattended-flag.mjs off --root "${root}"`);
   });
 
   it('a flag with no recorded `root` field is noted as having none, and is not called orphaned', async () => {
@@ -292,6 +346,41 @@ describe("unattended-flag.mjs list — read-only inventory of this project's che
     );
     expect(window).not.toMatch(/orphaned/i);
   });
+
+  it("a no-root flag's line names its exact flag file path, so an operator can inspect and remove it by path", async () => {
+    const flagPath = await writeScopedFlag(undefined, 'RP-NOROOT-PATH', {
+      basenameOverride: scopedFlagName('no-root-path-marker'),
+    });
+    const result = await runCli(['list'], home);
+    expect(result.code, result.stderr).toBe(0);
+    const idx = result.stdout.indexOf('RP-NOROOT-PATH');
+    expect(idx, result.stdout).toBeGreaterThan(-1);
+    const window = result.stdout.slice(idx, idx + 400);
+    expect(window).toContain(flagPath);
+    // A generated rig's user never sees this repository's ticket keys.
+    expect(result.stdout).not.toContain('RP-421');
+  });
+
+  it.each([
+    ['invalid JSON', 'not valid json {'],
+    ['a JSON array', JSON.stringify(['a', 'b'])],
+    ['a file larger than 64 KiB', Buffer.alloc(65537, 'a')],
+  ])(
+    'an unreadable flag (%s) is reported "cannot be read" by its basename, exits 0, and is left byte-identical',
+    async (_label, content) => {
+      await mkdir(claudeDir(), { recursive: true });
+      const basename = scopedFlagName(`unreadable-${_label}`);
+      const target = path.join(claudeDir(), basename);
+      await writeFile(target, content);
+      const before = await readFile(target);
+      const result = await runCli(['list'], home);
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('cannot be read');
+      expect(result.stdout).toContain(basename);
+      const after = await readFile(target);
+      expect(Buffer.compare(before, after)).toBe(0);
+    },
+  );
 
   it('never deletes or modifies any flag file — every flag is byte-identical before and after', async () => {
     const activeRoot = path.join(home, 'untouched-active');
