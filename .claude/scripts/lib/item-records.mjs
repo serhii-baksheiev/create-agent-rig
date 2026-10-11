@@ -20,7 +20,7 @@ import {
   lstatSync,
   mkdirSync,
   openSync,
-  readFileSync,
+  readSync,
   realpathSync,
   writeSync,
 } from 'node:fs';
@@ -181,6 +181,26 @@ export const appendItemRecordLine = (recordPath, line) => {
   }
 };
 
+const exceedsBound = (maxBytes) =>
+  new Error(`exceeds ${maxBytes} bytes and is refused whole rather than partially read.`);
+
+/**
+ * Read `fd` (positioned at the start) into a buffer one byte larger than
+ * `maxBytes`: a byte past the bound means the file grew after its size was
+ * checked, and it is refused whole, never returned truncated.
+ */
+const readBoundedUtf8 = (fd, maxBytes) => {
+  const buf = Buffer.allocUnsafe(maxBytes + 1);
+  let offset = 0;
+  while (offset <= maxBytes) {
+    const bytesRead = readSync(fd, buf, offset, maxBytes + 1 - offset, null);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset > maxBytes) throw exceedsBound(maxBytes);
+  return buf.toString('utf8', 0, offset);
+};
+
 /**
  * Read the record file at `recordPath`, never following a symlink and never
  * blocking on a non-regular file. `{ exists: false }` for an absent file. The
@@ -188,8 +208,12 @@ export const appendItemRecordLine = (recordPath, line) => {
  * regular file — a FIFO included, so a FIFO with no writer is refused before
  * any `open()` and can never block inside one), the file is then opened
  * `O_NOFOLLOW`, and the open handle is `fstat`-checked again, with the
- * `maxBytes` bound, before any byte is read: a file over the bound is refused
- * whole, never partially read.
+ * `maxBytes` bound, before any byte is read: a file already over the bound
+ * at that check is refused whole, never partially read — and so is one that
+ * grows past it between that check and the read
+ * (`test/template/item-records.test.ts`, absent in a generated rig, › "refuses the whole file, never a
+ * partial read, when it grows past maxBytes between the fstat check and the
+ * read (RP-430)").
  */
 export const readItemRecordFile = (recordPath, options) => {
   // Checked first, file or no file: a bound that is missing or not a
@@ -259,9 +283,9 @@ export const readItemRecordFile = (recordPath, options) => {
       throw new Error('is not a regular file with a single name.');
     }
     if (stat.size > maxBytes) {
-      throw new Error(`exceeds ${maxBytes} bytes and is refused whole rather than partially read.`);
+      throw exceedsBound(maxBytes);
     }
-    return { exists: true, text: readFileSync(fd, 'utf8') };
+    return { exists: true, text: readBoundedUtf8(fd, maxBytes) };
   } finally {
     closeSync(fd);
   }
