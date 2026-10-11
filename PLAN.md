@@ -1,20 +1,20 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 1.5.1. Live work, status, dependencies and acceptance
+> **Current release:** 1.5.2. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Registry reconciliation (11 Oct 2026):** npm contains published `1.5.0`
-> (`gitHead` `d7f4f53c6a91b138e05f31e228ff195a45c9d636`) and `1.5.1`
-> (`gitHead` `57d4dc31351a3f80f1f303153c324144541ecee1`); `latest` is `1.5.1`.
+> **Registry reconciliation (11 Oct 2026):** npm contains published `1.5.1`
+> (`gitHead` `57d4dc31351a3f80f1f303153c324144541ecee1`) and `1.5.2`
+> (`gitHead` `dca34da953276996cf007047ed9de11061fee1b2`); `latest` is `1.5.2`.
 > Downloaded tarball SHA1/SHA512 match npm metadata. Their accepted source
-> candidates remain unchanged at the SHA-addressed replacement ref
-> `release/1.5.0-rc-d7f4f53c6a91b138e05f31e228ff195a45c9d636` and at
-> `release/1.5.1-rc`; the original, superseded `e041e52f` stays at
+> candidates remain unchanged at `release/1.5.1-rc` and at
+> `release/RP-488-152-candidate`; the superseded `e041e52f` stays at
 > `release/1.5.0-rc`.
-> Earlier releases, `1.4.1` and `1.4.0` included, are recorded in the ledger.
-> `1.5.2` is the bounded safety and authority patch being prepared;
-> `1.6.0`, `1.6.1` and `1.7.0` follow on the Jira graph.
+> Earlier releases, `1.5.0` and `1.4.1` included, are recorded in the ledger.
+> `1.6.0` is the Composable Evidence & Capabilities minor being prepared, cut
+> from `master` rather than from a previous release plus cherry-picks;
+> `1.6.1` and `1.7.0` follow on the Jira graph.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
