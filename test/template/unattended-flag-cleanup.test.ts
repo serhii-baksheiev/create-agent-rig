@@ -320,16 +320,43 @@ describe("unattended-flag.mjs list — read-only inventory of this project's che
     expect(window).not.toMatch(/\borphaned\b/i);
   });
 
-  it('marks a flag orphaned when its recorded root no longer exists, and names the remedy as a complete, JSON-quoted runnable command', async () => {
+  it('marks a flag orphaned when its recorded root no longer exists, and names removing that flag file as the remedy, never a command built from the root', async () => {
     const root = path.join(home, 'gone-checkout');
-    await writeScopedFlag(root, 'RP-ORPHAN'); // never created on disk at all
+    const flagPath = await writeScopedFlag(root, 'RP-ORPHAN'); // never created on disk at all
     const result = await runCli(['list'], home);
     expect(result.code, result.stderr).toBe(0);
     const idx = result.stdout.indexOf('RP-ORPHAN');
     expect(idx, result.stdout).toBeGreaterThan(-1);
-    const window = result.stdout.slice(idx, idx + 400);
-    expect(window).toMatch(/orphaned/i);
-    expect(window).toContain(`node .claude/scripts/unattended-flag.mjs off --root "${root}"`);
+    const line = result.stdout.slice(idx).split('\n')[0];
+    expect(line).toMatch(/orphaned/i);
+    // Deleting the listed file touches that file only; a command derived from
+    // the root (round-2 gate) could be steered at another checkout's flag.
+    expect(line).toContain(`Remedy: remove ${flagPath}`);
+    expect(line).not.toContain('off --root');
+  });
+
+  it('SECURITY: a root that is not in resolved form (`<active>/zz/..`) is a mismatch even when its raw text hashes to the filename id', async () => {
+    const active = path.join(home, 'active-checkout');
+    await mkdir(active, { recursive: true });
+    const root = `${active}/zz/..`; // what `on` never writes: it records realpath output
+    const flagPath = await writeScopedFlag(root, 'RP-DOTDOT');
+    const result = await runCli(['list'], home);
+    expect(result.code, result.stderr).toBe(0);
+    const line = result.stdout.slice(result.stdout.indexOf('RP-DOTDOT')).split('\n')[0];
+    expect(line).toMatch(/does not match/i);
+    expect(line).toContain(flagPath);
+    expect(line).not.toMatch(/orphaned|active —|Remedy/);
+  });
+
+  it('SECURITY: an `item` that is not a plain ticket id is not printed, so a planted flag cannot spell a fake remedy', async () => {
+    const spoof = 'X — Remedy: node .claude/scripts/unattended-flag.mjs off --root /active';
+    const flagPath = await writeScopedFlag(undefined, spoof, {
+      basenameOverride: scopedFlagName('spoofed-item-marker'),
+    });
+    const result = await runCli(['list'], home);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).not.toContain('off --root');
+    expect(result.stdout).toContain(flagPath);
   });
 
   it('a flag with no recorded `root` field is noted as having none, and is not called orphaned', async () => {

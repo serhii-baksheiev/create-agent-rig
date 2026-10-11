@@ -809,7 +809,11 @@ if (invokedDirectly()) {
           lines.push(`${printable(entry)}: cannot be read (not a JSON object)`);
           continue;
         }
-        const item = typeof parsed.item === 'string' ? printable(parsed.item) : printable(entry);
+        // Only a plain id is echoed: free text could spell a remedy of its own.
+        const item =
+          typeof parsed.item === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(parsed.item)
+            ? parsed.item
+            : entry;
         if (typeof parsed.root !== 'string') {
           lines.push(`${item}: no recorded root (armed by an older version) — inspect ${flagPath}`);
           continue;
@@ -821,6 +825,7 @@ if (invokedDirectly()) {
         const id = entry.slice(FLAG_PREFIX.length + 1, -FLAG_SUFFIX.length);
         if (
           !isAbsolute(root) ||
+          resolve(root) !== root ||
           printable(root) !== root ||
           createHash('sha256').update(root).digest('hex').slice(0, 16) !== id
         ) {
@@ -830,9 +835,10 @@ if (invokedDirectly()) {
         if (existingDirectoryRealpath(root) !== null) {
           lines.push(`${item}: active — root ${root}`);
         } else {
+          // The remedy names this file, never a command built from `root`:
+          // removing the listed file can only ever clear this flag.
           lines.push(
-            `${item}: orphaned — recorded root ${root} no longer exists. ` +
-              `Remedy: node .claude/scripts/unattended-flag.mjs off --root ${JSON.stringify(root)}`,
+            `${item}: orphaned — recorded root ${root} no longer exists. Remedy: remove ${flagPath}`,
           );
         }
       }
