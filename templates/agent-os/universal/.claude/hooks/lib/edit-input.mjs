@@ -406,16 +406,29 @@ function patchFragments(command, payloadCwd) {
   };
 
   for (const line of command.split(/\r?\n/)) {
+    // RP-479: outside an Update File section Codex's streaming parser matches
+    // markers after Rust `trim()`, so an indented header is still a header;
+    // inside one it trims only the end, and a leading-whitespace line is hunk
+    // context. Only the leading side is stripped here: the trailing side is
+    // left for `repositoryPatchPath`, which owns that boundary rule.
     // The downstream parser treats U+2028 and U+2029 as trailing whitespace,
     // but JavaScript `.` does not match them. Retain every character here so
     // `repositoryPatchPath` can apply that boundary rule before classification.
-    const file = /^\*\*\* (?:Add|Update) File: ([\s\S]+)$/.exec(line);
+    const header = current?.updates ? line : trimRustLeadingWhitespace(line);
+    const file = /^\*\*\* (Add|Update) File: ([\s\S]+)$/.exec(header);
     if (file) {
       if (!flush()) break;
-      current = { sourcePath: file[1], moveTo: null, additions: [], hunks: [], activeHunk: null };
+      current = {
+        sourcePath: file[2],
+        moveTo: null,
+        additions: [],
+        hunks: [],
+        activeHunk: null,
+        updates: file[1] === 'Update',
+      };
       continue;
     }
-    const move = /^\*\*\* Move to: ([\s\S]+)$/.exec(line);
+    const move = /^\*\*\* Move to: ([\s\S]+)$/.exec(header);
     if (move && current !== null) {
       current.moveTo = move[1];
       continue;
@@ -423,14 +436,14 @@ function patchFragments(command, payloadCwd) {
     // RP-214: a Delete File section becomes its own fragment — `removes:
     // true`, resolved through the same path the other verbs use — instead of
     // only flushing whatever section came before it.
-    const del = /^\*\*\* Delete File: ([\s\S]+)$/.exec(line);
+    const del = /^\*\*\* Delete File: ([\s\S]+)$/.exec(header);
     if (del) {
       if (!flush()) break;
       current = { sourcePath: del[1], moveTo: null, additions: [], hunks: [], activeHunk: null, removes: true };
       if (!flush()) break;
       continue;
     }
-    if (/^\*\*\* End Patch/.test(line)) {
+    if (/^\*\*\* End Patch/.test(header)) {
       if (!flush()) break;
       continue;
     }
