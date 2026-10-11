@@ -2507,16 +2507,17 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
     }
   });
 
-  // Walk bypass (RP-442, security-scanner): the record-only CHAIN itself
-  // (`recordOnlyChain`'s own `rev-list`/`diff-tree` reads) is what decides
-  // whether a commit that also changes code may be mistaken for one that
-  // changes only `.rig/decisions/` (pinned above, "a commit that also
-  // changes code on top of the authorized head does not match"). Without
-  // `--no-replace-objects` on those two reads, a `git replace` ref for HEAD's
-  // own SHA can present a DIFFERENT commit object to the walk — one whose
-  // tree is the authorized head's own tree plus only the decisions blob the
-  // real commit carries — while HEAD, `@{u}` and the real index/working tree
-  // stay exactly the real, code-changing commit, unmoved and clean.
+  // diff-tree bypass (RP-442, security-scanner): `recordOnlyChain`'s own
+  // `diff-tree` read is what decides whether a commit that also changes code
+  // may be mistaken for one that changes only `.rig/decisions/` (pinned
+  // above, "a commit that also changes code on top of the authorized head
+  // does not match"). Without `--no-replace-objects` on that read, a `git
+  // replace` ref for HEAD's own SHA can present a DIFFERENT commit object to
+  // the diff — one whose tree is the authorized head's own tree plus only
+  // the decisions blob the real commit carries, same parent — while HEAD,
+  // `@{u}` and the real index/working tree stay exactly the real,
+  // code-changing commit, unmoved and clean. The WALK itself (`rev-list`) is
+  // a separate read with its own bypass, pinned below rather than here.
   it('refuses when the record-only chain is read through a replace ref that hides a real code change in the committed diff', async () => {
     const roots: string[] = [];
     try {
@@ -2558,10 +2559,9 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
       // carries, parent X. Built in a throwaway index; the real working tree
       // and index are untouched by this step.
       const decisionsBlobSha = await git(['rev-parse', `${r}:.rig/decisions/RP-1.jsonl`], dir);
-      const tmpIndex = path.join(
-        await mkdtemp(path.join(tmpdir(), 'delegated-rounds-index-')),
-        'index',
-      );
+      const tmpIndexDir = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-index-'));
+      roots.push(tmpIndexDir);
+      const tmpIndex = path.join(tmpIndexDir, 'index');
       const indexEnv = { ...withoutGitLocation(), GIT_INDEX_FILE: tmpIndex };
       const plumb = async (args: string[]): Promise<string> => {
         const result = await run(
@@ -2630,6 +2630,119 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
     }
   });
 
+  // Walk-skip bypass via `rev-list` (RP-442, security-scanner): each commit
+  // the chain visits already gets an honest `diff-tree` (`--no-replace-objects`
+  // pinned above), but the WALK itself (`recordOnlyChain`'s own `rev-list
+  // --first-parent`) still honours a `git replace` ref. Re-parenting the
+  // record-only tip directly onto the authorized head — same tree, parent
+  // changed only — makes a replace-honouring walk skip the intervening
+  // code-changing commit entirely: the tip's own `diff-tree` still reads
+  // honestly (against its REAL parent, since `diff-tree` already carries
+  // `--no-replace-objects`) and still looks record-only on its own, but the
+  // code-changing commit in between is never visited at all, so its change
+  // is never checked.
+  it('refuses when a replace ref re-parents the record-only tip onto the authorized head, skipping an intervening code-changing commit in the rev-list walk', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      // X: the authorized head — a real, pre-existing commit, named by the
+      // record's own `--head` field; it never itself carries the record.
+      const x = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          x,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+
+      // C: a commit on top of X that changes ONLY a code file — the
+      // decisions file `record` just wrote stays uncommitted and unstaged
+      // through this commit.
+      await writeFile(path.join(dir, 'code.txt'), 'x');
+      await git(['add', 'code.txt'], dir);
+      await git(['commit', '-q', '-m', 'a fix, no authorization yet'], dir);
+
+      // R: a commit on top of C that changes ONLY `.rig/decisions` — the
+      // record-only landing of the authorization `record` wrote above.
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'record-only landing of the authorization'], dir);
+      await git(['push', '-q'], dir);
+      const r = await head(dir);
+
+      // The replacement: R's own tree, unchanged — built through the same
+      // throwaway-index `plumb` technique as the neighbouring test, never
+      // touching the real index or working tree — but re-parented onto X
+      // directly, skipping C. HEAD, `@{u}` and the real index/working tree
+      // stay exactly the real R, unmoved and clean.
+      const tmpIndexDir = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-index-'));
+      roots.push(tmpIndexDir);
+      const tmpIndex = path.join(tmpIndexDir, 'index');
+      const indexEnv = { ...withoutGitLocation(), GIT_INDEX_FILE: tmpIndex };
+      const plumb = async (args: string[]): Promise<string> => {
+        const result = await run(
+          'git',
+          [
+            '-c',
+            'commit.gpgsign=false',
+            '-c',
+            'user.email=t@example.invalid',
+            '-c',
+            'user.name=t',
+            ...args,
+          ],
+          dir,
+          indexEnv,
+        );
+        if (result.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.out}`);
+        return result.stdout.trim();
+      };
+      await plumb(['read-tree', r]);
+      const replacementTree = await plumb(['write-tree']);
+      const replacement = await git(
+        [
+          'commit-tree',
+          replacementTree,
+          '-p',
+          x,
+          '-m',
+          'forged — re-parented onto X, skipping C, never reachable except via replace',
+        ],
+        dir,
+      );
+      await git(['replace', r, replacement], dir);
+
+      const statusAfterReplace = await git(['status', '--porcelain'], dir);
+      expect(statusAfterReplace, statusAfterReplace).toBe('');
+      expect(await git(['rev-parse', 'HEAD'], dir)).toBe(r);
+      expect(await git(['rev-parse', '@{u}'], dir)).toBe(r);
+
+      const result2 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(runDir),
+      );
+      expect(result2.code, result2.out).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
   // Budget undercount via `ls-tree` (RP-442, security-scanner): the "more
   // records than the budget" refusal (pinned above, "refuses --authorized
   // when the branch holds MORE extra-gate-round records than the budget")
@@ -2680,10 +2793,9 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
       // R': the real commit's own tree, minus the RP-2 ticket file alone —
       // same parent, built in a throwaway index that never touches the real
       // working tree or index.
-      const tmpIndex = path.join(
-        await mkdtemp(path.join(tmpdir(), 'delegated-rounds-index-')),
-        'index',
-      );
+      const tmpIndexDir = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-index-'));
+      roots.push(tmpIndexDir);
+      const tmpIndex = path.join(tmpIndexDir, 'index');
       const indexEnv = { ...withoutGitLocation(), GIT_INDEX_FILE: tmpIndex };
       const plumb = async (args: string[]): Promise<string> => {
         const result = await run(
