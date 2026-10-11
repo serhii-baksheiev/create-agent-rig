@@ -13,6 +13,7 @@ import {
   CLOUD_ACCESS_KEY,
   GITHUB_PAT,
   PEM_HEADER,
+  SLACK_BOT_TOKEN,
 } from './secrets-fixtures.js';
 import { runNodeTimed } from '../helpers/child-timing.js';
 import { needsGitRoot, onlyOnWindows, skipUnless } from '../helpers/env.js';
@@ -2163,5 +2164,171 @@ describe('guard-secret-file: a Move fragment covers every line Codex can write (
     await writeFile(path.join(fixtureRoot, 'src', 'a.txt'), 'A\nB\n');
     const result = await runHook(moveCommand(['@@', ' A', '-B', '+C']), {}, fixtureRoot);
     expect(result.code, result.stderr).toBe(0);
+  });
+});
+
+// RP-483. Regression shapes for the RP-479..RP-484 apply_patch fixes. Tests
+// named fail-closed pin known over-refusals rather than credential writes.
+describe('guard-secret-file: Codex apply_patch parity shapes (RP-483)', () => {
+  let fixtureRoot = '';
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp483-parity-root-')));
+    await run('git', ['init', '-q', fixtureRoot]);
+    await mkdir(path.join(fixtureRoot, 'src'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+  });
+
+  const source = (text: string) => writeFile(path.join(fixtureRoot, 'src', 'a.txt'), text);
+  const patch = (lines: string[], newline = '\n') => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: { command: ['*** Begin Patch', ...lines, '*** End Patch'].join(newline) },
+  });
+  const update = (hunk: string[], newline = '\n') =>
+    patch(['*** Update File: src/a.txt', ...hunk], newline);
+  const move = (hunk: string[], newline = '\n') =>
+    patch(['*** Update File: src/a.txt', '*** Move to: src/b.txt', ...hunk], newline);
+  const dashLookalike = (value: string) => value.replaceAll('-', '‐');
+  const keyLine = `token = ${ANTHROPIC_KEY}`;
+
+  describe('a non-move Update writes its context lines', () => {
+    it.each([
+      ['an implicit chunk with no `@@`', [` ${keyLine}`, '+ordinary']],
+      ['a second hunk whose context carries it', ['@@', ' first', '+x', '@@', ` ${keyLine}`]],
+      ['a PEM header context line', ['@@', ` ${PEM_HEADER}`]],
+      ['a Slack token context line', ['@@', ` slack = ${SLACK_BOT_TOKEN}`]],
+    ])('refuses %s', async (_label, hunk) => {
+      await source(
+        `first\n${dashLookalike(keyLine)}\n${dashLookalike(PEM_HEADER)}\nslack = ${dashLookalike(SLACK_BOT_TOKEN)}\n`,
+      );
+      const result = await runHook(update(hunk), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('refuses a context line before `*** End of File` that matches the last line', async () => {
+      await source(`first\n${dashLookalike(keyLine)}\n`);
+      const result = await runHook(
+        update(['@@', ` ${keyLine}`, '*** End of File']),
+        {},
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('refuses a CRLF patch whose context carries it', async () => {
+      await source(`${dashLookalike(keyLine)}\r\n`);
+      const result = await runHook(update(['@@', ` ${keyLine}`, '+x'], '\r\n'), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('allows a credential that only the `@@` change-context header names, which Codex does not write', async () => {
+      await source(`${dashLookalike(keyLine)}\nafter\n`);
+      const result = await runHook(update([`@@ ${keyLine}`, ' after', '+x']), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(0);
+    });
+
+    it('refuses a context line that repeats a credential already in the file (fail-closed: the credential is already there)', async () => {
+      await source(`${keyLine}\nafter\n`);
+      const result = await runHook(update(['@@', ` ${keyLine}`, ' after', '+x']), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(2);
+    });
+  });
+
+  describe('a Move writes every source and patch line Codex can match', () => {
+    it.each([
+      ['a CRLF patch', `${PEM_HEADER}\r\nA\r\n${dashLookalike(PEM_HEADER)}\r\n`, '\r\n'],
+      [
+        'an LF patch whose lookalike uses Unicode dashes',
+        `${PEM_HEADER}\nA\n${dashLookalike(PEM_HEADER)}\n`,
+        '\n',
+      ],
+    ])('refuses a lookalike removal in %s', async (_label, text, newline) => {
+      await source(text);
+      const result = await runHook(
+        move(['@@', ' A', '+b', '@@', `-${PEM_HEADER}`], newline),
+        {},
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('refuses a credential added before `*** End of File`', async () => {
+      await source('first\nlast\n');
+      const result = await runHook(
+        move(['@@', ' last', `+${keyLine}`, '*** End of File']),
+        {},
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('refuses a credential in the third hunk of a multi-hunk Move', async () => {
+      await source('one\ntwo\nthree\n');
+      const result = await runHook(
+        move(['@@', ' one', '+a', '@@', ' two', '+b', '@@', ' three', `+${keyLine}`]),
+        {},
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('refuses a credential inserted by a hunk whose trailing-empty retry empties its context', async () => {
+      await source('first\nsecond');
+      const result = await runHook(move(['@@', `+${keyLine}`, '']), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('refuses a Move that removes the source credential (fail-closed: Codex writes none)', async () => {
+      await source(`${keyLine}\nB\n`);
+      const result = await runHook(move(['@@', `-${keyLine}`, ' B']), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('reports a source credential at its source line number', async () => {
+      await source(`${keyLine}\nB\n`);
+      const result = await runHook(move(['@@', `-${keyLine}`, ' B']), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain('on line 1 of');
+    });
+
+    it('refuses a credential in the context of a Move whose source is missing (fail-closed: Codex applies nothing)', async () => {
+      const result = await runHook(move(['@@', ` ${keyLine}`]), {}, fixtureRoot);
+      expect(result.code, result.stderr).toBe(2);
+    });
+
+    it('refuses a credential at the very end of a maximum-size Move: a 1 MiB source plus a 1 MiB patch', async () => {
+      // The context names the source's unique last line, so both the rebuild
+      // and the scanned superset carry the credential at their very end.
+      const last = 'z'.repeat(1023);
+      await source(`${`${'x'.repeat(1023)}\n`.repeat(1023)}${last}\n`);
+      const head = [
+        '*** Begin Patch',
+        '*** Update File: src/a.txt',
+        '*** Move to: src/b.txt',
+        '@@',
+        ` ${last}`,
+      ];
+      const tail = [`+${keyLine}`, '*** End Patch'];
+      const added = `+${'y'.repeat(999)}`;
+      const fixed = [...head, ...tail].join('\n').length + 1;
+      const addedLines = Array<string>(Math.floor((1024 * 1024 - fixed) / (added.length + 1))).fill(
+        added,
+      );
+      const command = [...head, ...addedLines, ...tail].join('\n');
+      expect(command.length).toBeLessThanOrEqual(1024 * 1024);
+      expect(command.length).toBeGreaterThan(1024 * 1024 - 1024);
+      const result = await runHook(
+        { hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { command } },
+        {},
+        fixtureRoot,
+      );
+      expect(result.code, result.stderr).toBe(2);
+      expect(result.stderr).toContain('anthropic-key');
+      expect(result.stderr).not.toContain('cannot safely inspect');
+    });
   });
 });

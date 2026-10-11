@@ -163,6 +163,10 @@ function main() {
     }
 
     let findings = findSecretValues(fragment);
+    // A Move's possibleContent over-approximates what Codex writes, so it also
+    // refuses a Move whose patch removes the source's credential — see
+    // guard-secret-file.test.ts (absent in a generated rig) › "refuses a Move
+    // that removes the source credential (fail-closed: Codex writes none)".
     if (findings.length === 0 && typeof possibleContent === 'string') {
       findings = findSecretValues(possibleContent);
     }
