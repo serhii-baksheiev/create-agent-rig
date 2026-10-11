@@ -464,7 +464,11 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
     expect(t002.labels).toContain('rig-spec-kit');
     expect(t002.labels).not.toContain('triage');
     expect(t002.labels).not.toContain('operator-queue');
-    expect(t002.paragraphs).toEqual(['rig-spec-kit-task:001-export:T002', 'Generate exports']);
+    expect(t002.paragraphs).toEqual([
+      'rig-spec-kit-task:001-export:T002',
+      '<!-- rig-spec-kit-version:unknown (unknown) -->',
+      'Generate exports',
+    ]);
     // Link direction (create path): the GET representation `jira.mjs`'s own
     // `toTicket` reads carries the dependent's blocker as an `inwardIssue`
     // (`fieldsOf` above only ever emits `inwardIssue` for a `blockedBy`
@@ -680,11 +684,16 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
     // because the link lives IN the body it compares — Jira's own report
     // must name the same drift as `update`, not `unchanged`, even though the
     // link lives outside the summary/description it compares today.
+    const versionLine = '<!-- rig-spec-kit-version:unknown (unknown) -->';
     const existingOf = (): FakeIssue[] => [
       {
         key: 'RP-1',
         summary: 'Create the export configuration',
-        paragraphs: ['rig-spec-kit-task:001-export:T001', 'Create the export configuration'],
+        paragraphs: [
+          'rig-spec-kit-task:001-export:T001',
+          versionLine,
+          'Create the export configuration',
+        ],
         labels: ['rig-spec-kit'],
         statusCategory: 'new',
         links: [],
@@ -692,7 +701,7 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
       {
         key: 'RP-2',
         summary: 'Generate exports',
-        paragraphs: ['rig-spec-kit-task:001-export:T002', 'Generate exports'],
+        paragraphs: ['rig-spec-kit-task:001-export:T002', versionLine, 'Generate exports'],
         labels: ['rig-spec-kit'],
         statusCategory: 'new',
         links: [],
@@ -700,7 +709,7 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
       {
         key: 'RP-3',
         summary: 'Document why T002 exists',
-        paragraphs: ['rig-spec-kit-task:001-export:T003', 'Document why T002 exists'],
+        paragraphs: ['rig-spec-kit-task:001-export:T003', versionLine, 'Document why T002 exists'],
         labels: ['rig-spec-kit'],
         statusCategory: 'new',
         links: [],
@@ -1103,6 +1112,109 @@ describe('queue import spec-kit --to jira (RP-279)', () => {
         ),
         'T002 must never be created from a blocker key this import never validated',
       ).toBe(false);
+    });
+  });
+});
+
+// RP-443 — the Jira target carries the identical Spec Kit version marker the
+// GitHub target does (`spec-kit-import.test.ts` › "Spec Kit version marker"),
+// projected as the description's SECOND paragraph — immediately after the
+// task marker, ahead of the task title:
+//
+//   [0] rig-spec-kit-task:<identity>
+//   [1] <!-- rig-spec-kit-version:<version> (<source>) -->
+//   [2] <task title>
+//
+// `lib/provider-provenance.mjs`'s `specKitVersion` is not yet implemented —
+// `provider-provenance.test.ts` pins its own shape.
+describe('queue import spec-kit --to jira — Spec Kit version marker (RP-443)', () => {
+  let previousEnv: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    previousEnv = Object.fromEntries(
+      Object.keys(CREDENTIALS).map((key) => [key, process.env[key]]),
+    );
+    Object.assign(process.env, CREDENTIALS);
+  });
+
+  afterEach(async () => {
+    for (const [key, value] of Object.entries(previousEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    await Promise.all([...temporaryPaths].map((temporaryPath) => removeFixture(temporaryPath)));
+    temporaryPaths.clear();
+  });
+
+  const ONE_TASK = ['# Tasks: Export', '', '- [ ] T001 Create the export configuration', ''].join(
+    '\n',
+  );
+
+  const writeSpecKitInstalled = async (dir: string, version: string): Promise<void> => {
+    await mkdir(path.join(dir, '.specify'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.specify', 'init-options.json'),
+      `${JSON.stringify({ speckit_version: version })}\n`,
+    );
+  };
+
+  it('creates an issue whose description carries the version marker as its second paragraph, right after the task marker', async () => {
+    const { dir } = await scratchProject(ONE_TASK);
+    await writeSpecKitInstalled(dir, '1.0.8');
+    const jira = createFakeJira();
+    const { importSpecKit } = await loadImporter();
+
+    await withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' }));
+
+    const key = keyFor(jira, '001-export:T001');
+    const paragraphs = jira.issues.get(key)!.paragraphs;
+    expect(paragraphs[0]).toBe('rig-spec-kit-task:001-export:T001');
+    expect(paragraphs[1]).toBe('<!-- rig-spec-kit-version:1.0.8 (installed) -->');
+    expect(paragraphs[2]).toBe('Create the export configuration');
+  });
+
+  it('reads the version marker as unknown (unknown) when nothing in the project names a Spec Kit version', async () => {
+    const { dir } = await scratchProject(ONE_TASK);
+    const jira = createFakeJira();
+    const { importSpecKit } = await loadImporter();
+
+    await withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' }));
+
+    const key = keyFor(jira, '001-export:T001');
+    expect(jira.issues.get(key)!.paragraphs[1]).toBe(
+      '<!-- rig-spec-kit-version:unknown (unknown) -->',
+    );
+  });
+
+  it('an existing projection whose description predates the version marker is reported update exactly once, then unchanged', async () => {
+    const { dir } = await scratchProject(ONE_TASK);
+    await writeSpecKitInstalled(dir, '1.0.8');
+    const existing: FakeIssue[] = [
+      {
+        key: 'RP-1',
+        summary: 'Create the export configuration',
+        paragraphs: ['rig-spec-kit-task:001-export:T001', 'Create the export configuration'],
+        labels: ['rig-spec-kit'],
+        statusCategory: 'new',
+        links: [],
+      },
+    ];
+    const jira = createFakeJira({ issues: existing });
+    const { importSpecKit } = await loadImporter();
+
+    const first = await withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' }));
+    expect(first).toMatchObject({
+      counts: { create: 0, update: 1, unchanged: 0 },
+      changes: [{ identity: '001-export:T001', action: 'update' }],
+    });
+    expect(jira.issues.get('RP-1')!.paragraphs[1]).toBe(
+      '<!-- rig-spec-kit-version:1.0.8 (installed) -->',
+    );
+
+    const second = await withFetch(jira, () => importSpecKit({ projectRoot: dir, target: 'jira' }));
+    expect(second).toMatchObject({
+      counts: { create: 0, update: 0, unchanged: 1 },
+      changes: [],
     });
   });
 });

@@ -156,6 +156,15 @@ describe('the loop SKILL’s browser-evidence attach command actually runs (RP-3
     const url = 'https://app.example.invalid/login';
     await journalSelect(runDir, ticket);
 
+    // A rig that captures browser evidence has Playwright MCP wired; since
+    // RP-443 the attach stamps that pinned version, so the fixture carries it.
+    await writeFile(
+      path.join(dir, '.mcp.json'),
+      JSON.stringify({
+        mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp@0.0.83'] } },
+      }),
+    );
+
     const screenshotRel = 'screenshot.png';
     const screenshotAbs = path.join(dir, screenshotRel);
     const screenshotBytes = Buffer.from('fixture-png-bytes-not-a-real-image');

@@ -84,6 +84,7 @@
     ".claude/scripts/continuation.mjs",
     ".claude/scripts/delegated-decision.mjs",
     ".claude/scripts/evidence-attach.mjs",
+    ".claude/scripts/lib/provider-provenance.mjs",
     ".claude/scripts/preflight.mjs",
     ".claude/scripts/run-state.mjs",
     ".claude/scripts/revalidate.mjs",
