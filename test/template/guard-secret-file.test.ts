@@ -1991,3 +1991,67 @@ describe('guard-secret-file: a non-move Update scans its context lines too (RP-4
     expect(result.code, result.stderr).toBe(0);
   });
 });
+
+// RP-482. Codex's `UpdateFile` mode in
+// `codex-rs/apply-patch/src/streaming_parser.rs` records an empty line inside a
+// chunk as an empty context line. `patchFragments` dropped it, so a Move whose
+// context spans a blank source line was refused as not matching.
+describe('guard-secret-file: an empty hunk line is empty context, matching Codex (RP-482)', () => {
+  let fixtureRoot = '';
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp482-move-root-')));
+    await run('git', ['init', '-q', fixtureRoot]);
+    await mkdir(path.join(fixtureRoot, 'src'), { recursive: true });
+    await writeFile(path.join(fixtureRoot, 'src', 'a.txt'), 'first\n\nsecond\n');
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+  });
+
+  const moveCommand = (hunkLines: string[]) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: [
+        '*** Begin Patch',
+        '*** Update File: src/a.txt',
+        '*** Move to: src/b.txt',
+        ...hunkLines,
+        '*** End Patch',
+      ].join('\n'),
+    },
+  });
+
+  it('allows a Move whose context spans a blank source line, with and without `@@`', async () => {
+    const withHeader = await runHook(
+      moveCommand(['@@', ' first', '', ' second', '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
+    expect(withHeader.code, withHeader.stderr).toBe(0);
+
+    const withoutHeader = await runHook(
+      moveCommand([' first', '', ' second', '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
+    expect(withoutHeader.code, withoutHeader.stderr).toBe(0);
+  });
+
+  it('still refuses a credential added after a blank context line', async () => {
+    const result = await runHook(
+      moveCommand([' first', '', ' second', `+aws_access_key_id = ${CLOUD_ACCESS_KEY}`]),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('cloud-access-key');
+  });
+
+  it('refuses a Move whose blank context line meets a non-blank source line (control)', async () => {
+    const result = await runHook(moveCommand([' first', '', ' third']), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(2);
+  });
+});

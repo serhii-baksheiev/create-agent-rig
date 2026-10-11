@@ -460,8 +460,8 @@ function patchFragments(command, payloadCwd) {
       current.activeHunk = { lines: [] };
       current.hunks.push(current.activeHunk);
     }
-    if (current?.activeHunk && /^[-+ ]/.test(line)) {
-      current.activeHunk.lines.push({ operation: line[0], text: line.slice(1) });
+    if (current?.activeHunk && /^(?:[-+ ]|$)/.test(line)) {
+      current.activeHunk.lines.push({ operation: line[0] ?? ' ', text: line.slice(1) });
     }
   }
   if (patchRefusal !== null) return [patchRefusal];
