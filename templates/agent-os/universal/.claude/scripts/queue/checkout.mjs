@@ -91,8 +91,8 @@ export const mainCheckoutRoot = (startDir) => {
 };
 
 /**
- * The previous stop's own journal entry, left untracked on purpose (loop skill
- * §7), is the one dirt that does not refuse — `gate-rounds.test.ts` (absent in
+ * An untracked journal entry (`journal/YYYY-MM.md`) is the one dirt that does
+ * not refuse — `gate-rounds.test.ts` (absent in
  * a generated rig) › "passes gate-round on an untracked journal/YYYY-MM.md, and
  * counts the round" (RP-450).
  */
