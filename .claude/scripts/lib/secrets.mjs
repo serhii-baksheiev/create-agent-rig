@@ -207,7 +207,14 @@ export const isCredentialPath = (relativePath) => {
   const segments = normalised
     .split('/')
     .filter((segment) => segment !== '')
-    .map((segment) => segment.toLowerCase());
+    .map((segment) => {
+      // An ADS may name a file or a directory. Strip it before every
+      // credential-segment comparison on Windows, while retaining a drive
+      // prefix (`C:`) and every POSIX colon as literal pathname text.
+      const streamStart = /^[A-Za-z]:/.test(segment) ? 2 : 0;
+      const streamSeparator = process.platform === 'win32' ? segment.indexOf(':', streamStart) : -1;
+      return (streamSeparator < 0 ? segment : segment.slice(0, streamSeparator)).toLowerCase();
+    });
   if (segments.length === 0) return false;
 
   const basename = segments[segments.length - 1];

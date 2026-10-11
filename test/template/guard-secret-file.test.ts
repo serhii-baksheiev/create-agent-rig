@@ -515,6 +515,279 @@ describe('guard-secret-file: a credential-named path is refused whatever is in i
   });
 });
 
+// RP-496. `name:stream` is a named NTFS alternate data stream, not part of
+// the base filename. Direct Write/Edit cases establish that the current
+// fixture volume supports a harmless named stream before judging their paths.
+const readNamedStreamOrSkip = async (
+  ctx: Parameters<typeof skipUnless>[0],
+  filePath: string,
+  description: string,
+): Promise<string | undefined> => {
+  try {
+    return await readFile(filePath, 'utf8');
+  } catch (error) {
+    const code = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+    if (!['ENOENT', 'EINVAL', 'ENOTSUP', 'EOPNOTSUPP'].includes(code ?? '')) throw error;
+    ctx.skip(`the Windows fixture filesystem does not support ${description} (${code})`);
+    return undefined;
+  }
+};
+
+const namedNtfsStreamFixture = async (
+  ctx: Parameters<typeof skipUnless>[0],
+): Promise<string | undefined> => {
+  skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+
+  const fixture = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp496-ads-root-')));
+  try {
+    await run('git', ['init', '-q', fixture]);
+    const base = path.join(fixture, 'safe.txt');
+    const stream = `${base}:acceptance`;
+    await writeFile(base, 'base control\n');
+    await writeFile(stream, 'named-stream control\n');
+    const streamText = await readNamedStreamOrSkip(ctx, stream, 'a readable named NTFS stream');
+    if (streamText === undefined) {
+      await removeFixture(fixture);
+      return undefined;
+    }
+    expect(await readFile(base, 'utf8')).toBe('base control\n');
+    expect(streamText).toBe('named-stream control\n');
+    return fixture;
+  } catch (error) {
+    await removeFixture(fixture);
+    throw error;
+  }
+};
+
+describe('guard-secret-file: direct Windows named-stream paths keep credential policy (RP-496)', () => {
+  it('refuses a Write to the relative named stream of a credential file', async (ctx) => {
+    const fixture = await namedNtfsStreamFixture(ctx);
+    if (!fixture) return;
+    try {
+      const result = await runHook(
+        write('.env:acceptance', 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('refuses a Write to the absolute named stream of a credential file', async (ctx) => {
+    const fixture = await namedNtfsStreamFixture(ctx);
+    if (!fixture) return;
+    try {
+      const result = await runHook(
+        write(path.join(fixture, '.env:acceptance'), 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('refuses an Edit to the relative named stream of a credential file', async (ctx) => {
+    const fixture = await namedNtfsStreamFixture(ctx);
+    if (!fixture) return;
+    try {
+      const result = await runHook(
+        edit('.env:acceptance', 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('refuses an Edit to the absolute named stream of a credential file', async (ctx) => {
+    const fixture = await namedNtfsStreamFixture(ctx);
+    if (!fixture) return;
+    try {
+      const result = await runHook(
+        edit(path.join(fixture, '.env:acceptance'), 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('allows a Write to an ordinary named stream (positive control)', async (ctx) => {
+    const fixture = await namedNtfsStreamFixture(ctx);
+    if (!fixture) return;
+    try {
+      const result = await runHook(
+        write('safe.txt:acceptance', 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+});
+
+describe('guard-secret-file: direct Windows named directory streams keep credential policy (RP-496)', () => {
+  it('refuses a Write through the default named stream of a secrets directory', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fixture = realpathSync.native(
+      await mkdtemp(path.join(tmpdir(), 'rp496-directory-ads-root-')),
+    );
+    try {
+      const directoryAlias = `secrets::${'$'}INDEX_ALLOCATION`;
+      const marker = 'safe directory marker\n';
+      await run('git', ['init', '-q', fixture]);
+      await mkdir(path.join(fixture, 'secrets'));
+      await writeFile(path.join(fixture, 'secrets', 'config'), marker);
+      const markerRead = await readNamedStreamOrSkip(
+        ctx,
+        path.join(fixture, directoryAlias, 'config'),
+        'the readable default directory stream',
+      );
+      if (markerRead === undefined) return;
+      expect(markerRead).toBe(marker);
+
+      const result = await runHook(
+        write(`${directoryAlias}/config`, 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('refuses an Edit through the explicit named stream of a secrets directory', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fixture = realpathSync.native(
+      await mkdtemp(path.join(tmpdir(), 'rp496-directory-ads-root-')),
+    );
+    try {
+      const directoryAlias = `secrets:${'$'}I30:${'$'}INDEX_ALLOCATION`;
+      const marker = 'safe directory marker\n';
+      await run('git', ['init', '-q', fixture]);
+      await mkdir(path.join(fixture, 'secrets'));
+      await writeFile(path.join(fixture, 'secrets', 'config'), marker);
+      const markerRead = await readNamedStreamOrSkip(
+        ctx,
+        path.join(fixture, directoryAlias, 'config'),
+        'the readable explicit directory stream',
+      );
+      if (markerRead === undefined) return;
+      expect(markerRead).toBe(marker);
+
+      const result = await runHook(
+        edit(`${directoryAlias}/config`, 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('refuses a Write through the default named stream of a credentials directory', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fixture = realpathSync.native(
+      await mkdtemp(path.join(tmpdir(), 'rp496-directory-ads-root-')),
+    );
+    try {
+      const directoryAlias = `credentials::${'$'}INDEX_ALLOCATION`;
+      const marker = 'safe directory marker\n';
+      await run('git', ['init', '-q', fixture]);
+      await mkdir(path.join(fixture, 'credentials'));
+      await writeFile(path.join(fixture, 'credentials', 'config'), marker);
+      const markerRead = await readNamedStreamOrSkip(
+        ctx,
+        path.join(fixture, directoryAlias, 'config'),
+        'the readable default directory stream',
+      );
+      if (markerRead === undefined) return;
+      expect(markerRead).toBe(marker);
+
+      const result = await runHook(
+        write(`${directoryAlias}/config`, 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('refuses an Edit through the explicit named stream of a credentials directory', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fixture = realpathSync.native(
+      await mkdtemp(path.join(tmpdir(), 'rp496-directory-ads-root-')),
+    );
+    try {
+      const directoryAlias = `credentials:${'$'}I30:${'$'}INDEX_ALLOCATION`;
+      const marker = 'safe directory marker\n';
+      await run('git', ['init', '-q', fixture]);
+      await mkdir(path.join(fixture, 'credentials'));
+      await writeFile(path.join(fixture, 'credentials', 'config'), marker);
+      const markerRead = await readNamedStreamOrSkip(
+        ctx,
+        path.join(fixture, directoryAlias, 'config'),
+        'the readable explicit directory stream',
+      );
+      if (markerRead === undefined) return;
+      expect(markerRead).toBe(marker);
+
+      const result = await runHook(
+        edit(`${directoryAlias}/config`, 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(2);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+
+  it('allows a Write through the default named stream of an ordinary directory', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const fixture = realpathSync.native(
+      await mkdtemp(path.join(tmpdir(), 'rp496-directory-ads-root-')),
+    );
+    try {
+      const directoryAlias = `ordinary::${'$'}INDEX_ALLOCATION`;
+      const marker = 'safe directory marker\n';
+      await run('git', ['init', '-q', fixture]);
+      await mkdir(path.join(fixture, 'ordinary'));
+      await writeFile(path.join(fixture, 'ordinary', 'config'), marker);
+      const markerRead = await readNamedStreamOrSkip(
+        ctx,
+        path.join(fixture, directoryAlias, 'config'),
+        'the readable default directory stream',
+      );
+      if (markerRead === undefined) return;
+      expect(markerRead).toBe(marker);
+
+      const result = await runHook(
+        write(`${directoryAlias}/config`, 'safe\n'),
+        { CLAUDE_PROJECT_DIR: fixture },
+        fixture,
+      );
+      expect(result.code, result.stderr).toBe(0);
+    } finally {
+      await removeFixture(fixture);
+    }
+  });
+});
+
 describe('guard-secret-file: a credential value is refused wherever it is being written', () => {
   it.each([
     ['notes.md', CLOUD_ACCESS_KEY],
