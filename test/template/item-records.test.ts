@@ -651,4 +651,77 @@ describe('item-records.mjs — readItemRecordFile', () => {
     },
     ITEM_RECORD_FIFO_CHILD_TIMEOUT_MS + 5_000,
   );
+
+  it('refuses the whole file, never a partial read, when it grows past maxBytes between the fstat check and the read (RP-430)', async () => {
+    const dir = await newProjectDir();
+    const { ensureItemRecordDir } = await loadModule();
+    const recordsDir = ensureItemRecordDir(dir, 'decisions');
+    const filePath = path.join(recordsDir, 'RP-1.jsonl');
+    const trace = path.join(dir, '.grow-trace');
+    const preload = path.join(dir, 'grow-after-fstat-before-read.mjs');
+    const runner = path.join(dir, 'read-record.mjs');
+    const maxBytes = 16;
+    const withinBound = 'x'.repeat(maxBytes);
+    const grownBy = 'y'.repeat(50);
+    await writeFile(filePath, withinBound);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalOpenSync = fs.openSync;',
+        'const originalFstatSync = fs.fstatSync;',
+        'const target = process.env.RP430_GROW_TARGET;',
+        'const grownBy = process.env.RP430_GROW_BY;',
+        'const trace = process.env.RP430_GROW_TRACE;',
+        'let targetFd;',
+        'let grown = false;',
+        'fs.openSync = (...args) => {',
+        '  const fd = originalOpenSync(...args);',
+        '  if (args[0] === target) targetFd = fd;',
+        '  return fd;',
+        '};',
+        'fs.fstatSync = (fd, ...rest) => {',
+        '  const stat = originalFstatSync(fd, ...rest);',
+        '  if (fd === targetFd && !grown) {',
+        '    grown = true;',
+        '    appendFileSync(target, grownBy);',
+        "    appendFileSync(trace, 'grown-after-fstat-before-read\\n');",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    await writeFile(
+      runner,
+      [
+        `import { readItemRecordFile } from ${JSON.stringify(pathToFileURL(modulePath).href)};`,
+        'let result;',
+        'try {',
+        `  result = readItemRecordFile(process.env.RP430_GROW_TARGET, { maxBytes: ${maxBytes} });`,
+        '} catch (error) {',
+        '  result = { refused: error.message };',
+        '}',
+        'process.stdout.write(JSON.stringify(result));',
+      ].join('\n'),
+    );
+
+    const result = await runFifoChild(['--import', pathToFileURL(preload).href, runner], dir, {
+      ...process.env,
+      RP430_GROW_TARGET: filePath,
+      RP430_GROW_BY: grownBy,
+      RP430_GROW_TRACE: trace,
+    });
+
+    expect(await readFile(trace, 'utf8')).toBe('grown-after-fstat-before-read\n');
+    expect(result.killed, result.out).toBe(false);
+    expect(result.code, result.out).toBe(0);
+    // A truncated read would silently drop records; the bound refuses whole,
+    // with the same message the fstat check gives.
+    const parsed = JSON.parse(result.out) as { refused?: string; text?: string };
+    expect(parsed.text, result.out).toBeUndefined();
+    expect(parsed.refused).toMatch(/exceeds 16 bytes/);
+  });
 });
