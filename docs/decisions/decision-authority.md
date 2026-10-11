@@ -89,10 +89,14 @@ Explicitly stage `.rig/decisions/<ticket>.jsonl` and commit it with the item's
 branch before expecting another clone to read the decision. Per-run journals
 under `.claude/runs/` are local evidence and do not replace that portable file.
 Revalidation of an existing claim record mechanically checks its committed
-Git version; initial selection may create an unversioned baseline. The
-delegated-decision reader reads the working-tree file without requiring a
-committed Git version. A successful decision read therefore does not prove
-that another clone can read it.
+Git version; initial selection may create an unversioned baseline — the
+generator's `test/template/content-blind-revalidation.test.ts` (absent in a
+generated rig) › "refuses to resume from an existing claim until Git tracks
+it". The delegated-decision reader reads the working-tree file without
+requiring a committed Git version — `test/template/delegated-decision.test.ts`
+(absent in a generated rig) › "a FRESH process with no RIG_RUN_DIR at all
+still reads the made decision — durable, not conversational". A successful
+decision read therefore does not prove that another clone can read it.
 Generator evidence (absent in a generated rig):
 `test/e2e/delegated-authority.test.ts` › "scenario 6: a
 second controller session (B) reads session A's delegated decision back as
