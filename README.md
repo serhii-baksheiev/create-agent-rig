@@ -1,15 +1,19 @@
 # create-agent-rig
 
-**Rig configures a repository for reliable AI-assisted development with Claude
-Code and Codex — and keeps that configuration safe to upgrade and remove.**
+**A maintainable repository setup for AI-assisted development with Claude Code and Codex.**
 
-- **One configuration, both harnesses.** One rulebook, one set of guards and
-  review agents, wired natively into Claude Code _and_ Codex.
+Rig installs shared instructions, review agents, skills and narrowly scoped hooks
+into a new or existing repository. It gives that configuration an explicit
+ownership and upgrade lifecycle; your application architecture stays yours.
+
+- **One configuration, both harnesses.** A shared rulebook, guards and review
+  agents, delivered in each harness's native format. Capability coverage differs
+  by harness; see the compatibility matrix.
 - **Upgrades that respect your changes.** Files you edited are reported, not
   overwritten. Files you deleted stay deleted.
-- **Guardrails that run, not just rules that are read.** Hooks refuse a
-  pre-commit bypass, a force-push to a shared branch or a credential written
-  into a file.
+- **Guardrails that run, not just rules that are read.** Hooks check specific
+  command and edit patterns, including pre-commit bypasses, shared-branch
+  force-pushes and credential writes. Their coverage is bounded.
 - **Optional integrations, done by the book.** Figma and Atlassian MCP wiring,
   and GitHub Spec Kit through its own pinned CLI.
 - **A clean exit.** `doctor` shows what is installed and healthy; `uninstall`
@@ -19,6 +23,10 @@ Rig configures agent harnesses. It does not generate application code, run
 agents, or install plugins.
 
 ## Quick start
+
+**Prerequisites: Node.js ≥ 22 and Git**, plus Claude Code or Codex installed and
+authenticated separately. No application package manager is required to install
+Rig. Start in a clean working tree so you can review the generated changes.
 
 ```sh
 # a new repository
@@ -31,18 +39,29 @@ npx create-agent-rig@latest init --dry-run   # show what would be written
 npx create-agent-rig@latest init
 ```
 
-Then open the repository in either harness — nothing else to configure:
+Open the repository in your harness:
 
 ```sh
 claude    # Claude Code reads CLAUDE.md and .claude/settings.json
 codex     # Codex reads AGENTS.md, .codex/ and .agents/skills/
 ```
 
-Check it and commit it:
+Finish the project-specific setup before asking an agent to work:
+
+1. Create `.claude/hooks/dod-checks.json` with your real checks, for example
+   `["npm test", "npm run lint"]` for a project that defines those scripts.
+   Without this file the stop gate has no checks to run.
+2. Review the elevated paths in the generated `AGENTS.md` and add the paths in
+   your project that require human review.
+3. Add `.claude/worktrees/` to your `.gitignore`. With the workflow layer, also
+   ignore `.claude/queue.state.json`, `.claude/queue.board`,
+   `.claude/gate-rounds.json` and `.claude/runs/`. Put comments on separate lines.
+4. Review the generated hooks and the trust prompt described below. Then run:
 
 ```sh
 npx create-agent-rig@latest doctor
-git add -A && git commit -m "Add agent rig"
+git status --short
+# Review and stage the intended files, then commit them.
 ```
 
 Commit `.claude/.rig-manifest.json` with everything else — it is how later
@@ -60,6 +79,13 @@ records trust against the current hook hash, so a changed hook definition may
 require that review again; Rig never silently replaces hook configuration you
 own.
 
+`@latest` resolves the published npm dist-tag; the README on `master` describes
+the development tree. A merged feature or frozen release candidate is not proof
+that the feature is published. Check the [npm package](https://www.npmjs.com/package/create-agent-rig),
+[GitHub releases](https://github.com/serhii-baksheiev/create-agent-rig/releases)
+and [changelog](CHANGELOG.md) when selecting a version. Teams can replace
+`@latest` in these examples with the exact version they have evaluated.
+
 ## Why Rig
 
 Agent instructions tend to rot. A `CLAUDE.md` copied between projects, a
@@ -72,7 +98,7 @@ Rig treats that configuration as something with an owner and a lifecycle:
 | Without Rig                                         | With Rig                                                  |
 | --------------------------------------------------- | --------------------------------------------------------- |
 | Separate Claude Code and Codex setups               | One rulebook, projected into each harness's native format |
-| Rules that only work if the agent reads them        | Hooks that refuse the dangerous action at the tool layer  |
+| Rules that only work if the agent reads them        | Hooks that reject named patterns at the tool layer        |
 | Upgrading means re-copying and losing local changes | `upgrade` updates untouched files and reports the rest    |
 | A deleted rule quietly comes back                   | Deleted stays deleted                                     |
 | No way to tell what is installed or broken          | `doctor`                                                  |
@@ -127,14 +153,44 @@ Two things are left for you, and the installed `AGENTS.md` says so: the
 commands your Definition of Done should run (`.claude/hooks/dod-checks.json`),
 and the paths in your project that need a human reviewer.
 
-An **experimental** workflow layer adds a queue-driven autonomous loop, a
-pre-merge gate skill and PR-lifecycle helpers. It is opt-in:
-`init --layer workflow`.
+An **experimental**, opt-in workflow layer adds queue-driven loop instructions,
+a pre-merge gate skill and PR-lifecycle helpers:
+
+```sh
+npx create-agent-rig@latest init --layer workflow --dry-run
+npx create-agent-rig@latest init --layer workflow
+```
+
+The harness session executes these skills; Rig is not a background service.
+Queue claims and dependency checks coordinate cooperating controllers and are
+advisory, not a distributed lock or a guarantee against duplicate work. Review
+tracker credentials, decision authority, sandbox settings and stop conditions
+before an unattended session. The [unattended execution contract](docs/unattended-execution.md)
+distinguishes tool enforcement from instructions and operator responsibilities.
 
 For a Spec Kit plan shared by several controllers, Rig can project
 `specs/<feature>/tasks.md` into GitHub Issues and use the existing queue to
 read dependencies and claims. See [Parallel Workflows](docs/parallel-workflows.md)
 for the import command, re-import behavior and current concurrency limits.
+
+## Working with a rig
+
+Start with bounded, attended work. These are example prompts to your harness,
+not CLI commands or guaranteed outcomes:
+
+> Reproduce the reported validation bug in this repository. Ask the test-writer
+> to establish a failing regression test, then use the implementation-agent for
+> the smallest fix. Run the configured checks and obtain independent review.
+
+> Review this branch against the project Definition of Done. Reproduce each
+> actionable finding before changing code, and report the remaining risks.
+
+> Use the worktree-task skill for this isolated change. Confirm file ownership
+> and scope before editing; stop if another controller owns the same work.
+
+The agents provide roles and review instructions; their names do not establish
+that a review ran or that its conclusion is correct. Inspect the actual changes,
+test output and review findings before merging.
 
 ## How ownership works
 
@@ -223,15 +279,20 @@ npx create-agent-rig@latest setup remove figma-mcp
 `add`, `apply` and `remove` accept `--dry-run`. With `--json` they never
 prompt, and write only with `--yes`. Intent and ownership are recorded in `.rig/integrations.json`.
 
-| Integration     | ID               | What Rig does                                                                                        |
-| --------------- | ---------------- | ---------------------------------------------------------------------------------------------------- |
-| Figma MCP       | `figma-mcp`      | Writes the hosted MCP entry for Claude Code and/or Codex                                             |
-| Atlassian MCP   | `atlassian-mcp`  | Same, for Atlassian's hosted MCP                                                                     |
-| Playwright MCP  | `playwright-mcp` | Wires `npx @playwright/mcp@0.0.83` for attended browser verification; vendors nothing                |
-| Basic Memory    | `basic-memory`   | Preview. Wires `uvx basic-memory mcp`; never installs, reads or removes Basic Memory's data          |
-| GitHub Spec Kit | `spec-kit`       | Runs Spec Kit's own pinned CLI (1.0.8) to set up Claude Code and Codex                               |
-| Probity         | `probity`        | Opt-in TDD enforcement: hands file-edit tool calls to `@nizos/probity` 1.10.1                        |
-| BMAD TEA        | `bmad-tea`       | Declares TEA and reads its install state; never installs it. Its outputs attach as advisory evidence |
+The table distinguishes the development tree from the published package audited
+on **2026-10-11** (`npm latest`: **1.5.1**). Run `setup list` with your selected
+version to check its actual registry; do not assume a `master` integration is
+available through `@latest`.
+
+| Integration     | ID               | Availability                                | What Rig does                                                                                   |
+| --------------- | ---------------- | ------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Figma MCP       | `figma-mcp`      | npm 1.5.1 and master                        | Writes the hosted MCP entry for Claude Code and/or Codex                                        |
+| Atlassian MCP   | `atlassian-mcp`  | npm 1.5.1 and master                        | Writes Atlassian's hosted MCP entry                                                             |
+| Playwright MCP  | `playwright-mcp` | master only; absent from audited npm latest | Wires `npx @playwright/mcp@0.0.83` for attended browser verification; vendors nothing           |
+| Basic Memory    | `basic-memory`   | npm 1.5.1 and master; preview               | Wires `uvx basic-memory mcp`; never installs, reads or removes its data                         |
+| GitHub Spec Kit | `spec-kit`       | npm 1.5.1 and master                        | Delegates lifecycle to the official CLI pinned to 1.0.8                                         |
+| Probity         | `probity`        | npm 1.5.1 and master                        | Hands covered edit calls to the project-local `@nizos/probity` 1.10.1 launcher                  |
+| BMAD TEA        | `bmad-tea`       | master only; absent from audited npm latest | Recognizes BMAD TEA 1.27.2 install state; never installs it. Outputs are advisory evidence only |
 
 **MCP wiring is owned by Rig.** Rig writes the entries and removes only the ones
 it can prove it wrote; your own MCP entries are preserved. Signing in to a
@@ -254,8 +315,18 @@ Probity launcher; `MultiEdit` and shell commands are not handed over.
 Probity's config decides which of those writes must follow test-first. `doctor` reports the wiring but cannot
 see whether Probity is answering.
 
-**Plugins are not managed.** Rig 0.10.0 has no plugin manager or marketplace.
-Claude Code and Codex plugins can be used alongside Rig as usual.
+**Playwright and BMAD TEA provide evidence, not release authority.** Playwright
+MCP is intended for attended browser verification. BMAD TEA is an upstream-owned
+methodology integration; attaching either tool's output cannot independently
+produce a Rig SHIP or HOLD verdict. See [artifact evidence](docs/decisions/artifact-evidence.md).
+
+**Plugins are not managed.** Rig has no plugin manager or marketplace.
+Superpowers orchestration skills (`subagent-driven-development`,
+`dispatching-parallel-agents`, `executing-plans`) are **unsupported inside a Rig
+loop run**: they introduce another scheduler. Orthogonal methodology skills
+beside an attended session are **UNVERIFIED**, as is Superpowers support in
+Codex. Rig cannot disable individual Superpowers skills; this boundary is an
+operator rule, not an enforcement mechanism. See [discipline providers](docs/decisions/discipline-providers.md).
 
 ## Memory
 
@@ -291,11 +362,17 @@ contract version is refused with exit code `4`. The boundary is described in
 
 ## Platform support
 
-| Platform | Status for 0.10.0                                                      |
-| -------- | ---------------------------------------------------------------------- |
-| Linux    | Supported — the packed release is accepted on the exact release commit |
-| Windows  | Supported — same acceptance; one Spec Kit limitation below             |
-| macOS    | Supported on Apple silicon — same acceptance                           |
+| Platform | Evidence boundary                                                                                 |
+| -------- | ------------------------------------------------------------------------------------------------- |
+| Linux    | Covered by repository tests and release acceptance tooling; verify the exact candidate's results. |
+| Windows  | Covered by native test and acceptance paths; review the Spec Kit caveat below.                    |
+| macOS    | Apple silicon has a release acceptance path; verify the exact candidate's results.                |
+
+These paths are not a blanket compatibility guarantee. Individual wiring and
+third-party combinations may remain **UNVERIFIED**, even when a platform's
+other checks pass. The [compatibility matrix](docs/compatibility.md) records
+capability-level status and evidence; provider login, network access and native
+harness behavior require checks in your own environment.
 
 On Windows, Spec Kit 1.0.8 rewrites `.claude/settings.json` and
 `.codex/config.toml` with CRLF line endings. `doctor` then reports Rig's files
@@ -311,6 +388,12 @@ to it asks you to merge the Codex config by hand instead of overwriting it.
 - Provider accounts, authorization and connectivity are between you, the
   provider and the harness.
 - The workflow layer is experimental.
+
+No combination of instructions, hooks or reviewers proves autonomous correctness
+or comprehensive security. Shell indirection, tools outside hook coverage and
+manual changes remain outside some checks. Keep native sandboxing and explicit
+human authority appropriate to your repository. `doctor` verifies local state,
+not successful provider execution.
 
 ## The 2-minute demo
 
@@ -340,6 +423,16 @@ attempted pre-commit bypass.
 | [`docs/releasing.md`](docs/releasing.md)                       | How a release is prepared and accepted                                         |
 | [`docs/parallel-workflows.md`](docs/parallel-workflows.md)     | Spec Kit task import, tracker dependencies and controller boundaries           |
 | [`docs/unattended-execution.md`](docs/unattended-execution.md) | What Rig enforces, verifies and leaves to the harness when a run is unattended |
+
+## Release and CI contracts
+
+Ordinary CI tests fixtures, ownership, projections and command contracts. It
+does not by itself establish a published release or live integration acceptance.
+The [release procedure](docs/releasing.md) defines the separate, opt-in packed
+artifact acceptance lane for an exact commit, including frozen candidate
+handling. [Command contracts](docs/command-contract.md) define observable CLI
+behavior, exit codes and the evidence behind README promises. Publication is an
+owner action; a green PR is not permission to publish.
 
 ## Development
 
