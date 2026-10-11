@@ -84,6 +84,15 @@ still open — › "a FRESH run directory (a different controller session) still
 reads the made decision". The gates read their own inputs and never this
 record, so a recorded decision bypasses none of them.
 
+The run's authority is self-declared. In the opt-in workflow layer,
+`run-state.mjs authority` journals each declaration with the value before and after it, and the record and
+resolve commands act on a delegated authority only when the state file matches
+the latest journalled declaration — pinned in the generator's
+`test/template/delegated-decision.test.ts` (absent in a generated rig) ›
+"refuses to record under a delegated authority that was written by hand and
+never declared". A record therefore shows what the run declared, not what the
+owner authorised.
+
 The record command writes the decision file; it does not stage or commit it.
 Explicitly stage `.rig/decisions/<ticket>.jsonl` and commit it with the item's
 branch before expecting another clone to read the decision. Per-run journals
