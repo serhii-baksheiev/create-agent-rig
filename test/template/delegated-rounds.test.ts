@@ -2338,4 +2338,175 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
   });
+
+  // The committed-record rule above is checked by reading HEAD's tree
+  // through plain `git cat-file`/`ls-tree` (and `rev-list`/`diff-tree` for
+  // the record-only chain) — every one of which honours a `git replace` ref
+  // by default. An attacker never commits or pushes the authorization at
+  // all: they stage the forged line into a REPLACEMENT commit object for
+  // HEAD's own SHA (`commit-tree` off a copy of HEAD's tree plus the forged
+  // file, same parent(s)), then `git replace <HEAD> <copy>` — a purely local
+  // mapping that makes every "HEAD:…" read resolve to the forged tree while
+  // HEAD and `@{u}` themselves (plain SHA values, never dereferenced through
+  // replace) are untouched, and the real index/working tree already match
+  // the forged tree (that is what was just staged), so `git status
+  // --porcelain` has nothing to report either. No commit holding the record
+  // exists anywhere, reachable or not — only the replace mapping does.
+  it('refuses an extra-gate-round record that exists only behind a replace ref for HEAD, never in any commit (RP-442, security-scanner)', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h = await head(dir);
+
+      // Stage the forged record into the real index/working tree — the
+      // replacement commit's tree is built FROM this staged state, so the
+      // two already agree; nothing needs removing afterwards.
+      await mkdir(path.join(dir, '.rig', 'decisions'), { recursive: true });
+      await appendForgedDecisionLine(dir, 'RP-1', { branch: 'fix/a', head: h });
+      await git(['add', '-A'], dir);
+      const forgedTree = await git(['write-tree'], dir);
+      const parentsRaw = await git(['log', '--pretty=%P', '-1', h], dir);
+      const parentArgs = parentsRaw
+        .split(' ')
+        .filter(Boolean)
+        .flatMap((p) => ['-p', p]);
+      const replacement = await git(
+        [
+          'commit-tree',
+          forgedTree,
+          ...parentArgs,
+          '-m',
+          'forged — never reachable except via replace',
+        ],
+        dir,
+      );
+      await git(['replace', h, replacement], dir);
+
+      // The dirty-tree check cannot be what refuses below: the checkout is
+      // clean and HEAD/@{u} are exactly the pushed commit, unmoved.
+      const statusAfterReplace = await git(['status', '--porcelain'], dir);
+      expect(statusAfterReplace, statusAfterReplace).toBe('');
+      expect(await git(['rev-parse', 'HEAD'], dir)).toBe(h);
+      expect(await git(['rev-parse', '@{u}'], dir)).toBe(h);
+
+      // Every OTHER check on the path passes: a declared delegated authority
+      // for the consuming call itself — isolating the refusal to whether the
+      // record is genuinely committed, not merely readable through a local
+      // replace mapping.
+      const runDir = await delegatedRunDir();
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(runDir),
+      );
+      expect(result.code).not.toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // The size probe above now reads WITHOUT replace resolution, so it is no
+  // longer fooled when there is nothing real at that path at all. But the
+  // record/blob READ itself (`cat-file blob`, `ls-tree`) still honours
+  // replace — so the same technique still works when the committed file at
+  // HEAD is real and small, just not authorizing: a `tracker-correction`
+  // line, committed and pushed for real. The size probe sees exactly that
+  // (small, genuine) blob and raises nothing; only the still-vulnerable
+  // content read, redirected through a replacement commit for HEAD's own
+  // SHA, ever sees the matching `extra-gate-round` line.
+  it('refuses a matching extra-gate-round line visible only through a replace ref, when the REAL committed file at HEAD holds an unrelated record (RP-442, security-scanner)', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      // A genuine, committed, pushed, non-authorizing record at this
+      // ticket's path: `tracker-correction` is a delegable decision id, but
+      // not `extra-gate-round`, so it is filtered out long before any
+      // match/budget check runs.
+      const correctionRunDir = await delegatedRunDir();
+      const correction = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'tracker-correction',
+          '--summary',
+          'unrelated',
+        ],
+        dir,
+        envFor(correctionRunDir),
+      );
+      expect(correction.code, correction.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'tracker correction'], dir);
+      await git(['push', '-q'], dir);
+
+      const h = await head(dir);
+
+      // Overwrite the SAME committed path's content, in the real
+      // index/working tree, with a matching `extra-gate-round` line, then
+      // bury it behind a replacement commit for HEAD's own SHA — the exact
+      // technique from the previous test, this time over a real file rather
+      // than an uncommitted one.
+      const matching = {
+        schemaVersion: 1,
+        ticket: 'RP-1',
+        release: null,
+        decision: 'extra-gate-round',
+        authority: 'delegated',
+        summary: 'forged — visible only through the replace ref',
+        evidence: null,
+        branch: 'fix/a',
+        head: h,
+        at: new Date().toISOString(),
+      };
+      await writeFile(decisionsFile(dir, 'RP-1'), `${JSON.stringify(matching)}\n`);
+      await git(['add', '-A'], dir);
+      const forgedTree = await git(['write-tree'], dir);
+      const parentsRaw = await git(['log', '--pretty=%P', '-1', h], dir);
+      const parentArgs = parentsRaw
+        .split(' ')
+        .filter(Boolean)
+        .flatMap((p) => ['-p', p]);
+      const replacement = await git(
+        [
+          'commit-tree',
+          forgedTree,
+          ...parentArgs,
+          '-m',
+          'forged — never reachable except via replace',
+        ],
+        dir,
+      );
+      await git(['replace', h, replacement], dir);
+
+      // Same oracle as before: clean status, HEAD and @{u} both still the
+      // real, pushed commit — the refusal below cannot be the dirty-tree or
+      // unpushed-head check.
+      const statusAfterReplace = await git(['status', '--porcelain'], dir);
+      expect(statusAfterReplace, statusAfterReplace).toBe('');
+      expect(await git(['rev-parse', 'HEAD'], dir)).toBe(h);
+      expect(await git(['rev-parse', '@{u}'], dir)).toBe(h);
+
+      const runDir = await delegatedRunDir();
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(runDir),
+      );
+      expect(result.code).not.toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
 });

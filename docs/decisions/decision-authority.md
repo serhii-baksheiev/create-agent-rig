@@ -97,7 +97,10 @@ enlarge it by recording decisions — the generator's
 `test/template/delegated-rounds.test.ts` (absent in a generated rig) ›
 "absent maxDelegatedRounds defaults to 1: a first record succeeds, a second
 for the same ticket+branch is refused". The authorization is committed with
-the branch; `gate-round --authorized` counts the round only while no review
+the branch, only a record committed at HEAD counts, and the consuming call
+must itself run under a journalled delegated authority — › "gate-round
+--authorized refuses a bypass of the committed-record and consuming-authority
+rules (RP-442, security-scanner)". `gate-round --authorized` counts the round only while no review
 verdict exists on the head it covers, and that verdict is the only record that
 the round was spent — › "exits 2 on a second --authorized call at the same
 head once a reviewer verdict is recorded for it". A new head earns nothing on

@@ -441,7 +441,7 @@ const committedExtraGateRoundsFor = ({ projectRoot, ticket, branch }) => {
   const relPath = relative(projectRoot, decisionsPath).split(sep).join('/');
   let sizeRaw;
   try {
-    sizeRaw = execFileSync('git', ['cat-file', '-s', `HEAD:${relPath}`], {
+    sizeRaw = execFileSync('git', ['--no-replace-objects', 'cat-file', '-s', `HEAD:${relPath}`], {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -458,7 +458,7 @@ const committedExtraGateRoundsFor = ({ projectRoot, ticket, branch }) => {
       `the committed ${relPath} at HEAD is over ${MAX_DECISIONS_BYTES} bytes — refused whole, never partially read.`,
     );
   }
-  const text = execFileSync('git', ['cat-file', 'blob', `HEAD:${relPath}`], {
+  const text = execFileSync('git', ['--no-replace-objects', 'cat-file', 'blob', `HEAD:${relPath}`], {
     cwd: projectRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
@@ -484,7 +484,7 @@ const committedExtraGateRoundsFor = ({ projectRoot, ticket, branch }) => {
 const committedDecisionTickets = (projectRoot) => {
   let text;
   try {
-    text = execFileSync('git', ['ls-tree', '--name-only', 'HEAD', DECISIONS_PREFIX], {
+    text = execFileSync('git', ['--no-replace-objects', 'ls-tree', '--name-only', 'HEAD', DECISIONS_PREFIX], {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -522,7 +522,7 @@ const recordOnlyChain = (projectRoot, from, to) => {
   if (from === to) return [to];
   let list;
   try {
-    list = execFileSync('git', ['rev-list', '--first-parent', `--max-count=${MAX_RECORD_WALK}`, to], {
+    list = execFileSync('git', ['--no-replace-objects', 'rev-list', '--first-parent', `--max-count=${MAX_RECORD_WALK}`, to], {
       cwd: projectRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -538,7 +538,7 @@ const recordOnlyChain = (projectRoot, from, to) => {
     if (sha === from) return [from, ...chain];
     let changed;
     try {
-      changed = execFileSync('git', ['diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha], {
+      changed = execFileSync('git', ['--no-replace-objects', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha], {
         cwd: projectRoot,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'ignore'],
