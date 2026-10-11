@@ -1,6 +1,16 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -467,6 +477,42 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       expect(windowsScript).toContain("'rev-parse --show-toplevel'");
       expect(windowsScript).toMatch(/\$gitInfo\.WorkingDirectory\s*=/);
       expect(windowsScript).toMatch(/\$gitInfo\.StandardOutputEncoding\s*=.*UTF8Encoding/);
+    },
+  );
+
+  // RP-424: the test above pins that `Get-Command git.exe -CommandType
+  // Application` appears SOMEWHERE in the script, but not that its result is
+  // what actually launches git — a regression that resolved git.exe and then
+  // still started a bare `git` name (letting CreateProcess's own cwd-first
+  // search back in, the exact hijack RP-321/RP-266 round 3 closed) would
+  // still match that lone assertion. Pin the two statements together: the
+  // resolved path is assigned to `$gitExe`, and `$gitInfo.FileName` is set
+  // from that same variable, not from a literal.
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "launches git through the resolved application path in %s's wrapper, never a bare git name (RP-424)",
+    async (guardFile) => {
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: Record<
+          string,
+          Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>
+        >;
+      };
+      const entry = Object.values(config.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+
+      expect(
+        windowsScript,
+        `${guardFile}: expected $gitExe assigned from Get-Command git.exe -CommandType Application`,
+      ).toContain('$gitExe = (Get-Command git.exe -CommandType Application');
+      expect(
+        windowsScript,
+        `${guardFile}: expected $gitInfo.FileName set from the resolved $gitExe, not a bare 'git'`,
+      ).toContain('$gitInfo.FileName = $gitExe');
     },
   );
 
@@ -1040,6 +1086,80 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       }
     },
   );
+
+  // RP-424: a documented limit (invariants.md, "State the limits — and test
+  // them") needs a test proving the command really behaves that way. The
+  // POSIX command's root lookup is `git rev-parse --show-toplevel`, run
+  // ahead of the guard itself with no `timeout` of its own — unlike the
+  // guard's own stages, which the four BOUNDED_STAGE_GUARDS cases above pin
+  // as bounded on the Windows wrapper. A `.git/config` whose `[include]`
+  // path is a FIFO with no writer makes git block inside that lookup
+  // indefinitely, before the hook script is ever reached.
+  it('the POSIX Codex command puts no bound of its own on the root lookup: a stalled git rev-parse keeps the hook waiting', async (ctx) => {
+    skipUnless(ctx, posixShellAvailable().ok, posixShellAvailable().reason);
+    skipUnless(ctx, fifosAvailable().ok, fifosAvailable().reason);
+
+    const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = Object.values(config.hooks)
+      .flatMap((groups) => groups.flatMap((group) => group.hooks))
+      .find((hook) => hook.command.includes('guard-bash.mjs'))?.command;
+    expect(command, 'guard-bash.mjs has no projected Codex hook entry').toBeDefined();
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-stalled-root-'));
+    const fifoPath = path.join(scratch, '.git', 'stall.fifo');
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+      try {
+        execFileSync('mkfifo', [fifoPath]);
+      } catch (error) {
+        ctx.skip(`mkfifo unavailable on this host: ${String(error)}`);
+        return;
+      }
+      // An `[include]` path git must open to finish parsing config — a FIFO
+      // with no writer leaves that open() call, and everything after it,
+      // blocked forever.
+      await appendFile(path.join(scratch, '.git', 'config'), `\n[include]\n\tpath = ${fifoPath}\n`);
+
+      child = spawn('/bin/sh', ['-c', command!], {
+        cwd: scratch,
+        env: { ...withoutGitLocation(process.env), CLAUDE_PROJECT_DIR: '' },
+        detached: true,
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+      let exited = false;
+      child.once('exit', () => {
+        exited = true;
+      });
+      child.stdin!.end(
+        JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'echo hi' },
+          cwd: scratch,
+        }),
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      expect(
+        exited,
+        'the command exited within 3 s even though its root lookup should be stalled on an ' +
+          'unreadable FIFO include — the command now bounds that lookup itself',
+      ).toBe(false);
+    } finally {
+      if (child?.pid && !child.killed) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+      await removeFixture(scratch);
+    }
+  });
 
   it('emits each tool at most once in generated Codex hook matchers', async () => {
     const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
