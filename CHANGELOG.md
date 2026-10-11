@@ -59,19 +59,21 @@ list` reads the record back bounded and refuses a forged line, naming it.
 
 - **`maxDelegatedRounds`** in `.claude/queue.json` (default 1) makes the
   delegated extra-gate-round authority mechanically bounded:
-  `delegated-decision.mjs record --decision extra-gate-round` refuses once a
-  ticket+branch already holds that many authorizations for the named
-  `--head`, and `gate-round --authorized` counts a round only when a
+  `delegated-decision.mjs record --decision extra-gate-round` refuses once
+  the branch already holds that many authorizations, whatever ticket each
+  names, and `gate-round --authorized` counts a round only when a
   committed authorization covers HEAD and no review verdict exists yet on a
   covered head (RP-442).
 - **`verdict.mjs coverage <head>`** now walks first parents through
   record-only `.rig/evidence/` commits before the requested head, so
   evidence attached and then committed by the loop is read as current at its
   own PR head instead of stale (RP-437).
-- **`run-state.mjs providers`** journals the exact Playwright MCP, Spec Kit
-  and Probity versions a run used, read from files already on disk, never
-  invented; a stated `--producer-version` that contradicts a pinned version
-  is refused (RP-443).
+- **Provider versions are recorded, never invented** (RP-443):
+  `evidence-attach.mjs attach --producer playwright-mcp` stamps the pinned
+  `@playwright/mcp` version as `declared` and refuses a stated
+  `--producer-version` that contradicts the pin; the Spec Kit import writes
+  the Spec Kit version into its projections; `run-state.mjs providers`
+  journals Probity's versions. All are read from files already on disk.
 - **`queue/checkout.mjs`** no longer treats an untracked `journal/YYYY-MM.md`
   left by the previous loop stop as dirt blocking the next `gate-round`
   (RP-450).
@@ -100,9 +102,13 @@ list` reads the record back bounded and refuses a forged line, naming it.
 - The delegated `extra-gate-round` budget is consumed from this checkout's
   own run journals — per-checkout, not shared across clones or machines
   (RP-442, stated limit).
-- A graft that carries forward a committed `extra-gate-round` authorization
-  can reuse it on the grafted branch once `maxDelegatedRounds >= 2`; at the
-  default of 1 there is nothing left to reuse (RP-442, review record).
+- On Windows, the dispatch transcript reader (`record-dispatch.mjs`
+  `readBoundedLines`) and the item-record append
+  (`lib/item-records.mjs` `appendItemRecordLine`, also used by
+  `evidence-attach.mjs`) confirm file identity by inode only; they do not
+  re-open the path to compare devices as 1.5.0–1.5.2 did. POSIX is
+  unaffected: device and inode are both compared. Restoring the 1.5.x
+  check is tracked for 1.6.1 (RP-494).
 
 ### Verification and limits
 
