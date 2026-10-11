@@ -42,6 +42,7 @@
 // committable secret shape.
 import { execFile, execFileSync } from 'node:child_process';
 import {
+  chmod,
   link,
   mkdir,
   mkdtemp,
@@ -55,7 +56,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { fifosAvailable, skipUnless, symlinksAvailable } from '../helpers/env.js';
+import { fifosAvailable, modeBitsDeny, skipUnless, symlinksAvailable } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 import { stubCommand } from '../helpers/stub-command.js';
 import { GITHUB_PAT } from './secrets-fixtures.js';
@@ -394,6 +395,29 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     // must journal nothing in EITHER file. The fixture's own authority
     // declaration (RP-467) is already there before the call.
     expect(events.slice(before)).toEqual([]);
+  });
+
+  it('refuses when the run journal cannot be appended to (events.jsonl is read-only), naming the journal, and writes no evidence file (RP-430)', async (ctx) => {
+    skipUnless(ctx, modeBitsDeny().ok, modeBitsDeny().reason);
+    const { dir, runDir, env } = await delegatedFixture();
+    // `delegatedFixture` already declared (and journalled) the run's
+    // authority BEFORE this chmod — so the authority-check READ
+    // (`unjournalledDelegation`, which reads events.jsonl) already
+    // succeeded, and the refusal this test observes is the journal-before-
+    // evidence APPEND failing, not the authority check.
+    await chmod(path.join(runDir, 'events.jsonl'), 0o444);
+    try {
+      const result = await runCli(
+        recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+        dir,
+        env,
+      );
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/journal/i);
+      await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+    } finally {
+      await chmod(path.join(runDir, 'events.jsonl'), 0o644);
+    }
   });
 });
 
@@ -1278,6 +1302,119 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
       stub.restore();
     }
   });
+
+  it('(e) the posted comment body carries a "release: <label>" line when --release is given (RP-430)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await declareAuthority(runDir, 'delegated');
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.claude', 'queue.json'),
+      JSON.stringify({ adapter: 'github-issues' }),
+    );
+
+    const callsDir = await mkdtemp(path.join(tmpdir(), 'delegated-decision-gh-calls-'));
+    const callsPath = path.join(callsDir, 'calls.log');
+    const stub = await stubCommand(
+      'gh',
+      `const fs = require('node:fs');
+       const callsPath = ${JSON.stringify(callsPath)};
+       if (args[0] === 'issue' && args[1] === 'comment') {
+         fs.appendFileSync(callsPath, JSON.stringify(args) + '\\n');
+         return { stdout: '' };
+       }
+       if (args[0] === 'issue' && args[1] === 'view') {
+         return { stdout: JSON.stringify({ updatedAt: new Date().toISOString() }) + '\\n' };
+       }
+       return { stdout: '' };`,
+    );
+    try {
+      const env = envFor(runDir);
+      const result = await runCli(
+        recordArgs({
+          ticket: 'RP-1',
+          decision: 'extra-gate-round',
+          summary: 'ok',
+          release: 'rel-1.5.0',
+          post: true,
+        }),
+        dir,
+        env,
+      );
+      expect(result.code, result.out).toBe(0);
+
+      const raw = await readFile(callsPath, 'utf8');
+      const calls = raw
+        .split('\n')
+        .filter((line) => line.trim() !== '')
+        .map((line) => JSON.parse(line) as string[]);
+      const commentCall = calls.find((call) => call[0] === 'issue' && call[1] === 'comment');
+      if (!commentCall) throw new Error(`gh issue comment was never invoked: ${raw}`);
+      const bodyIndex = commentCall.indexOf('--body');
+      const body = bodyIndex === -1 ? undefined : commentCall[bodyIndex + 1];
+      if (body === undefined) throw new Error(`no --body argument found: ${commentCall.join(' ')}`);
+
+      expect(body).toMatch(/^release: rel-1\.5\.0$/m);
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('(f) the posted comment body carries no "release:" line at all when --release is not given (RP-430)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await declareAuthority(runDir, 'delegated');
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.claude', 'queue.json'),
+      JSON.stringify({ adapter: 'github-issues' }),
+    );
+
+    const callsDir = await mkdtemp(path.join(tmpdir(), 'delegated-decision-gh-calls-'));
+    const callsPath = path.join(callsDir, 'calls.log');
+    const stub = await stubCommand(
+      'gh',
+      `const fs = require('node:fs');
+       const callsPath = ${JSON.stringify(callsPath)};
+       if (args[0] === 'issue' && args[1] === 'comment') {
+         fs.appendFileSync(callsPath, JSON.stringify(args) + '\\n');
+         return { stdout: '' };
+       }
+       if (args[0] === 'issue' && args[1] === 'view') {
+         return { stdout: JSON.stringify({ updatedAt: new Date().toISOString() }) + '\\n' };
+       }
+       return { stdout: '' };`,
+    );
+    try {
+      const env = envFor(runDir);
+      const result = await runCli(
+        recordArgs({
+          ticket: 'RP-1',
+          decision: 'extra-gate-round',
+          summary: 'ok',
+          post: true,
+        }),
+        dir,
+        env,
+      );
+      expect(result.code, result.out).toBe(0);
+
+      const raw = await readFile(callsPath, 'utf8');
+      const calls = raw
+        .split('\n')
+        .filter((line) => line.trim() !== '')
+        .map((line) => JSON.parse(line) as string[]);
+      const commentCall = calls.find((call) => call[0] === 'issue' && call[1] === 'comment');
+      if (!commentCall) throw new Error(`gh issue comment was never invoked: ${raw}`);
+      const bodyIndex = commentCall.indexOf('--body');
+      const body = bodyIndex === -1 ? undefined : commentCall[bodyIndex + 1];
+      if (body === undefined) throw new Error(`no --body argument found: ${commentCall.join(' ')}`);
+
+      expect(body).not.toMatch(/^release:/m);
+    } finally {
+      stub.restore();
+    }
+  });
 });
 
 // --- list --------------------------------------------------------------
@@ -1411,9 +1548,15 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
   it('a file larger than 256 KiB is unreadable — exit 2, never partially read', async () => {
     const { dir } = await newProject();
     await mkdir(path.join(dir, '.rig', 'decisions'), { recursive: true });
+    // Otherwise valid — including `release`, a REQUIRED_KEYS member — so the
+    // size bound is the ONLY reason this is refused. Without `release` here,
+    // `parseDecisions` would reject line 1 for a missing required key before
+    // the size bound is ever the deciding fact, and this test would still
+    // pass green with the bound removed entirely (vacuous).
     const validLine = `${JSON.stringify({
       schemaVersion: 1,
       ticket: 'RP-9',
+      release: null,
       decision: 'extra-gate-round',
       authority: 'delegated',
       summary: 'ok',
@@ -1433,6 +1576,11 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
     );
     expect(result.code).toBe(2);
     expect(result.out).toMatch(/unreadable/i);
+    // The assertion that actually depends on the bound: removing/widening
+    // MAX_DECISIONS_BYTES turns this red because the records are otherwise
+    // well-formed and would parse cleanly — `exceeds 262144 bytes` can only
+    // come from `item-records.mjs`'s size check.
+    expect(result.out).toMatch(/exceeds 262144 bytes/);
   });
 });
 
