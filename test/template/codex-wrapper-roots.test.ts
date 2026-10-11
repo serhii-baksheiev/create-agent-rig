@@ -16,7 +16,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
-import { encodedWrapperFor, runWindowsWrapper } from '../helpers/codex-windows-wrapper.js';
+import {
+  commandWindowsFor,
+  preToolUseDeny,
+  runWindowsCodexHost,
+} from '../helpers/codex-windows-wrapper.js';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -37,6 +41,15 @@ const FORCE_PUSH = {
   tool_input: { command: 'git push --force origin master' },
 };
 
+function expectCodexDeny(result: { code: number; stdout: string; stderr: string }): void {
+  expect(result.code, result.stderr).toBe(0);
+  const deny = preToolUseDeny(result.stdout);
+  expect(deny?.hookSpecificOutput?.hookEventName).toBe('PreToolUse');
+  expect(deny?.hookSpecificOutput?.permissionDecision).toBe('deny');
+  expect(deny?.hookSpecificOutput?.permissionDecisionReason).toEqual(expect.any(String));
+  expect(deny?.hookSpecificOutput?.permissionDecisionReason).not.toBe('');
+}
+
 async function rigAt(root: string): Promise<void> {
   await exec('git', ['init', '-q', root], { env: withoutGitLocation() });
   await cp(path.join(universal, '.claude'), path.join(root, '.claude'), { recursive: true });
@@ -51,16 +64,16 @@ describe('the Windows Codex wrapper runs the guard from a non-ASCII or UNC root 
       const scratch = await mkdtemp(path.join(tmpdir(), 'u-тест-é-'));
       try {
         await rigAt(scratch);
-        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
-        expect(encoded).toBeDefined();
-        const result = await runWindowsWrapper(
-          encoded!,
+        const commandWindows = await commandWindowsFor(universal, 'guard-bash.mjs');
+        expect(commandWindows).toBeDefined();
+        const result = await runWindowsCodexHost(
+          commandWindows!,
           { ...FORCE_PUSH, cwd: scratch },
           scratch,
           {},
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(result.code, result.stderr).toBe(2);
+        expectCodexDeny(result);
         expect(result.stderr).toMatch(/BLOCKED.*force-pushing a shared branch/i);
       } finally {
         await removeFixture(scratch);
@@ -86,16 +99,16 @@ describe('the Windows Codex wrapper runs the guard from a non-ASCII or UNC root 
       );
       try {
         await rigAt(scratch);
-        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
-        expect(encoded).toBeDefined();
-        const result = await runWindowsWrapper(
-          encoded!,
+        const commandWindows = await commandWindowsFor(universal, 'guard-bash.mjs');
+        expect(commandWindows).toBeDefined();
+        const result = await runWindowsCodexHost(
+          commandWindows!,
           { ...FORCE_PUSH, cwd: unc! },
           unc!,
           {},
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(result.code, result.stderr).toBe(2);
+        expectCodexDeny(result);
         expect(result.stderr).toMatch(/BLOCKED.*force-pushing a shared branch/i);
       } finally {
         await removeFixture(scratch);
@@ -121,17 +134,16 @@ describe('the Windows Codex wrapper blocks when it cannot run the guard (RP-321)
       try {
         await rigAt(scratch);
         await removeFixture(path.join(scratch, '.claude', 'hooks', 'guard-bash.mjs'));
-        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
-        expect(encoded).toBeDefined();
-        const result = await runWindowsWrapper(
-          encoded!,
+        const commandWindows = await commandWindowsFor(universal, 'guard-bash.mjs');
+        expect(commandWindows).toBeDefined();
+        const result = await runWindowsCodexHost(
+          commandWindows!,
           { ...FORCE_PUSH, cwd: scratch },
           scratch,
           {},
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(result.code, result.stderr).toBe(2);
-        expect(result.stderr.startsWith('codex wrapper:')).toBe(true);
+        expectCodexDeny(result);
         expect(result.stderr).toMatch(/codex wrapper: .*guard did not run/i);
       } finally {
         await removeFixture(scratch);
@@ -149,17 +161,16 @@ describe('the Windows Codex wrapper blocks when it cannot run the guard (RP-321)
       // can even look for the guard.
       const scratch = await mkdtemp(path.join(tmpdir(), 'codex-wrapper-no-repo-'));
       try {
-        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
-        expect(encoded).toBeDefined();
-        const result = await runWindowsWrapper(
-          encoded!,
+        const commandWindows = await commandWindowsFor(universal, 'guard-bash.mjs');
+        expect(commandWindows).toBeDefined();
+        const result = await runWindowsCodexHost(
+          commandWindows!,
           { ...FORCE_PUSH, cwd: scratch },
           scratch,
           {},
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(result.code, result.stderr).toBe(2);
-        expect(result.stderr.startsWith('codex wrapper:')).toBe(true);
+        expectCodexDeny(result);
         expect(result.stderr).toMatch(/codex wrapper: .*guard did not run/i);
       } finally {
         await removeFixture(scratch);
@@ -175,8 +186,8 @@ describe('the Windows Codex wrapper blocks when it cannot run the guard (RP-321)
       const scratch = await mkdtemp(path.join(tmpdir(), 'codex-wrapper-no-git-'));
       try {
         await rigAt(scratch);
-        const encoded = await encodedWrapperFor(universal, 'guard-bash.mjs');
-        expect(encoded).toBeDefined();
+        const commandWindows = await commandWindowsFor(universal, 'guard-bash.mjs');
+        expect(commandWindows).toBeDefined();
         // Only what powershell.exe and node.exe themselves need to start —
         // no git. Windows env lookups are case-insensitive but Node's env
         // object is not, so both spellings carry the same restricted value;
@@ -191,15 +202,14 @@ describe('the Windows Codex wrapper blocks when it cannot run the guard (RP-321)
             'v1.0',
           ),
         ].join(';');
-        const result = await runWindowsWrapper(
-          encoded!,
+        const result = await runWindowsCodexHost(
+          commandWindows!,
           { ...FORCE_PUSH, cwd: scratch },
           scratch,
           { PATH: restrictedPath, Path: restrictedPath },
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(result.code, result.stderr).toBe(2);
-        expect(result.stderr.startsWith('codex wrapper:')).toBe(true);
+        expectCodexDeny(result);
         expect(result.stderr).toMatch(/codex wrapper: .*guard did not run/i);
       } finally {
         await removeFixture(scratch);

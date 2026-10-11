@@ -212,25 +212,32 @@ function portableHookCommand(command) {
   return carriesClaudeHarnessFlag(command) ? `${base} --harness=codex` : base;
 }
 
-function windowsHookCommand(command) {
+function windowsHookCommand(command, event) {
   const hook = command.match(/\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/)?.[0];
   if (!hook) throw new Error(`cannot derive a Windows Codex hook command from: ${command}`);
   const argumentsLine = carriesClaudeHarnessFlag(command)
     ? "$startInfo.Arguments = '\"' + $hookPath + '\" --harness=codex'"
     : "$startInfo.Arguments = '\"' + $hookPath + '\"'";
-  const bounded = BOUNDED_STAGE_GUARDS.has(hookFileOf(command));
+  const bounded = event === 'PreToolUse' && BOUNDED_STAGE_GUARDS.has(hookFileOf(command));
   // PowerShell owns its stdin, so `& node` receives an empty stream. Copy the
   // original bytes into a child process explicitly; parsing and re-encoding the
   // JSON here would make the wrapper a second implementation of the hook input.
   const script = bounded
     ? [
+        // Codex's native Windows host wraps commandWindows in another
+        // PowerShell process. Its translation of an inner `exit 2` to exit 1
+        // loses the hook refusal, so bounded PreToolUse guards render Codex's
+        // machine-readable denial and return success from the outer command.
+        // `ConvertTo-Json` keeps the protocol line valid without interpolating
+        // a refusal reason into it. The guard's own diagnostic stays on stderr.
+        "function D([string]$r){[Console]::Error.WriteLine($r);[Console]::Out.WriteLine((@{hookSpecificOutput=@{hookEventName='PreToolUse';permissionDecision='deny';permissionDecisionReason=$r}}|ConvertTo-Json -Compress));exit 0}",
         // RP-321: a wrapper-internal failure means the guard never ran, and
         // that is not the guard error the fail-open rule allows — so any
-        // terminating error the script does not catch itself blocks (exit 2)
+        // terminating error the script does not catch itself emits a denial
         // instead of PowerShell's own exit 1, which Codex reads as
-        // non-blocking. The guard's own exit code, once it ran, still passes
-        // through unchanged below.
-        "trap { [Console]::Error.WriteLine('codex wrapper: ' + $_.Exception.Message + '; the guard did not run'); exit 2 }",
+        // non-blocking. Guard exit 2 receives the same translation below;
+        // other guard exit codes still pass through unchanged.
+        "trap { D ('codex wrapper: ' + $_.Exception.Message + '; the guard did not run') }",
         "$ErrorActionPreference = 'Stop'",
         // PR #353 round 2: a native command's stderr, redirected under this
         // preference, becomes a terminating NativeCommandError — including
@@ -284,18 +291,18 @@ function windowsHookCommand(command) {
         // already-exited process's stderr into a terminating error the
         // wrapper never caught, so it exited 1 — which Codex reads as
         // non-blocking. The kill is now the ONLY thing inside the try; the
-        // report and `exit 2` run unconditionally once a bound has expired,
+        // report and denial run unconditionally once a bound has expired,
         // never inside the catch.
-        'if (-not $gitOk) { try { taskkill /PID $gitProc.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: git rev-parse timed out after $gitBoundMs ms"); exit 2 }',
+        'if (-not $gitOk) { try { taskkill /PID $gitProc.Id /T /F 2>&1 | Out-Null } catch {}; D "codex wrapper: git rev-parse timed out after $gitBoundMs ms" }',
         '$repoRoot = $gitProc.StandardOutput.ReadToEnd().Trim()',
         '$null = $gitProc.StandardError.ReadToEnd()',
-        'if ($gitProc.ExitCode -ne 0 -or -not $repoRoot) { [Console]::Error.WriteLine("codex wrapper: git rev-parse found no repository (exit $($gitProc.ExitCode)); the guard did not run"); exit 2 }',
+        'if ($gitProc.ExitCode -ne 0 -or -not $repoRoot) { D "codex wrapper: git rev-parse found no repository (exit $($gitProc.ExitCode)); the guard did not run" }',
         // git prints a UNC root with forward slashes (//host/share/...);
         // the rest of the wrapper and the guard expect the Windows form.
         "if ($repoRoot.StartsWith('//')) { $repoRoot = $repoRoot.Replace('/', '\\') }",
         '$env:CLAUDE_PROJECT_DIR = $repoRoot',
         `$hookPath = Join-Path $repoRoot '${hook}'`,
-        'if (-not (Test-Path -LiteralPath $hookPath -PathType Leaf)) { [Console]::Error.WriteLine("codex wrapper: $hookPath not found; the guard did not run"); exit 2 }',
+        'if (-not (Test-Path -LiteralPath $hookPath -PathType Leaf)) { D "codex wrapper: $hookPath not found; the guard did not run" }',
         '$startInfo = New-Object System.Diagnostics.ProcessStartInfo',
         "$startInfo.FileName = 'node'",
         argumentsLine,
@@ -326,7 +333,7 @@ function windowsHookCommand(command) {
         // wait instead — the child has, after all, already exited, which is
         // WHY the copy faulted — never reporting it as a stdin timeout.
         'try { $stdinOk = $copyTask.Wait($guardBudgetMs) } catch { $stdinOk = $true }',
-        'if (-not $stdinOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: stdin timed out after $guardBudgetMs ms"); exit 2 }',
+        'if (-not $stdinOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; D "codex wrapper: stdin timed out after $guardBudgetMs ms" }',
         '$child.StandardInput.Close()',
         '$guardRemainingMs = [Math]::Max(0, $guardBudgetMs - $guardStopwatch.ElapsedMilliseconds)',
         '$guardOk = $child.WaitForExit($guardRemainingMs)',
@@ -336,7 +343,8 @@ function windowsHookCommand(command) {
         // time actually left after the stdin copy, which is always a few ms
         // below the configured bound once the copy has spent any time at
         // all.
-        'if (-not $guardOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; [Console]::Error.WriteLine("codex wrapper: guard timed out after $guardBudgetMs ms"); exit 2 }',
+        'if (-not $guardOk) { try { taskkill /PID $child.Id /T /F 2>&1 | Out-Null } catch {}; D "codex wrapper: guard timed out after $guardBudgetMs ms" }',
+        'if ($child.ExitCode -eq 2) { D "Rig guard refused this operation" }',
         'exit $child.ExitCode',
       ]
     : [
@@ -392,7 +400,7 @@ function codexHooks(settings) {
             const projected = {
               ...hook,
               command,
-              commandWindows: windowsHookCommand(hook.command),
+              commandWindows: windowsHookCommand(hook.command, event),
             };
             // Added by the projection itself, never spread from the Claude
             // source — see BOUNDED_STAGE_HOOKS_TIMEOUT_SECONDS above.

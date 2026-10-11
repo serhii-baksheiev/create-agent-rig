@@ -36,7 +36,7 @@ import { describe, expect, it } from 'vitest';
 import { gitEnv as withoutGitLocation } from '../../packages/cli/src/lib/git-env.js';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
-import { runWindowsWrapper } from '../helpers/codex-windows-wrapper.js';
+import { preToolUseDeny, runWindowsWrapper } from '../helpers/codex-windows-wrapper.js';
 
 const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -78,6 +78,15 @@ const PROMPT_GUARD_SOURCE = [
   "process.stdout.write('RP266-PROBE-OK\\n');",
   'process.exit(7);',
 ].join('\n');
+
+function expectPreToolDeny(result: { code: number; stdout: string; stderr: string }): void {
+  expect(result.code, result.stderr).toBe(0);
+  const deny = preToolUseDeny(result.stdout);
+  expect(deny?.hookSpecificOutput?.hookEventName).toBe('PreToolUse');
+  expect(deny?.hookSpecificOutput?.permissionDecision).toBe('deny');
+  expect(deny?.hookSpecificOutput?.permissionDecisionReason).toEqual(expect.any(String));
+  expect(deny?.hookSpecificOutput?.permissionDecisionReason).not.toBe('');
+}
 
 describe('the Windows Codex wrapper bounds its timeout stages without failing open (RP-266 follow-up)', () => {
   it(
@@ -134,7 +143,7 @@ describe('the Windows Codex wrapper bounds its timeout stages without failing op
             { CLAUDE_PROJECT_DIR: '', RIG_CODEX_WRAPPER_TIMEOUT_MS: '1000' },
             WRAPPER_SAFETY_NET_TIMEOUT_MS,
           );
-          expect(raced.code, `guard exits at ${delayMs} ms: ${raced.stderr}`).toBe(2);
+          expectPreToolDeny(raced);
           expect(raced.stderr, `guard exits at ${delayMs} ms`).toMatch(
             /codex wrapper: .*timed out after 1000 ms/i,
           );
@@ -236,7 +245,7 @@ describe('the Windows Codex wrapper resists a hijacked $repoRoot and a faulted s
           {},
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(hijack.code, hijack.stderr).toBe(2);
+        expectPreToolDeny(hijack);
         expect(hijack.stderr).toMatch(/BLOCKED.*force-pushing a shared branch/i);
       } finally {
         await removeFixture(attackerRoot);
@@ -281,7 +290,8 @@ describe('the Windows Codex wrapper resists a hijacked $repoRoot and a faulted s
           { CLAUDE_PROJECT_DIR: '', RIG_CODEX_WRAPPER_TIMEOUT_MS: '2000' },
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(hung.code, hung.stderr).toBe(2);
+        expectPreToolDeny(hung);
+        expect(hung.stderr).toMatch(/codex wrapper: guard timed out after 2000 ms/i);
         // RP-266 round 3 code blocker: the message must report the
         // CONFIGURED bound (the lowered override in effect), not whatever
         // was left of the shared deadline after the stdin copy — that
@@ -326,7 +336,10 @@ describe('the Windows Codex wrapper resists a hijacked $repoRoot and a faulted s
         // guard's own genuine verdict (2, same code the real guard returns
         // when it blocks), and the wrapper must report exactly that, not an
         // exit 1 the broken-pipe exception would otherwise produce.
-        await writeFile(guardPath, 'process.exit(2);\n');
+        await writeFile(
+          guardPath,
+          "process.stderr.write('BLOCKED — synthetic early-exit guard\\n'); process.exit(2);\n",
+        );
 
         const oversized = await runWindowsWrapper(
           rulebookEncoded!,
@@ -345,7 +358,8 @@ describe('the Windows Codex wrapper resists a hijacked $repoRoot and a faulted s
           { CLAUDE_PROJECT_DIR: '' },
           WRAPPER_SAFETY_NET_TIMEOUT_MS,
         );
-        expect(oversized.code, oversized.stderr).toBe(2);
+        expectPreToolDeny(oversized);
+        expect(oversized.stderr).toMatch(/synthetic early-exit guard/i);
         // RP-321: the wrapper's own failures also exit 2 now, so the 2 above
         // is the guard's only if the wrapper reported nothing of its own.
         expect(oversized.stderr).not.toContain('codex wrapper:');

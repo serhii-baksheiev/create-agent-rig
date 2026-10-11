@@ -73,16 +73,18 @@ in the generator's `test/template/codex.test.ts` (absent in a generated rig) ›
 "the POSIX Codex command puts no bound of its own on the root lookup: a
 stalled git rev-parse keeps the hook waiting".
 
-The mild one: if Git is absent or the session is outside a worktree, the
-generated command exits before the hook runs and therefore cannot return the
-blocking exit code — a fail-open boundary.
+The mild one applies to the POSIX command: if Git is absent or the session is
+outside a worktree, it exits before the hook runs and cannot return the blocking
+exit code — a fail-open boundary. The bounded Windows guard wrappers refuse a
+failed root lookup or a missing hook through the structured denial described
+below.
 
 🔴 The sharp one, stated because a reader who only saw the first would infer
 cover that is not there: **the root is resolved from the session's working
 directory, which the agent controls, so the hook that runs is whichever file
 sits at that path.** An agent that creates a repository of its own and works
-from inside it supplies its own `.claude/hooks/*.mjs`. Measured on this branch:
-the emitted `guard-bash` command exits 2 on a force-push payload from the real
+from inside it supplies its own `.claude/hooks/*.mjs`. Measured with the POSIX
+command: the emitted `guard-bash` command exits 2 on a force-push payload from the real
 repository root, and exits 0 from an agent-created repository holding a no-op
 hook of the same name. That is guard *substitution*, not merely fail-open.
 
@@ -103,16 +105,16 @@ What this costs is worth naming, and the first draft of this paragraph understat
 it. "Drift-resistant, not adversary-resistant" is wrong: **no adversary is
 required.** A session whose cwd sits inside any repository that is not this one —
 a vendored dependency with its own `.git`, a fixture repo, a scratch `git init` —
-resolves a root with no `.claude/hooks` in it, and the emitted command exits 1.
-Measured: exit 2 from the rig root, **exit 1 from a nested repository**, exit 1
+resolves a root with no `.claude/hooks` in it, and the POSIX command exits 1.
+Measured with that command: exit 2 from the rig root, **exit 1 from a nested repository**, exit 1
 outside a worktree. Exit 1 is not the blocking code, so the hook layer is simply
 gone, silently, for ordinary reasons.
 
-So state it plainly: under Codex the hook layer holds when the session works from
-the rig's own root and is absent otherwise, which is one layer less than under
-Claude Code, where the harness sets the root. The layers behind it — review, the
-test suite, CI — are unchanged, and they are what this rig relies on for the
-Codex path.
+Under Codex the POSIX hook layer holds when the session works from the rig's
+own root and is absent otherwise. The bounded Windows guard wrappers refuse a
+missing hook, but resolving a different repository with its own hook still
+permits substitution. Claude Code sets the project root. Review, the test suite
+and CI remain the layers behind these documented boundaries.
 
 ## Schema and executable contracts
 
@@ -154,8 +156,8 @@ On Windows, the four guard hooks that gate an edit or a shell command
 inside a generated wrapper that bounds every stage of its own work —
 resolving the repository root, copying stdin to the guard, and waiting on the
 guard itself. Once any one stage's bound is crossed, the wrapper kills that
-stage's whole process tree and blocks with exit 2, naming the stage that
-expired in its stderr message, unconditionally — never silently falling
+stage's whole process tree and emits a structured PreToolUse denial, naming the
+stage that expired in its stderr message, unconditionally — never silently falling
 through to a harness default that would treat the hang as an allow (see
 generator's `test/template/codex.test.ts` (absent in a generated rig) ›
 "bounds every Windows wrapper stage for %s, kills the process tree on expiry,
@@ -169,3 +171,16 @@ raising one or throwing (see generator's `test/template/codex.test.ts`
 (absent in a generated rig) › "lets a test-only RIG_CODEX_WRAPPER_TIMEOUT_MS
 override lower %s's per-stage bounds through Math.Min alone, and never raise
 them (RP-266 follow-up)").
+
+The Windows projection translates a guard's blocking exit 2 into stdout JSON
+`hookSpecificOutput` with `hookEventName: "PreToolUse"` and
+`permissionDecision: "deny"`, then exits 0. The reason identifies the Rig
+refusal; the guard's detailed diagnostic remains on stderr. This translation
+also covers wrapper failures and expired stage bounds. An outer PowerShell
+`-Command` can turn a nested process's exit 2 into exit 1, which Codex treats as
+a failed hook without a denial. Explicit JSON with exit 0 preserves refusal
+through that launch chain (RP-498). Direct guard invocation and Claude Code
+retain their exit-2 contract; lifecycle hooks are unchanged. The generator's
+`test/template/codex-refusal-contract.test.ts` exercises the outer PowerShell
+launch, safe controls and these failure paths. Hook activation still requires
+normal Codex trust; deterministic wrapper tests do not prove live activation.

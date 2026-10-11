@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
+import { preToolUseDeny } from '../helpers/codex-windows-wrapper.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -618,11 +619,11 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       args: string[],
       options: Parameters<typeof execFile>[2],
       stdinPayload: string = payload,
-    ): Promise<{ code: number }> =>
+    ): Promise<{ code: number; stdout: string }> =>
       new Promise((resolve, reject) => {
-        const child = execFile(executable, args, options, (error) => {
+        const child = execFile(executable, args, options, (error, stdout) => {
           const code = error ? ((error as { code?: number }).code ?? 1) : 0;
-          resolve({ code });
+          resolve({ code, stdout: String(stdout) });
         });
         if (!child.stdin) {
           reject(new Error('no stdin'));
@@ -632,7 +633,9 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
         child.stdin.end();
       });
 
-    const runClaudeGuard = (stdinPayload: string = payload): Promise<{ code: number }> =>
+    const runClaudeGuard = (
+      stdinPayload: string = payload,
+    ): Promise<{ code: number; stdout: string }> =>
       withStdin(
         process.execPath,
         [guardPath],
@@ -657,19 +660,19 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
 
     /** The literal Codex `hooks.json` wiring, never a direct node call — mirrors
      * `unattended-posture.test.ts`'s `runCodexGuard` shape exactly. */
-    const runCodexGuard = async (stdinPayload: string = payload): Promise<{ code: number }> => {
+    const runCodexGuard = async (
+      stdinPayload: string = payload,
+    ): Promise<{ code: number; stdout: string }> => {
       const entry = await findCodexGuardEntry();
       const guardEnv: NodeJS.ProcessEnv = { ...baseEnv(), RIG_RUN_DIR: runDirA };
       if (process.platform === 'win32') {
         if (entry.commandWindows === undefined) {
           throw new Error('no commandWindows on the Codex hook entry');
         }
-        const parts = entry.commandWindows.trim().split(/\s+/);
-        const encoded = parts[parts.length - 1];
         delete guardEnv.NoDefaultCurrentDirectoryInExePath;
         return withStdin(
           'powershell.exe',
-          ['-NoProfile', '-NonInteractive', '-EncodedCommand', String(encoded)],
+          ['-NoProfile', '-Command', entry.commandWindows],
           { cwd: repo, env: guardEnv },
           stdinPayload,
         );
@@ -683,6 +686,15 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
       );
     };
 
+    const expectWindowsCodexDeny = (result: { code: number; stdout: string }): void => {
+      expect(result.code).toBe(0);
+      const deny = preToolUseDeny(result.stdout);
+      expect(deny?.hookSpecificOutput?.hookEventName).toBe('PreToolUse');
+      expect(deny?.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(deny?.hookSpecificOutput?.permissionDecisionReason).toEqual(expect.any(String));
+      expect(deny?.hookSpecificOutput?.permissionDecisionReason).not.toBe('');
+    };
+
     // Brake absent: an ordinary command is allowed on both surfaces...
     expect((await runClaudeGuard()).code).toBe(0);
     expect((await runCodexGuard()).code).toBe(0);
@@ -690,7 +702,9 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
     // is guard-bash's own force-push rule holding with no brake in play at
     // all, not the kill-switch assertion below wearing a different payload.
     expect((await runClaudeGuard(forcePushPayload)).code).toBe(2);
-    expect((await runCodexGuard(forcePushPayload)).code).toBe(2);
+    const codexForcePush = await runCodexGuard(forcePushPayload);
+    if (process.platform === 'win32') expectWindowsCodexDeny(codexForcePush);
+    else expect(codexForcePush.code).toBe(2);
 
     // Hand-plant the brake under the FAKE home only — never via a helper that
     // mirrors into the real OS home, and never the real home itself.
@@ -702,7 +716,9 @@ describe('the 1.5.0 delegated-authority model end to end on a generated workflow
     await writeFile(brakePath, '');
 
     expect((await runClaudeGuard()).code).toBe(2);
-    expect((await runCodexGuard()).code).toBe(2);
+    const codexStopped = await runCodexGuard();
+    if (process.platform === 'win32') expectWindowsCodexDeny(codexStopped);
+    else expect(codexStopped.code).toBe(2);
 
     await rm(brakePath);
   }, 120_000);
