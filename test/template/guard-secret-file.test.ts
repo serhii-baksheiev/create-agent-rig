@@ -7,7 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { ATLASSIAN_TOKEN, CLOUD_ACCESS_KEY, GITHUB_PAT, PEM_HEADER } from './secrets-fixtures.js';
+import {
+  ANTHROPIC_KEY,
+  ATLASSIAN_TOKEN,
+  CLOUD_ACCESS_KEY,
+  GITHUB_PAT,
+  PEM_HEADER,
+} from './secrets-fixtures.js';
 import { runNodeTimed } from '../helpers/child-timing.js';
 import { needsGitRoot, onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
@@ -1919,6 +1925,69 @@ describe('guard-secret-file: a Move hunk opens implicitly without `@@`, matching
 
   it('allows a Move with no hunk lines at all, a pure rename (control, pins current behaviour)', async () => {
     const result = await runHook(moveCommand([]), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
+
+// RP-481. Codex's apply_patch matches an Update's context with Unicode
+// punctuation normalisation and then writes the patch's own context text, so a
+// context line can carry a credential into the file. The non-move fragment held
+// only the `+` lines.
+describe('guard-secret-file: a non-move Update scans its context lines too (RP-481)', () => {
+  let fixtureRoot = '';
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp481-update-root-')));
+    await run('git', ['init', '-q', fixtureRoot]);
+    await mkdir(path.join(fixtureRoot, 'src'), { recursive: true });
+    await writeFile(
+      path.join(fixtureRoot, 'src', 'a.txt'),
+      `token = ${ANTHROPIC_KEY.replaceAll('-', '\u2010')}\n`,
+    );
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+  });
+
+  const updateCommand = (hunkLines: string[]) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: [
+        '*** Begin Patch',
+        '*** Update File: src/a.txt',
+        ...hunkLines,
+        '*** End Patch',
+      ].join('\n'),
+    },
+  });
+
+  it('refuses a context line that carries a credential, with an ordinary addition after it', async () => {
+    const result = await runHook(
+      updateCommand(['@@', ` token = ${ANTHROPIC_KEY}`, '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('src/a.txt');
+  });
+
+  it('refuses a context-only Update whose context carries a credential', async () => {
+    const result = await runHook(
+      updateCommand(['@@', ` token = ${ANTHROPIC_KEY}`]),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('allows an Update whose context and addition carry no credential (control)', async () => {
+    const result = await runHook(
+      updateCommand(['@@', ' const before = 1;', '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
     expect(result.code, result.stderr).toBe(0);
   });
 });

@@ -2,7 +2,8 @@
  * Normalise the edit surfaces exposed by Claude Code and Codex.
  *
  * Claude sends Write/Edit fields directly. Codex sends an apply_patch command,
- * so added lines are returned for ordinary edits. A move is different: the
+ * so the lines it writes — added and context lines — are returned for
+ * ordinary edits. A move is different: the
  * destination receives the existing file too, so guards inspect the resulting
  * content instead of only the patch additions when inspection succeeds. A
  * removal — a `*** Delete File:` section, or the source half of a
@@ -452,7 +453,9 @@ function patchFragments(command, payloadCwd) {
       current.hunks.push(current.activeHunk);
       continue;
     }
-    if (current !== null && line.startsWith('+')) current.additions.push(line.slice(1));
+    if (current !== null && (line.startsWith('+') || (current.updates && line.startsWith(' ')))) {
+      current.additions.push(line.slice(1));
+    }
     if (current?.updates && current.activeHunk === null && /^(?:[-+ ]|$)/.test(line)) {
       current.activeHunk = { lines: [] };
       current.hunks.push(current.activeHunk);
