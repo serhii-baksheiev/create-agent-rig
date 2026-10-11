@@ -47,7 +47,7 @@ import {
   itemRecordPathFor,
   readItemRecordFile,
 } from './lib/item-records.mjs';
-import { playwrightPin } from './lib/provider-provenance.mjs';
+import { playwrightPin, playwrightPinCredentialShaped } from './lib/provider-provenance.mjs';
 
 /** What an external producer may say about its own artifact — data, never a Rig verdict. */
 export const ADVISORY_DECISIONS = Object.freeze(['pass', 'concerns', 'fail']);
@@ -435,6 +435,16 @@ const runAttach = async (argv, cwd) => {
   let producerVersion = options.producerVersion;
   let producerVersionSource = producerVersion === undefined ? undefined : 'stated';
   if (options.producer === 'playwright-mcp') {
+    // A credential-shaped configured pin reads as null from `playwrightPin`
+    // exactly like a dist-tag or a range does — "no exact version" either
+    // way — so this is checked first, unconditionally: it is the only way to
+    // refuse the credential case even when a clean --producer-version was
+    // also given and the null pin otherwise leaves nothing to disagree with.
+    if (playwrightPinCredentialShaped(projectRoot)) {
+      return refuse(
+        'the configured Playwright MCP pin carries a credential-shaped value; it is never recorded.',
+      );
+    }
     const pin = await playwrightPin(projectRoot);
     if (producerVersion === undefined) {
       if (pin === null) {
@@ -445,11 +455,19 @@ const runAttach = async (argv, cwd) => {
       }
       producerVersion = pin;
       producerVersionSource = 'declared';
-    } else if (pin !== null && pin !== producerVersion) {
-      return refuse(
-        `--producer-version ${producerVersion} disagrees with Playwright MCP ${pin}, the version the ` +
-          "rig's own wiring launches.",
-      );
+    } else {
+      // The stated value clears its own two checks (shape, credential-shape)
+      // BEFORE it is ever interpolated into the disagreement message below —
+      // `producerVersionProblem`'s refusal never echoes the value it refuses,
+      // and the disagreement refusal does.
+      const statedProblem = producerVersionProblem(producerVersion);
+      if (statedProblem) return refuse(statedProblem);
+      if (pin !== null && pin !== producerVersion) {
+        return refuse(
+          `--producer-version ${producerVersion} disagrees with Playwright MCP ${pin}, the version the ` +
+            "rig's own wiring launches.",
+        );
+      }
     }
   } else if (options.producer === 'bmad-tea' && producerVersion === undefined) {
     return refuse(

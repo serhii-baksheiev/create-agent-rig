@@ -40,6 +40,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
 import { skipUnless, symlinksAvailable } from '../helpers/env.js';
+import { CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
@@ -311,6 +312,19 @@ describe('provider-provenance.mjs — specKitVersion', () => {
     expect(await specKitVersion(root)).toEqual({ version: null, source: 'unknown' });
   });
 
+  // A credential-shaped value is a valid EXACT_VERSION pre-release suffix too
+  // (alphanumeric, 1-40 chars) — versionOrNull's semver shape check alone
+  // does not reject it. It must read as unknown, exactly like any other
+  // value that fails validation, never handed back verbatim.
+  it('rule: a credential-shaped speckit_version reads as unknown — never returned verbatim', async () => {
+    const root = await newProjectRoot();
+    await writeJson(path.join(root, '.specify', 'init-options.json'), {
+      speckit_version: `1.0.0-${CLOUD_ACCESS_KEY}`,
+    });
+    const { specKitVersion } = await loadModule();
+    expect(await specKitVersion(root)).toEqual({ version: null, source: 'unknown' });
+  });
+
   it('rule: a malformed declared version token reads as unknown rather than returned verbatim', async () => {
     const root = await newProjectRoot();
     await writeJson(path.join(root, '.rig', 'integrations.json'), {
@@ -476,6 +490,26 @@ describe('provider-provenance.mjs — probityProvenance', () => {
       declared: '1.10.1',
       installed: null,
     });
+  });
+
+  // A credential-shaped value is a valid EXACT_VERSION pre-release suffix too
+  // (alphanumeric, 1-40 chars) — versionOrNull's semver shape check alone
+  // does not reject it, on either the declared or the installed side. Both
+  // must read as null, and the serialized result must never carry the
+  // credential — this is what reaches Probity's own journalled provenance.
+  it('rule: a credential-shaped declared AND installed probity version both read as null, and the serialized result never carries the credential', async () => {
+    const root = await newProjectRoot();
+    const credentialVersion = `1.0.0-${CLOUD_ACCESS_KEY}`;
+    await withProbityEntry(root, { version: credentialVersion, selected: true });
+    await withInstalledProbity(root, credentialVersion);
+    const { probityProvenance } = await loadModule();
+    const result = await probityProvenance(root);
+    expect(result).toEqual({
+      selected: true,
+      declared: null,
+      installed: null,
+    });
+    expect(JSON.stringify(result)).not.toContain(CLOUD_ACCESS_KEY);
   });
 
   it('rule: invalid JSON in node_modules/@nizos/probity/package.json reads as installed: null, never throws', async () => {

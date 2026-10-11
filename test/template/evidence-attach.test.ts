@@ -1767,6 +1767,57 @@ describe('evidence-attach.mjs attach — producer-aware version provenance (RP-4
     expect(await readEventsFor(runDir)).toEqual(before);
   });
 
+  // --- the disagreement refusal must never echo either side's credential ----
+  //
+  // The two checks a stated --producer-version clears — PRODUCER_VERSION
+  // shape and findSecretValues — run in `producerVersionProblem`, but the
+  // pin-vs-stated comparison above it returns its own refusal first, and that
+  // refusal interpolates both `producerVersion` and `pin` verbatim into the
+  // message. A credential-shaped value on either side of a genuine
+  // disagreement is echoed before `producerVersionProblem` ever sees it.
+
+  it('a credential-shaped --producer-version that also disagrees with a clean configured pin: refused, never echoes the credential', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    await writeMcpPin(dir, '0.0.83');
+    const before = await readEventsFor(runDir);
+    const credentialVersion = `1.0.0-${CLOUD_ACCESS_KEY}`;
+    const result = await runCli(
+      attachArgs({
+        ...VALID_REF,
+        producer: 'playwright-mcp',
+        producerVersion: credentialVersion,
+      }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).not.toContain(CLOUD_ACCESS_KEY);
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
+  it('a credential-shaped configured pin that also disagrees with a clean stated --producer-version: refused, never echoes the credential', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const credentialPin = `1.0.0-${CLOUD_ACCESS_KEY}`;
+    await writeMcpPin(dir, credentialPin);
+    const before = await readEventsFor(runDir);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp', producerVersion: '1.0.0' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).not.toContain(CLOUD_ACCESS_KEY);
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
   // --- bmad-tea --------------------------------------------------------------
 
   it('bmad-tea with no --producer-version: refused, writes nothing', async () => {
