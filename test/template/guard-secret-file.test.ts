@@ -1848,3 +1848,77 @@ describe('guard-secret-file: a checkout is judged by its repo-relative path', ()
     expect(result.code, result.stderr).toBe(2);
   });
 });
+
+// RP-480. Before this fix `patchFragments` collected a Move's hunk lines only
+// after an `@@` line, while Codex's `UpdateFile` mode in
+// `codex-rs/apply-patch/src/streaming_parser.rs` opens a chunk on the first
+// context, added, removed or empty line. A Move with no `@@` therefore wrote
+// its `+` line to the destination while the scanned fragment was the unchanged
+// source.
+describe('guard-secret-file: a Move hunk opens implicitly without `@@`, matching Codex (RP-480)', () => {
+  let fixtureRoot = '';
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp480-move-root-')));
+    await run('git', ['init', '-q', fixtureRoot]);
+    await mkdir(path.join(fixtureRoot, 'src'), { recursive: true });
+    await writeFile(path.join(fixtureRoot, 'src', 'a.txt'), 'hello\n');
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+  });
+
+  const movePatch = (hunkLines: string[]) =>
+    [
+      '*** Begin Patch',
+      '*** Update File: src/a.txt',
+      '*** Move to: src/b.txt',
+      ...hunkLines,
+      '*** End Patch',
+    ].join('\n');
+
+  const moveCommand = (hunkLines: string[]) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: { command: movePatch(hunkLines) },
+  });
+
+  it('refuses a Move credential addition with no `@@` header, for the same reason the `@@` spelling gets', async () => {
+    const credentialLine = `+aws_access_key_id = ${CLOUD_ACCESS_KEY}`;
+
+    const withHeader = await runHook(moveCommand(['@@', credentialLine]), {}, fixtureRoot);
+    expect(withHeader.code, withHeader.stderr).toBe(2);
+    expect(withHeader.stderr).toContain('cloud-access-key');
+
+    const withoutHeader = await runHook(moveCommand([credentialLine]), {}, fixtureRoot);
+    expect(withoutHeader.code, withoutHeader.stderr).toBe(2);
+    expect(withoutHeader.stderr).toContain('cloud-access-key');
+    expect(withoutHeader.stderr).toContain('src/b.txt');
+  });
+
+  it('refuses a Move credential addition preceded by a matching context line, with no `@@` header', async () => {
+    const credentialLine = `+aws_access_key_id = ${CLOUD_ACCESS_KEY}`;
+
+    const result = await runHook(moveCommand([' hello', credentialLine]), {}, fixtureRoot);
+
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('cloud-access-key');
+    expect(result.stderr).toContain('src/b.txt');
+  });
+
+  it('allows a Move addition that carries no credential, with no `@@` header (control)', async () => {
+    const result = await runHook(moveCommand(['+export const ordinary = true;']), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('allows a context-only Move with no `@@` header whose context matches the source (control)', async () => {
+    const result = await runHook(moveCommand([' hello']), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('allows a Move with no hunk lines at all, a pure rename (control, pins current behaviour)', async () => {
+    const result = await runHook(moveCommand([]), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
