@@ -137,7 +137,7 @@ function main() {
     .replaceAll('\\', '/')
     .replace(/\/+$/, '');
   let refused = false;
-  for (const { filePath, fragment, inspectionRefusal } of fragments) {
+  for (const { filePath, fragment, inspectionRefusal, possibleContent } of fragments) {
     const relativePath =
       projectDir !== '' && filePath.startsWith(`${projectDir}/`)
         ? filePath.slice(projectDir.length + 1)
@@ -162,7 +162,10 @@ function main() {
       continue;
     }
 
-    const findings = findSecretValues(fragment);
+    let findings = findSecretValues(fragment);
+    if (findings.length === 0 && typeof possibleContent === 'string') {
+      findings = findSecretValues(possibleContent);
+    }
     if (findings.length === 0) continue;
     refused = true;
     process.stderr.write(
