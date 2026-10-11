@@ -2167,11 +2167,8 @@ describe('guard-secret-file: a Move fragment covers every line Codex can write (
   });
 });
 
-// RP-483. Codex-parity shapes for the RP-479..RP-484 apply_patch fixes, each
-// checked against native codex-cli 0.161.0 apply_patch before it was pinned:
-// a refusal here is a patch Codex applies with the credential in the written
-// file, and an allow is one Codex applies without writing one. The two tests
-// named as fail-closed are the exceptions: Codex writes no credential there.
+// RP-483. Regression shapes for the RP-479..RP-484 apply_patch fixes. Tests
+// named fail-closed pin known over-refusals rather than credential writes.
 describe('guard-secret-file: Codex apply_patch parity shapes (RP-483)', () => {
   let fixtureRoot = '';
 
@@ -2234,7 +2231,7 @@ describe('guard-secret-file: Codex apply_patch parity shapes (RP-483)', () => {
       expect(result.code, result.stderr).toBe(0);
     });
 
-    it('refuses a context line that repeats a credential already in the file', async () => {
+    it('refuses a context line that repeats a credential already in the file (fail-closed: the credential is already there)', async () => {
       await source(`${keyLine}\nafter\n`);
       const result = await runHook(update(['@@', ` ${keyLine}`, ' after', '+x']), {}, fixtureRoot);
       expect(result.code, result.stderr).toBe(2);
@@ -2303,13 +2300,35 @@ describe('guard-secret-file: Codex apply_patch parity shapes (RP-483)', () => {
       expect(result.code, result.stderr).toBe(2);
     });
 
-    it('refuses a credential at the very end of a source at the move-inspection size limit', async () => {
-      const filler = 'x'.repeat(1023);
-      const lines = Math.floor((1024 * 1024 - keyLine.length - 2) / 1024);
-      await source(`${`${filler}\n`.repeat(lines)}${keyLine}\n`);
-      const result = await runHook(move(['@@', ` ${filler}`, '+ordinary']), {}, fixtureRoot);
+    it('refuses a credential at the very end of a maximum-size Move: a 1 MiB source plus a 1 MiB patch', async () => {
+      // The context names the source's unique last line, so both the rebuild
+      // and the scanned superset carry the credential at their very end.
+      const last = 'z'.repeat(1023);
+      await source(`${`${'x'.repeat(1023)}\n`.repeat(1023)}${last}\n`);
+      const head = [
+        '*** Begin Patch',
+        '*** Update File: src/a.txt',
+        '*** Move to: src/b.txt',
+        '@@',
+        ` ${last}`,
+      ];
+      const tail = [`+${keyLine}`, '*** End Patch'];
+      const added = `+${'y'.repeat(999)}`;
+      const fixed = [...head, ...tail].join('\n').length + 1;
+      const addedLines = Array<string>(Math.floor((1024 * 1024 - fixed) / (added.length + 1))).fill(
+        added,
+      );
+      const command = [...head, ...addedLines, ...tail].join('\n');
+      expect(command.length).toBeLessThanOrEqual(1024 * 1024);
+      expect(command.length).toBeGreaterThan(1024 * 1024 - 1024);
+      const result = await runHook(
+        { hook_event_name: 'PreToolUse', tool_name: 'apply_patch', tool_input: { command } },
+        {},
+        fixtureRoot,
+      );
       expect(result.code, result.stderr).toBe(2);
-      expect(result.stderr).toContain('src/b.txt');
+      expect(result.stderr).toContain('anthropic-key');
+      expect(result.stderr).not.toContain('cannot safely inspect');
     });
   });
 });
