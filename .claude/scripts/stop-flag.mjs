@@ -60,9 +60,13 @@ export const stopFlags = (env = process.env) => {
 
 /**
  * The first of `paths` that arms the brake, as `{ path, code }` — `code` set
- * when the flag could not be inspected — or null. Only ENOENT and ENOTDIR mean
- * "no flag here": a flag that cannot be inspected (EACCES behind a chmod-000
- * directory) arms the brake, where `existsSync` once read it as absent (RP-462).
+ * when the flag could not be inspected — or null. ENOENT, ENOTDIR and
+ * ENAMETOOLONG mean "no flag here": a flag that cannot be inspected (EACCES
+ * behind a chmod-000 directory) arms the brake, where `existsSync` once read
+ * it as absent (RP-462). ENAMETOOLONG joins that set because a name the OS
+ * cannot even resolve cannot be a file anyone created, and `stopFlags` can
+ * only ADD paths — including the raw, unsplit value — so treating an
+ * unresolvable one as absent can never switch a real flag off (RP-466).
  */
 export const armedFlag = (paths) => {
   for (const path of paths) {
@@ -70,7 +74,7 @@ export const armedFlag = (paths) => {
       statSync(path);
       return { path, code: null };
     } catch (error) {
-      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') continue;
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR' || error?.code === 'ENAMETOOLONG') continue;
       return { path, code: error?.code ?? 'unknown error' };
     }
   }

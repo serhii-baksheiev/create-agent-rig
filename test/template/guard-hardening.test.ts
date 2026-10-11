@@ -556,6 +556,145 @@ describe('RP-462: a STOP path that exists but cannot be inspected is denied, not
   });
 });
 
+describe('RP-466: a STOP path that is too long to stat is not read as armed', () => {
+  // `stopFlags` pushes the RAW, unsplit `AGENT_LOOP_STOP` value as a path of its
+  // own (`paths.push(extra, ...extras)`, intentional since 500c64cb — a single
+  // path containing the platform delimiter must still arm the brake). That raw
+  // value is checked by `armedFlag` BEFORE the split entries ever are. Two
+  // ordinary, harmless inputs make `statSync` throw ENAMETOOLONG on that raw
+  // value alone — the whole joined string exceeding PATH_MAX (shape A), or the
+  // join swallowing a path separator into one over-length filename (shape B,
+  // e.g. a relative second entry with no `/` of its own) — and `armedFlag`
+  // currently treats every code except ENOENT/ENOTDIR as armed. The decided fix
+  // adds ENAMETOOLONG to the codes that mean "no flag here".
+  it('shape A: two valid entries whose JOINED length alone exceeds PATH_MAX are not armed', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'rp466-shapea-'));
+    try {
+      // Each entry is a real path shape (nested components, each well under the
+      // 255-char NAME_MAX) that does not exist on disk. Neither entry alone is
+      // too long; only the two of them joined by `path.delimiter` are.
+      const entryA = path.join(
+        dir,
+        'a'.repeat(230),
+        'b'.repeat(230),
+        'c'.repeat(230),
+        'd'.repeat(230),
+      );
+      const entryB = path.join(
+        dir,
+        'e'.repeat(230),
+        'f'.repeat(230),
+        'g'.repeat(230),
+        'h'.repeat(230),
+      );
+      const joined = `${entryA}${path.delimiter}${entryB}`;
+      expect(joined.length, 'the fixture must actually exceed PATH_MAX').toBeGreaterThan(1100);
+
+      const { stopFlags, armedFlag } = await import(
+        pathToFileURL(path.join(scripts, 'stop-flag.mjs')).href
+      );
+      const env = { HOME: dir, AGENT_LOOP_STOP: joined };
+      expect(
+        (armedFlag as (p: string[]) => unknown)((stopFlags as (e: typeof env) => string[])(env)),
+        'nothing on disk names either entry, so this must read as not armed',
+      ).toBe(null);
+
+      await allow('gh pr merge 12 --squash', env);
+    } finally {
+      await removeFixture(dir);
+    }
+  });
+
+  it('shape B: two short entries whose join forms one over-length component are not armed', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'rp466-shapeb-'));
+    try {
+      // The second entry is RELATIVE (no `/` of its own, as in the diagnosis),
+      // so when it is appended after the delimiter it becomes part of the SAME
+      // filename component as the tail of the first entry rather than a
+      // separate path segment.
+      const first = path.join(dir, 'a'.repeat(200));
+      const second = 'b'.repeat(200);
+      const joined = `${first}${path.delimiter}${second}`;
+      const lastComponent = joined.split(path.sep).pop() ?? '';
+      expect(
+        lastComponent.length,
+        'the fixture must form a single over-length component',
+      ).toBeGreaterThan(255);
+      expect(joined.length, 'the whole value must stay well under PATH_MAX').toBeLessThan(1024);
+
+      const { stopFlags, armedFlag } = await import(
+        pathToFileURL(path.join(scripts, 'stop-flag.mjs')).href
+      );
+      const env = { HOME: dir, AGENT_LOOP_STOP: joined };
+      expect(
+        (armedFlag as (p: string[]) => unknown)((stopFlags as (e: typeof env) => string[])(env)),
+        'nothing on disk names either entry, so this must read as not armed',
+      ).toBe(null);
+
+      await allow('gh pr merge 12 --squash', env);
+    } finally {
+      await removeFixture(dir);
+    }
+  });
+
+  it('control: the same over-length value still denies when the second entry is a real STOP file', async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), 'rp466-control-real-'));
+    try {
+      const entryA = path.join(
+        dir,
+        'a'.repeat(230),
+        'b'.repeat(230),
+        'c'.repeat(230),
+        'd'.repeat(230),
+      );
+      const real = path.join(dir, 'REAL-STOP');
+      await writeFile(real, '');
+      const joined = `${entryA}${path.delimiter}${real}`;
+      expect(joined.length, 'the fixture must still exceed PATH_MAX').toBeGreaterThan(1024);
+
+      const stderr = await new Promise<string>((resolve) => {
+        const child = execFile(
+          process.execPath,
+          [hook],
+          { env: { ...process.env, HOME: dir, AGENT_LOOP_STOP: joined }, timeout: 10_000 },
+          (_error, _stdout, err) => resolve(String(err)),
+        );
+        child.stdin?.end(
+          JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'gh pr merge 12 --squash' } }),
+        );
+      });
+      expect(stderr).toMatch(/kill switch/);
+
+      await deny('gh pr merge 12 --squash', { HOME: dir, AGENT_LOOP_STOP: joined });
+    } finally {
+      await removeFixture(dir);
+    }
+  });
+
+  it('control: a single path that is itself too long to exist is not armed', async () => {
+    // Consistent with the decided fix: ENAMETOOLONG joins the "no file here"
+    // codes, and a path this long cannot exist as a real STOP flag either way.
+    const dir = await mkdtemp(path.join(tmpdir(), 'rp466-single-'));
+    try {
+      const long = path.join(dir, 'x'.repeat(300));
+      expect(long.length).toBeLessThan(1024);
+
+      const { stopFlags, armedFlag } = await import(
+        pathToFileURL(path.join(scripts, 'stop-flag.mjs')).href
+      );
+      const env = { HOME: dir, AGENT_LOOP_STOP: long };
+      expect(
+        (armedFlag as (p: string[]) => unknown)((stopFlags as (e: typeof env) => string[])(env)),
+        'a single component this long cannot name a real file, so this must read as not armed',
+      ).toBe(null);
+
+      await allow('gh pr merge 12 --squash', env);
+    } finally {
+      await removeFixture(dir);
+    }
+  });
+});
+
 // ── The limits, and the rule that made this round necessary ──────────────────
 
 describe('the guard does provably bounded work, and says what it cannot see', () => {
