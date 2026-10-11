@@ -575,7 +575,7 @@ describe('the delegated-round budget is spent by the BRANCH, whatever ticket eac
       const round4 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(round4.code, round4.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -604,7 +604,7 @@ describe('the delegated-round budget is spent by the BRANCH, whatever ticket eac
       const round5 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-2', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(round5.code, round5.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(5);
@@ -881,10 +881,14 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       await branchAndPush(dir, 'fix/a');
       await exhaustBaseCap(dir, 'fix/a', cfg);
 
+      // Every OTHER check on the path passes: a declared delegated authority
+      // for the consuming call itself — so this refusal is isolated to there
+      // being no authorization record at all.
+      const runDir = await delegatedRunDir();
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
@@ -931,7 +935,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code, result.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -981,7 +985,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code, result.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1028,7 +1032,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
@@ -1070,7 +1074,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
@@ -1115,7 +1119,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
@@ -1158,7 +1162,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
@@ -1203,7 +1207,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const firstAuthorized = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(firstAuthorized.code, firstAuthorized.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1211,8 +1215,9 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       // The reviewer fan-out's own verdict, at the head the RECORD itself
       // names (`h`) rather than the record-only commit's own head — still
       // inside the chain `authorizedRoundFor` covers. Written into a run
-      // directory under THIS checkout's own `.claude/runs/`, since
-      // gate-round is not told RIG_RUN_DIR here.
+      // directory under THIS checkout's own `.claude/runs/`, which
+      // `authorizedRoundFor` always scans regardless of the consuming call's
+      // own declared `RIG_RUN_DIR` (used below only for its authority).
       const reviewRunDir = path.join(dir, '.claude', 'runs', 'r1');
       await mkdir(reviewRunDir, { recursive: true });
       recordDecision({
@@ -1226,7 +1231,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const secondAuthorized = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(secondAuthorized.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1272,14 +1277,16 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const firstAuthorized = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(firstAuthorized.code, firstAuthorized.out).toBe(0);
 
       // This time the verdict is recorded at the RECORD-ONLY COMMIT's own
       // head (not the head the record names) — the other end of the chain
-      // `authorizedRoundFor` covers, and still consumption.
-      const reviewRunDir = await newRunDir();
+      // `authorizedRoundFor` covers, and still consumption. Also a
+      // delegated-authority run directory, since it is what the second
+      // `--authorized` call below is told as its own `RIG_RUN_DIR`.
+      const reviewRunDir = await delegatedRunDir();
       roots.push(reviewRunDir);
       recordDecision({
         runDir: reviewRunDir,
@@ -1337,7 +1344,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round4 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(round4.code, round4.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1369,7 +1376,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(result.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1416,7 +1423,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round4 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(round4.code, round4.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1451,7 +1458,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round5 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(round5.code, round5.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(5);
@@ -1533,7 +1540,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cloneCfg],
         clone,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(result.code, result.out).toBe(0);
       expect(await roundsFor(cloneCfg, 'fix/a')).toBe(4);
@@ -1591,7 +1598,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
@@ -1638,7 +1645,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const firstAuthorized = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(firstAuthorized.code, firstAuthorized.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1656,7 +1663,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const secondAuthorized = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(secondAuthorized.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1710,7 +1717,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round4 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(round4.code, round4.out).toBe(0);
       // The total cap this project has: maxGateRounds (3, the default) plus
@@ -1749,7 +1756,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       // Nothing was counted — still exactly the total cap from round 4.
@@ -1798,7 +1805,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round4 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(round4.code, round4.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1848,7 +1855,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(result.code).toBe(2);
       // Nothing was counted — still exactly the total cap from round 4.
@@ -1898,7 +1905,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round4 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(round4.code, round4.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -1943,7 +1950,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round5 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(round5.code, round5.out).toBe(0);
       // The total cap with a configured budget of 2: 3 + 2 = 5.
@@ -1979,7 +1986,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const result = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(delegated),
       );
       expect(result.code).toBe(2);
       // Nothing was counted — still exactly the total cap from round 5.
@@ -2045,7 +2052,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const authorized = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(authorized.code, authorized.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -2094,7 +2101,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const round4 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(round4.code, round4.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -2123,9 +2130,209 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const furtherAuthorized = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
-        withoutGitLocation(),
+        envFor(runDir),
       );
       expect(furtherAuthorized.code).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+});
+
+// --- the consuming call's own commit and authority requirements -----------
+//
+// security-scanner, reproduced on 92edefbe: `authorizedRoundFor` reads
+// `.rig/decisions/*.jsonl` from the WORKING TREE, not HEAD's committed tree,
+// and checks no authority of the consuming `--authorized` run at all. A
+// record hand-written straight to disk — never through `record`, never
+// committed, never journalled — is still honoured, and so is a consuming run
+// that declares no delegated authority whatsoever.
+//
+// The fix this file pins (not implemented here): only a COMMITTED record
+// counts, read from HEAD's own tree; and the consuming call must itself run
+// under a journalled delegated authority (`RIG_RUN_DIR` set, `run-state.mjs
+// authority delegated` declared) — the same authority check `record` already
+// runs on its own side.
+describe('gate-round --authorized refuses a bypass of the committed-record and consuming-authority rules (RP-442, security-scanner)', () => {
+  it('refuses when a matching extra-gate-round line exists only in the WORKING TREE, never committed', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h = await head(dir);
+
+      // Hide `.rig/decisions/` from `git status` via a LOCAL, never-committed
+      // exclude — so the generic dirty-tree check (`checkoutIsShippable`)
+      // does not refuse first, and the refusal below is isolated to whether
+      // the authorization itself is committed.
+      await writeFile(path.join(dir, '.git', 'info', 'exclude'), '.rig/decisions/\n');
+
+      // A well-formed `extra-gate-round` line, matching ticket/branch/head
+      // exactly — written directly to disk, bypassing `record` entirely, and
+      // never committed.
+      await mkdir(path.join(dir, '.rig', 'decisions'), { recursive: true });
+      await appendForgedDecisionLine(dir, 'RP-1', { branch: 'fix/a', head: h });
+
+      const statusAfterExclude = await git(['status', '--porcelain'], dir);
+      expect(statusAfterExclude, statusAfterExclude).toBe('');
+
+      // Every OTHER check on the path passes: a declared delegated authority
+      // for the consuming call itself.
+      const runDir = await delegatedRunDir();
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(runDir),
+      );
+      expect(result.code).not.toBe(0);
+      expect(result.out).toMatch(/commit/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('refuses a committed, otherwise-valid authorization when RIG_RUN_DIR is unset on the consuming call', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      // RIG_RUN_DIR deliberately UNSET on the consuming `--authorized` call —
+      // the only thing this test varies from the documented happy path.
+      const result2 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(undefined),
+      );
+      expect(result2.code).not.toBe(0);
+      expect(result2.out).toMatch(/RIG_RUN_DIR|authority/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('refuses a committed, otherwise-valid authorization when RIG_RUN_DIR is set but its journalled authority is owner, not delegated', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h = await head(dir);
+      const delegated = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      // The consuming call's OWN run directory declares owner authority, not
+      // delegated — the only thing this test varies from the documented
+      // happy path.
+      const ownerRunDir = await newRunDir();
+      roots.push(ownerRunDir);
+      await declareAuthority(ownerRunDir, 'owner');
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(ownerRunDir),
+      );
+      expect(result.code).not.toBe(0);
+      expect(result.out).toMatch(/delegated|authority/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // Control: the same committed, matching authorization, consumed by a call
+  // that DOES run under a journalled delegated authority — exactly the
+  // documented happy path, which none of the three refusals above may touch.
+  it('grants the round for a committed authorization consumed under a journalled delegated authority', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const h = await head(dir);
+      const delegated = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          h,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      // The one difference from the three refusals above: the consuming
+      // call itself runs under the SAME delegated-authority run directory.
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(result.code, result.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));

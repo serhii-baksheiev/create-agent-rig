@@ -13,7 +13,7 @@
 //
 //   node .claude/scripts/delegated-decision.mjs record --ticket <id> \
 //        --decision <kind> --summary <text> [--evidence <text>] \
-//        [--release <label>] [--post]
+//        [--release <label>] [--head <sha>] [--post]
 //   node .claude/scripts/delegated-decision.mjs list --ticket <id> [--json]
 //   node .claude/scripts/delegated-decision.mjs resolve --stop <item-stop-id> [--json]
 //
@@ -160,13 +160,20 @@
 //   See `describe('delegated-decision.mjs list — refuses a forged record as
 //   unreadable')` and the matching `parseDecisions(text, { ticket })` cases
 //   under `describe('delegated-decision.mjs — exported pure helpers')`.
-// - Recording bypasses no mechanical gate: this module never writes to a run
-//   journal's `decisions.jsonl` — a delegated decision is a run EVENT
-//   (`recordEvent`, kind `delegated-decision`), never a gate VERDICT — and
-//   never calls `revalidate.mjs`, `queue/core.mjs`, or `verdict.mjs`, and
-//   neither of those three ever references `.rig/decisions` or this file —
-//   see `describe('delegated-decision.mjs — recording bypasses no mechanical
-//   gate')`.
+// - Recording bypasses no mechanical gate, with one bounded exception: this
+//   module never writes to a run journal's `decisions.jsonl` — a delegated
+//   decision is a run EVENT (`recordEvent`, kind `delegated-decision`), never
+//   a gate VERDICT — and never calls `revalidate.mjs`, `queue/core.mjs`, or
+//   `verdict.mjs`, and neither of those three ever references
+//   `.rig/decisions` or this file — see `describe('delegated-decision.mjs —
+//   recording bypasses no mechanical gate')`. The one exception is
+//   `queue/index.mjs`'s `gate-round --authorized` (RP-442): past the base
+//   cap, it reads a COMMITTED `extra-gate-round` record out of
+//   `.rig/decisions` (`authorizedRoundFor`, below) to admit one bounded
+//   review round, within the owner's `options.maxDelegatedRounds` budget —
+//   see `test/template/delegated-rounds.test.ts` (absent in a generated rig),
+//   `describe('queue/index.mjs gate-round --branch <b> --ticket <id>
+//   --authorized (RP-442)')`.
 //
 // --- Untested design limits ----------------------------------------------
 //
@@ -186,7 +193,7 @@
 // for every case above, by name, next to the assertion that proves it.
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, realpathSync, statSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from './git-env.mjs';
@@ -414,6 +421,98 @@ const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
 const REVIEW_GATES = new Set(['pr-ship', 'code-reviewer', 'prose-reviewer', 'security-scanner']);
 
 /**
+ * Every `extra-gate-round` authorization for one ticket+branch, read ONLY
+ * from HEAD's own COMMITTED tree (`git cat-file`) — never the working tree,
+ * a staged-but-uncommitted change, or any other ref. `--authorized` must
+ * never honour an authorization `record` (or a bypass of it) left sitting
+ * only on disk: a well-formed line that was never committed is invisible
+ * here, the same as if it did not exist (RP-442, security-scanner). Bounded
+ * the same way `extraGateRoundsFor` is — the committed blob's own size is
+ * checked (`git cat-file -s`) BEFORE any byte of it is read, and an
+ * oversized blob is refused whole, never partially read.
+ */
+const committedExtraGateRoundsFor = ({ projectRoot, ticket, branch }) => {
+  let decisionsPath;
+  try {
+    decisionsPath = decisionsPathFor(projectRoot, ticket);
+  } catch {
+    return [];
+  }
+  const relPath = relative(projectRoot, decisionsPath).split(sep).join('/');
+  let sizeRaw;
+  try {
+    sizeRaw = execFileSync('git', ['cat-file', '-s', `HEAD:${relPath}`], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: withoutGitLocation(),
+    }).trim();
+  } catch {
+    // No such blob committed at HEAD — reads the same as "no authorization
+    // exists", never as an error.
+    return [];
+  }
+  const size = Number(sizeRaw);
+  if (!Number.isFinite(size) || size > MAX_DECISIONS_BYTES) {
+    throw new Error(
+      `the committed ${relPath} at HEAD is over ${MAX_DECISIONS_BYTES} bytes — refused whole, never partially read.`,
+    );
+  }
+  const text = execFileSync('git', ['cat-file', 'blob', `HEAD:${relPath}`], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'ignore'],
+    env: withoutGitLocation(),
+  });
+  const result = parseDecisions(text, { ticket });
+  if (!result.ok) {
+    throw new Error(
+      `the committed decisions record line ${result.line} is unreadable — ${result.reason}`,
+    );
+  }
+  return result.records.filter(
+    (record) => record.decision === 'extra-gate-round' && record.branch === branch,
+  );
+};
+
+/**
+ * Every ticket with a COMMITTED `.rig/decisions/<ticket>.jsonl` at HEAD,
+ * read from the tree (`git ls-tree`) rather than the working directory —
+ * the committed-tree counterpart of `extraGateRoundsOnBranch`, used only by
+ * `authorizedRoundFor`'s own budget check below.
+ */
+const committedDecisionTickets = (projectRoot) => {
+  let text;
+  try {
+    text = execFileSync('git', ['ls-tree', '--name-only', 'HEAD', DECISIONS_PREFIX], {
+      cwd: projectRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      env: withoutGitLocation(),
+    });
+  } catch {
+    return [];
+  }
+  return text
+    .split('\n')
+    .filter((name) => name.startsWith(DECISIONS_PREFIX) && name.endsWith('.jsonl'))
+    .map((name) => name.slice(DECISIONS_PREFIX.length, -'.jsonl'.length))
+    .filter((ticket) => ticket !== '');
+};
+
+/**
+ * Every `extra-gate-round` authorization COMMITTED on one branch at HEAD,
+ * whatever ticket each names — the committed-tree counterpart of
+ * `extraGateRoundsOnBranch`, so an uncommitted record (hand-written or
+ * merely staged) can never inflate the branch budget `authorizedRoundFor`
+ * checks either.
+ */
+const committedExtraGateRoundsOnBranch = ({ projectRoot, branch }) =>
+  committedDecisionTickets(projectRoot).flatMap((ticket) =>
+    committedExtraGateRoundsFor({ projectRoot, ticket, branch }),
+  );
+
+/**
  * The heads one authorization covers: its own head, then every first-parent
  * commit on top of it that changes only `.rig/decisions/` — committing the
  * record itself must not move the round off the head it was decided for.
@@ -491,14 +590,54 @@ const journalDecisionTexts = (projectRoot, runDir) => {
 
 /**
  * Whether `gate-round --authorized` may run one round past the base cap
- * (RP-442): a durable `extra-gate-round` authorization for this ticket and
- * branch whose head is HEAD, or HEAD's record-only descendant, and no review
- * verdict yet on any head that authorization covers. That verdict set is the
- * only consumption fact — there is no consumed-state file.
+ * (RP-442): a durable, COMMITTED `extra-gate-round` authorization for this
+ * ticket and branch whose head is HEAD, or HEAD's record-only descendant,
+ * and no review verdict yet on any head that authorization covers. That
+ * verdict set is the only consumption fact — there is no consumed-state
+ * file. The authorization is read only from HEAD's own committed tree
+ * (`committedExtraGateRoundsFor`/`committedExtraGateRoundsOnBranch`, above)
+ * — never the working tree — so a record that was never committed can never
+ * be honoured (RP-442, security-scanner).
+ *
+ * The CONSUMING call needs its own authority too, checked BEFORE any
+ * decision record is even read: `runDir` (`RIG_RUN_DIR`) must be set, and
+ * that run's declared authority must be exactly `delegated` AND journalled
+ * as such — the same two checks `record` itself runs
+ * (`readState(runDir).decisionAuthority` through `parseDecisionAuthority`,
+ * then `unjournalledDelegation`), reused rather than reimplemented
+ * (`.claude/rules/invariants.md`, one mechanism one implementation). Without
+ * this, a run under no authority at all — or one that declared `owner` —
+ * could spend an authorization someone else recorded, which is the gap
+ * `committedExtraGateRoundsFor` above closes for the RECORD side and this
+ * closes for the CONSUMING side (RP-442, security-scanner).
  */
 export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
   if (typeof ticket !== 'string' || ticket === '') {
     return { ok: false, why: '--authorized needs --ticket <id>, the item the authorization was recorded for.' };
+  }
+  if (!runDir) {
+    return {
+      ok: false,
+      why:
+        'RIG_RUN_DIR is not set, so there is no run whose declared authority this could check — ' +
+        'an authorized round may only be consumed under a journalled delegated authority.',
+    };
+  }
+  const authority = parseDecisionAuthority(readState(runDir).decisionAuthority);
+  if (authority !== 'delegated') {
+    return {
+      ok: false,
+      why:
+        `this run's declared authority is ${authority}, not delegated — an authorized round may ` +
+        'only be consumed under a journalled delegated authority.',
+    };
+  }
+  const undeclared = unjournalledDelegation(runDir);
+  if (undeclared !== null) {
+    return {
+      ok: false,
+      why: `this run's authority is not journalled as delegated — ${undeclared}`,
+    };
   }
   const head = gitValue(['rev-parse', 'HEAD'], projectRoot);
   if (!head) return { ok: false, why: 'HEAD could not be read.' };
@@ -507,8 +646,8 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
   let onBranch;
   let budget;
   try {
-    records = extraGateRoundsFor({ projectRoot, ticket, branch });
-    onBranch = extraGateRoundsOnBranch({ projectRoot, branch }).length;
+    records = committedExtraGateRoundsFor({ projectRoot, ticket, branch });
+    onBranch = committedExtraGateRoundsOnBranch({ projectRoot, branch }).length;
     budget = delegatedRoundBudget(loadConfig(join(projectRoot, '.claude', 'queue.json')));
     texts = journalDecisionTexts(projectRoot, runDir);
   } catch (error) {
@@ -549,7 +688,9 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
   }
   return {
     ok: false,
-    why: `no extra-gate-round authorization for ${ticket} on ${branch} matches HEAD ${head}.`,
+    why:
+      `no COMMITTED extra-gate-round authorization for ${ticket} on ${branch} matches HEAD ${head} — ` +
+      'only a record committed at HEAD counts; an uncommitted one is not durable evidence of anything.',
   };
 };
 
