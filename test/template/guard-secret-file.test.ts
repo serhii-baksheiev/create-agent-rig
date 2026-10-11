@@ -2090,3 +2090,78 @@ describe('guard-secret-file: an empty hunk line is empty context, matching Codex
     expect(result.stderr).toContain('cloud-access-key');
   });
 });
+
+// RP-484. Codex matches Move context fuzzily from a moving cursor, while the
+// guard rebuilt the destination by exact match from the top, so a removal could
+// take the real credential in the guard's rebuild and a lookalike in Codex's
+// output. Every line Codex writes comes from the source or from the patch's
+// context and added lines, so the scanned fragment carries both.
+describe('guard-secret-file: a Move fragment covers every line Codex can write (RP-484)', () => {
+  let fixtureRoot = '';
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp484-move-root-')));
+    await run('git', ['init', '-q', fixtureRoot]);
+    await mkdir(path.join(fixtureRoot, 'src'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+  });
+
+  const moveCommand = (hunkLines: string[]) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: [
+        '*** Begin Patch',
+        '*** Update File: src/a.txt',
+        '*** Move to: src/b.txt',
+        ...hunkLines,
+        '*** End Patch',
+      ].join('\n'),
+    },
+  });
+
+  const lookalikeHeader = PEM_HEADER.replace(' PRIVATE', ' PRIVATE');
+
+  it('refuses a removal that matches the exact header while Codex removes its lookalike', async () => {
+    await writeFile(
+      path.join(fixtureRoot, 'src', 'a.txt'),
+      `${PEM_HEADER}\nA\n${lookalikeHeader}\n`,
+    );
+    const result = await runHook(
+      moveCommand(['@@', ' A', '+b', '@@', `-${PEM_HEADER}`]),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('src/b.txt');
+  });
+
+  it('refuses a removal of an inserted header while Codex removes the source lookalike', async () => {
+    await writeFile(path.join(fixtureRoot, 'src', 'a.txt'), `A\n${lookalikeHeader}\n`);
+    const result = await runHook(
+      moveCommand(['@@', ' A', `+${PEM_HEADER}`, '@@', `-${PEM_HEADER}`]),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses a removal with a trailing blank line that Codex applies to a lookalike', async () => {
+    const lookalikeKey = `token = ${ANTHROPIC_KEY.replaceAll('-', '‐')}`;
+    await writeFile(
+      path.join(fixtureRoot, 'src', 'a.txt'),
+      `${lookalikeKey}\n\nmiddle\ntoken = ${ANTHROPIC_KEY}\n`,
+    );
+    const result = await runHook(moveCommand([`-token = ${ANTHROPIC_KEY}`, '']), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('allows an ordinary Move whose source and patch carry no credential (control)', async () => {
+    await writeFile(path.join(fixtureRoot, 'src', 'a.txt'), 'A\nB\n');
+    const result = await runHook(moveCommand(['@@', ' A', '-B', '+C']), {}, fixtureRoot);
+    expect(result.code, result.stderr).toBe(0);
+  });
+});
