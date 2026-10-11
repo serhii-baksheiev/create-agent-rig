@@ -47,6 +47,9 @@ const ELEVATED_PATHS = [
   // over a real directory in THIS tree and deliberately has no template twin.
   '.husky/',
   'package.json', // the publish manifest: files, bin, version
+  'probity.config.mjs',
+  'tools/dogfood/',
+  'pnpm-workspace.yaml',
   'templates/agent-os/universal/.claude/hooks/', // the enforcement layer
   'templates/agent-os/universal/.claude/scripts/', // and the sweeps that watch it
   'templates/agent-os/universal/.claude/settings.json', // the hook wiring

@@ -7,6 +7,13 @@
 //   node .claude/scripts/unattended-flag.mjs verify --root <checkout> --item AR-51
 //   node .claude/scripts/unattended-flag.mjs off --root <checkout>
 //   node .claude/scripts/unattended-flag.mjs off --legacy --path <reported-path>
+//   node .claude/scripts/unattended-flag.mjs list
+//
+// `list` is read-only (RP-421): it never writes or removes anything, and it
+// takes no `--root` — it enumerates every checkout-scoped flag this project's
+// trusted homes carry (`homesOf`), naming each one `active` (its recorded
+// `root` still exists) or `orphaned` (it does not) or, for a flag written
+// before this field existed, carrying no recorded root at all.
 //
 // `--root` is mandatory for `on` and `verify` (RP-258) — an unrooted `on`
 // wrote a flag `readUnattended` could not tell apart from stale legacy
@@ -25,14 +32,16 @@
 // each unattended record is scoped to the canonical checkout, so concurrent
 // worktrees cannot overwrite or clear one another's authorization.
 //
-// The flag is JSON, `{ item, runDir, allow }`. `allow` is the list of
+// The flag is JSON, `{ item, runDir, allow, root }`. `allow` is the list of
 // repo-relative prefixes the current item may write under even though they are
 // part of the rulebook — the loop writes it at claim time from the paths the
 // item names, and clears the flag when the run ends. A blanket "no rulebook
 // edits while unattended" would stall on the first queue item that touches
 // `queue/*.mjs`, which is most of this queue; the allow-list is what makes the
 // guard livable, and the guard is what makes the allow-list a decision rather
-// than a default.
+// than a default. `root` (RP-421) is the canonical checkout the flag is scoped
+// to — `null` for an unscoped write — so a leftover flag can be mapped back to
+// the worktree that armed it (and told apart from an orphan) by `list`, below.
 //
 // 🔴 Three answers, and the third is not the first: `{ on: false }` when no flag
 // exists — an attended session, the guard does nothing; `{ on: true, item,
@@ -67,6 +76,7 @@ import {
   fstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readSync,
   realpathSync,
   rmSync,
@@ -81,6 +91,15 @@ import { homesOf } from './stop-flag.mjs';
 export const FLAG_BASENAME = 'create-agent-rig-loop-UNATTENDED';
 export const MAX_FLAG_BYTES = 64 * 1024;
 export const MAX_ALLOW_ENTRIES = 64;
+
+// `scopedBasename` splits `FLAG_BASENAME` at this exact substring and inserts
+// the checkout id between the two halves; `list` needs the same split in
+// reverse (recognise an id that was inserted there), so both read it from one
+// constant rather than repeating the literal.
+const FLAG_SUFFIX = '-loop-UNATTENDED';
+const FLAG_PREFIX = FLAG_BASENAME.endsWith(FLAG_SUFFIX)
+  ? FLAG_BASENAME.slice(0, -FLAG_SUFFIX.length)
+  : FLAG_BASENAME;
 
 /**
  * The files that decide what a session may do — repo-relative prefixes. Owned
@@ -319,8 +338,34 @@ const checkoutId = (env) => {
 
 const scopedBasename = (env) => {
   const id = checkoutId(env);
-  return id === null ? FLAG_BASENAME : FLAG_BASENAME.replace('-loop-UNATTENDED', `-${id}-loop-UNATTENDED`);
+  return id === null ? FLAG_BASENAME : `${FLAG_PREFIX}-${id}${FLAG_SUFFIX}`;
 };
+
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * A basename `scopedBasename` could have produced for THIS project — the
+ * literal prefix and suffix either side of a 16-hex checkout id, same scheme
+ * as `scopedBasename` itself. Built once at module load. `list` (below) uses
+ * it to tell this project's own scoped flags apart from a different
+ * project's (`other-project-<hash>-loop-UNATTENDED`) and from the unscoped
+ * legacy basename (`FLAG_BASENAME` itself, which carries no id segment at
+ * all and therefore never matches).
+ */
+const SCOPED_FLAG_PATTERN = new RegExp(
+  `^${escapeRegExp(FLAG_PREFIX)}-[0-9a-f]{16}${escapeRegExp(FLAG_SUFFIX)}$`,
+);
+
+// eslint-disable-next-line no-control-regex -- the control range IS the subject of this regex
+const CONTROL_CHARS = /[\x00-\x1f\x7f-\x9f]/g;
+
+/**
+ * Strip every C0/C1 control character (and DEL) before untrusted flag text
+ * (an `item`, a `root`, a filename) reaches a terminal — same shape used
+ * elsewhere in this rig (e.g. `token-report.mjs`), kept local here because
+ * this file imports no shared text-sanitizing helper.
+ */
+const printable = (text) => text.replace(CONTROL_CHARS, '');
 
 /** Every checkout-scoped path that arms unattended mode. The env-derived home is first. */
 export const unattendedFlags = (env = process.env) =>
@@ -462,7 +507,13 @@ export const writeUnattended = ({ item, runDir = null, allow = [] } = {}, env = 
   const candidates = unattendedFlags(env);
   const targets = checkoutId(env) === null ? candidates.slice(0, 1) : [...candidates].reverse();
   const written = [];
-  const content = `${JSON.stringify({ item: item.trim(), runDir, allow: list }, null, 2)}\n`;
+  // RP-421: the canonical checkout the flag is scoped to, so a leftover flag
+  // can be mapped back to the worktree that armed it — `null` for an
+  // unscoped write, same as `checkoutId`/`canonicalCheckout` above. Written
+  // into every mirrored copy via this one `content` string, so they stay
+  // byte-identical, same as every other field here.
+  const root = canonicalCheckout(env);
+  const content = `${JSON.stringify({ item: item.trim(), runDir, allow: list, root }, null, 2)}\n`;
   try {
     for (const path of targets) {
       mkdirSync(dirname(path), { recursive: true });
@@ -711,6 +762,92 @@ if (invokedDirectly()) {
     process.stdout.write(removed.length === 0 ? 'no unattended flag was set\n' : `${removed.join('\n')}\n`);
     process.exit(0);
   }
+  // RP-421: `list` is read-only and takes no `--root` — a worktree's Finish
+  // step removed the checkout without ever running `off --root <worktree>`,
+  // and nothing reported the leftover flag. This enumerates every
+  // checkout-scoped flag this project's trusted homes carry, names each
+  // `active`/`orphaned` by whether its recorded `root` still exists, and
+  // never modifies or deletes anything it finds — an unreadable flag gets a
+  // line saying so, not a crash and not a removal.
+  if (word === 'list') {
+    const lines = [];
+    const seenBasenames = new Set();
+    for (const home of homesOf(process.env)) {
+      const dir = join(home, '.claude');
+      let entries;
+      try {
+        entries = readdirSync(dir).filter((entry) => SCOPED_FLAG_PATTERN.test(entry));
+      } catch (error) {
+        if (isMissing(error)) continue;
+        lines.push(`${printable(dir)}: cannot be listed (${error?.code ?? 'read failed'})`);
+        continue;
+      }
+      for (const entry of entries) {
+        if (seenBasenames.has(entry)) continue;
+        seenBasenames.add(entry);
+        const flagPath = join(dir, entry);
+        let raw;
+        try {
+          raw = readCapped(flagPath);
+        } catch (error) {
+          if (isMissing(error)) continue;
+          lines.push(`${printable(entry)}: cannot be read (${error?.code ?? 'read failed'})`);
+          continue;
+        }
+        if (raw.bytes > MAX_FLAG_BYTES) {
+          lines.push(`${printable(entry)}: cannot be read (larger than ${MAX_FLAG_BYTES} bytes)`);
+          continue;
+        }
+        let parsed;
+        try {
+          parsed = JSON.parse(raw.text);
+        } catch {
+          lines.push(`${printable(entry)}: cannot be read (not valid JSON)`);
+          continue;
+        }
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          lines.push(`${printable(entry)}: cannot be read (not a JSON object)`);
+          continue;
+        }
+        // Only a plain id is echoed: free text could spell a remedy of its own.
+        const item =
+          typeof parsed.item === 'string' && /^[A-Za-z0-9._-]{1,64}$/.test(parsed.item)
+            ? parsed.item
+            : entry;
+        if (typeof parsed.root !== 'string') {
+          lines.push(`${item}: no recorded root (armed by an older version) — inspect ${flagPath}`);
+          continue;
+        }
+        // The root is trusted only when it is the checkout this file's own
+        // name was derived from: anything else in it, and the remedy would
+        // disarm whichever checkout the text names.
+        const { root } = parsed;
+        const id = entry.slice(FLAG_PREFIX.length + 1, -FLAG_SUFFIX.length);
+        if (
+          !isAbsolute(root) ||
+          resolve(root) !== root ||
+          printable(root) !== root ||
+          createHash('sha256').update(root).digest('hex').slice(0, 16) !== id
+        ) {
+          lines.push(`${item}: root does not match its flag name — inspect ${flagPath}`);
+          continue;
+        }
+        if (existingDirectoryRealpath(root) !== null) {
+          lines.push(`${item}: active — root ${root}`);
+        } else {
+          // The remedy names this file, never a command built from `root`:
+          // removing the listed file can only ever clear this flag.
+          lines.push(
+            `${item}: orphaned — recorded root ${root} no longer exists. Remedy: remove ${flagPath}`,
+          );
+        }
+      }
+    }
+    process.stdout.write(
+      lines.length === 0 ? 'no unattended flags are armed\n' : `${lines.join('\n')}\n`,
+    );
+    process.exit(0);
+  }
   // 🔴 **The read-back `on` did not have, and the reason it is a subcommand
   // rather than a line in the skill (RP-103).**
   //
@@ -781,6 +918,6 @@ if (invokedDirectly()) {
     process.stdout.write(`${state.path ?? 'armed'}\n`);
     process.exit(0);
   }
-  process.stderr.write(`unknown word: ${word ?? '(none)'}. This CLI has three: on, verify, off.\n`);
+  process.stderr.write(`unknown word: ${word ?? '(none)'}. This CLI has four: on, verify, off, list.\n`);
   process.exit(1);
 }

@@ -417,6 +417,174 @@ describe('release preflight (real git, real child process) — frozen-candidate 
   }, 30_000);
 });
 
+describe('release preflight (real git, real child process) — an immutable replacement candidate preserves its predecessor', () => {
+  // RP-471: the original canonical release/<version>-rc is immutable evidence.
+  // A corrected candidate uses a SHA-derived ref, proves the canonical ref
+  // still names the predecessor, and proves that predecessor is in the new
+  // candidate's history. A replacement must not merely retarget old evidence.
+  it('accepts a replacement only through its SHA-derived ref while preserving the canonical original ref', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    await writeManifests(work, '1.2.0', '## 1.2.0 (release candidate)');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'freeze original 1.2.0'], work);
+    const originalSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+
+    await writeFile(path.join(work, 'replacement-note'), 'bounded correction\n');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'prepare corrected replacement 1.2.0'], work);
+    const replacementSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+    git(['branch', 'release/1.2.0-rc', originalSha], work);
+    git(['push', 'origin', 'release/1.2.0-rc'], work);
+    git(['branch', `release/1.2.0-rc-${replacementSha}`, replacementSha], work);
+    git(['push', 'origin', `release/1.2.0-rc-${replacementSha}`], work);
+    git(['fetch', 'origin'], work);
+    git(['checkout', replacementSha], work);
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(
+        work,
+        ['--frozen-candidate', replacementSha, '--supersedes', originalSha],
+        stub.env,
+      );
+      expect(result.out, result.out).not.toMatch(
+        /could not be resolved|no longer names|not an ancestor/,
+      );
+      expect(existsSync(stub.marker), result.out).toBe(true);
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+
+  it('rejects a replacement whose preserved canonical predecessor has another package version, before npm pack', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    await writeManifests(work, '9.9.9', '## 9.9.9 (release candidate)');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'freeze a malformed original predecessor'], work);
+    const originalSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+
+    await writeManifests(work, '1.2.0', '## 1.2.0 (release candidate)');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'prepare corrected replacement 1.2.0'], work);
+    const replacementSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+    git(['branch', 'release/1.2.0-rc', originalSha], work);
+    git(['push', 'origin', 'release/1.2.0-rc'], work);
+    git(['branch', `release/1.2.0-rc-${replacementSha}`, replacementSha], work);
+    git(['push', 'origin', `release/1.2.0-rc-${replacementSha}`], work);
+    git(['fetch', 'origin'], work);
+    git(['checkout', replacementSha], work);
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(
+        work,
+        ['--frozen-candidate', replacementSha, '--supersedes', originalSha],
+        stub.env,
+      );
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out, result.out).toContain('release/1.2.0-rc');
+      expect(result.out, result.out).toContain('9.9.9');
+      expect(result.out, result.out).toContain('1.2.0');
+      expect(existsSync(stub.marker), result.out).toBe(false);
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+
+  it('rejects a replacement that does not descend from its preserved canonical predecessor, before npm pack', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    await writeManifests(work, '1.2.0', '## 1.2.0 (release candidate)');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'prepare the shared 1.2.0 base'], work);
+    const baseSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+
+    git(['checkout', '-b', 'original-candidate', baseSha], work);
+    await writeFile(path.join(work, 'original-note'), 'original candidate\n');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'freeze a canonical predecessor on a sibling branch'], work);
+    const originalSha = git(['rev-parse', 'HEAD'], work);
+    git(['branch', 'release/1.2.0-rc', originalSha], work);
+    git(['push', 'origin', 'release/1.2.0-rc'], work);
+
+    git(['checkout', 'master'], work);
+    await writeFile(path.join(work, 'replacement-note'), 'unrelated candidate\n');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'prepare a sibling replacement candidate'], work);
+    const replacementSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+    git(['branch', `release/1.2.0-rc-${replacementSha}`, replacementSha], work);
+    git(['push', 'origin', `release/1.2.0-rc-${replacementSha}`], work);
+    git(['fetch', 'origin'], work);
+    git(['checkout', replacementSha], work);
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(
+        work,
+        ['--frozen-candidate', replacementSha, '--supersedes', originalSha],
+        stub.env,
+      );
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out, result.out).toContain(originalSha);
+      expect(result.out, result.out).toMatch(/not an ancestor/i);
+      expect(existsSync(stub.marker), result.out).toBe(false);
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+
+  it('rejects a replacement when the canonical original ref was moved, before npm pack', async () => {
+    const { work } = await makeOriginAndClone('master');
+    await installScriptCopy(work);
+    await writeManifests(work, '1.2.0', '## 1.2.0 (release candidate)');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'freeze original 1.2.0'], work);
+    const originalSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+
+    await writeFile(path.join(work, 'replacement-note'), 'bounded correction\n');
+    git(['add', '-A'], work);
+    git(['commit', '-m', 'prepare corrected replacement 1.2.0'], work);
+    const replacementSha = git(['rev-parse', 'HEAD'], work);
+    git(['push', 'origin', 'master'], work);
+    // This is the forbidden rewrite: it cannot substitute for an immutable
+    // predecessor, even though a replacement ref also exists and is correct.
+    git(['branch', 'release/1.2.0-rc', replacementSha], work);
+    git(['push', 'origin', 'release/1.2.0-rc'], work);
+    git(['branch', `release/1.2.0-rc-${replacementSha}`, replacementSha], work);
+    git(['push', 'origin', `release/1.2.0-rc-${replacementSha}`], work);
+    git(['fetch', 'origin'], work);
+    git(['checkout', replacementSha], work);
+
+    const stub = await installNpmMarkerStub();
+    try {
+      const result = await runPreflight(
+        work,
+        ['--frozen-candidate', replacementSha, '--supersedes', originalSha],
+        stub.env,
+      );
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.out, result.out).toContain('release/1.2.0-rc');
+      expect(result.out, result.out).toContain(originalSha);
+      expect(existsSync(stub.marker), result.out).toBe(false);
+    } finally {
+      stub.restore();
+      await removeFixture(stub.markerDir);
+    }
+  }, 30_000);
+});
+
 // Item E: ordinary mode (no --frozen-candidate at all) already runs the same
 // `changelogHeadingFindings` check `main()` runs for frozen mode — pinned here
 // end to end, against the real script, with HEAD sitting on the current

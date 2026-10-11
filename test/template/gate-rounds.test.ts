@@ -302,13 +302,25 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     });
 
     it('counts once the branch is committed and pushed', async () => {
-      const cfg = await config();
-      const dir = path.join(path.dirname(cfg), '..');
-      gitIn(dir, ['checkout', '-q', '-b', 'fix/a']);
-      gitIn(dir, ['push', '-q', '-u', 'origin', 'fix/a']);
-      const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-      expect(result.code, result.stderr).toBe(0);
-      expect(result.stdout).toMatch(/round 1 of 3/);
+      const stages: Stages = createStageDiagnostics();
+      const roots: string[] = [];
+      try {
+        const cfg = await stages.run('pushed-branch-config-setup', () => config(undefined, roots));
+        const dir = path.join(path.dirname(cfg), '..');
+        await stages.run('pushed-branch-checkout', async () => {
+          gitIn(dir, ['checkout', '-q', '-b', 'fix/a']);
+        });
+        await stages.run('pushed-branch-push', async () => {
+          gitIn(dir, ['push', '-q', '-u', 'origin', 'fix/a']);
+        });
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg], stages);
+        expect(result.code, result.stderr).toBe(0);
+        expect(result.stdout).toMatch(/round 1 of 3/);
+      } finally {
+        await stages.run('pushed-branch-fixture-teardown', async () => {
+          for (const root of roots) await removeFixture(root);
+        });
+      }
     });
   });
 

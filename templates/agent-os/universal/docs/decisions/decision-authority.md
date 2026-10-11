@@ -84,6 +84,48 @@ still open — › "a FRESH run directory (a different controller session) still
 reads the made decision". The gates read their own inputs and never this
 record, so a recorded decision bypasses none of them.
 
+The run's authority is self-declared. In the opt-in workflow layer,
+`run-state.mjs authority` journals each declaration with the value before and after it, and the record and
+resolve commands act on a delegated authority only when the state file matches
+the latest journalled declaration — pinned in the generator's
+`test/template/delegated-decision.test.ts` (absent in a generated rig) ›
+"refuses to record under a delegated authority that was written by hand and
+never declared". A record therefore shows what the run declared, not what the
+owner authorised.
+
+The record command writes the decision file; it does not stage or commit it.
+Explicitly stage `.rig/decisions/<ticket>.jsonl` and commit it with the item's
+branch before expecting another clone to read the decision. Per-run journals
+under `.claude/runs/` are local evidence and do not replace that portable file.
+Revalidation of an existing claim record mechanically checks its committed
+Git version; initial selection may create an unversioned baseline — the
+generator's `test/template/content-blind-revalidation.test.ts` (absent in a
+generated rig) › "refuses to resume from an existing claim until Git tracks
+it". The delegated-decision reader reads the working-tree file without
+requiring a committed Git version — `test/template/delegated-decision.test.ts`
+(absent in a generated rig) › "a FRESH process with no RIG_RUN_DIR at all
+still reads the made decision — durable, not conversational". A successful
+decision read therefore does not prove that another clone can read it.
+Generator evidence (absent in a generated rig):
+`test/e2e/delegated-authority.test.ts` › "scenario 6: a
+second controller session (B) reads session A's delegated decision back as
+durable evidence" explicitly stages and commits the file before cloning;
+`test/template/delegated-decision.test.ts` (absent in a generated rig) ›
+"journals exactly one run-journal
+EVENT (kind: delegated-decision), and writes NOTHING to decisions.jsonl"
+pins the separate local event.
+
+The reader refuses a persistently linked decisions directory or a multiply
+linked record file. These static containment checks assume the decisions
+directory is not concurrently replaced during the read; they do not provide
+race-proof containment against such replacement.
+The static refusals are pinned in the generator's
+`test/template/delegated-decision.test.ts` (absent in a generated rig) › "a
+.rig/decisions directory junction to a different checkout is unreadable — exit
+2, never that checkout's decision" and › "a ticket file hard-linked from
+another checkout is unreadable — exit 2, never that checkout's decision".
+Those checks do not establish protection against concurrent directory replacement.
+
 ## Consequences
 
 Preflight and doctor report the posture, and the loop declares the authority
