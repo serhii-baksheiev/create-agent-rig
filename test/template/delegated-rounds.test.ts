@@ -2410,15 +2410,12 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
     }
   });
 
-  // The size probe above now reads WITHOUT replace resolution, so it is no
-  // longer fooled when there is nothing real at that path at all. But the
-  // record/blob READ itself (`cat-file blob`, `ls-tree`) still honours
-  // replace — so the same technique still works when the committed file at
-  // HEAD is real and small, just not authorizing: a `tracker-correction`
-  // line, committed and pushed for real. The size probe sees exactly that
-  // (small, genuine) blob and raises nothing; only the still-vulnerable
-  // content read, redirected through a replacement commit for HEAD's own
-  // SHA, ever sees the matching `extra-gate-round` line.
+  // The size probe alone is not enough: when the committed file at HEAD is
+  // real and small, just not authorizing (a `tracker-correction` line,
+  // committed and pushed for real), the size probe sees that genuine blob and
+  // raises nothing, so only a content read that honoured replace refs could
+  // see the matching `extra-gate-round` line a replacement commit for HEAD's
+  // own SHA carries. This pins that the content read does not.
   it('refuses a matching extra-gate-round line visible only through a replace ref, when the REAL committed file at HEAD holds an unrelated record (RP-442, security-scanner)', async () => {
     const roots: string[] = [];
     try {
@@ -2504,6 +2501,245 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
         envFor(runDir),
       );
       expect(result.code).not.toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // Walk bypass (RP-442, security-scanner): the record-only CHAIN itself
+  // (`recordOnlyChain`'s own `rev-list`/`diff-tree` reads) is what decides
+  // whether a commit that also changes code may be mistaken for one that
+  // changes only `.rig/decisions/` (pinned above, "a commit that also
+  // changes code on top of the authorized head does not match"). Without
+  // `--no-replace-objects` on those two reads, a `git replace` ref for HEAD's
+  // own SHA can present a DIFFERENT commit object to the walk — one whose
+  // tree is the authorized head's own tree plus only the decisions blob the
+  // real commit carries — while HEAD, `@{u}` and the real index/working tree
+  // stay exactly the real, code-changing commit, unmoved and clean.
+  it('refuses when the record-only chain is read through a replace ref that hides a real code change in the committed diff', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const x = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          x,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+
+      // R: the authorization AND a real code change, landed in one commit —
+      // on an honest walk this is exactly the "also changes code" case
+      // pinned above, and must never match.
+      await writeFile(path.join(dir, 'code.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization and a fix'], dir);
+      await git(['push', '-q'], dir);
+      const r = await head(dir);
+
+      // R': the commit a record-only landing of the SAME authorization would
+      // have produced — X's own tree plus only the decisions blob R actually
+      // carries, parent X. Built in a throwaway index; the real working tree
+      // and index are untouched by this step.
+      const decisionsBlobSha = await git(['rev-parse', `${r}:.rig/decisions/RP-1.jsonl`], dir);
+      const tmpIndex = path.join(
+        await mkdtemp(path.join(tmpdir(), 'delegated-rounds-index-')),
+        'index',
+      );
+      const indexEnv = { ...withoutGitLocation(), GIT_INDEX_FILE: tmpIndex };
+      const plumb = async (args: string[]): Promise<string> => {
+        const result = await run(
+          'git',
+          [
+            '-c',
+            'commit.gpgsign=false',
+            '-c',
+            'user.email=t@example.invalid',
+            '-c',
+            'user.name=t',
+            ...args,
+          ],
+          dir,
+          indexEnv,
+        );
+        if (result.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.out}`);
+        return result.stdout.trim();
+      };
+      await plumb(['read-tree', x]);
+      await plumb([
+        'update-index',
+        '--add',
+        '--cacheinfo',
+        `100644,${decisionsBlobSha},.rig/decisions/RP-1.jsonl`,
+      ]);
+      const replacementTree = await plumb(['write-tree']);
+      const parentsRaw = await git(['log', '--pretty=%P', '-1', r], dir);
+      const parentArgs = parentsRaw
+        .split(' ')
+        .filter(Boolean)
+        .flatMap((p) => ['-p', p]);
+      const replacement = await git(
+        [
+          'commit-tree',
+          replacementTree,
+          ...parentArgs,
+          '-m',
+          'forged record-only replacement, never reachable except via replace',
+        ],
+        dir,
+      );
+      await git(['replace', r, replacement], dir);
+
+      // Hide R's real code change from the index/status view too, so the
+      // refusal below cannot be the dirty-tree check: the real index is made
+      // to agree with the REPLACED tree (no code.txt), and the file left on
+      // disk is excluded locally.
+      await git(['rm', '-q', '--cached', 'code.txt'], dir);
+      await writeFile(path.join(dir, '.git', 'info', 'exclude'), 'code.txt\n');
+
+      const statusAfterReplace = await git(['status', '--porcelain'], dir);
+      expect(statusAfterReplace, statusAfterReplace).toBe('');
+      expect(await git(['rev-parse', 'HEAD'], dir)).toBe(r);
+      expect(await git(['rev-parse', '@{u}'], dir)).toBe(r);
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(runDir),
+      );
+      expect(result.code).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  // Budget undercount via `ls-tree` (RP-442, security-scanner): the "more
+  // records than the budget" refusal (pinned above, "refuses --authorized
+  // when the branch holds MORE extra-gate-round records than the budget")
+  // depends on `committedDecisionTickets`'s own `ls-tree` enumerating EVERY
+  // ticket file committed at HEAD. Without `--no-replace-objects` there, a
+  // `git replace` ref for HEAD's own SHA can present a tree that is missing
+  // one ticket's file — while every other read (the per-ticket `cat-file`,
+  // the chain's `rev-list`/`diff-tree`) still sees the real, two-ticket
+  // commit, and HEAD/`@{u}`/the working tree stay the real commit, unmoved
+  // and clean.
+  it('refuses a branch holding more extra-gate-round records than the budget even when ls-tree is fooled into enumerating only one ticket', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' }); // default budget 1
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const x = await head(dir);
+      const runDir = await delegatedRunDir();
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'ok',
+          '--head',
+          x,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+
+      // A second ticket's authorization, forged directly onto disk —
+      // bypassing `record`'s own branch budget check entirely — so once both
+      // land in the same commit, the branch genuinely holds TWO
+      // extra-gate-round records, one more than the default budget of 1.
+      await appendForgedDecisionLine(dir, 'RP-2', { branch: 'fix/a', head: x });
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'two authorizations'], dir);
+      await git(['push', '-q'], dir);
+      const r = await head(dir);
+
+      // R': the real commit's own tree, minus the RP-2 ticket file alone —
+      // same parent, built in a throwaway index that never touches the real
+      // working tree or index.
+      const tmpIndex = path.join(
+        await mkdtemp(path.join(tmpdir(), 'delegated-rounds-index-')),
+        'index',
+      );
+      const indexEnv = { ...withoutGitLocation(), GIT_INDEX_FILE: tmpIndex };
+      const plumb = async (args: string[]): Promise<string> => {
+        const result = await run(
+          'git',
+          [
+            '-c',
+            'commit.gpgsign=false',
+            '-c',
+            'user.email=t@example.invalid',
+            '-c',
+            'user.name=t',
+            ...args,
+          ],
+          dir,
+          indexEnv,
+        );
+        if (result.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.out}`);
+        return result.stdout.trim();
+      };
+      await plumb(['read-tree', r]);
+      await plumb(['update-index', '--force-remove', '.rig/decisions/RP-2.jsonl']);
+      const replacementTree = await plumb(['write-tree']);
+      const parentsRaw = await git(['log', '--pretty=%P', '-1', r], dir);
+      const parentArgs = parentsRaw
+        .split(' ')
+        .filter(Boolean)
+        .flatMap((p) => ['-p', p]);
+      const replacement = await git(
+        [
+          'commit-tree',
+          replacementTree,
+          ...parentArgs,
+          '-m',
+          'forged — hides RP-2 from a plain ls-tree, never reachable except via replace',
+        ],
+        dir,
+      );
+      await git(['replace', r, replacement], dir);
+
+      // Hide RP-2's real file from the index/status view too: the real
+      // index is made to agree with the REPLACED tree (no RP-2.jsonl), and
+      // the file left on disk is excluded locally.
+      await git(['rm', '-q', '--cached', path.join('.rig', 'decisions', 'RP-2.jsonl')], dir);
+      await writeFile(path.join(dir, '.git', 'info', 'exclude'), '.rig/decisions/RP-2.jsonl\n');
+
+      const statusAfterReplace = await git(['status', '--porcelain'], dir);
+      expect(statusAfterReplace, statusAfterReplace).toBe('');
+      expect(await git(['rev-parse', 'HEAD'], dir)).toBe(r);
+      expect(await git(['rev-parse', '@{u}'], dir)).toBe(r);
+
+      const result2 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(runDir),
+      );
+      expect(result2.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
