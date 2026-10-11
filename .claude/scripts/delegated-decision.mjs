@@ -200,7 +200,7 @@ import { withoutGitLocation } from './git-env.mjs';
 import { composeCappedTextField, composeTextField } from './continuation.mjs';
 import { readState } from './run-state.mjs';
 import { DECISION_AUTHORITIES, mayResolve, parseDecisionAuthority } from './lib/authority.mjs';
-import { recordEvent } from './run-journal.mjs';
+import { readRun, recordEvent } from './run-journal.mjs';
 import { ITEM_STOPS, resolutionOf } from './queue/stop-class.mjs';
 
 const DECISIONS_ROOT = ['.rig', 'decisions'];
@@ -731,6 +731,9 @@ const runRecord = async (argv, cwd) => {
     );
   }
 
+  const undeclared = unjournalledDelegation(runDir);
+  if (undeclared !== null) return refuse(undeclared);
+
   let allowed;
   try {
     allowed = mayResolve(parsed.decision, authority);
@@ -914,6 +917,30 @@ const parseResolveArgs = (argv) => {
   return { ok: true, ...args };
 };
 
+// RP-467: the authority `run-state.mjs authority` last journalled for this
+// run, or null when there is none (or the journal cannot be read). A state
+// file that says delegated is acted on only when this agrees.
+const journalledAuthority = (runDir) => {
+  try {
+    const declared = readRun({ runDir }).events.filter(
+      (event) => event.kind === 'authority-declared',
+    );
+    return declared.at(-1)?.data?.to ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const unjournalledDelegation = (runDir) => {
+  const journalled = journalledAuthority(runDir);
+  if (journalled === 'delegated') return null;
+  return (
+    "this run's state says delegated, but its latest journalled declaration is " +
+    `${journalled ?? 'none'}. Declare the authority with \`run-state.mjs authority\` ` +
+    'so the declaration is journalled; a state file alone is not a declaration.'
+  );
+};
+
 const runResolve = (argv) => {
   const parsed = parseResolveArgs(argv);
   if (!parsed.ok) return refuse(parsed.error);
@@ -929,6 +956,10 @@ const runResolve = (argv) => {
     );
   }
   const authority = parseDecisionAuthority(readState(runDir).decisionAuthority);
+  if (authority === 'delegated') {
+    const undeclared = unjournalledDelegation(runDir);
+    if (undeclared !== null) return refuse(`resolve: ${undeclared}`);
+  }
   const resolution = resolutionOf({ stopClass: entry.stopClass, authority, decision: entry.decision });
   const answer = {
     stop: entry.id,

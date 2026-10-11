@@ -122,6 +122,25 @@ const newRunDir = (): Promise<string> => mkdtemp(path.join(tmpdir(), 'delegated-
 const writeRunState = (runDir: string, state: Record<string, unknown>) =>
   writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
 
+/** Declares the run's authority the supported way: `run-state.mjs authority <word>`. */
+const declareAuthority = async (runDir: string, word: string): Promise<void> => {
+  const result = await run(
+    process.execPath,
+    [scriptPath('run-state.mjs'), 'authority', word],
+    repoRoot,
+    envFor(runDir),
+  );
+  if (result.code !== 0) throw new Error(`run-state authority ${word} failed: ${result.out}`);
+};
+
+/** How many journal events the run already holds — the declaration the fixture made, before a call. */
+const journalledEventCount = async (runDir: string): Promise<number> => {
+  const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+    readRun: (input: { runDir: string }) => { events: unknown[] };
+  };
+  return readRun({ runDir }).events.length;
+};
+
 /** `RIG_RUN_DIR` is set ONLY for this one spawn — never on `process.env`. */
 const envFor = (runDir: string | undefined): NodeJS.ProcessEnv => {
   const env = withoutGitLocation();
@@ -176,7 +195,7 @@ const delegatedFixture = async (): Promise<{
 }> => {
   const { dir, branch, head } = await newProject();
   const runDir = await newRunDir();
-  await writeRunState(runDir, { decisionAuthority: 'delegated' });
+  await declareAuthority(runDir, 'delegated');
   return { dir, branch, head, runDir, env: envFor(runDir) };
 };
 
@@ -332,6 +351,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
 
   it('refuses a whitespace-only --summary before writing a decision or journal event', async () => {
     const { dir, runDir, env } = await delegatedFixture();
+    const before = await journalledEventCount(runDir);
     const result = await runCli(
       recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: '   ' }),
       dir,
@@ -346,11 +366,14 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
       readRun: (input: { runDir: string }) => { decisions: unknown[]; events: unknown[] };
     };
-    expect(readRun({ runDir })).toMatchObject({ decisions: [], events: [] });
+    const journal = readRun({ runDir });
+    expect(journal.decisions).toEqual([]);
+    expect(journal.events.slice(before)).toEqual([]);
   });
 
   it('a refused call journals nothing into the run directory either', async () => {
     const { dir, runDir, env } = await delegatedFixture();
+    const before = await journalledEventCount(runDir);
     const result = await runCli(
       recordArgs({ ticket: 'RP-1', decision: 'publication', summary: 'ok' }),
       dir,
@@ -371,8 +394,9 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     expect(decisions).toEqual([]);
     // RP-340 round 1: the durable trace moved from decisions.jsonl to
     // events.jsonl (see "journals exactly one EVENT" below) — a refused call
-    // must journal nothing in EITHER file.
-    expect(events).toEqual([]);
+    // must journal nothing in EITHER file. The fixture's own authority
+    // declaration (RP-467) is already there before the call.
+    expect(events.slice(before)).toEqual([]);
   });
 });
 
@@ -1010,6 +1034,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
 
   it('journals exactly one run-journal EVENT (kind: delegated-decision), and writes NOTHING to decisions.jsonl', async () => {
     const { dir, runDir, env } = await delegatedFixture();
+    const before = await journalledEventCount(runDir);
     await runCli(
       recordArgs({
         ticket: 'RP-1',
@@ -1032,8 +1057,8 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     // decisions.jsonl to events.jsonl so a continuation note's review-round
     // reading (which reads decisions.jsonl) is not disturbed.
     expect(decisions).toEqual([]);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    expect(events.slice(before)).toHaveLength(1);
+    expect(events.slice(before)[0]).toMatchObject({
       kind: 'delegated-decision',
       data: {
         ticket: 'RP-1',
@@ -1285,7 +1310,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
   it('(d) the posted comment body starts with "rig-delegated-decision v1" and carries ticket/decision/authority/summary lines, redacted exactly as the stored record', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     await mkdir(path.join(dir, '.claude'), { recursive: true });
     await writeFile(
       path.join(dir, '.claude', 'queue.json'),
@@ -2320,7 +2345,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     async (stop, expected) => {
       const { dir } = await newProject();
       const runDir = await newRunDir();
-      await writeRunState(runDir, { decisionAuthority: 'delegated' });
+      await declareAuthority(runDir, 'delegated');
       const result = await runCli(['resolve', '--stop', stop, '--json'], dir, envFor(runDir));
       expect(result.code, result.out).toBe(0);
       const parsed = JSON.parse(result.stdout) as { resolution: string };
@@ -2413,7 +2438,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('--json prints exactly { stop, stopClass, decision, authority, resolution }, in that key order', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     // RP-342 round 1: `elevated-path-scope` is the only catalogued stop that
     // still names a delegable decision, so it is the one that exercises a
     // non-null `decision` and a `decide-and-continue` resolution here.
@@ -2487,7 +2512,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('refuses an unknown stop id, naming it', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const result = await runCli(['resolve', '--stop', 'made-up-stop'], dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expect(result.out, 'the CLI crashed on import rather than refusing').not.toMatch(
@@ -2499,7 +2524,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('refuses a --stop flag with nothing after it', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const result = await runCli(['resolve', '--stop'], dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expect(result.out).toMatch(/--stop/);
@@ -2508,7 +2533,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('refuses when --stop is omitted altogether', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const result = await runCli(['resolve'], dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expect(result.out).toMatch(/--stop/);
@@ -2519,7 +2544,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('writes nothing: no .rig/decisions file, and nothing new in the run directory', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const before = (await readdir(runDir)).sort();
     const result = await runCli(
       ['resolve', '--stop', 'gate-round-cap', '--json'],
@@ -2532,5 +2557,67 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     await expect(readdir(dotRig)).rejects.toThrow();
     const after = (await readdir(runDir)).sort();
     expect(after).toEqual(before);
+  });
+});
+
+// RP-467. A run's authority was whatever `state.json` said, however it got
+// there: a hand-written file, or a re-declaration nothing journalled. The
+// declaration is now journalled by `run-state.mjs authority`, and record and
+// resolve act on a delegated authority only when the journal's latest
+// declaration agrees with the state file.
+describe('delegated-decision.mjs — the run authority must match its journalled declaration (RP-467)', () => {
+  it('refuses to record under a delegated authority that was written by hand and never declared', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stderr).toMatch(/run-state\.mjs authority/);
+    await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+  });
+
+  it('refuses to record when the state file was edited to delegated after an owner declaration', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await declareAuthority(runDir, 'owner');
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stderr).toMatch(/owner/);
+    await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+  });
+
+  it('records under a delegated authority declared through run-state.mjs (control)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await declareAuthority(runDir, 'delegated');
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(1);
+  });
+
+  it('refuses to resolve under a hand-written delegated authority', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(
+      ['resolve', '--stop', 'elevated-path-scope', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stdout).not.toMatch(/decide-and-continue/);
   });
 });

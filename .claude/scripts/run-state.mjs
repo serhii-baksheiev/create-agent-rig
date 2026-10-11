@@ -672,6 +672,10 @@ const COMMANDS = Object.freeze({
     words: DECISION_AUTHORITIES,
     field: 'decisionAuthority',
     lowerCase: true,
+    // RP-467: every declaration is journalled with the value before and
+    // after it, so a mid-run change stays visible and `delegated-decision.mjs`
+    // can cross-check the state file against it.
+    journalKind: 'authority-declared',
     valueOf: (word) => word,
     missingDir:
       'there is no run whose decision authority this would record. ' +
@@ -736,7 +740,26 @@ if (invokedDirectly()) {
   }
 
   const argument = spec.words ? normalise(given) : given;
-  const value = spec.valueOf(argument, readState(runDir));
+  const before = readState(runDir);
+  const value = spec.valueOf(argument, before);
+  if (spec.journalKind) {
+    // Imported here, not at the top: this module is read by the queue and
+    // other scripts that must not depend on the journal module being present.
+    try {
+      const { recordEvent } = await import('./run-journal.mjs');
+      recordEvent({
+        runDir,
+        kind: spec.journalKind,
+        data: { from: before[spec.field] ?? null, to: value },
+        now: new Date().toISOString(),
+      });
+    } catch (error) {
+      process.stderr.write(
+        `the run journal refused the ${command} declaration, so it was not recorded: ${error.message}\n`,
+      );
+      process.exit(1);
+    }
+  }
   updateState(runDir, { [spec.field]: value });
   process.stdout.write(`run state: ${spec.field} = ${JSON.stringify(value)}\n`);
 }
