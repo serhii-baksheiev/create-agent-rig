@@ -533,9 +533,12 @@ export const claim = (
  * where `listEligible` drops CLOSED for selection's sake — with the link view
  * `listEligible` builds from the same two windows (`blocks` from the
  * cross-index, each blocker's resolution from its state), so a SELECT baseline
- * and a later read of an unedited item agree (RP-449). When the windows cannot
- * be read, the issue comes back without that view, as a single view always
- * did. The offline `issues` seam is honoured.
+ * and a later read of an unedited item agree (RP-449). When the windows
+ * cannot be read, this throws rather than answering the single-issue view
+ * with a silently empty `blocks: []` — "I could not check" repainted as
+ * "nothing blocks this" is exactly the fail-open shape `invariants.md`
+ * forbids; the caller (`revalidate.mjs`'s `readAdapter`) turns the throw into
+ * `UNVERIFIABLE`. The offline `issues` seam is honoured.
  */
 export const find = (id, { limit = 100, issues = null } = {}) => {
   const raw = issues
@@ -545,8 +548,10 @@ export const find = (id, { limit = 100, issues = null } = {}) => {
   let all;
   try {
     all = issues ?? listWindows(limit).raw;
-  } catch {
-    return toTicket(raw, {});
+  } catch (error) {
+    throw new Error(`github-issues: find(${id}) could not read the list windows to cross-index blocks`, {
+      cause: error,
+    });
   }
   const states = Object.fromEntries(all.map((issue) => [String(issue.number), issue.state]));
   const ticket = toTicket(raw, states);
