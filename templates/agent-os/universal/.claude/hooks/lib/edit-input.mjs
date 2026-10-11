@@ -453,6 +453,13 @@ function patchFragments(command, payloadCwd) {
       continue;
     }
     if (current !== null && line.startsWith('+')) current.additions.push(line.slice(1));
+    // RP-480: inside an Update File section Codex opens a chunk itself on the
+    // first context, added, removed or empty line — no `@@` is required — so a
+    // Move's added lines reach its fragment either way.
+    if (current?.updates && current.activeHunk === null && /^(?:[-+ ]|$)/.test(line)) {
+      current.activeHunk = { lines: [] };
+      current.hunks.push(current.activeHunk);
+    }
     if (current?.activeHunk && /^[-+ ]/.test(line)) {
       current.activeHunk.lines.push({ operation: line[0], text: line.slice(1) });
     }
