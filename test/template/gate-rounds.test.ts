@@ -329,12 +329,32 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
         expect(result.stdout).toMatch(/round 1 of 3/);
       });
 
-      // Rule under test: the exemption is scoped to journal/ — an untracked
-      // file anywhere else is still an uncommitted head and still refuses.
-      it('still refuses on an untracked file outside journal/', async () => {
+      // Rule under test: the exemption is scoped to the literal `journal/`
+      // directory — not "one path segment", which a loosened
+      // `[^/]+\/\d{4}-\d{2}\.md$` would also accept. The name is otherwise a
+      // perfectly valid entry (right YYYY-MM name, right extension, flat), so
+      // only the directory makes it refuse; a widened directory match is the
+      // only way this file could pass.
+      it('still refuses on a valid-looking entry filed under the wrong directory (docs/2026-10.md alone)', async () => {
         const cfg = await config();
         const dir = path.join(path.dirname(cfg), '..');
-        await writeFile(path.join(dir, 'notes.md'), 'scratch\n');
+        await mkdir(path.join(dir, 'docs'), { recursive: true });
+        await writeFile(path.join(dir, 'docs', '2026-10.md'), 'not the journal\n');
+        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        expect(result.code).toBe(1);
+        expect(result.stderr).toMatch(/working tree is dirty/);
+        expect(existsSync(countsFile(cfg))).toBe(false);
+      });
+
+      // Rule under test: the exemption requires the `journal/` directory to be
+      // PRESENT, not merely permitted — a loosened `(?:journal\/)?` would also
+      // accept the same YYYY-MM.md name sitting at the repo root, with no
+      // directory at all. Everything else about this file matches a real
+      // entry, so only the missing directory makes it refuse.
+      it('still refuses on a valid-looking entry with no journal/ directory at all (root-level 2026-10.md alone)', async () => {
+        const cfg = await config();
+        const dir = path.join(path.dirname(cfg), '..');
+        await writeFile(path.join(dir, '2026-10.md'), 'not the journal\n');
         const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
         expect(result.code).toBe(1);
         expect(result.stderr).toMatch(/working tree is dirty/);
