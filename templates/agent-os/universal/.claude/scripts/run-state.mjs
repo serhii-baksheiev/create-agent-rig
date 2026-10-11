@@ -739,9 +739,16 @@ if (invokedDirectly() && process.argv[2] === 'providers') {
   const spec = Object.hasOwn(COMMANDS, String(command)) ? COMMANDS[command] : null;
 
   if (!spec) {
-    const names = Object.entries(COMMANDS).map(
-      ([name, { words }]) => `\`${name} <${words ? words.join('|').toLowerCase() : 'item-id'}>\``,
-    );
+    // `providers` is dispatched by its own argv[2] check above, before this
+    // table is ever consulted — so it never gets a COMMANDS entry of its own.
+    // Named here by hand, or an operator reading this refusal as the CLI's own
+    // table of contents is told it has four commands when it has five.
+    const names = [
+      ...Object.entries(COMMANDS).map(
+        ([name, { words }]) => `\`${name} <${words ? words.join('|').toLowerCase() : 'item-id'}>\``,
+      ),
+      '`providers` (no argument)',
+    ];
     process.stderr.write(
       `unknown command: ${command ?? '(none)'}. This CLI has ${names.length}: ` +
         `${names.slice(0, -1).join(', ')} and ${names.at(-1)}. Everything else in this ` +

@@ -327,6 +327,20 @@ describe('run-state.mjs — the `providers` command (RP-443)', () => {
       probity: { selected: true, declared: '1.10.1', installed: '1.10.1' },
     });
   });
+
+  // `providers` is handled by its own argv[2] check BEFORE the CLI falls
+  // through to `COMMANDS` and its "unknown command" index — so the index
+  // built from `Object.keys(COMMANDS)` (`deploy`, `budget`, `trigger`,
+  // `authority`) never names a fifth command that genuinely exists. An
+  // operator who mistypes and reads the refusal as the CLI's own table of
+  // contents is told it has four commands when it has five.
+  it('is named in the unknown-command refusal alongside deploy/budget/trigger/authority', async () => {
+    const projectRoot = await newProjectRoot();
+    const result = await runCli(['frobnicate'], projectRoot, envFor(await newRunDir()));
+
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.out).toMatch(/providers/);
+  });
 });
 
 // RP-467. A declaration — and every re-declaration — leaves a journal event

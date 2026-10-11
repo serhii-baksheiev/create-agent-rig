@@ -107,6 +107,22 @@ const authorityClassProblem = (value) => {
   return null;
 };
 
+/**
+ * Why a producerVersion cannot be recorded, or null when it can — the one
+ * implementation both a stated `--producer-version` and a configured
+ * provider pin (RP-443) are held to, with the refusal `--producer-version`
+ * itself uses.
+ */
+const producerVersionProblem = (value) => {
+  if (!PRODUCER_VERSION.test(value)) {
+    return `--producer-version ${JSON.stringify(value)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`;
+  }
+  if (findSecretValues(value).length > 0) {
+    return '--producer-version carries a credential-shaped value; it is never recorded.';
+  }
+  return null;
+};
+
 const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -344,14 +360,6 @@ const runAttach = async (argv, cwd) => {
       return refuse(`${flag} ${JSON.stringify(options[key])} is not a lowercase token (1-64 of a-z 0-9 . _ -).`);
     }
   }
-  if (options.producerVersion !== undefined && !PRODUCER_VERSION.test(options.producerVersion)) {
-    return refuse(
-      `--producer-version ${JSON.stringify(options.producerVersion)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`,
-    );
-  }
-  if (options.producerVersion !== undefined && findSecretValues(options.producerVersion).length > 0) {
-    return refuse('--producer-version carries a credential-shaped value; it is never recorded.');
-  }
   const authority = authorityClassProblem(options.authorityClass);
   if (authority) return refuse(`--authority-class ${JSON.stringify(options.authorityClass)} ${authority}.`);
   if ((options.file === undefined) === (options.ref === undefined)) {
@@ -447,6 +455,13 @@ const runAttach = async (argv, cwd) => {
     return refuse(
       '--producer bmad-tea needs --producer-version: the tea entry version in _bmad/_config/manifest.yaml.',
     );
+  }
+  // Whichever producerVersion is finally recorded — stated or taken from a
+  // configured pin above — clears the same two checks a stated
+  // --producer-version always did, before anything is journalled or appended.
+  if (producerVersion !== undefined) {
+    const versionProblem = producerVersionProblem(producerVersion);
+    if (versionProblem) return refuse(versionProblem);
   }
   const headSha = gitValue(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd);
   if (!headSha) return refuse('the repository has no HEAD commit to bind the evidence to.');

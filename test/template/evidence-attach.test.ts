@@ -1717,6 +1717,56 @@ describe('evidence-attach.mjs attach — producer-aware version provenance (RP-4
     expect(record!.producerVersionSource).toBe('stated');
   });
 
+  // --- playwright-mcp, the configured pin must clear the SAME checks a
+  // --producer-version value clears (RP-443 gate follow-up) -----------------
+  //
+  // `playwrightPin` only requires `EXACT_VERSION`
+  // (`/^\d{1,9}\.\d{1,9}\.\d{1,9}(?:-[0-9A-Za-z.-]{1,40})?(?:\+[0-9A-Za-z.-]{1,40})?$/`
+  // in `lib/provider-provenance.mjs`), which allows a prerelease/build
+  // combination far longer than the 64-character `PRODUCER_VERSION` cap a
+  // *stated* `--producer-version` is held to, and never runs the pin through
+  // `findSecretValues` at all. Today `attach` stamps whatever the pin says
+  // straight onto the descriptor without either check, because both checks
+  // run before the pin is even read.
+
+  it('a configured pin longer than 64 characters: refused like an over-long --producer-version, writes nothing', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const longPin = `123456789.123456789.123456789-${'a'.repeat(40)}+${'b'.repeat(40)}`;
+    expect(longPin.length).toBeGreaterThan(64);
+    await writeMcpPin(dir, longPin);
+    const before = await readEventsFor(runDir);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
+  it('a credential-shaped configured pin: refused like a credential-shaped --producer-version, writes nothing to the evidence file or the journal', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const credentialPin = `1.0.0-${CLOUD_ACCESS_KEY}`;
+    await writeMcpPin(dir, credentialPin);
+    const before = await readEventsFor(runDir);
+    const result = await runCli(
+      attachArgs({ ...VALID_REF, producer: 'playwright-mcp' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.out).not.toContain(CLOUD_ACCESS_KEY);
+    await expectNothingWritten(dir, 'RP-1');
+    expect(await readEventsFor(runDir)).toEqual(before);
+  });
+
   // --- bmad-tea --------------------------------------------------------------
 
   it('bmad-tea with no --producer-version: refused, writes nothing', async () => {

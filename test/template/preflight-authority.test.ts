@@ -385,3 +385,38 @@ describe('preflight.mjs builds the authority block from lib/authority.mjs, not a
     expect(typeof mod.report).toBe('function');
   });
 });
+
+// RP-443 — this pins the end-to-end wiring `preflight-posture.test.ts` only
+// exercises through the pure `report()` function: a REAL spawned
+// `node preflight.mjs --json`, in a fixture project where Probity is
+// selected and pinned (the `.rig/integrations.json` + installed-package
+// shape `run-state-authority.test.ts`'s `providers` suite uses), must carry
+// that same provenance under `providers` on its JSON output. The expected
+// values are the fixture's own literals, never production's reader.
+describe("preflight --json carries this project's real Probity provenance under `providers` (RP-443)", () => {
+  it('reports the selected, declared and installed Probity version the fixture pins', async () => {
+    const root = await fixture();
+    try {
+      await stubProbes();
+      await writeFile(
+        path.join(root, '.rig', 'integrations.json'),
+        `${JSON.stringify({
+          schemaVersion: 1,
+          integrations: [{ id: 'probity', version: '1.10.1', selected: true }],
+        })}\n`,
+      );
+      await mkdir(path.join(root, 'node_modules', '@nizos', 'probity'), { recursive: true });
+      await writeFile(
+        path.join(root, 'node_modules', '@nizos', 'probity', 'package.json'),
+        `${JSON.stringify({ name: '@nizos/probity', version: '1.10.1' })}\n`,
+      );
+
+      const result = (await preflightJson(root)) as Report & { providers?: { probity?: unknown } };
+      expect(result.providers).toMatchObject({
+        probity: { selected: true, declared: '1.10.1', installed: '1.10.1' },
+      });
+    } finally {
+      await removeFixture(root);
+    }
+  });
+});
