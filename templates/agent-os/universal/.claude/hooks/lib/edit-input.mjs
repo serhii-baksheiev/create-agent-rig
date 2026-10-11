@@ -453,6 +453,10 @@ function patchFragments(command, payloadCwd) {
       continue;
     }
     if (current !== null && line.startsWith('+')) current.additions.push(line.slice(1));
+    if (current?.updates && current.activeHunk === null && /^(?:[-+ ]|$)/.test(line)) {
+      current.activeHunk = { lines: [] };
+      current.hunks.push(current.activeHunk);
+    }
     if (current?.activeHunk && /^[-+ ]/.test(line)) {
       current.activeHunk.lines.push({ operation: line[0], text: line.slice(1) });
     }
