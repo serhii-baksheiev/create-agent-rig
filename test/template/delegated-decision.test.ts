@@ -206,7 +206,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
   it('refuses with no RIG_RUN_DIR declared', async () => {
     const { dir } = await newProject();
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(undefined),
     );
@@ -221,7 +221,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     const { dir } = await newProject();
     const runDir = await newRunDir();
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(runDir),
     );
@@ -238,7 +238,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     const runDir = await newRunDir();
     await writeRunState(runDir, { decisionAuthority: 'owner' });
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(runDir),
     );
@@ -254,7 +254,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     const runDir = await newRunDir();
     await writeRunState(runDir, { decisionAuthority: 'nonsense' });
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(runDir),
     );
@@ -300,7 +300,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
   it('refuses with no --ticket at all', async () => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ decision: 'tracker-correction', summary: 'ok' }),
       dir,
       env,
     );
@@ -314,7 +314,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
   it.each(UNSAFE_TICKETS)('refuses an unsafe ticket id %j', async (ticket) => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ ticket, decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket, decision: 'tracker-correction', summary: 'ok' }),
       dir,
       env,
     );
@@ -327,7 +327,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
   it('refuses with no --summary at all', async () => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction' }),
       dir,
       env,
     );
@@ -340,7 +340,7 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
   it('refuses with an empty --summary', async () => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: '' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: '' }),
       dir,
       env,
     );
@@ -408,7 +408,9 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     await chmod(path.join(runDir, 'events.jsonl'), 0o444);
     try {
       const result = await runCli(
-        recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+        // tracker-correction, not extra-gate-round: RP-442 requires --head for
+        // the latter, which this journal-order test is not about.
+        recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
         dir,
         env,
       );
@@ -429,7 +431,7 @@ describe('delegated-decision.mjs record — ticket hardening (RP-340 round 1)', 
   it('refuses a credential-shaped ticket id, assembled at runtime, and creates no file', async () => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ ticket: GITHUB_PAT, decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: GITHUB_PAT, decision: 'tracker-correction', summary: 'ok' }),
       dir,
       env,
     );
@@ -446,7 +448,7 @@ describe('delegated-decision.mjs record — ticket hardening (RP-340 round 1)', 
     async (ticket) => {
       const { dir, env } = await delegatedFixture();
       const result = await runCli(
-        recordArgs({ ticket, decision: 'extra-gate-round', summary: 'ok' }),
+        recordArgs({ ticket, decision: 'tracker-correction', summary: 'ok' }),
         dir,
         env,
       );
@@ -463,7 +465,7 @@ describe('delegated-decision.mjs record — ticket hardening (RP-340 round 1)', 
     // `--ticket` is deliberately the LAST argument, with nothing after it —
     // the shape that makes `argv[i += 1]` read past the end of argv.
     const result = await runCli(
-      ['record', '--decision', 'extra-gate-round', '--summary', 'ok', '--ticket'],
+      ['record', '--decision', 'tracker-correction', '--summary', 'ok', '--ticket'],
       dir,
       env,
     );
@@ -493,7 +495,7 @@ describe('delegated-decision.mjs record — never follows a symlink out of the p
     await link(outsideFile, decisionsFile(dir, 'RP-1'));
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(runDir),
     );
@@ -515,7 +517,7 @@ describe('delegated-decision.mjs record — never follows a symlink out of the p
     );
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(runDir),
     );
@@ -536,7 +538,7 @@ describe('delegated-decision.mjs record — never follows a symlink out of the p
     );
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(runDir),
     );
@@ -556,7 +558,7 @@ describe('delegated-decision.mjs record — never follows a symlink out of the p
     await symlink(outsideFile, decisionsFile(dir, 'RP-1'));
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       envFor(runDir),
     );
@@ -614,7 +616,7 @@ describe('delegated-decision.mjs record — a regular decisions file cannot be s
           delegatedDecisionScript,
           ...recordArgs({
             ticket: 'RP-1',
-            decision: 'extra-gate-round',
+            decision: 'tracker-correction',
             summary: 'must not reach replacement',
           }),
         ],
@@ -688,7 +690,7 @@ describe('delegated-decision.mjs record — a regular decisions file cannot be s
             delegatedDecisionScript,
             ...recordArgs({
               ticket: 'RP-1',
-              decision: 'extra-gate-round',
+              decision: 'tracker-correction',
               summary: 'must not append after initial FIFO substitution',
             }),
           ],
@@ -775,7 +777,7 @@ describe('delegated-decision.mjs record — POSIX identity rejects an initial de
           delegatedDecisionScript,
           ...recordArgs({
             ticket: 'RP-1',
-            decision: 'extra-gate-round',
+            decision: 'tracker-correction',
             summary: 'must not append after POSIX mismatch',
           }),
         ],
@@ -801,7 +803,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     const result = await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'round 4 is justified',
         release: 'rel-1.5.0',
       }),
@@ -810,7 +812,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     );
     expect(result.code, result.out).toBe(0);
     expect(result.stdout).toContain('RP-1');
-    expect(result.stdout).toContain('extra-gate-round');
+    expect(result.stdout).toContain('tracker-correction');
     // The file is named relative to the project root (round 1: never the
     // absolute machine path) — see "prints the decisions file path relative
     // to the project root, never absolute".
@@ -835,7 +837,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
       schemaVersion: 1,
       ticket: 'RP-1',
       release: 'rel-1.5.0',
-      decision: 'extra-gate-round',
+      decision: 'tracker-correction',
       authority: 'delegated',
       summary: 'round 4 is justified',
       evidence: null,
@@ -849,7 +851,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
   it('stores release: null when --release is not given at all', async () => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'no release yet' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'no release yet' }),
       dir,
       env,
     );
@@ -865,7 +867,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
   it.each(VALID_RELEASE_LABELS)('accepts the well-formed --release label %j', async (release) => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok', release }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok', release }),
       dir,
       env,
     );
@@ -891,7 +893,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     async (release) => {
       const { dir, env } = await delegatedFixture();
       const result = await runCli(
-        recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok', release }),
+        recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok', release }),
         dir,
         env,
       );
@@ -906,7 +908,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
   it('a second record for the same ticket APPENDS a second line, never rewriting the first', async () => {
     const { dir, env } = await delegatedFixture();
     await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'first' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'first' }),
       dir,
       env,
     );
@@ -918,7 +920,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
 
     const lines = (await readDecisionLines(dir, 'RP-1')) as Array<Record<string, unknown>>;
     expect(lines).toHaveLength(2);
-    expect(lines[0]).toMatchObject({ decision: 'extra-gate-round', summary: 'first' });
+    expect(lines[0]).toMatchObject({ decision: 'tracker-correction', summary: 'first' });
     expect(lines[1]).toMatchObject({ decision: 'work-sequencing', summary: 'second' });
   });
 
@@ -929,7 +931,10 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
   it('appends to an unchanged regular decisions file and reports success for both writes', async () => {
     const { dir, env } = await delegatedFixture();
     const first = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'first' }),
+      // `tracker-correction`, not `extra-gate-round` (RP-442 binds that id to
+      // `--head`/the branch budget) — this test is exercising ordinary
+      // append durability, unrelated to that feature's own coverage.
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'first' }),
       dir,
       env,
     );
@@ -949,7 +954,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'short',
         evidence: 'journal/2026-10.md#RP-1',
       }),
@@ -968,7 +973,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'round 4 is justified',
         release: 'rel-1.5.0',
       }),
@@ -993,7 +998,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
       data: {
         ticket: 'RP-1',
         release: 'rel-1.5.0',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'round 4 is justified',
       },
     });
@@ -1004,7 +1009,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await expect(readFile(path.join(dir, '.claude', 'queue.json'), 'utf8')).rejects.toThrow();
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'no adapter needed' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'no adapter needed' }),
       dir,
       env,
     );
@@ -1014,7 +1019,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
   it('prints the decisions file path relative to the project root, never absolute', async () => {
     const { dir, env } = await delegatedFixture();
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok' }),
       dir,
       env,
     );
@@ -1030,7 +1035,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: `rotated the leaked token ${GITHUB_PAT} before merging`,
       }),
       dir,
@@ -1048,7 +1053,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'short',
         evidence: GITHUB_PAT,
       }),
@@ -1066,7 +1071,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: '/Users/someone/secret/dir',
       }),
       dir,
@@ -1083,7 +1088,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'C:\\Users\\x\\y',
       }),
       dir,
@@ -1100,7 +1105,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'line one\nline two',
       }),
       dir,
@@ -1116,7 +1121,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     const { dir, env } = await delegatedFixture();
     const long = 'a'.repeat(5000);
     await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: long }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: long }),
       dir,
       env,
     );
@@ -1135,7 +1140,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'short',
         evidence: long,
       }),
@@ -1185,7 +1190,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
     await writeFile(path.join(dir, 'PLAN.md'), '## Agent queue\n\n');
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok', post: true }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok', post: true }),
       dir,
       env,
     );
@@ -1207,7 +1212,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
     await writeFile(path.join(dir, 'PLAN.md'), '## Agent queue\n\n');
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok', post: true }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok', post: true }),
       dir,
       env,
     );
@@ -1225,7 +1230,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
     delete postEnv.JIRA_API_TOKEN;
 
     const result = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'ok', post: true }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'ok', post: true }),
       dir,
       postEnv,
     );
@@ -1269,7 +1274,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
       const result = await runCli(
         recordArgs({
           ticket: 'RP-1',
-          decision: 'extra-gate-round',
+          decision: 'tracker-correction',
           // Round 2: a summary the redaction actually changes, so a body built
           // from the raw argument instead of the stored record goes red.
           summary: `rotated the leaked token ${GITHUB_PAT} before merging`,
@@ -1295,7 +1300,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
       const bodyLines = body.split('\n');
       expect(bodyLines[0]).toBe('rig-delegated-decision v1');
       expect(body).toMatch(/^ticket: RP-1$/m);
-      expect(body).toMatch(/^decision: extra-gate-round$/m);
+      expect(body).toMatch(/^decision: tracker-correction$/m);
       expect(body).toMatch(/^authority: delegated$/m);
       expect(body).toMatch(/^summary: \[redacted\]$/m);
       const [stored] = await readDecisionLines(dir, 'RP-1');
@@ -1335,7 +1340,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
       const result = await runCli(
         recordArgs({
           ticket: 'RP-1',
-          decision: 'extra-gate-round',
+          decision: 'tracker-correction',
           summary: 'ok',
           release: 'rel-1.5.0',
           post: true,
@@ -1392,7 +1397,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
       const result = await runCli(
         recordArgs({
           ticket: 'RP-1',
-          decision: 'extra-gate-round',
+          decision: 'tracker-correction',
           summary: 'ok',
           post: true,
         }),
@@ -1437,7 +1442,7 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
   it('a made decision is returned by --json, in file order', async () => {
     const { dir, env } = await delegatedFixture();
     await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'first' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'first' }),
       dir,
       env,
     );
@@ -1456,14 +1461,14 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
     expect(result.code, result.out).toBe(0);
     const records = JSON.parse(result.stdout) as Array<Record<string, unknown>>;
     expect(records).toHaveLength(2);
-    expect(records[0]).toMatchObject({ decision: 'extra-gate-round', summary: 'first' });
+    expect(records[0]).toMatchObject({ decision: 'tracker-correction', summary: 'first' });
     expect(records[1]).toMatchObject({ decision: 'work-sequencing', summary: 'second' });
   });
 
   it('a FRESH process with no RIG_RUN_DIR at all still reads the made decision — durable, not conversational', async () => {
     const { dir, env } = await delegatedFixture();
     await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'made it' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'made it' }),
       dir,
       env,
     );
@@ -1482,7 +1487,7 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
   it('a FRESH run directory (a different controller session) still reads the made decision', async () => {
     const { dir, env } = await delegatedFixture();
     await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'made it' }),
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'made it' }),
       dir,
       env,
     );
@@ -1507,7 +1512,7 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         authority: 'delegated',
         summary: 'ok',
         evidence: null,
@@ -1533,7 +1538,7 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
     await mkdir(path.join(dir, '.rig', 'decisions'), { recursive: true });
     await writeFile(
       decisionsFile(dir, 'RP-9'),
-      `${JSON.stringify({ ticket: 'RP-9', decision: 'extra-gate-round' })}\n`,
+      `${JSON.stringify({ ticket: 'RP-9', decision: 'tracker-correction' })}\n`,
     );
 
     const result = await run(
@@ -1559,7 +1564,7 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
       schemaVersion: 1,
       ticket: 'RP-9',
       release: null,
-      decision: 'extra-gate-round',
+      decision: 'tracker-correction',
       authority: 'delegated',
       summary: 'ok',
       evidence: null,
@@ -2252,7 +2257,9 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
     };
     const { dir, env } = await delegatedFixture();
     const recorded = await runCli(
-      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'writer shape' }),
+      // `tracker-correction`, not `extra-gate-round` — see the note above the
+      // append-durability test for why this file avoids that id.
+      recordArgs({ ticket: 'RP-1', decision: 'tracker-correction', summary: 'writer shape' }),
       dir,
       env,
     );
@@ -2276,7 +2283,7 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
     const recorded = await runCli(
       recordArgs({
         ticket: 'RP-1',
-        decision: 'extra-gate-round',
+        decision: 'tracker-correction',
         summary: 'writer redacts a credential-shaped release',
         release: GITHUB_PAT,
       }),
@@ -2349,19 +2356,17 @@ describe('delegated-decision.mjs — recording bypasses no mechanical gate', () 
 // production function the CLI itself calls.
 describe('delegated-decision.mjs resolve — turns a per-item stop into one of three resolutions', () => {
   // Every ITEM_STOPS id, with its independently-declared expected resolution
-  // UNDER DELEGATED AUTHORITY. RP-342 round 1 (controller decision, Jira
-  // RP-342 comment 23320): `elevated-path-scope` is now the ONLY catalogued
-  // stop that names a decision `DELEGABLE_DECISIONS` lists
-  // (`elevated-change-acceptance`), so it is the only one a delegated run may
-  // decide and continue past. `gate-round-cap` and `premise-false` now name
-  // no delegable decision at all and always escalate, under every
-  // authority including `delegated`; the three `work-blocked` stops, the
-  // two decision-less `decision-needed`
+  // UNDER DELEGATED AUTHORITY. RP-442: `gate-round-cap` now names the
+  // delegable `extra-gate-round` decision too, so it joins
+  // `elevated-path-scope` as a stop a delegated run may decide and continue
+  // past. `premise-false` still names no delegable decision at all and
+  // always escalates, under every authority including `delegated`; the
+  // three `work-blocked` stops, the two decision-less `decision-needed`
   // stops (`surprise-scope`, `invariant-conflict`) and `external-blocker`
-  // (now `work-blocked`, a per-item wall rather than a run-level one) all
-  // always escalate the item — none of them stops the run.
+  // (a per-item wall rather than a run-level one) all always escalate the
+  // item — none of them stops the run.
   const UNDER_DELEGATED: Array<[string, string]> = [
-    ['gate-round-cap', 'escalate-item'],
+    ['gate-round-cap', 'decide-and-continue'],
     ['premise-false', 'escalate-item'],
     ['elevated-path-scope', 'decide-and-continue'],
     ['three-strikes', 'escalate-item'],
@@ -2385,13 +2390,14 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     },
   );
 
-  // RP-342 round 1: `elevated-path-scope` is now the only catalogued stop
-  // that can ever decide-and-continue, and only under exactly `delegated`
-  // (see UNDER_DELEGATED above). Every other catalogued stop — including
-  // `external-blocker`, now `work-blocked` rather than a run-level wall —
-  // never resolves to decide-and-continue under any authority, so checking
-  // "not decide-and-continue under owner/malformed" for all of them,
-  // `elevated-path-scope` included, is this table's job.
+  // RP-442: `elevated-path-scope` and `gate-round-cap` are the only
+  // catalogued stops that can ever decide-and-continue, and only under
+  // exactly `delegated` (see UNDER_DELEGATED above). Every other catalogued
+  // stop — including `external-blocker`, `work-blocked` rather than a
+  // run-level wall — never resolves to decide-and-continue under any
+  // authority, so checking "not decide-and-continue under owner/malformed"
+  // for all of them, `elevated-path-scope` and `gate-round-cap` included, is
+  // this table's job.
   const NEVER_DECIDES_OUTSIDE_DELEGATED = [
     'three-strikes',
     'attempt-budget',

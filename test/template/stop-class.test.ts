@@ -104,17 +104,16 @@ const EXPECTED_ITEM_STOPS: ItemStop[] = [
   { id: 'three-strikes', stopClass: 'work-blocked', decision: null },
   { id: 'attempt-budget', stopClass: 'work-blocked', decision: null },
   { id: 'blocking-verdict', stopClass: 'work-blocked', decision: null },
-  // RP-342 round 1 (controller decision, Jira RP-342 comment 23320):
-  // `gate-round-cap` and `premise-false` carry no delegable decision at all
-  // — they stay `decision-needed` but always escalate, under every
-  // authority including `delegated`.
-  { id: 'gate-round-cap', stopClass: 'decision-needed', decision: null },
+  // RP-442: `gate-round-cap` now names the delegable `extra-gate-round`
+  // decision (authority.mjs already listed it; RP-341/RP-342 left it
+  // unwired here) — a delegated run may authorise one more review round
+  // past the configured cap, under the budget `maxDelegatedRounds` sets.
+  // `premise-false` still carries no delegable decision at all.
+  { id: 'gate-round-cap', stopClass: 'decision-needed', decision: 'extra-gate-round' },
   { id: 'premise-false', stopClass: 'decision-needed', decision: null },
   // Reaching a declared elevated path that is none of the Tier-2 change kinds
   // is delegable; touching a Tier-2 change kind (autonomy.md, "Surprise
-  // scope") stays the owner's — RP-341 round 1. After RP-342 round 1 this is
-  // the only catalogued stop that can reach decide-and-continue, and only
-  // under exactly `delegated`.
+  // scope") stays the owner's — RP-341 round 1.
   {
     id: 'elevated-path-scope',
     stopClass: 'decision-needed',
@@ -133,7 +132,9 @@ const EXPECTED_RESOLUTION_UNDER_DELEGATED: Record<string, Resolution> = {
   'three-strikes': 'escalate-item',
   'attempt-budget': 'escalate-item',
   'blocking-verdict': 'escalate-item',
-  'gate-round-cap': 'escalate-item',
+  // RP-442: now decide-and-continue under exactly `delegated` — see
+  // EXPECTED_ITEM_STOPS above.
+  'gate-round-cap': 'decide-and-continue',
   'premise-false': 'escalate-item',
   'elevated-path-scope': 'decide-and-continue',
   'surprise-scope': 'escalate-item',
