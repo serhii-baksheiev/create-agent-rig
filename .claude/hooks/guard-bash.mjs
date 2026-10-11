@@ -155,7 +155,7 @@
 // The split is decided in one place for both shell guards, `lib/hook-input.mjs`.
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { brakeIsOn } from '../scripts/stop-flag.mjs';
+import { armedFlag, stopFlags } from '../scripts/stop-flag.mjs';
 import { SHELL_TOOLS } from '../scripts/lib/shell-tools.mjs';
 import { readHookInput, refusalText, shellCommandOf } from './lib/hook-input.mjs';
 
@@ -1523,11 +1523,19 @@ export const inspect = (raw, brake, depth = 0) => {
       return deniedByBrake(name, args);
     })();
     if (braked) {
+      const state =
+        brake.code === null
+          ? `the kill switch is set (${brake.path})`
+          : `the kill switch path ${brake.path} cannot be inspected (${brake.code}), so it reads as set`;
+      const clear =
+        brake.code === null
+          ? `Clear it with: rm ${brake.path}`
+          : 'Fix that path (its permissions, or the AGENT_LOOP_STOP value naming it) to clear it.';
       return (
-        `BLOCKED — the kill switch is set (${brake}), so nothing may land on the ` +
+        `BLOCKED — ${state}, so nothing may land on the ` +
         'default branch. Everything else stays allowed on purpose: finish the ' +
         'current task, push the branch, open the PR, write the journal entry, and ' +
-        `stop. "Stop cleanly" never means "lose the work". Clear it with: rm ${brake}`
+        `stop. "Stop cleanly" never means "lose the work". ${clear}`
       );
     }
 
@@ -1622,7 +1630,7 @@ function main() {
   if (!raw.trim()) return 0;
 
   try {
-    const reason = inspect(raw, brakeIsOn());
+    const reason = inspect(raw, armedFlag(stopFlags()));
     if (reason) {
       process.stderr.write(`${reason}\n`);
       return 2;

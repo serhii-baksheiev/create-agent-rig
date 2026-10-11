@@ -155,15 +155,28 @@ const envFor = (runDir: string | undefined): NodeJS.ProcessEnv => {
   return env;
 };
 
-const writeRunState = (runDir: string, state: Record<string, unknown>) =>
-  writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
-
 const newRunDir = (): Promise<string> => mkdtemp(path.join(tmpdir(), 'delegated-rounds-run-'));
+
+/**
+ * Declares the run's authority the supported way: `run-state.mjs authority
+ * <word>` — since RP-467, a hand-written `decisionAuthority` in `state.json`
+ * is refused; only a journalled declaration is read back by
+ * `delegated-decision.mjs`.
+ */
+const declareAuthority = async (runDir: string, word: string): Promise<void> => {
+  const result = await run(
+    process.execPath,
+    [scriptPath('run-state.mjs'), 'authority', word],
+    repoRoot,
+    envFor(runDir),
+  );
+  if (result.code !== 0) throw new Error(`run-state authority ${word} failed: ${result.out}`);
+};
 
 /** A delegated-authority run directory, ready for `record`. */
 const delegatedRunDir = async (): Promise<string> => {
   const runDir = await newRunDir();
-  await writeRunState(runDir, { decisionAuthority: 'delegated' });
+  await declareAuthority(runDir, 'delegated');
   return runDir;
 };
 

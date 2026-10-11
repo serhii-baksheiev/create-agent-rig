@@ -651,6 +651,59 @@ describe('record-dispatch.mjs — a matched token_usage_record with no usable th
 });
 
 describe('record-dispatch.mjs — Codex rollout path is refused before anything is opened (RP-227)', () => {
+  it('does not read a stable rollout when its initial POSIX lstat device differs from the opened descriptor', async () => {
+    const agentId = 'initial-device-mismatch';
+    const file = await writeRollout(`agent-${agentId}.jsonl`, [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 131313, output_tokens: 313131 },
+      }),
+    ]);
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    let changed = false;
+
+    vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: 'linux' });
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        lstatSync: (...args: Parameters<typeof actual.lstatSync>) => {
+          const stat = actual.lstatSync(...args);
+          const device = stat?.dev;
+          if (!changed && args[0] === file && stat && typeof device === 'number') {
+            changed = true;
+            return new Proxy(stat, {
+              get(value, property, receiver) {
+                return property === 'dev' ? device + 1 : Reflect.get(value, property, receiver);
+              },
+            });
+          }
+          return stat;
+        },
+      };
+    });
+
+    try {
+      const module = (await import(
+        `${pathToFileURL(hookPath).href}?initial-device-mismatch=${Date.now()}`
+      )) as {
+        readCodexRolloutUsage: (
+          file: string,
+          agentId: string,
+        ) => { usage?: Record<string, unknown>; usageUnavailable?: string };
+      };
+      const result = module.readCodexRolloutUsage(file, agentId);
+      expect(changed).toBe(true);
+      expect(result).toEqual({ usageUnavailable: 'transcript-unreadable' });
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
   it('does not read a rollout replaced with a symlink after lstatSync has accepted its regular file', async () => {
     // The reader calls synchronous filesystem primitives, so a real timing
     // race cannot be scheduled deterministically. This mock leaves every

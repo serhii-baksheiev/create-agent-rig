@@ -101,10 +101,10 @@ function main() {
 
   // RP-214: `editFragments` also reports a removal (a Delete File section, or
   // the source half of a Move) as its own fragment, `removes: true` — deleting
-  // a credential file is not writing one, so this guard never judges those,
-  // including an inspection refusal attached to one.
-  const fragments = editFragments(input).filter(({ removes }) => !removes);
-  const globalRefusal = fragments.find(
+  // a credential file is not writing one, so this guard excludes their content
+  // after it has applied a path-safety refusal to every fragment.
+  const allFragments = editFragments(input);
+  const globalRefusal = allFragments.find(
     ({ inspectionRefusal, appliesToAll }) => appliesToAll && inspectionRefusal,
   );
   if (globalRefusal) {
@@ -117,6 +117,8 @@ function main() {
     );
     return 2;
   }
+
+  const fragments = allFragments.filter(({ removes }) => !removes);
 
   if (fragments.length === 0 || fragments.every(({ filePath }) => filePath === '')) {
     return 0; // nothing to judge; fail open
@@ -135,7 +137,7 @@ function main() {
     .replaceAll('\\', '/')
     .replace(/\/+$/, '');
   let refused = false;
-  for (const { filePath, fragment, inspectionRefusal } of fragments) {
+  for (const { filePath, fragment, inspectionRefusal, possibleContent } of fragments) {
     const relativePath =
       projectDir !== '' && filePath.startsWith(`${projectDir}/`)
         ? filePath.slice(projectDir.length + 1)
@@ -160,7 +162,14 @@ function main() {
       continue;
     }
 
-    const findings = findSecretValues(fragment);
+    let findings = findSecretValues(fragment);
+    // A Move's possibleContent over-approximates what Codex writes, so it also
+    // refuses a Move whose patch removes the source's credential — see
+    // guard-secret-file.test.ts (absent in a generated rig) › "refuses a Move
+    // that removes the source credential (fail-closed: Codex writes none)".
+    if (findings.length === 0 && typeof possibleContent === 'string') {
+      findings = findSecretValues(possibleContent);
+    }
     if (findings.length === 0) continue;
     refused = true;
     process.stderr.write(

@@ -2,7 +2,8 @@
  * Normalise the edit surfaces exposed by Claude Code and Codex.
  *
  * Claude sends Write/Edit fields directly. Codex sends an apply_patch command,
- * so added lines are returned for ordinary edits. A move is different: the
+ * so the lines it writes — added and context lines — are returned for
+ * ordinary edits. A move is different: the
  * destination receives the existing file too, so guards inspect the resulting
  * content instead of only the patch additions when inspection succeeds. A
  * removal — a `*** Delete File:` section, or the source half of a
@@ -343,6 +344,7 @@ function patchFragments(command, payloadCwd) {
           filePath: '',
           fragment: '',
           inspectionRefusal: 'patch destination is outside the repository or cannot be resolved safely',
+          remedy: 'Use a repository-relative path spelling; absolute paths must resolve inside this repository.',
           appliesToAll: true,
           // RP-214: a Delete File section has no destination — only the
           // removed path itself — so this refusal is about a removal too;
@@ -390,6 +392,8 @@ function patchFragments(command, payloadCwd) {
                   fragment: '',
                   inspectionRefusal:
                     'patch move source is outside the repository or cannot be resolved safely',
+                  remedy:
+                    'Use a repository-relative path spelling; absolute paths must resolve inside this repository.',
                   appliesToAll: true,
                   removes: true,
                 }
@@ -403,13 +407,29 @@ function patchFragments(command, payloadCwd) {
   };
 
   for (const line of command.split(/\r?\n/)) {
-    const file = /^\*\*\* (?:Add|Update) File: (.+)$/.exec(line);
+    // RP-479: outside an Update File section Codex's streaming parser matches
+    // markers after Rust `trim()`, so an indented header is still a header;
+    // inside one it trims only the end, and a leading-whitespace line is hunk
+    // context. Only the leading side is stripped here: the trailing side is
+    // left for `repositoryPatchPath`, which owns that boundary rule.
+    // The downstream parser treats U+2028 and U+2029 as trailing whitespace,
+    // but JavaScript `.` does not match them. Retain every character here so
+    // `repositoryPatchPath` can apply that boundary rule before classification.
+    const header = current?.updates ? line : trimRustLeadingWhitespace(line);
+    const file = /^\*\*\* (Add|Update) File: ([\s\S]+)$/.exec(header);
     if (file) {
       if (!flush()) break;
-      current = { sourcePath: file[1], moveTo: null, additions: [], hunks: [], activeHunk: null };
+      current = {
+        sourcePath: file[2],
+        moveTo: null,
+        additions: [],
+        hunks: [],
+        activeHunk: null,
+        updates: file[1] === 'Update',
+      };
       continue;
     }
-    const move = /^\*\*\* Move to: (.+)$/.exec(line);
+    const move = /^\*\*\* Move to: ([\s\S]+)$/.exec(header);
     if (move && current !== null) {
       current.moveTo = move[1];
       continue;
@@ -417,14 +437,14 @@ function patchFragments(command, payloadCwd) {
     // RP-214: a Delete File section becomes its own fragment — `removes:
     // true`, resolved through the same path the other verbs use — instead of
     // only flushing whatever section came before it.
-    const del = /^\*\*\* Delete File: (.+)$/.exec(line);
+    const del = /^\*\*\* Delete File: ([\s\S]+)$/.exec(header);
     if (del) {
       if (!flush()) break;
       current = { sourcePath: del[1], moveTo: null, additions: [], hunks: [], activeHunk: null, removes: true };
       if (!flush()) break;
       continue;
     }
-    if (/^\*\*\* End Patch/.test(line)) {
+    if (/^\*\*\* End Patch/.test(header)) {
       if (!flush()) break;
       continue;
     }
@@ -433,9 +453,15 @@ function patchFragments(command, payloadCwd) {
       current.hunks.push(current.activeHunk);
       continue;
     }
-    if (current !== null && line.startsWith('+')) current.additions.push(line.slice(1));
-    if (current?.activeHunk && /^[-+ ]/.test(line)) {
-      current.activeHunk.lines.push({ operation: line[0], text: line.slice(1) });
+    if (current !== null && (line.startsWith('+') || (current.updates && line.startsWith(' ')))) {
+      current.additions.push(line.slice(1));
+    }
+    if (current?.updates && current.activeHunk === null && /^(?:[-+ ]|$)/.test(line)) {
+      current.activeHunk = { lines: [] };
+      current.hunks.push(current.activeHunk);
+    }
+    if (current?.activeHunk && /^(?:[-+ ]|$)/.test(line)) {
+      current.activeHunk.lines.push({ operation: line[0] ?? ' ', text: line.slice(1) });
     }
   }
   if (patchRefusal !== null) return [patchRefusal];
@@ -446,9 +472,9 @@ function patchFragments(command, payloadCwd) {
 
 function movedFragment(current, budget) {
   if (budget.exhausted !== null) return inspectionRefusal(current, budget.exhausted);
-  const sourcePath = canonicalPatchPath(current.sourcePath);
-  if (sourcePath === null) {
-    return inspectionRefusal(current, 'move source is outside the repository root');
+  const source = repositoryPatchPath(current.sourcePath, budget);
+  if (source === null) {
+    return inspectionRefusal(current, 'unsafe move source cannot be resolved safely');
   }
   if (budget.repoRoot === null) {
     return inspectionRefusal(current, 'cannot resolve the repository root with git rev-parse');
@@ -458,7 +484,7 @@ function movedFragment(current, budget) {
   }
   try {
     const repoRoot = budget.repoRoot;
-    const candidate = path.resolve(budget.patchCwd, sourcePath);
+    const candidate = source.candidate;
     if (!isWithin(repoRoot, candidate)) {
       return inspectionRefusal(current, 'move source is outside the repository root');
     }
@@ -483,10 +509,25 @@ function movedFragment(current, budget) {
       }
       const verified = statSync(verifiedSource);
       if (!verified.isFile()) return inspectionRefusal(current, 'move source is not a regular file');
-      if (opened.dev !== verified.dev || opened.ino !== verified.ino) {
+      if (
+        opened.ino !== verified.ino ||
+        (process.platform !== 'win32' && opened.dev !== verified.dev)
+      ) {
         return inspectionRefusal(current, 'move source changed during inspection');
       }
-
+      const verifiedHandle = openSync(verifiedSource, constants.O_RDONLY | noFollow | nonBlocking);
+      try {
+        const verifiedOpened = fstatSync(verifiedHandle);
+        if (
+          !verifiedOpened.isFile() ||
+          verifiedOpened.dev !== opened.dev ||
+          verifiedOpened.ino !== opened.ino
+        ) {
+          return inspectionRefusal(current, 'move source changed during inspection');
+        }
+      } finally {
+        closeSync(verifiedHandle);
+      }
       let bytesRead = 0;
       const buffer = Buffer.allocUnsafe(MAX_MOVED_FILE_BYTES + 1);
       while (bytesRead < buffer.length) {
@@ -511,7 +552,12 @@ function movedFragment(current, budget) {
       }
 
       const content = buffer.toString('utf8', 0, bytesRead);
-      return applyHunks(content, current.hunks, current, budget);
+      const rebuilt = applyHunks(content, current.hunks, current, budget);
+      if (rebuilt.inspectionRefusal !== undefined) return rebuilt;
+      // RP-484: Codex matches a Move's context fuzzily, so its output need not
+      // be this rebuild; every line it writes is a source line or a patch
+      // context or added line, carried beside the rebuild for a value scan.
+      return { ...rebuilt, possibleContent: `${content}\n${current.additions.join('\n')}` };
     } finally {
       closeSync(handle);
     }
@@ -540,10 +586,10 @@ function applyHunks(content, hunks, current, budget) {
     }
     budget.hunkLines += hunk.lines.length;
     if (budget.hunkLines > MAX_TOTAL_HUNK_LINES) return exhaustBudget(budget, current, `total move hunk lines exceed the ${MAX_TOTAL_HUNK_LINES}-line limit`);
-    const before = hunk.lines
+    let before = hunk.lines
       .filter(({ operation }) => operation !== '+')
       .map(({ text }) => text);
-    const after = hunk.lines
+    let after = hunk.lines
       .filter(({ operation }) => operation !== '-')
       .map(({ text }) => text);
 
@@ -554,7 +600,14 @@ function applyHunks(content, hunks, current, budget) {
       lines.splice(Math.max(0, lines.length - 1), 0, ...after);
       continue;
     }
-    const match = findSequence(lines, before, budget);
+    let match = findSequence(lines, before, budget);
+    if (!match.exhausted && match.index === -1 && before.at(-1) === '') {
+      // RP-482: Codex retries a chunk whose context ends in an empty line
+      // without that line, dropping a trailing empty line from the replacement too.
+      before = before.slice(0, -1);
+      if (after.at(-1) === '') after = after.slice(0, -1);
+      match = findSequence(lines, before, budget);
+    }
     if (match.exhausted) {
       return exhaustBudget(budget, current, 'move context comparison budget was exhausted');
     }
@@ -595,11 +648,19 @@ function findSequence(lines, sequence, budget) {
 }
 
 function isWithin(root, candidate) {
-  const relative = path.relative(root, candidate);
-  return (
-    relative === '' ||
-    (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
-  );
+  // `path.relative` is not a containment oracle on Windows: its case-folding
+  // treats some distinct Unicode NTFS names as the same component. Compare the
+  // resolved spellings at component boundaries instead. `repositoryPatchPath`
+  // separately realpath-resolves existing prefixes; this lexical check remains
+  // deliberately conservative and admits only the canonical spelling it was
+  // given, refusing an alternate case or Unicode-normalised absolute spelling.
+  const resolvedRoot = path.resolve(root);
+  const resolvedCandidate = path.resolve(candidate);
+  if (resolvedCandidate === resolvedRoot) return true;
+  const separatorTerminatedRoot = resolvedRoot.endsWith(path.sep)
+    ? resolvedRoot
+    : `${resolvedRoot}${path.sep}`;
+  return resolvedCandidate.startsWith(separatorTerminatedRoot);
 }
 
 function inspectionRefusal(current, reason) {
@@ -691,8 +752,8 @@ function clampAtDriveRoot(slashed) {
   return path.posix.normalize(slashed);
 }
 
-function normalisePath(value) {
-  const raw = String(value ?? '').trim();
+function normalisePath(value, trimBoundaryWhitespace = true) {
+  const raw = trimBoundaryWhitespace ? String(value ?? '').trim() : String(value ?? '');
   if (raw === '') return '';
   // `null` here is a sentinel distinct from every valid return of this
   // function (including `''`) — `clampAtDriveRoot` returns it once its own
@@ -721,7 +782,7 @@ function normalisePath(value) {
 
 function canonicalPatchPath(value) {
   const raw = String(value ?? '').replaceAll('\\', '/');
-  const normalised = normalisePath(raw);
+  const normalised = normalisePath(raw, false);
   if (
     // RP-247: `normalisePath` returns `null`, not a string, once its own
     // component bound is crossed — reached here only in principle, since
@@ -745,16 +806,92 @@ function canonicalPatchPath(value) {
   return normalised.replace(/^\.\//, '');
 }
 
+function isRustWhitespace(character) {
+  const codePoint = character.charCodeAt(0);
+  return (
+    (codePoint >= 0x0009 && codePoint <= 0x000d) ||
+    codePoint === 0x0020 ||
+    codePoint === 0x0085 ||
+    codePoint === 0x00a0 ||
+    codePoint === 0x1680 ||
+    (codePoint >= 0x2000 && codePoint <= 0x200a) ||
+    codePoint === 0x2028 ||
+    codePoint === 0x2029 ||
+    codePoint === 0x202f ||
+    codePoint === 0x205f ||
+    codePoint === 0x3000
+  );
+}
+
+function trimRustTrailingWhitespace(value) {
+  let end = value.length;
+  while (end > 0) {
+    if (!isRustWhitespace(value.charAt(end - 1))) break;
+    end -= 1;
+  }
+  return value.slice(0, end);
+}
+
+function trimRustLeadingWhitespace(value) {
+  let start = 0;
+  while (start < value.length) {
+    if (!isRustWhitespace(value.charAt(start))) break;
+    start += 1;
+  }
+  return value.slice(start);
+}
+
 function repositoryPatchPath(value, budget) {
-  const patchPath = canonicalPatchPath(value);
-  if (patchPath === null || budget.repoRoot === null || budget.patchCwd === null) return null;
-  const candidate = path.resolve(budget.patchCwd, patchPath);
+  if (budget.repoRoot === null || budget.patchCwd === null) return null;
+  // The downstream parser removes Rust `char::is_whitespace()` from the
+  // trailing boundary. Keep the original spelling long enough to retain the
+  // existing conservative NEL refusal, then remove precisely that set.
+  // U+FEFF is not Rust whitespace and must remain part of the pathname.
+  const originalValue = String(value ?? '');
+  if (originalValue.startsWith('\u0085') || originalValue.endsWith('\u0085')) return null;
+  const rawValue = trimRustTrailingWhitespace(originalValue);
+  if (originalValue.startsWith('\u0085') || rawValue.endsWith('\u0085')) return null;
+  // Leading whitespace is a pathname character to Codex. If it makes a path
+  // look absolute only after trimming, we cannot prove the parser will target
+  // the same entry, so refuse instead of validating a safer spelling.
+  const withoutLeadingWhitespace = trimRustLeadingWhitespace(rawValue);
+  if (withoutLeadingWhitespace !== rawValue && path.isAbsolute(withoutLeadingWhitespace)) return null;
+  // `apply_patch` normally names a repository-relative path. Codex may instead
+  // emit an absolute spelling, but only one we can prove belongs to this
+  // checkout is equivalent. Reject every traversal spelling before resolving:
+  // normalising first would turn an unsafe claim into an apparently contained
+  // one. UNC, device, drive-relative, and Windows root-relative forms stay
+  // unjudgeable here; a native fully-qualified path is the only alternate
+  // surface this resolver admits.
+  const hasTraversal = rawValue.split(/[\\/]/).some((part) => part === '..');
+  const isDeviceOrUnc =
+    /^[\\/]{2}[?.](?:[\\/]|$)/.test(rawValue) || /^[\\/]{2}/.test(rawValue);
+  const isWindowsRootRelative =
+    process.platform === 'win32' && /^[\\/](?![\\/])/.test(rawValue);
+  const absolute = path.isAbsolute(rawValue);
+  if (hasTraversal || isDeviceOrUnc || isWindowsRootRelative) return null;
+
+  const patchPath = absolute ? null : canonicalPatchPath(rawValue);
+  if (!absolute && patchPath === null) return null;
+  const candidate = absolute ? path.resolve(rawValue) : path.resolve(budget.patchCwd, patchPath);
   if (!isWithin(budget.repoRoot, candidate)) return null;
 
   // RP-60: the lexical repo-relative spelling, fixed BEFORE any symlink in the
   // path (a guarded prefix junctioned elsewhere inside the checkout, say) gets
   // resolved away below. One extra string, computed once — not a new loop.
   const raw = path.relative(budget.repoRoot, candidate).split(path.sep).join('/');
+  // A colon cannot name an ordinary Windows repository entry here: after the
+  // drive root has been removed, it is an alternate data stream spelling.
+  // Refuse it before resolving or caching an ancestor, so `.env::$DATA` cannot
+  // evade the credential-file path policy through its default-stream alias.
+  if (
+    raw === '' ||
+    raw === '..' ||
+    raw.startsWith('../') ||
+    (process.platform === 'win32' && raw.includes(':'))
+  ) {
+    return null;
+  }
 
   let existing = candidate;
   const suffix = [];
@@ -763,7 +900,11 @@ function repositoryPatchPath(value, budget) {
       const resolved = budget.resolvedDirectories.get(existing);
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
+      return {
+        raw,
+        candidate,
+        resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/'),
+      };
     }
     try {
       const resolved = realpathSync(existing);
@@ -779,7 +920,11 @@ function repositoryPatchPath(value, budget) {
       }
       const resolvedCandidate = path.resolve(resolved, ...suffix);
       if (!isWithin(budget.repoRoot, resolvedCandidate)) return null;
-      return { raw, resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/') };
+      return {
+        raw,
+        candidate,
+        resolved: path.relative(budget.repoRoot, resolvedCandidate).split(path.sep).join('/'),
+      };
     } catch (error) {
       if (error?.code !== 'ENOENT') return null;
       try {

@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-440",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "dd8dc36bcdbeee685af0acbb82cc8250b95cb124c5a872f7eccff39365b85593",
+      "targetSha": "4579b6a65f89953b12cd30660f574cf280c30497"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "de8f1a856daf90cad4741377df8ce1a16c21f23e054872d5379fd6e2b2adf097",
+      "count": 6
+    }
+  }
+}

@@ -155,6 +155,28 @@ describe('worktree-task skill (universal) — isolation per task, host-agnostic'
     expect(content).not.toMatch(/\/home\/[a-z]/i);
     expect(content).not.toMatch(/windows/i);
   });
+
+  // RP-421: Finish removed the worktree but never disarmed the checkout-scoped
+  // unattended flag `on --root <worktree>` armed at claim time — the flag
+  // outlived the checkout that armed it, and nothing else disarms it. The
+  // disarm must run BEFORE the worktree is removed, and name the exact
+  // worktree path being removed, not the repo root.
+  it("disarms the removed worktree's unattended flag before removing it (RP-421)", async () => {
+    const content = await read();
+    const block =
+      /## Finish \(after the PR is merged\)\n\n```bash\n([\s\S]*?)```/.exec(content)?.[1] ?? '';
+    expect(block, 'the Finish code block must still exist').toBeTruthy();
+    const offIndex = block.search(/unattended-flag\.mjs\s+off\s+--root\b/);
+    const removeIndex = block.search(/git worktree remove\b/);
+    expect(
+      offIndex,
+      'Finish must run `unattended-flag.mjs off --root` before removing the worktree',
+    ).toBeGreaterThan(-1);
+    expect(removeIndex).toBeGreaterThan(-1);
+    expect(offIndex).toBeLessThan(removeIndex);
+    // scoped to the worktree being removed, not the repo root
+    expect(block).toMatch(/off --root \.claude\/worktrees\/<slug>/);
+  });
 });
 
 describe('PLAN.md queue convention (universal)', () => {

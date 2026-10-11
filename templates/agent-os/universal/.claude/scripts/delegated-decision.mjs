@@ -146,9 +146,10 @@
 // - `parseDecisions` validates in three passes, never interleaved line by
 //   line. First, every line's JSON syntax, in order — the first
 //   syntactically invalid line ends the scan immediately. Second, once every
-//   line parses, every record's nine required keys, in order, reporting the
+//   line parses, every record's ten required keys, in order, reporting the
 //   first record missing one. Third, once every record carries every key,
 //   whether the record could be a GENUINE delegated decision at all: its
+//   schema version and field types must match the writer's record shape; its
 //   `authority` must be exactly `"delegated"`, its `ticket` must match the
 //   one requested (when a ticket was given to check against), and its
 //   `decision` must be a delegable id under the RP-339 contract
@@ -192,7 +193,7 @@ import { withoutGitLocation } from './git-env.mjs';
 import { composeCappedTextField, composeTextField } from './continuation.mjs';
 import { readState } from './run-state.mjs';
 import { DECISION_AUTHORITIES, mayResolve, parseDecisionAuthority } from './lib/authority.mjs';
-import { recordEvent } from './run-journal.mjs';
+import { readRun, recordEvent } from './run-journal.mjs';
 import { ITEM_STOPS, resolutionOf } from './queue/stop-class.mjs';
 import { loadConfig } from './queue/queue-config.mjs';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
@@ -222,6 +223,7 @@ export const decisionsPathFor = (projectRoot, ticket) =>
 const REQUIRED_KEYS = Object.freeze([
   'schemaVersion',
   'ticket',
+  'release',
   'decision',
   'authority',
   'summary',
@@ -276,6 +278,31 @@ export const parseDecisions = (text, { ticket } = {}) => {
   // the record unreadable, the same as a structural defect.
   for (let index = 0; index < parsed.length; index += 1) {
     const record = parsed[index];
+    const invalid = (field) => ({ ok: false, line: index + 1, reason: `invalid ${field} field` });
+    if (record.schemaVersion !== 1) return invalid('schemaVersion');
+    try {
+      itemRecordPathFor('.', 'decisions', record.ticket);
+    } catch {
+      return invalid('ticket');
+    }
+    if (
+      record.release !== null &&
+      record.release !== '[redacted]' &&
+      (typeof record.release !== 'string' || !RELEASE_LABEL.test(record.release))
+    ) {
+      return invalid('release');
+    }
+    if (typeof record.summary !== 'string' || record.summary.trim() === '') return invalid('summary');
+    if (record.evidence !== null && typeof record.evidence !== 'string') return invalid('evidence');
+    if (typeof record.branch !== 'string' || record.branch.trim() === '') return invalid('branch');
+    if (typeof record.head !== 'string' || record.head.trim() === '') return invalid('head');
+    if (
+      typeof record.at !== 'string' ||
+      Number.isNaN(Date.parse(record.at)) ||
+      new Date(record.at).toISOString() !== record.at
+    ) {
+      return invalid('at');
+    }
     if (record.authority !== 'delegated') {
       return {
         ok: false,
@@ -622,8 +649,8 @@ const runRecord = async (argv, cwd) => {
   if (typeof parsed.decision !== 'string' || parsed.decision === '') {
     return refuse('record: --decision is required.');
   }
-  if (typeof parsed.summary !== 'string' || parsed.summary === '') {
-    return refuse('record: --summary is required and may not be empty.');
+  if (typeof parsed.summary !== 'string' || parsed.summary.trim() === '') {
+    return refuse('record: --summary is required and may not be empty or whitespace.');
   }
   if (parsed.release !== undefined && !RELEASE_LABEL.test(parsed.release)) {
     return refuse(
@@ -655,6 +682,9 @@ const runRecord = async (argv, cwd) => {
         'Only an owner may resolve it directly.',
     );
   }
+
+  const undeclared = unjournalledDelegation(runDir);
+  if (undeclared !== null) return refuse(undeclared);
 
   let allowed;
   try {
@@ -873,6 +903,30 @@ const parseResolveArgs = (argv) => {
   return { ok: true, ...args };
 };
 
+// RP-467: the authority `run-state.mjs authority` last journalled for this
+// run, or null when there is none (or the journal cannot be read). A state
+// file that says delegated is acted on only when this agrees.
+const journalledAuthority = (runDir) => {
+  try {
+    const declared = readRun({ runDir }).events.filter(
+      (event) => event.kind === 'authority-declared',
+    );
+    return declared.at(-1)?.data?.to ?? null;
+  } catch {
+    return null;
+  }
+};
+
+const unjournalledDelegation = (runDir) => {
+  const journalled = journalledAuthority(runDir);
+  if (journalled === 'delegated') return null;
+  return (
+    "this run's state says delegated, but its latest journalled declaration is " +
+    `${journalled ?? 'none'}. Declare the authority with \`run-state.mjs authority\` ` +
+    'so the declaration is journalled; a state file alone is not a declaration.'
+  );
+};
+
 const runResolve = (argv) => {
   const parsed = parseResolveArgs(argv);
   if (!parsed.ok) return refuse(parsed.error);
@@ -888,6 +942,10 @@ const runResolve = (argv) => {
     );
   }
   const authority = parseDecisionAuthority(readState(runDir).decisionAuthority);
+  if (authority === 'delegated') {
+    const undeclared = unjournalledDelegation(runDir);
+    if (undeclared !== null) return refuse(`resolve: ${undeclared}`);
+  }
   const resolution = resolutionOf({ stopClass: entry.stopClass, authority, decision: entry.decision });
   const answer = {
     stop: entry.id,

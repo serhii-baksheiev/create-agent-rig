@@ -5,6 +5,8 @@ packages:
 # node_modules, where the probity-gate hook looks for the project-local launcher.
 publicHoistPattern:
   - '@nizos/probity'
+overrides:
+  '@nizos/probity@1.10.1>@openai/codex-sdk': 0.161.0
 minimumReleaseAgeExclude:
   - '@vitest/mocker@5.0.0'
   - '@vitest/spy@5.0.0'

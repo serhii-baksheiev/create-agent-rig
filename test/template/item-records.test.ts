@@ -27,7 +27,7 @@
 // built with `path.join` by hand, never computed by calling the module under
 // test — so a test can never be satisfied merely by the module checking its
 // own work.
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import {
   link,
   mkdir,
@@ -68,6 +68,29 @@ const newProjectDir = async (): Promise<string> =>
 
 const newOutsideDir = async (): Promise<string> =>
   mkdtemp(path.join(tmpdir(), 'item-records-outside-'));
+
+// The tested child must fail before this bound. It exercises the real initial
+// open after a regular pathname is atomically replaced with a FIFO; a longer
+// wait would conceal the blocking-open regression instead of describing it.
+const ITEM_RECORD_FIFO_CHILD_TIMEOUT_MS = 3_000;
+
+type ChildResult = { code: number; out: string; killed: boolean };
+
+const runFifoChild = (args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<ChildResult> =>
+  new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      args,
+      { cwd, env, timeout: ITEM_RECORD_FIFO_CHILD_TIMEOUT_MS, killSignal: 'SIGKILL' },
+      (error, stdout, stderr) => {
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          out: stdout + stderr,
+          killed: Boolean((error as { signal?: string } | null)?.signal),
+        });
+      },
+    );
+  });
 
 describe('item-records.mjs — ITEM_RECORD_KINDS', () => {
   it('names exactly decisions and evidence, and is frozen', async () => {
@@ -226,6 +249,145 @@ describe('item-records.mjs — appendItemRecordLine', () => {
     appendItemRecordLine(filePath, '{"a":2}\n');
 
     expect(await readFile(filePath, 'utf8')).toBe('{"a":1}\n{"a":2}\n');
+  });
+
+  it(
+    'refuses promptly without appending when a checked regular record becomes a FIFO before the first append open',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const dir = await newProjectDir();
+      const { ensureItemRecordDir } = await loadModule();
+      const recordsDir = ensureItemRecordDir(dir, 'decisions');
+      const filePath = path.join(recordsDir, 'RP-1.jsonl');
+      const oldFile = `${filePath}.before-fifo`;
+      const fifo = `${filePath}.fifo`;
+      const trace = path.join(dir, '.fifo-trace');
+      const preload = path.join(dir, 'swap-before-first-append-open.mjs');
+      const runner = path.join(dir, 'append-record.mjs');
+      const original = '{"original":"first inode"}\n';
+      await writeFile(filePath, original);
+      execFileSync('mkfifo', [fifo]);
+      await writeFile(
+        preload,
+        [
+          "import { appendFileSync, renameSync } from 'node:fs';",
+          "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+          "const fs = createRequire(import.meta.url)('node:fs');",
+          'const originalLstatSync = fs.lstatSync;',
+          'const target = process.env.RP455_FIFO_TARGET;',
+          'const oldFile = process.env.RP455_FIFO_OLD_FILE;',
+          'const fifo = process.env.RP455_FIFO_FILE;',
+          'const trace = process.env.RP455_FIFO_TRACE;',
+          'let targetLstats = 0;',
+          'fs.lstatSync = (...args) => {',
+          '  const stat = originalLstatSync(...args);',
+          '  if (args[0] === target && ++targetLstats === 1) {',
+          '    renameSync(target, oldFile);',
+          '    renameSync(fifo, target);',
+          "    appendFileSync(trace, 'record-replaced-with-fifo-after-initial-lstat\\n');",
+          '  }',
+          '  return stat;',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      await writeFile(
+        runner,
+        [
+          `import { appendItemRecordLine } from ${JSON.stringify(pathToFileURL(modulePath).href)};`,
+          'try {',
+          '  appendItemRecordLine(process.env.RP455_FIFO_TARGET, "{\\"new\\":true}\\n");',
+          '} catch (error) {',
+          '  process.stderr.write(String(error));',
+          '  process.exitCode = 1;',
+          '}',
+        ].join('\n'),
+      );
+
+      const result = await runFifoChild(['--import', pathToFileURL(preload).href, runner], dir, {
+        ...process.env,
+        RP455_FIFO_TARGET: filePath,
+        RP455_FIFO_OLD_FILE: oldFile,
+        RP455_FIFO_FILE: fifo,
+        RP455_FIFO_TRACE: trace,
+      });
+
+      expect(await readFile(trace, 'utf8')).toBe('record-replaced-with-fifo-after-initial-lstat\n');
+      expect(result.killed, result.out).toBe(false);
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/unreadable|changed under the check/i);
+      expect(await readFile(oldFile, 'utf8')).toBe(original);
+      expect(await readdir(recordsDir)).toEqual(['RP-1.jsonl', 'RP-1.jsonl.before-fifo']);
+    },
+    ITEM_RECORD_FIFO_CHILD_TIMEOUT_MS + 5_000,
+  );
+
+  it('refuses without appending when the checked regular file is replaced before the append open', async () => {
+    const dir = await newProjectDir();
+    const { ensureItemRecordDir } = await loadModule();
+    const recordsDir = ensureItemRecordDir(dir, 'decisions');
+    const filePath = path.join(recordsDir, 'RP-1.jsonl');
+    const replacement = `${filePath}.replacement`;
+    const oldFile = `${filePath}.before-swap`;
+    const trace = path.join(dir, '.swap-trace');
+    const preload = path.join(dir, 'swap-before-append-open.mjs');
+    const runner = path.join(dir, 'append-record.mjs');
+    const original = '{"original":"first inode"}\n';
+    const replacementBytes = '{"replacement":"second inode"}\n';
+    await writeFile(filePath, original);
+    await writeFile(replacement, replacementBytes);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalOpenSync = fs.openSync;',
+        'const target = process.env.RP451_SWAP_TARGET;',
+        'const replacement = process.env.RP451_SWAP_REPLACEMENT;',
+        'const oldFile = process.env.RP451_SWAP_OLD_FILE;',
+        'const trace = process.env.RP451_SWAP_TRACE;',
+        'let swapped = false;',
+        'fs.openSync = (...args) => {',
+        '  if (!swapped && args[0] === target) {',
+        '    renameSync(target, oldFile);',
+        '    renameSync(replacement, target);',
+        "    appendFileSync(trace, 'swapped-before-append-open\\n');",
+        '    swapped = true;',
+        '  }',
+        '  return originalOpenSync(...args);',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    await writeFile(
+      runner,
+      [
+        `import { appendItemRecordLine } from ${JSON.stringify(pathToFileURL(modulePath).href)};`,
+        'try {',
+        '  appendItemRecordLine(process.env.RP451_SWAP_TARGET, "{\\"new\\":true}\\n");',
+        '} catch (error) {',
+        '  process.stderr.write(String(error));',
+        '  process.exitCode = 1;',
+        '}',
+      ].join('\n'),
+    );
+
+    const result = await runFifoChild(['--import', pathToFileURL(preload).href, runner], dir, {
+      ...process.env,
+      RP451_SWAP_TARGET: filePath,
+      RP451_SWAP_REPLACEMENT: replacement,
+      RP451_SWAP_OLD_FILE: oldFile,
+      RP451_SWAP_TRACE: trace,
+    });
+
+    expect(result.killed, result.out).toBe(false);
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/changed under the check/i);
+    expect(await readFile(trace, 'utf8')).toBe('swapped-before-append-open\n');
+    expect(await readFile(filePath, 'utf8')).toBe(replacementBytes);
+    expect(await readFile(oldFile, 'utf8')).toBe(original);
   });
 
   it('refuses a symlink to a file outside the project, leaving the outside file untouched', async (ctx) => {
@@ -417,4 +579,76 @@ describe('item-records.mjs — readItemRecordFile', () => {
 
     expect(() => readItemRecordFile(fifoPath, { maxBytes: 1024 })).toThrow();
   }, 8_000);
+
+  it(
+    'refuses promptly when a checked regular record becomes a FIFO before the first read open',
+    async (ctx) => {
+      const fifos = fifosAvailable();
+      skipUnless(ctx, fifos.ok, fifos.reason);
+      const dir = await newProjectDir();
+      const { ensureItemRecordDir } = await loadModule();
+      const recordsDir = ensureItemRecordDir(dir, 'decisions');
+      const filePath = path.join(recordsDir, 'RP-1.jsonl');
+      const oldFile = `${filePath}.before-fifo`;
+      const fifo = `${filePath}.fifo`;
+      const trace = path.join(dir, '.fifo-trace');
+      const preload = path.join(dir, 'swap-before-first-read-open.mjs');
+      const runner = path.join(dir, 'read-record.mjs');
+      const original = '{"original":"first inode"}\n';
+      await writeFile(filePath, original);
+      execFileSync('mkfifo', [fifo]);
+      await writeFile(
+        preload,
+        [
+          "import { appendFileSync, renameSync } from 'node:fs';",
+          "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+          "const fs = createRequire(import.meta.url)('node:fs');",
+          'const originalLstatSync = fs.lstatSync;',
+          'const target = process.env.RP455_FIFO_TARGET;',
+          'const oldFile = process.env.RP455_FIFO_OLD_FILE;',
+          'const fifo = process.env.RP455_FIFO_FILE;',
+          'const trace = process.env.RP455_FIFO_TRACE;',
+          'let targetLstats = 0;',
+          'fs.lstatSync = (...args) => {',
+          '  const stat = originalLstatSync(...args);',
+          '  if (args[0] === target && ++targetLstats === 1) {',
+          '    renameSync(target, oldFile);',
+          '    renameSync(fifo, target);',
+          "    appendFileSync(trace, 'record-replaced-with-fifo-after-initial-lstat\\n');",
+          '  }',
+          '  return stat;',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      await writeFile(
+        runner,
+        [
+          `import { readItemRecordFile } from ${JSON.stringify(pathToFileURL(modulePath).href)};`,
+          'try {',
+          '  readItemRecordFile(process.env.RP455_FIFO_TARGET, { maxBytes: 1024 });',
+          '} catch (error) {',
+          '  process.stderr.write(String(error));',
+          '  process.exitCode = 1;',
+          '}',
+        ].join('\n'),
+      );
+
+      const result = await runFifoChild(['--import', pathToFileURL(preload).href, runner], dir, {
+        ...process.env,
+        RP455_FIFO_TARGET: filePath,
+        RP455_FIFO_OLD_FILE: oldFile,
+        RP455_FIFO_FILE: fifo,
+        RP455_FIFO_TRACE: trace,
+      });
+
+      expect(await readFile(trace, 'utf8')).toBe('record-replaced-with-fifo-after-initial-lstat\n');
+      expect(result.killed, result.out).toBe(false);
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/not a regular file|unreadable/i);
+      expect(await readFile(oldFile, 'utf8')).toBe(original);
+      expect(await readdir(recordsDir)).toEqual(['RP-1.jsonl', 'RP-1.jsonl.before-fifo']);
+    },
+    ITEM_RECORD_FIFO_CHILD_TIMEOUT_MS + 5_000,
+  );
 });

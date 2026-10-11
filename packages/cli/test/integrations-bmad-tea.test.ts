@@ -24,6 +24,7 @@ import { runIntegrationsCommand } from '../src/commands/integrations.js';
 import { runDoctor } from '../src/commands/doctor.js';
 import { readManifest, writeManifest } from '../src/lib/manifest.js';
 import type { RigManifest } from '../src/lib/manifest.js';
+import type { ProviderProcessResult } from '../src/integrations/spawn.js';
 import { REGISTRY } from '../src/integrations/registry.js';
 import { BMAD_TEA_VERSION, inspectBmadTea } from '../src/integrations/bmad-tea.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
@@ -660,10 +661,20 @@ describe('doctor: bmad-tea in the composed preset summary (RP-315)', () => {
       )}\n`,
     );
 
+    // Guard-process behavior has its own contract suite. This composed-summary
+    // case keeps the real project install and BMAD inspection while replacing
+    // only that unrelated subprocess batch within its 15-second test budget.
+    const guardRunner = async (): Promise<ProviderProcessResult> => ({
+      status: 'ok',
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+    });
     const result = await runDoctor({
       cwd: repo,
       args: ['--json'],
       env: { HOME: repo, APPDATA: repo, PATH: repo },
+      guardRunner,
     });
     const body = JSON.parse(result.stdout) as {
       preset: { integrations: Array<{ id: string; declared: boolean; observed: unknown }> };
