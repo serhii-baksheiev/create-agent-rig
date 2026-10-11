@@ -181,6 +181,9 @@ also covers wrapper failures and expired stage bounds. An outer PowerShell
 a failed hook without a denial. Explicit JSON with exit 0 preserves refusal
 through that launch chain (RP-498). Direct guard invocation and Claude Code
 retain their exit-2 contract; lifecycle hooks are unchanged. The generator's
-`test/template/codex-refusal-contract.test.ts` exercises the outer PowerShell
-launch, safe controls and these failure paths. Hook activation still requires
+`test/template/codex-refusal-contract.test.ts` (absent in a generated rig) ›
+"returns exit 0 plus a structured deny for guards and bounded wrapper failures, while safe controls and lifecycle hooks retain their contracts"
+exercises the outer PowerShell launch, safe controls and these failure paths;
+the same file › "runs SessionStart and an inert Stop hook through the outer PowerShell host"
+pins the lifecycle controls. Hook activation still requires
 normal Codex trust; deterministic wrapper tests do not prove live activation.
