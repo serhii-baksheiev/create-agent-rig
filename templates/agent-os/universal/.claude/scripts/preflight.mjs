@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url';
 // file used to carry its own `process.env.AGENT_LOOP_STOP || <default>`, which is
 // the replace-not-add bug — fixed in the hook and left open here for a full review
 // cycle, because preflight is the only scripted brake check and had no test.
-import { brakeIsOn } from './stop-flag.mjs';
+import { armedFlag, stopFlags } from './stop-flag.mjs';
 import { readRevalidationContract } from './lib/claim-records.mjs';
 import { preflightVerdict } from './lib/posture.mjs';
 import { authorityPosture, DECISION_AUTHORITIES } from './lib/authority.mjs';
@@ -126,10 +126,16 @@ const run = (command, args) => {
 
 /** The kill switch must be absent before a run starts. */
 export const checkKillSwitch = () => {
-  const armed = brakeIsOn();
-  return armed
-    ? { ok: false, detail: `kill switch is SET (${armed}) — do not start; deal with the cause` }
-    : { ok: true, detail: 'absent' };
+  const armed = armedFlag(stopFlags());
+  if (armed === null) return { ok: true, detail: 'absent' };
+  return armed.code === null
+    ? { ok: false, detail: `kill switch is SET (${armed.path}) — do not start; deal with the cause` }
+    : {
+        ok: false,
+        detail:
+          `kill switch path ${armed.path} cannot be inspected (${armed.code}) — read as SET; ` +
+          'fix its permissions or remove it before starting',
+      };
 };
 
 /**

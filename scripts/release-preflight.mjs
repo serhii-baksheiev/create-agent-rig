@@ -361,6 +361,8 @@ export const parseReleasePreflightArgs = (argv) => {
   if (args.length === 0) return { mode: 'normal' };
 
   let sha;
+  let supersedes;
+  let seenSupersedes = false;
   let seenFlag = false;
   const rest = [];
 
@@ -380,6 +382,10 @@ export const parseReleasePreflightArgs = (argv) => {
         return { mode: 'invalid', error: '--frozen-candidate requires a sha argument' };
       }
       sha = value;
+    } else if (arg === '--supersedes' && !seenSupersedes) {
+      seenSupersedes = true;
+      i += 1;
+      supersedes = args[i];
     } else {
       rest.push(arg);
     }
@@ -419,7 +425,20 @@ export const parseReleasePreflightArgs = (argv) => {
     };
   }
 
-  return { mode: 'frozen-candidate', sha };
+  if (!seenSupersedes) return { mode: 'frozen-candidate', sha };
+
+  if (supersedes === undefined) {
+    return { mode: 'invalid', error: '--supersedes requires a sha argument' };
+  }
+
+  if (!/^[0-9a-f]{40}$/.test(supersedes) || supersedes === sha) {
+    return {
+      mode: 'invalid',
+      error: '--supersedes requires a distinct 40-character lowercase hex sha',
+    };
+  }
+
+  return { mode: 'frozen-candidate', sha, supersedes };
 };
 
 /** The file `npm pack` writes for a version. */
@@ -519,10 +538,28 @@ const packedPaths = () => {
   };
 };
 
+function packageVersionAt(sha) {
+  try {
+    return JSON.parse(git(['show', '--end-of-options', `${sha}:package.json`])).version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isAncestor(ancestor, descendant) {
+  try {
+    git(['merge-base', '--is-ancestor', ancestor, descendant]);
+    return true;
+  } catch (error) {
+    if (error?.status === 1) return false;
+    throw error;
+  }
+}
+
 function main() {
   // Argument parsing runs BEFORE any git call or `npm pack`: an invalid
   // argument is refused here, with nothing else having run yet.
-  const { mode, sha, error } = parseReleasePreflightArgs(process.argv.slice(2));
+  const { mode, sha, supersedes, error } = parseReleasePreflightArgs(process.argv.slice(2));
   if (mode === 'invalid') {
     console.log(formatReport([error]));
     return exitCodeFor([error]);
@@ -547,7 +584,8 @@ function main() {
     // `origin/master`, which keeps moving once a later version is prepared
     // on top of it, this ref is the one the candidate was pushed under and
     // never changes out from under this check.
-    const releaseRefName = `refs/remotes/origin/release/${version}-rc`;
+    const canonicalRefName = `refs/remotes/origin/release/${version}-rc`;
+    const releaseRefName = supersedes ? `${canonicalRefName}-${sha}` : canonicalRefName;
     const releaseRefSha = resolveExactRef(releaseRefName);
     const masterRefSha = resolveExactRef('refs/remotes/origin/master');
     // `origin/master` unresolvable is reported once, below, and distinctly
@@ -581,6 +619,27 @@ function main() {
       findings.push(
         'origin/master could not be resolved — cannot confirm the frozen candidate is reachable from its history',
       );
+    }
+    if (supersedes) {
+      const canonicalRefSha = resolveExactRef(canonicalRefName);
+      if (canonicalRefSha !== supersedes) {
+        findings.push(
+          canonicalRefSha === null
+            ? `${canonicalRefName} could not be resolved — cannot confirm the immutable predecessor ${supersedes}`
+            : `${canonicalRefName} is ${canonicalRefSha} but the immutable predecessor is ${supersedes}`,
+        );
+      }
+      const canonicalPackageVersion = packageVersionAt(supersedes);
+      if (canonicalPackageVersion !== version) {
+        findings.push(
+          `${canonicalRefName}'s package.json is version ${canonicalPackageVersion ?? 'unknown'}, not ${version} — the immutable predecessor must name the same release version`,
+        );
+      }
+      if (!isAncestor(supersedes, sha)) {
+        findings.push(
+          `${supersedes} is not an ancestor of replacement ${sha} — the replacement must retain its immutable predecessor`,
+        );
+      }
     }
   } else {
     // `resolveExactRef`, not `git(['rev-parse', 'origin/master'])`: the same

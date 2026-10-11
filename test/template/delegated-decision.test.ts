@@ -56,6 +56,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { fifosAvailable, skipUnless, symlinksAvailable } from '../helpers/env.js';
+import { removeFixture } from '../helpers/remove-fixture.js';
 import { stubCommand } from '../helpers/stub-command.js';
 import { GITHUB_PAT } from './secrets-fixtures.js';
 
@@ -121,6 +122,25 @@ const newRunDir = (): Promise<string> => mkdtemp(path.join(tmpdir(), 'delegated-
 const writeRunState = (runDir: string, state: Record<string, unknown>) =>
   writeFile(path.join(runDir, 'state.json'), `${JSON.stringify(state, null, 2)}\n`);
 
+/** Declares the run's authority the supported way: `run-state.mjs authority <word>`. */
+const declareAuthority = async (runDir: string, word: string): Promise<void> => {
+  const result = await run(
+    process.execPath,
+    [scriptPath('run-state.mjs'), 'authority', word],
+    repoRoot,
+    envFor(runDir),
+  );
+  if (result.code !== 0) throw new Error(`run-state authority ${word} failed: ${result.out}`);
+};
+
+/** How many journal events the run already holds — the declaration the fixture made, before a call. */
+const journalledEventCount = async (runDir: string): Promise<number> => {
+  const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+    readRun: (input: { runDir: string }) => { events: unknown[] };
+  };
+  return readRun({ runDir }).events.length;
+};
+
 /** `RIG_RUN_DIR` is set ONLY for this one spawn — never on `process.env`. */
 const envFor = (runDir: string | undefined): NodeJS.ProcessEnv => {
   const env = withoutGitLocation();
@@ -175,7 +195,7 @@ const delegatedFixture = async (): Promise<{
 }> => {
   const { dir, branch, head } = await newProject();
   const runDir = await newRunDir();
-  await writeRunState(runDir, { decisionAuthority: 'delegated' });
+  await declareAuthority(runDir, 'delegated');
   return { dir, branch, head, runDir, env: envFor(runDir) };
 };
 
@@ -329,8 +349,28 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     );
   });
 
+  it('refuses a whitespace-only --summary before writing a decision or journal event', async () => {
+    const { dir, runDir, env } = await delegatedFixture();
+    const before = await journalledEventCount(runDir);
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: '   ' }),
+      dir,
+      env,
+    );
+    expect(result.code, result.out).toBe(1);
+    await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+
+    const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+      readRun: (input: { runDir: string }) => { decisions: unknown[]; events: unknown[] };
+    };
+    const journal = readRun({ runDir });
+    expect(journal.decisions).toEqual([]);
+    expect(journal.events.slice(before)).toEqual([]);
+  });
+
   it('a refused call journals nothing into the run directory either', async () => {
     const { dir, runDir, env } = await delegatedFixture();
+    const before = await journalledEventCount(runDir);
     const result = await runCli(
       recordArgs({ ticket: 'RP-1', decision: 'publication', summary: 'ok' }),
       dir,
@@ -351,8 +391,9 @@ describe('delegated-decision.mjs record — refusals write nothing and journal n
     expect(decisions).toEqual([]);
     // RP-340 round 1: the durable trace moved from decisions.jsonl to
     // events.jsonl (see "journals exactly one EVENT" below) — a refused call
-    // must journal nothing in EITHER file.
-    expect(events).toEqual([]);
+    // must journal nothing in EITHER file. The fixture's own authority
+    // declaration (RP-467) is already there before the call.
+    expect(events.slice(before)).toEqual([]);
   });
 });
 
@@ -499,6 +540,233 @@ describe('delegated-decision.mjs record — never follows a symlink out of the p
   });
 });
 
+describe('delegated-decision.mjs record — a regular decisions file cannot be swapped after validation', () => {
+  it('refuses when an existing regular decisions file is replaced before the writer opens it', async () => {
+    const { dir, env } = await delegatedFixture();
+    const file = decisionsFile(dir, 'RP-1');
+    await mkdir(path.dirname(file), { recursive: true });
+    const firstBytes = `${JSON.stringify({ original: 'first inode' })}\n`;
+    const replacementBytes = `${JSON.stringify({ replacement: 'second inode' })}\n`;
+    const replacement = `${file}.replacement`;
+    const trace = `${file}.swap-trace`;
+    const preload = path.join(
+      await mkdtemp(path.join(tmpdir(), 'delegated-decision-preload-')),
+      'swap.mjs',
+    );
+    await writeFile(file, firstBytes);
+    await writeFile(replacement, replacementBytes);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalOpenSync = fs.openSync;',
+        'const target = process.env.RP451_SWAP_TARGET;',
+        'const replacement = process.env.RP451_SWAP_REPLACEMENT;',
+        'const trace = process.env.RP451_SWAP_TRACE;',
+        'let swapped = false;',
+        'fs.openSync = (...args) => {',
+        '  if (!swapped && args[0] === target) {',
+        '    renameSync(target, `${target}.before-swap`);',
+        '    renameSync(replacement, target);',
+        "    appendFileSync(trace, 'swapped\\n');",
+        '    swapped = true;',
+        '  }',
+        '  return originalOpenSync(...args);',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await run(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preload).href,
+          delegatedDecisionScript,
+          ...recordArgs({
+            ticket: 'RP-1',
+            decision: 'extra-gate-round',
+            summary: 'must not reach replacement',
+          }),
+        ],
+        dir,
+        {
+          ...env,
+          RP451_SWAP_TARGET: file,
+          RP451_SWAP_REPLACEMENT: replacement,
+          RP451_SWAP_TRACE: trace,
+        },
+      );
+
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/changed under the check/i);
+      expect(await readFile(trace, 'utf8')).toBe('swapped\n');
+      expect(await readFile(file, 'utf8')).toBe(replacementBytes);
+      expect(await readFile(`${file}.before-swap`, 'utf8')).toBe(firstBytes);
+    } finally {
+      await removeFixture(path.dirname(preload));
+    }
+  });
+  it('refuses promptly without appending when the decisions pathname becomes a FIFO after initial lstat', async (ctx) => {
+    const fifos = fifosAvailable();
+    skipUnless(ctx, fifos.ok, fifos.reason);
+    const BOUND_MS = 3_000;
+    const { dir, env } = await delegatedFixture();
+    const file = decisionsFile(dir, 'RP-1');
+    const oldFile = `${file}.before-fifo`;
+    const fifo = `${file}.fifo`;
+    const trace = path.join(dir, '.fifo-trace');
+    const firstBytes = `${JSON.stringify({ original: 'first inode' })}\n`;
+    const preload = path.join(
+      await mkdtemp(path.join(tmpdir(), 'delegated-decision-initial-fifo-preload-')),
+      'swap.mjs',
+    );
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, firstBytes);
+    execFileSync('mkfifo', [fifo]);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP455_FIFO_TARGET;',
+        'const oldFile = process.env.RP455_FIFO_OLD_FILE;',
+        'const fifo = process.env.RP455_FIFO_FILE;',
+        'const trace = process.env.RP455_FIFO_TRACE;',
+        'let targetLstats = 0;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  if (args[0] === target && ++targetLstats === 1) {',
+        '    renameSync(target, oldFile);',
+        '    renameSync(fifo, target);',
+        "    appendFileSync(trace, 'decisions-replaced-with-fifo-after-initial-lstat\\n');",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await new Promise<RunResult & { killed: boolean }>((resolve) => {
+        execFile(
+          process.execPath,
+          [
+            '--import',
+            pathToFileURL(preload).href,
+            delegatedDecisionScript,
+            ...recordArgs({
+              ticket: 'RP-1',
+              decision: 'extra-gate-round',
+              summary: 'must not append after initial FIFO substitution',
+            }),
+          ],
+          {
+            cwd: dir,
+            env: {
+              ...env,
+              RP455_FIFO_TARGET: file,
+              RP455_FIFO_OLD_FILE: oldFile,
+              RP455_FIFO_FILE: fifo,
+              RP455_FIFO_TRACE: trace,
+            },
+            timeout: BOUND_MS,
+            killSignal: 'SIGKILL',
+          },
+          (error, stdout, stderr) => {
+            resolve({
+              code: error ? ((error as { code?: number }).code ?? 1) : 0,
+              stdout,
+              stderr,
+              out: stdout + stderr,
+              killed: Boolean((error as { signal?: string } | null)?.signal),
+            });
+          },
+        );
+      });
+
+      expect(await readFile(trace, 'utf8')).toBe(
+        'decisions-replaced-with-fifo-after-initial-lstat\n',
+      );
+      expect(result.killed, result.out).toBe(false);
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/unreadable|changed under the check/i);
+      expect(await readFile(oldFile, 'utf8')).toBe(firstBytes);
+      expect(await readdir(path.dirname(file))).toEqual(['RP-1.jsonl', 'RP-1.jsonl.before-fifo']);
+    } finally {
+      await removeFixture(path.dirname(preload));
+    }
+  }, 8_000);
+});
+
+describe('delegated-decision.mjs record — POSIX identity rejects an initial device mismatch', () => {
+  it('refuses before appending when the pre-open lstat device differs from the opened regular file', async () => {
+    const { dir, env } = await delegatedFixture();
+    const file = decisionsFile(dir, 'RP-1');
+    const original = `${JSON.stringify({ original: 'stable regular file' })}\n`;
+    const trace = `${file}.lstat-trace`;
+    const preload = path.join(
+      await mkdtemp(path.join(tmpdir(), 'delegated-decision-posix-preload-')),
+      'lstat.mjs',
+    );
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, original);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "Object.defineProperty(process, 'platform', { value: 'linux' });",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP451_POSIX_TARGET;',
+        'const trace = process.env.RP451_POSIX_TRACE;',
+        'let changed = false;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  if (!changed && args[0] === target) {',
+        '    changed = true;',
+        "    appendFileSync(trace, 'initial-lstat\\n');",
+        "    return new Proxy(stat, { get(value, property, receiver) { return property === 'dev' ? value.dev + 1 : Reflect.get(value, property, receiver); } });",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await run(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preload).href,
+          delegatedDecisionScript,
+          ...recordArgs({
+            ticket: 'RP-1',
+            decision: 'extra-gate-round',
+            summary: 'must not append after POSIX mismatch',
+          }),
+        ],
+        dir,
+        { ...env, RP451_POSIX_TARGET: file, RP451_POSIX_TRACE: trace },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('initial-lstat\n');
+      expect(result.code, result.out).toBe(1);
+      expect(result.out).toMatch(/changed under the check/i);
+      expect(await readFile(file, 'utf8')).toBe(original);
+    } finally {
+      await removeFixture(path.dirname(preload));
+    }
+  });
+});
+
 // --- record: success ---------------------------------------------------
 
 describe('delegated-decision.mjs record — durable evidence on success', () => {
@@ -628,6 +896,28 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     expect(lines[1]).toMatchObject({ decision: 'work-sequencing', summary: 'second' });
   });
 
+  // A normal, unchanged decisions file must remain writable after the first
+  // append. This runs through the real lstat → open → fstat guard, rather
+  // than stubbing filesystem metadata: a platform may report the opened file
+  // with different device metadata while its identity and contents are stable.
+  it('appends to an unchanged regular decisions file and reports success for both writes', async () => {
+    const { dir, env } = await delegatedFixture();
+    const first = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'first' }),
+      dir,
+      env,
+    );
+    const second = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'work-sequencing', summary: 'second' }),
+      dir,
+      env,
+    );
+
+    expect(first.code, first.out).toBe(0);
+    expect(second.code, second.out).toBe(0);
+    expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
+  });
+
   it('records --evidence verbatim (through the same redaction pipeline) when given', async () => {
     const { dir, env } = await delegatedFixture();
     await runCli(
@@ -648,6 +938,7 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
 
   it('journals exactly one run-journal EVENT (kind: delegated-decision), and writes NOTHING to decisions.jsonl', async () => {
     const { dir, runDir, env } = await delegatedFixture();
+    const before = await journalledEventCount(runDir);
     await runCli(
       recordArgs({
         ticket: 'RP-1',
@@ -670,8 +961,8 @@ describe('delegated-decision.mjs record — durable evidence on success', () => 
     // decisions.jsonl to events.jsonl so a continuation note's review-round
     // reading (which reads decisions.jsonl) is not disturbed.
     expect(decisions).toEqual([]);
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    expect(events.slice(before)).toHaveLength(1);
+    expect(events.slice(before)[0]).toMatchObject({
       kind: 'delegated-decision',
       data: {
         ticket: 'RP-1',
@@ -923,7 +1214,7 @@ describe('delegated-decision.mjs record --post (RP-340 round 1)', () => {
   it('(d) the posted comment body starts with "rig-delegated-decision v1" and carries ticket/decision/authority/summary lines, redacted exactly as the stored record', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     await mkdir(path.join(dir, '.claude'), { recursive: true });
     await writeFile(
       path.join(dir, '.claude', 'queue.json'),
@@ -1151,6 +1442,112 @@ describe('delegated-decision.mjs list — a fresh controller tells made from unr
 // file this module reads for a fresh controller.
 
 describe('delegated-decision.mjs list — never follows a symlink, and never reads a non-regular file', () => {
+  it("a .rig directory junction to a different checkout is unreadable — exit 2, never that checkout's decision", async () => {
+    const { dir } = await newProject();
+    const outside = await mkdtemp(path.join(tmpdir(), 'delegated-decision-other-checkout-'));
+    const outsideDecisions = path.join(outside, 'decisions');
+    await mkdir(outsideDecisions);
+    await writeFile(
+      path.join(outsideDecisions, 'RP-9.jsonl'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        ticket: 'RP-9',
+        release: null,
+        decision: 'extra-gate-round',
+        authority: 'delegated',
+        summary: 'belongs below the other checkout rig directory',
+        evidence: null,
+        branch: 'master',
+        head: 'deadbeef',
+        at: new Date().toISOString(),
+      })}\n`,
+    );
+    await symlink(
+      outside,
+      path.join(dir, '.rig'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const result = await run(
+      process.execPath,
+      [delegatedDecisionScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      withoutGitLocation(),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/unreadable/i);
+    expect(result.stdout).not.toContain('belongs below the other checkout rig directory');
+  });
+
+  it("a .rig/decisions directory junction to a different checkout is unreadable — exit 2, never that checkout's decision", async () => {
+    const { dir } = await newProject();
+    const outside = await mkdtemp(path.join(tmpdir(), 'delegated-decision-other-checkout-'));
+    await writeFile(
+      path.join(outside, 'RP-9.jsonl'),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        ticket: 'RP-9',
+        release: null,
+        decision: 'extra-gate-round',
+        authority: 'delegated',
+        summary: 'belongs to the other checkout',
+        evidence: null,
+        branch: 'master',
+        head: 'deadbeef',
+        at: new Date().toISOString(),
+      })}\n`,
+    );
+    await mkdir(path.join(dir, '.rig'), { recursive: true });
+    await symlink(
+      outside,
+      path.join(dir, '.rig', 'decisions'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+
+    const result = await run(
+      process.execPath,
+      [delegatedDecisionScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      withoutGitLocation(),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/unreadable/i);
+    expect(result.stdout).not.toContain('belongs to the other checkout');
+  });
+
+  it("a ticket file hard-linked from another checkout is unreadable — exit 2, never that checkout's decision", async () => {
+    const { dir } = await newProject();
+    const outside = await mkdtemp(path.join(tmpdir(), 'delegated-decision-other-checkout-'));
+    const outsideFile = path.join(outside, 'RP-9.jsonl');
+    await writeFile(
+      outsideFile,
+      `${JSON.stringify({
+        schemaVersion: 1,
+        ticket: 'RP-9',
+        release: null,
+        decision: 'extra-gate-round',
+        authority: 'delegated',
+        summary: 'hard-linked from the other checkout',
+        evidence: null,
+        branch: 'master',
+        head: 'deadbeef',
+        at: new Date().toISOString(),
+      })}\n`,
+    );
+    await mkdir(path.join(dir, '.rig', 'decisions'), { recursive: true });
+    await link(outsideFile, decisionsFile(dir, 'RP-9'));
+
+    const result = await run(
+      process.execPath,
+      [delegatedDecisionScript, 'list', '--ticket', 'RP-9', '--json'],
+      dir,
+      withoutGitLocation(),
+    );
+    expect(result.code, result.out).toBe(2);
+    expect(result.out).toMatch(/unreadable/i);
+    expect(result.stdout).not.toContain('hard-linked from the other checkout');
+  });
+
   it("a symlink to a regular file elsewhere is unreadable — exit 2, never the target's own content", async (ctx) => {
     skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
     const { dir } = await newProject();
@@ -1162,6 +1559,7 @@ describe('delegated-decision.mjs list — never follows a symlink, and never rea
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary: 'ok',
@@ -1231,6 +1629,97 @@ describe('delegated-decision.mjs list — never follows a symlink, and never rea
     expect(result.code).toBe(2);
     expect(result.out).toMatch(/unreadable/i);
   });
+  it('a regular decisions file replaced with a FIFO after initial lstat is unreadable promptly', async (ctx) => {
+    const fifos = fifosAvailable();
+    skipUnless(ctx, fifos.ok, fifos.reason);
+    const BOUND_MS = 3_000;
+    const { dir } = await newProject();
+    const file = decisionsFile(dir, 'RP-9');
+    const oldFile = `${file}.before-fifo`;
+    const fifo = `${file}.fifo`;
+    const trace = path.join(dir, '.fifo-trace');
+    const firstBytes = `${JSON.stringify({ original: 'first inode' })}\n`;
+    const preload = path.join(
+      await mkdtemp(path.join(tmpdir(), 'delegated-decision-list-initial-fifo-preload-')),
+      'swap.mjs',
+    );
+    await mkdir(path.dirname(file), { recursive: true });
+    await writeFile(file, firstBytes);
+    execFileSync('mkfifo', [fifo]);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalLstatSync = fs.lstatSync;',
+        'const target = process.env.RP455_FIFO_TARGET;',
+        'const oldFile = process.env.RP455_FIFO_OLD_FILE;',
+        'const fifo = process.env.RP455_FIFO_FILE;',
+        'const trace = process.env.RP455_FIFO_TRACE;',
+        'let targetLstats = 0;',
+        'fs.lstatSync = (...args) => {',
+        '  const stat = originalLstatSync(...args);',
+        '  if (args[0] === target && ++targetLstats === 1) {',
+        '    renameSync(target, oldFile);',
+        '    renameSync(fifo, target);',
+        "    appendFileSync(trace, 'decisions-replaced-with-fifo-after-initial-lstat\\n');",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await new Promise<RunResult & { killed: boolean }>((resolve) => {
+        execFile(
+          process.execPath,
+          [
+            '--import',
+            pathToFileURL(preload).href,
+            delegatedDecisionScript,
+            'list',
+            '--ticket',
+            'RP-9',
+            '--json',
+          ],
+          {
+            cwd: dir,
+            env: {
+              ...withoutGitLocation(),
+              RP455_FIFO_TARGET: file,
+              RP455_FIFO_OLD_FILE: oldFile,
+              RP455_FIFO_FILE: fifo,
+              RP455_FIFO_TRACE: trace,
+            },
+            timeout: BOUND_MS,
+            killSignal: 'SIGKILL',
+          },
+          (error, stdout, stderr) => {
+            resolve({
+              code: error ? ((error as { code?: number }).code ?? 1) : 0,
+              stdout,
+              stderr,
+              out: stdout + stderr,
+              killed: Boolean((error as { signal?: string } | null)?.signal),
+            });
+          },
+        );
+      });
+
+      expect(await readFile(trace, 'utf8')).toBe(
+        'decisions-replaced-with-fifo-after-initial-lstat\n',
+      );
+      expect(result.killed, result.out).toBe(false);
+      expect(result.code, result.out).toBe(2);
+      expect(result.out).toMatch(/unreadable/i);
+      expect(await readFile(oldFile, 'utf8')).toBe(firstBytes);
+      expect(await readdir(path.dirname(file))).toEqual(['RP-9.jsonl', 'RP-9.jsonl.before-fifo']);
+    } finally {
+      await removeFixture(path.dirname(preload));
+    }
+  }, 8_000);
 });
 
 // --- list: refuses a forged record as unreadable (RP-340 round 1, security)
@@ -1245,6 +1734,7 @@ describe('delegated-decision.mjs list — refuses a forged record as unreadable'
     const record = {
       schemaVersion: 1,
       ticket,
+      release: null,
       decision: 'extra-gate-round',
       authority: 'delegated',
       summary: 'ok',
@@ -1277,6 +1767,7 @@ describe('delegated-decision.mjs list — refuses a forged record as unreadable'
     const record = {
       schemaVersion: 1,
       ticket: 'RP-2',
+      release: null,
       decision: 'extra-gate-round',
       authority: 'delegated',
       summary: 'ok',
@@ -1328,7 +1819,7 @@ describe('delegated-decision.mjs list — refuses a forged record as unreadable'
 
   it('still lists a well-formed delegated record of a delegable kind', async () => {
     const { dir } = await newProject();
-    await writeForgedLine(dir, 'RP-9', {});
+    await writeForgedLine(dir, 'RP-9', { release: null });
 
     const result = await run(
       process.execPath,
@@ -1354,6 +1845,7 @@ describe('delegated-decision.mjs list — human (non-JSON) output escapes contro
       `${JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-9',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary,
@@ -1414,6 +1906,7 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
       JSON.stringify({
         schemaVersion: 1,
         ticket: 'RP-1',
+        release: null,
         decision: 'extra-gate-round',
         authority: 'delegated',
         summary,
@@ -1469,6 +1962,7 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
     `${JSON.stringify({
       schemaVersion: 1,
       ticket: 'RP-1',
+      release: null,
       decision: 'extra-gate-round',
       authority: 'delegated',
       summary: 'ok',
@@ -1478,6 +1972,48 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
       at: new Date().toISOString(),
       ...overrides,
     })}\n`;
+
+  it('parseDecisions(text) rejects unsafe ticket values even without a requested ticket', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    for (const value of [23, '', '../RP-1', 'CON', GITHUB_PAT]) {
+      const result = parseDecisions(forgedLine({ ticket: value }));
+      expect(result).toMatchObject({
+        ok: false,
+        line: 1,
+        reason: expect.stringMatching(/ticket/i),
+      });
+    }
+  });
+
+  it('parseDecisions rejects a record that omits release, which the writer always persists', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const record = JSON.parse(forgedLine({})) as Record<string, unknown>;
+    delete record.release;
+    const result = parseDecisions(`${JSON.stringify(record)}\n`, { ticket: 'RP-1' });
+    expect(result).toMatchObject({
+      ok: false,
+      line: 1,
+      reason: expect.stringMatching(/release/i),
+    });
+  });
+
+  it('parseDecisions rejects malformed release values', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    for (const value of [23, {}, [], '', '   ', '../1.5.0']) {
+      const result = parseDecisions(forgedLine({ release: value }), { ticket: 'RP-1' });
+      expect(result).toMatchObject({
+        ok: false,
+        line: 1,
+        reason: expect.stringMatching(/release/i),
+      });
+    }
+  });
 
   it('parseDecisions(text, { ticket }) rejects a record whose authority is not exactly "delegated"', async () => {
     const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
@@ -1520,6 +2056,109 @@ describe('delegated-decision.mjs — exported pure helpers', () => {
     const result = parseDecisions(forgedLine({}), { ticket: 'RP-1' });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.records).toHaveLength(1);
+  });
+
+  it('parseDecisions rejects an unsupported decision-record schema version', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const result = parseDecisions(forgedLine({ schemaVersion: 999 }), { ticket: 'RP-1' });
+    expect(result).toMatchObject({ ok: false, line: 1, reason: expect.stringMatching(/schema/i) });
+  });
+
+  it('parseDecisions rejects malformed typed decision fields', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const malformedFields: Array<['summary' | 'evidence' | 'branch' | 'head' | 'at', unknown]> = [
+      ['summary', null],
+      ['summary', ''],
+      ['summary', '   '],
+      ['evidence', {}],
+      ['evidence', 23],
+      ['branch', 23],
+      ['branch', null],
+      ['branch', ''],
+      ['head', null],
+      ['head', 23],
+      ['head', ''],
+      ['at', 'not-a-date'],
+      ['at', null],
+      ['at', '2026-02-30T00:00:00.000Z'],
+    ];
+    for (const [field, value] of malformedFields) {
+      const result = parseDecisions(forgedLine({ [field]: value }), { ticket: 'RP-1' });
+      expect(result).toMatchObject({
+        ok: false,
+        line: 1,
+        reason: expect.stringMatching(new RegExp(field, 'i')),
+      });
+    }
+  });
+
+  it('parseDecisions accepts a record produced by record, including null evidence and release', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const { dir, env } = await delegatedFixture();
+    const recorded = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'extra-gate-round', summary: 'writer shape' }),
+      dir,
+      env,
+    );
+    expect(recorded.code, recorded.out).toBe(0);
+
+    const result = parseDecisions(await readFile(decisionsFile(dir, 'RP-1'), 'utf8'), {
+      ticket: 'RP-1',
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.records).toHaveLength(1);
+      expect(result.records[0]).toMatchObject({ evidence: null, release: null });
+    }
+  });
+
+  it('parseDecisions accepts the exact release redaction the writer persists', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const { dir, env } = await delegatedFixture();
+    const recorded = await runCli(
+      recordArgs({
+        ticket: 'RP-1',
+        decision: 'extra-gate-round',
+        summary: 'writer redacts a credential-shaped release',
+        release: GITHUB_PAT,
+      }),
+      dir,
+      env,
+    );
+    expect(recorded.code, recorded.out).toBe(0);
+    const text = await readFile(decisionsFile(dir, 'RP-1'), 'utf8');
+    expect(text).not.toContain(GITHUB_PAT);
+
+    const result = parseDecisions(text, { ticket: 'RP-1' });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) expect(result.records[0]).toMatchObject({ release: '[redacted]' });
+  });
+
+  it('parseDecisions reports invalid JSON before it evaluates missing or malformed fields', async () => {
+    const { parseDecisions } = (await import(pathToFileURL(delegatedDecisionScript).href)) as {
+      parseDecisions: ParseDecisionsWithTicket;
+    };
+    const incompleteMalformedFirstLine = JSON.stringify({
+      schemaVersion: 999,
+      ticket: 'RP-1',
+      decision: 'extra-gate-round',
+      authority: 'delegated',
+      branch: 23,
+      head: null,
+      at: 'not-a-date',
+    });
+    const result = parseDecisions(`${incompleteMalformedFirstLine}\nnot json\n`, {
+      ticket: 'RP-1',
+    });
+    expect(result).toEqual({ ok: false, line: 2, reason: 'invalid JSON' });
   });
 });
 
@@ -1588,7 +2227,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     async (stop, expected) => {
       const { dir } = await newProject();
       const runDir = await newRunDir();
-      await writeRunState(runDir, { decisionAuthority: 'delegated' });
+      await declareAuthority(runDir, 'delegated');
       const result = await runCli(['resolve', '--stop', stop, '--json'], dir, envFor(runDir));
       expect(result.code, result.out).toBe(0);
       const parsed = JSON.parse(result.stdout) as { resolution: string };
@@ -1681,7 +2320,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('--json prints exactly { stop, stopClass, decision, authority, resolution }, in that key order', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     // RP-342 round 1: `elevated-path-scope` is the only catalogued stop that
     // still names a delegable decision, so it is the one that exercises a
     // non-null `decision` and a `decide-and-continue` resolution here.
@@ -1755,7 +2394,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('refuses an unknown stop id, naming it', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const result = await runCli(['resolve', '--stop', 'made-up-stop'], dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expect(result.out, 'the CLI crashed on import rather than refusing').not.toMatch(
@@ -1767,7 +2406,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('refuses a --stop flag with nothing after it', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const result = await runCli(['resolve', '--stop'], dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expect(result.out).toMatch(/--stop/);
@@ -1776,7 +2415,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('refuses when --stop is omitted altogether', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const result = await runCli(['resolve'], dir, envFor(runDir));
     expect(result.code, result.out).toBe(1);
     expect(result.out).toMatch(/--stop/);
@@ -1787,7 +2426,7 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
   it('writes nothing: no .rig/decisions file, and nothing new in the run directory', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
-    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    await declareAuthority(runDir, 'delegated');
     const before = (await readdir(runDir)).sort();
     const result = await runCli(
       ['resolve', '--stop', 'gate-round-cap', '--json'],
@@ -1800,5 +2439,67 @@ describe('delegated-decision.mjs resolve — turns a per-item stop into one of t
     await expect(readdir(dotRig)).rejects.toThrow();
     const after = (await readdir(runDir)).sort();
     expect(after).toEqual(before);
+  });
+});
+
+// RP-467. A run's authority was whatever `state.json` said, however it got
+// there: a hand-written file, or a re-declaration nothing journalled. The
+// declaration is now journalled by `run-state.mjs authority`, and record and
+// resolve act on a delegated authority only when the journal's latest
+// declaration agrees with the state file.
+describe('delegated-decision.mjs — the run authority must match its journalled declaration (RP-467)', () => {
+  it('refuses to record under a delegated authority that was written by hand and never declared', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stderr).toMatch(/run-state\.mjs authority/);
+    await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+  });
+
+  it('refuses to record when the state file was edited to delegated after an owner declaration', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await declareAuthority(runDir, 'owner');
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stderr).toMatch(/owner/);
+    await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+  });
+
+  it('records under a delegated authority declared through run-state.mjs (control)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await declareAuthority(runDir, 'delegated');
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(1);
+  });
+
+  it('refuses to resolve under a hand-written delegated authority', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await writeRunState(runDir, { decisionAuthority: 'delegated' });
+    const result = await runCli(
+      ['resolve', '--stop', 'elevated-path-scope', '--json'],
+      dir,
+      envFor(runDir),
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stdout).not.toMatch(/decide-and-continue/);
   });
 });

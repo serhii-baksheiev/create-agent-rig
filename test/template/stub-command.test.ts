@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
 import { copyFile, link, mkdtemp, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,7 +29,7 @@ const materializeStubExecutable = async () => {
     destination: string,
     dependencies?: {
       linkFile?: (source: string, destination: string) => Promise<void>;
-      copyFile?: (source: string, destination: string) => Promise<void>;
+      copyFile?: (source: string, destination: string, mode?: number) => Promise<void>;
     },
   ) => Promise<void>;
 };
@@ -63,29 +64,32 @@ describe('test/helpers/stub-command', () => {
     }
   });
 
-  it('reuses the running executable on the same Windows volume and still runs its handler', async () => {
+  it('runs its handler after materializing the stub executable', async () => {
     const stub = await stubCommand('ghstub', 'return { stdout: "linked\\n" };');
     try {
       const out = execFileSync('ghstub', ['issue', 'list'], { encoding: 'utf8' });
       expect(out).toBe('linked\n');
-
-      if (process.platform === 'win32') {
-        const stubExecutable = path.join(stub.bin, 'ghstub.exe');
-        const sameVolume =
-          path.parse(stubExecutable).root.toLowerCase() ===
-          path.parse(process.execPath).root.toLowerCase();
-
-        if (sameVolume) {
-          const [stubStats, nodeStats] = await Promise.all([
-            stat(stubExecutable, { bigint: true }),
-            stat(process.execPath, { bigint: true }),
-          ]);
-          expect(stubStats.dev).toBe(nodeStats.dev);
-          expect(stubStats.ino).toBe(nodeStats.ino);
-        }
-      }
     } finally {
       stub.restore();
+    }
+  });
+
+  it('hard-links a fresh executable on the same volume when hard-link capability is available', async () => {
+    const fixture = await executableFixture();
+    await copyFile(process.execPath, fixture.source);
+    try {
+      await (
+        await materializeStubExecutable()
+      )(fixture.source, fixture.destination);
+
+      const [sourceStats, destinationStats] = await Promise.all([
+        stat(fixture.source, { bigint: true }),
+        stat(fixture.destination, { bigint: true }),
+      ]);
+      expect(destinationStats.dev).toBe(sourceStats.dev);
+      expect(destinationStats.ino).toBe(sourceStats.ino);
+    } finally {
+      await fixture.cleanup();
     }
   });
 
@@ -110,6 +114,120 @@ describe('test/helpers/stub-command', () => {
       expect(linkAttempts).toBe(1);
       expect(copies).toBe(1);
       expect(await readFile(fixture.destination)).toEqual(fixture.contents);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('copies the executable when Windows reports an unknown error for an exhausted hard-link operation', async () => {
+    const fixture = await executableFixture();
+    const exhausted = Object.assign(new Error('unknown error, link'), {
+      code: 'UNKNOWN',
+      syscall: 'link',
+    });
+    let copies = 0;
+    try {
+      await (
+        await materializeStubExecutable()
+      )(fixture.source, fixture.destination, {
+        linkFile: async () => {
+          throw exhausted;
+        },
+        copyFile: async (source, destination) => {
+          copies += 1;
+          await copyFile(source, destination);
+        },
+      });
+      expect(copies).toBe(1);
+      expect(await readFile(fixture.destination)).toEqual(fixture.contents);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('copies the executable when the filesystem reports too many hard links', async () => {
+    const fixture = await executableFixture();
+    const exhausted = Object.assign(new Error('too many links'), { code: 'EMLINK' });
+    let copies = 0;
+    try {
+      await (
+        await materializeStubExecutable()
+      )(fixture.source, fixture.destination, {
+        linkFile: async () => {
+          throw exhausted;
+        },
+        copyFile: async (source, destination) => {
+          copies += 1;
+          await copyFile(source, destination);
+        },
+      });
+      expect(copies).toBe(1);
+      expect(await readFile(fixture.destination)).toEqual(fixture.contents);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('uses an exclusive copy when a hard-link limit requires the fallback', async () => {
+    const fixture = await executableFixture();
+    const exhausted = Object.assign(new Error('too many links'), { code: 'EMLINK' });
+    let copyMode: number | undefined;
+    try {
+      await (
+        await materializeStubExecutable()
+      )(fixture.source, fixture.destination, {
+        linkFile: async () => {
+          throw exhausted;
+        },
+        copyFile: async (_source, _destination, mode) => {
+          copyMode = mode;
+        },
+      });
+      expect(copyMode).toBe(fsConstants.COPYFILE_EXCL);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('does not treat an unknown error outside the hard-link operation as a copy fallback', async () => {
+    const fixture = await executableFixture();
+    const unrelated = Object.assign(new Error('unknown error, open'), {
+      code: 'UNKNOWN',
+      syscall: 'open',
+    });
+    let copies = 0;
+    try {
+      await expect(
+        (await materializeStubExecutable())(fixture.source, fixture.destination, {
+          linkFile: async () => {
+            throw unrelated;
+          },
+          copyFile: async () => {
+            copies += 1;
+          },
+        }),
+      ).rejects.toBe(unrelated);
+      expect(copies).toBe(0);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it('propagates a copy failure after a hard-link limit fallback', async () => {
+    const fixture = await executableFixture();
+    const exhausted = Object.assign(new Error('too many links'), { code: 'EMLINK' });
+    const copyFailed = Object.assign(new Error('copy failed'), { code: 'EACCES' });
+    try {
+      await expect(
+        (await materializeStubExecutable())(fixture.source, fixture.destination, {
+          linkFile: async () => {
+            throw exhausted;
+          },
+          copyFile: async () => {
+            throw copyFailed;
+          },
+        }),
+      ).rejects.toBe(copyFailed);
     } finally {
       await fixture.cleanup();
     }

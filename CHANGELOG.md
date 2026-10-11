@@ -15,7 +15,49 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.5.0 (release candidate)
+## 1.5.1 (release candidate)
+
+This is a patch on the 1.5 line: it brings the credential and rulebook guards'
+reading of Codex `apply_patch` in line with how Codex itself parses and applies
+a patch, without adding a new workflow capability.
+
+### Fixed
+
+- Match `apply_patch` section headers the way Codex parses them: outside an
+  Update section an indented `*** Add File:`, `*** Update File:` or
+  `*** Delete File:` header is still a header, so indentation cannot hide a
+  credential file or a rulebook path from the guards; inside one, an
+  indented line stays hunk context, as it does for Codex (RP-479).
+- Open an Update section's hunk on its first context, added, removed or empty
+  line, as Codex does, so a Move's added lines are inspected even when the
+  patch never spells `@@` (RP-480).
+- Scan the context lines of a non-move Update as well as its added lines:
+  Codex can write a patch's context text into the file after matching it
+  loosely, so a context line could carry a credential past the guard
+  (RP-481).
+- Treat an empty line inside a hunk as empty context, and retry a hunk
+  without its trailing empty context line, as Codex does, so a valid Move
+  is no longer refused as not matching its source (RP-482).
+- Scan every line Codex can write into a Move destination — the source text
+  and the patch's context and added lines — beside the rebuilt destination.
+  Codex matches Move context loosely from a moving cursor, so a removal
+  could take a lookalike line in Codex's output and the real credential in
+  the guard's rebuild (RP-484).
+- Pin these shapes as regression tests, including the largest Move the guard
+  inspects; a credential found in a Move's source is reported at its source
+  line (RP-483).
+
+Two refusals are deliberate over-approximations, and fail closed: an Update
+whose context repeats a credential already in the file, and a Move whose
+patch removes the source's credential.
+
+### Documentation
+
+- `docs/decisions/decision-authority.md` separates the committed claim
+  record that revalidation checks from the working-tree file the
+  delegated-decision reader reads (RP-452).
+
+## 1.5.0
 
 **1.5.0 is additive on the 1.4 line.** It separates two questions a run used
 to answer with one word: whether anyone is watching (execution mode), and who
@@ -60,6 +102,48 @@ records the decision and its consequences.
   `authority` section is read from observed state — the unattended flag and
   the run it names — and never changes doctor's status or exit code (RP-343).
 
+### Fixed
+
+- Carry the accepted 1.4.1 absolute patch-path containment and Codex
+  patch-header whitespace corrections into the 1.5.0 line (RP-463, RP-478,
+  RP-471). The original frozen 1.5.0 candidate remains preserved; this
+  replacement requires its own exact-source and packed acceptance.
+- Reject malformed delegated-decision schema versions, typed fields and
+  timestamps while retaining valid records (RP-439). Evidence:
+  `test/template/delegated-decision.test.ts` › "parseDecisions rejects an
+  unsupported decision-record schema version", › "parseDecisions rejects
+  malformed typed decision fields", and ›
+  "parseDecisions(text, { ticket }) still accepts a well-formed delegated
+  record of a delegable kind".
+- Refuse persistent linked or junction decisions directories and hard-linked
+  foreign decision evidence; ordinary records and safe absence retain their
+  behavior (RP-440). Evidence: `test/template/delegated-decision.test.ts` ›
+  "a .rig/decisions directory junction to a different checkout is unreadable —
+  exit 2, never that checkout's decision", › "a ticket file hard-linked from
+  another checkout is unreadable — exit 2, never that checkout's decision",
+  › "an unresolved ticket (no file at all) reports an empty array, exit 0",
+  and › "still lists a well-formed delegated record of a delegable kind";
+  `test/template/item-records.test.ts` › "reports exists: false for an absent
+  file".
+- Correct Windows Node 22 file-identity verification without dropping POSIX
+  device/inode checks, and use nonblocking opens so FIFO replacements are
+  rejected without waiting for a writer (RP-451, RP-455). Evidence:
+  `test/template/content-blind-revalidation.test.ts` › "reads an unchanged
+  regular selection state without treating its open handle as replacement",
+  › "refuses a selection state replaced after initial lstat instead of reading
+  the replacement stop", and › "fails closed promptly when the selection state
+  becomes a FIFO after initial lstat";
+  `test/template/delegated-decision.test.ts` › "refuses before appending when
+  the pre-open lstat device differs from the opened regular file", and ›
+  "refuses promptly without appending when the decisions pathname becomes a
+  FIFO after initial lstat".
+- Decode non-ASCII Git roots correctly in the Windows Codex Probity wrapper
+  and preserve raw input without adding a UTF-8 BOM (RP-460). Evidence:
+  `test/template/probity-windows-wrapper.test.ts` › "forwards exact Codex input
+  and relays the selected Probity block from a non-ASCII root", and › "forwards
+  exact Codex input without adding a BOM from a preamble-bearing console
+  encoding".
+
 ### Verification and limits
 
 - An e2e acceptance test drives the authority model on a generated workflow
@@ -68,11 +152,40 @@ records the decision and its consequences.
   kill switch through both harnesses' hook invocations, the publication
   boundary in preflight and doctor, and reading a decision back from a second
   session and a second clone (RP-344).
-- Live Claude Code sessions were driven for RP-344; the evidence is on the
-  ticket. Live Codex acceptance was unavailable for this release (account
-  usage limit) and was not substituted.
+- Live Claude Code sessions were driven for the original RP-344 acceptance;
+  its historical Codex session was unavailable because of an account usage
+  limit. Independent replacement validation records deterministic Codex-path
+  execution separately from live observations; generated-hook tests do not
+  prove that a native Codex session loaded those hooks.
+- The record command writes decision evidence but does not stage or commit it.
+  Stage and commit `.rig/decisions/<ticket>.jsonl` for another clone to read it;
+  the per-run journal is local evidence (RP-452).
+- Decisions-directory containment is static. Concurrent replacement of that
+  directory during a read remains a known Low limitation; the reader is not
+  race-proof (RP-454).
 
-## 1.4.0 (release candidate)
+## 1.4.1
+
+This is a patch on the 1.4 line: it corrects guard compatibility and source
+inspection without adding a new workflow capability.
+
+### Fixed
+
+- Accept absolute `apply_patch` paths only when they can be mechanically
+  resolved inside the repository. Keep path containment and credential checks
+  active in both attended and unattended modes, including Windows Unicode,
+  drive, UNC, device and alternate-stream paths, traversal, and linked escapes
+  (RP-463).
+- Match Codex's trailing patch-header whitespace while preserving FEFF and
+  leading pathname characters, so whitespace cannot hide an absolute
+  credential filename or change which linked file the guard inspects
+  (RP-478).
+- Reopen a Move source after path verification and compare its file identity
+  before inspecting its content; refuse a changed source or inspection errors
+  other than a missing file. A missing source emits a warning and retains
+  addition-only scanning (RP-459).
+
+## 1.4.0
 
 **1.4.0 is additive on the 1.3 line.** It adds one contract for the conditions
 that decide whether a checkout is ready to run unattended, and reports it on
@@ -121,6 +234,26 @@ says what it enforces, verifies and leaves to the harness.
 - **An `apply_patch` move whose source cannot be resolved** is now refused
   with wording that names the source, not the destination (RP-366).
 
+### Fixed
+
+- **Windows Node 22 file identity checks.** Run-state and claim readers now
+  compare two opened file handles; Codex rollout and patch-move checks retain
+  inode checks and apply pathname device checks on POSIX. This avoids false
+  refusals when Windows pathname and handle APIs report different device ids
+  for the same file (RP-451).
+- **FIFO evidence replacements fail promptly.** Run-state and claim-contract
+  readers use nonblocking opens before checking the opened file type, so a
+  regular file replaced by a FIFO cannot stall selection (RP-455).
+- **Selected Probity on Windows non-ASCII roots.** The Codex wrapper decodes
+  Git output as UTF-8, including when PowerShell starts under CP437, so it
+  reaches the selected provider. Forwarding preserves exact input without
+  adding a UTF-8 BOM and relays response bytes unchanged (RP-460).
+- **A kill switch that cannot be inspected reads as set.** A STOP path that
+  exists but cannot be inspected, for example behind a directory without
+  search permission, now arms the brake in `guard-bash` and fails
+  `kill-switch-armed` in preflight and doctor. Only a missing path reads as
+  absent (RP-462).
+
 ### Verification and limits
 
 - An e2e acceptance test runs the contract's scenario matrix on a generated
@@ -132,8 +265,20 @@ says what it enforces, verifies and leaves to the harness.
   - a guard refusal under an armed run, through both harnesses' invocations;
   - no change to the repository or to the harness configuration in HOME.
 - Live Claude Code and Codex sessions were not driven for this release.
-- The Windows wrapper's non-ASCII repository root case did not reproduce on
+- The bounded guard wrapper's non-ASCII repository root case did not reproduce on
   the hosted Windows runner. It stays as a regression test.
+
+## 1.3.1
+
+### Fixed
+
+- Windows Node 22 file identity checks in run-state and claim readers (RP-451).
+- FIFO replacements fail promptly in state and claim readers (RP-455).
+- Windows Codex guards resolve UNC roots and selected Probity on non-ASCII
+  roots without adding a UTF-8 BOM (RP-321, RP-460).
+
+Published from `19a9dc648b336732b495d5dd98eb2e32dd8e3b1f`. This records the
+completed hotfix publication; its source candidate remains unchanged.
 
 ## 1.3.0
 
@@ -2763,6 +2908,13 @@ sometimes earlier (step 6). Everything before that is mechanical:
    `node scripts/release-preflight.mjs --frozen-candidate <40-char-lowercase-hex-sha>`
    instead — see `docs/releasing.md`, "Preflighting a frozen, unpublished
    release candidate".
+
+   When several accepted candidates await publication, publish in increasing
+   version order. Publishing an older patch after a newer minor requires an
+   explicit non-`latest` tag, for example `npm publish --tag v1.4-patch`:
+   an ordinary publish moves `latest` to the version just published. Check
+   `npm view create-agent-rig dist-tags --json` before and after publication.
+   Publication and dist-tag changes remain owner-only.
 
 9. **Owner:** smoke the published artifact — `npx create-agent-rig@<version>` in
    an empty directory, then `pnpm install && pnpm check` inside it; and

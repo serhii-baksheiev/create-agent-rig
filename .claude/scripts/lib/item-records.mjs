@@ -24,7 +24,7 @@ import {
   realpathSync,
   writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { composeTextField } from '../continuation.mjs';
 
@@ -151,7 +151,8 @@ export const appendItemRecordLine = (recordPath, line) => {
     (pathStat ? 0 : constants.O_CREAT | constants.O_EXCL) |
     // Undefined on Windows; the lstat above and the identity check below are
     // what hold there.
-    (constants.O_NOFOLLOW ?? 0);
+    (constants.O_NOFOLLOW ?? 0) |
+    (constants.O_NONBLOCK ?? 0);
   let fd;
   try {
     fd = openSync(recordPath, flags, 0o644);
@@ -168,7 +169,10 @@ export const appendItemRecordLine = (recordPath, line) => {
     if (!stat.isFile() || stat.nlink !== 1) {
       throw new Error(`${recordPath} is not a regular file with a single name; refusing to write.`);
     }
-    if (pathStat && (stat.dev !== pathStat.dev || stat.ino !== pathStat.ino)) {
+    if (
+      pathStat &&
+      (stat.ino !== pathStat.ino || (process.platform !== 'win32' && stat.dev !== pathStat.dev))
+    ) {
       throw new Error(`${recordPath} changed under the check; refusing to write.`);
     }
     writeSync(fd, line);
@@ -196,6 +200,36 @@ export const readItemRecordFile = (recordPath, options) => {
       `item-records: maxBytes must be a non-negative integer, got ${String(maxBytes)}.`,
     );
   }
+  const itemDir = dirname(recordPath);
+  const rigDir = dirname(itemDir);
+  let rigStat;
+  try {
+    rigStat = lstatSync(rigDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw new Error(error.message, { cause: error });
+  }
+  if (rigStat.isSymbolicLink()) {
+    throw new Error(`${rigDir} is a symlink; refusing to follow it.`);
+  }
+  if (!rigStat.isDirectory()) {
+    throw new Error(`${rigDir} is not a directory.`);
+  }
+
+  let itemDirStat;
+  try {
+    itemDirStat = lstatSync(itemDir);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return { exists: false };
+    throw new Error(error.message, { cause: error });
+  }
+  if (itemDirStat.isSymbolicLink()) {
+    throw new Error(`${itemDir} is a symlink; refusing to follow it.`);
+  }
+  if (!itemDirStat.isDirectory()) {
+    throw new Error(`${itemDir} is not a directory.`);
+  }
+
   let pathStat;
   try {
     pathStat = lstatSync(recordPath);
@@ -206,20 +240,23 @@ export const readItemRecordFile = (recordPath, options) => {
   if (pathStat.isSymbolicLink()) {
     throw new Error('is a symlink; refusing to follow it.');
   }
-  if (!pathStat.isFile()) {
-    throw new Error('is not a regular file.');
+  if (!pathStat.isFile() || pathStat.nlink !== 1) {
+    throw new Error('is not a regular file with a single name.');
   }
 
   let fd;
   try {
-    fd = openSync(recordPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      recordPath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     throw new Error(error.message, { cause: error });
   }
   try {
     const stat = fstatSync(fd);
-    if (!stat.isFile()) {
-      throw new Error('is not a regular file.');
+    if (!stat.isFile() || stat.nlink !== 1) {
+      throw new Error('is not a regular file with a single name.');
     }
     if (stat.size > maxBytes) {
       throw new Error(`exceeds ${maxBytes} bytes and is refused whole rather than partially read.`);

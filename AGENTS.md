@@ -240,6 +240,9 @@ rule does not change with or without the script.
 scripts/
 .husky/
 package.json
+probity.config.mjs
+tools/dogfood/
+pnpm-workspace.yaml
 templates/agent-os/universal/.claude/hooks/
 templates/agent-os/universal/.claude/scripts/
 templates/agent-os/universal/.claude/settings.json

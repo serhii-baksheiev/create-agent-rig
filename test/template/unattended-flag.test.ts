@@ -899,6 +899,8 @@ describe('writeUnattended / clearUnattended: the file the run arms and disarms',
       item: 'AR-51',
       runDir: '/r',
       allow: ['CLAUDE.md'],
+      // RP-421: an unscoped write records no checkout root.
+      root: null,
     });
     expect(readUnattended(env()).on).toBe(true);
   });
@@ -1105,6 +1107,8 @@ describe('the CLI the loop skill calls', () => {
         item: 'AR-51',
         runDir: '/runs/1',
         allow: ['.claude/scripts/queue/', '.claude/skills/loop/'],
+        // RP-421: the checkout it is scoped to, so a leftover maps back to it.
+        root: canonicalCheckout,
       });
     } finally {
       await Promise.all(
