@@ -42,6 +42,7 @@ git worktree list                       # verify the path is DIRECTLY under .cla
 
 ```bash
 cd "$(git -C <repo root> rev-parse --show-toplevel)"   # cd OUT of the worktree first — gotcha 2
+node .claude/scripts/unattended-flag.mjs off --root .claude/worktrees/<slug>   # disarm this worktree's own unattended flag, BEFORE it is removed
 git worktree remove .claude/worktrees/<slug> --force
 git worktree prune
 git branch -D <type>/<slug>
