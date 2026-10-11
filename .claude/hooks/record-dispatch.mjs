@@ -132,7 +132,8 @@
 // most 32 MiB read in total, at most 8 MiB in one line, at most 3s wall
 // time (checked between chunks) — a fixed-size buffer on an
 // `O_RDONLY|O_NONBLOCK` handle whose opened `fstatSync` is a regular file
-// with the same device and inode as the preceding regular-file `lstatSync`.
+// with the same inode, and on POSIX the same device, as the preceding
+// regular-file `lstatSync`.
 // That comparison happens after `openSync`: it rejects a different opened file
 // before reading changed content, but does not prevent the open itself. See
 // dispatch-usage-codex.test.ts (absent in a generated rig) › "does not read a
@@ -858,7 +859,11 @@ function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 
     fd = openSync(file, OPEN_FLAGS);
     const opened = fstatSync(fd);
-    if (!opened.isFile() || opened.dev !== lst.dev || opened.ino !== lst.ino) {
+    if (
+      !opened.isFile() ||
+      opened.ino !== lst.ino ||
+      (process.platform !== 'win32' && opened.dev !== lst.dev)
+    ) {
       return 'transcript-unreadable';
     }
 

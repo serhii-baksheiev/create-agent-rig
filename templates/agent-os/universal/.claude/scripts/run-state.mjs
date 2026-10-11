@@ -124,7 +124,10 @@ export const readStateForSelection = (runDir) => {
   if (!pathStat.isFile()) throw new Error('run state is invalid: expected a regular file');
   let fd;
   try {
-    fd = openSync(statePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    fd = openSync(
+      statePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
   } catch (error) {
     throw new Error('run state is unreadable', { cause: error });
   }
@@ -132,14 +135,33 @@ export const readStateForSelection = (runDir) => {
   try {
     const stat = fstatSync(fd);
     if (!stat.isFile()) throw new Error('run state is invalid: expected a regular file');
+    if (
+      stat.ino !== pathStat.ino ||
+      (process.platform !== 'win32' && stat.dev !== pathStat.dev)
+    ) {
+      throw new Error('run state changed during validation');
+    }
     if (stat.size > MAX_STATE_BYTES) {
       throw new Error(`run state exceeds ${MAX_STATE_BYTES} bytes`);
     }
     const current = lstatSync(statePath);
     if (current.isSymbolicLink()) throw new Error('run state is a symlink');
     if (!current.isFile()) throw new Error('run state is invalid: expected a regular file');
-    if (current.dev !== stat.dev || current.ino !== stat.ino) {
-      throw new Error('run state changed during validation');
+    const currentFd = openSync(
+      statePath,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      const currentOpened = fstatSync(currentFd);
+      if (
+        !currentOpened.isFile() ||
+        currentOpened.dev !== stat.dev ||
+        currentOpened.ino !== stat.ino
+      ) {
+        throw new Error('run state changed during validation');
+      }
+    } finally {
+      closeSync(currentFd);
     }
     raw = readFileSync(fd, 'utf8');
   } catch (error) {
@@ -650,6 +672,10 @@ const COMMANDS = Object.freeze({
     words: DECISION_AUTHORITIES,
     field: 'decisionAuthority',
     lowerCase: true,
+    // RP-467: every declaration is journalled with the value before and
+    // after it, so a mid-run change stays visible and `delegated-decision.mjs`
+    // can cross-check the state file against it.
+    journalKind: 'authority-declared',
     valueOf: (word) => word,
     missingDir:
       'there is no run whose decision authority this would record. ' +
@@ -753,7 +779,26 @@ if (invokedDirectly() && process.argv[2] === 'providers') {
   }
 
   const argument = spec.words ? normalise(given) : given;
-  const value = spec.valueOf(argument, readState(runDir));
+  const before = readState(runDir);
+  const value = spec.valueOf(argument, before);
+  if (spec.journalKind) {
+    // Imported here, not at the top: this module is read by the queue and
+    // other scripts that must not depend on the journal module being present.
+    try {
+      const { recordEvent } = await import('./run-journal.mjs');
+      recordEvent({
+        runDir,
+        kind: spec.journalKind,
+        data: { from: before[spec.field] ?? null, to: value },
+        now: new Date().toISOString(),
+      });
+    } catch (error) {
+      process.stderr.write(
+        `the run journal refused the ${command} declaration, so it was not recorded: ${error.message}\n`,
+      );
+      process.exit(1);
+    }
+  }
   updateState(runDir, { [spec.field]: value });
   process.stdout.write(`run state: ${spec.field} = ${JSON.stringify(value)}\n`);
 }

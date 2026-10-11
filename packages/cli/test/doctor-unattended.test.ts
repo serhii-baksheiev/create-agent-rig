@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -242,6 +242,43 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
       [true, 'fail'],
     ]);
   });
+
+  // RP-462: a literal expectation, never derived by calling `brakeIsOn`/
+  // `stopFlags` to compute what "should" come out — the independent-oracle
+  // invariant (`.claude/rules/invariants.md`) the test above this one does
+  // not follow for its own `brakeIsOn(env) !== null` half, which is exactly
+  // how the underlying defect hid: `brakeIsOn` and `doctor` agreeing by
+  // construction, both silently reading an uninspectable path as absent.
+  //
+  // Chmod 000 denies nothing on Windows (a different ACL model) or for root
+  // (CAP_DAC_OVERRIDE bypasses permission checks), so only a non-root POSIX
+  // process can demonstrate it. Computed once, by name, rather than written
+  // inline into `skipIf(...)` — see test/template/platform-skips.test.ts,
+  // which refuses a bare `process.platform` check there.
+  const canChmodDeny = process.platform !== 'win32' && process.getuid?.() !== 0;
+
+  it.skipIf(!canChmodDeny)(
+    'reports kill-switch-armed fail for an AGENT_LOOP_STOP path that exists but cannot be inspected (RP-462)',
+    async () => {
+      await initProject(repo, { withWorkflow: true });
+      const locked = await mkdtemp(path.join(tmpdir(), 'rp462-doctor-locked-'));
+      const flag = path.join(locked, 'STOP');
+      await writeFile(flag, '');
+      await chmod(locked, 0o000);
+      try {
+        const result = await doctor({ HOME: home, AGENT_LOOP_STOP: flag });
+        expect(condition(result, 'kill-switch-armed')).toMatchObject({
+          outcome: 'fail',
+          status: 'fail',
+        });
+      } finally {
+        // Restore before cleanup, or removing `locked` recursively has to
+        // read it to empty it first and fails the same way the bug does.
+        await chmod(locked, 0o755);
+        await removeFixture(locked);
+      }
+    },
+  );
 
   it('answers detection-contract-invalid exactly as preflight does, valid, malformed and absent', async () => {
     const { checkDetectionContract } = (await import(

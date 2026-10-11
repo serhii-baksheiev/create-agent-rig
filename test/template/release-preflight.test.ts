@@ -51,6 +51,7 @@ const {
   parseReleasePreflightArgs: (argv: readonly string[]) => {
     mode: 'normal' | 'frozen-candidate' | 'invalid';
     sha?: string;
+    supersedes?: string;
     error?: string;
   };
   // The three git facts a frozen candidate must satisfy, mirroring the shape of
@@ -694,6 +695,7 @@ describe('release preflight — the checkout the bytes would be published from',
 // shape is a narrow, explicit flag: `--frozen-candidate <40-char-lowercase-hex-
 // sha>`. No flag at all is ordinary mode.
 const CANDIDATE_SHA = 'c0ffee0011223344556677889900aabbccddeeff';
+const SUPERSEDED_SHA = 'd'.repeat(40);
 
 describe('release preflight — the --frozen-candidate flag is parsed before anything else runs', () => {
   it('reads no arguments as ordinary mode', () => {
@@ -705,6 +707,58 @@ describe('release preflight — the --frozen-candidate flag is parsed before any
       mode: 'frozen-candidate',
       sha: CANDIDATE_SHA,
     });
+  });
+
+  // RP-471: a replacement is an explicit, two-SHA operation. The old frozen
+  // candidate remains at its canonical ref; this opt-in tells preflight to
+  // validate the new content-addressed replacement ref as a successor of it.
+  it('reads a replacement only when --supersedes names a distinct exact sha', () => {
+    expect(
+      parseReleasePreflightArgs([
+        '--frozen-candidate',
+        CANDIDATE_SHA,
+        '--supersedes',
+        SUPERSEDED_SHA,
+      ]),
+    ).toEqual({
+      mode: 'frozen-candidate',
+      sha: CANDIDATE_SHA,
+      supersedes: SUPERSEDED_SHA,
+    });
+  });
+
+  it('refuses replacement shorthand, malformed predecessor shas, duplicates, and self-supersession', () => {
+    const withoutCandidate = parseReleasePreflightArgs(['--supersedes', SUPERSEDED_SHA]);
+    const malformed = parseReleasePreflightArgs([
+      '--frozen-candidate',
+      CANDIDATE_SHA,
+      '--supersedes',
+      'not-a-sha',
+    ]);
+    const duplicate = parseReleasePreflightArgs([
+      '--frozen-candidate',
+      CANDIDATE_SHA,
+      '--supersedes',
+      SUPERSEDED_SHA,
+      '--supersedes',
+      SUPERSEDED_SHA,
+    ]);
+    const sameSha = parseReleasePreflightArgs([
+      '--frozen-candidate',
+      CANDIDATE_SHA,
+      '--supersedes',
+      CANDIDATE_SHA,
+    ]);
+
+    for (const result of [withoutCandidate, malformed, duplicate, sameSha]) {
+      expect(result.mode).toBe('invalid');
+    }
+  });
+
+  it('refuses --supersedes when it has no predecessor sha', () => {
+    const result = parseReleasePreflightArgs(['--frozen-candidate', CANDIDATE_SHA, '--supersedes']);
+    expect(result.mode).toBe('invalid');
+    expect(result.error).toMatch(/--supersedes/);
   });
 
   it('refuses the flag given with no value', () => {

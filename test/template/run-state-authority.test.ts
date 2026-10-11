@@ -328,3 +328,32 @@ describe('run-state.mjs — the `providers` command (RP-443)', () => {
     });
   });
 });
+
+// RP-467. A declaration — and every re-declaration — leaves a journal event
+// carrying the value before and after, so a mid-run change is visible later.
+describe('run-state.mjs authority — journals every declaration (RP-467)', () => {
+  const authorityEvents = async (runDir: string) =>
+    (await readFile(path.join(runDir, 'events.jsonl'), 'utf8'))
+      .split('\n')
+      .filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line) as { kind: string; data: unknown })
+      .filter((record) => record.kind === 'authority-declared')
+      .map((record) => record.data);
+
+  it('journals the first declaration and a later change, each with the previous and new value', async () => {
+    const runDir = await newRunDir();
+    expect((await runCli(['authority', 'delegated'], repoRoot, envFor(runDir))).code).toBe(0);
+    expect((await runCli(['authority', 'owner'], repoRoot, envFor(runDir))).code).toBe(0);
+    expect(await authorityEvents(runDir)).toEqual([
+      { from: null, to: 'delegated' },
+      { from: 'delegated', to: 'owner' },
+    ]);
+  });
+
+  it('writes neither the event nor the state for a word outside the vocabulary', async () => {
+    const runDir = await newRunDir();
+    expect((await runCli(['authority', 'controller'], repoRoot, envFor(runDir))).code).not.toBe(0);
+    expect(await stateFileExists(runDir)).toBe(false);
+    await expect(readFile(path.join(runDir, 'events.jsonl'), 'utf8')).rejects.toThrow();
+  });
+});

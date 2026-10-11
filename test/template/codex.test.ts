@@ -1,6 +1,16 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -29,7 +39,11 @@ const exec = promisify(execFile);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const agentOs = path.join(repoRoot, 'templates', 'agent-os');
 const universal = path.join(agentOs, 'universal');
-const hooksDir = path.join(universal, '.claude', 'hooks');
+// RP-459: lets the same race oracle execute an archived hook tree without
+// changing that accepted source. Ordinary suite runs always use the template.
+const hooksDir = process.env.RP459_TEST_HOOKS_DIR
+  ? path.resolve(process.env.RP459_TEST_HOOKS_DIR)
+  : path.join(universal, '.claude', 'hooks');
 
 const text = (...parts: string[]) => readFile(path.join(...parts), 'utf8');
 
@@ -463,6 +477,42 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       expect(windowsScript).toContain("'rev-parse --show-toplevel'");
       expect(windowsScript).toMatch(/\$gitInfo\.WorkingDirectory\s*=/);
       expect(windowsScript).toMatch(/\$gitInfo\.StandardOutputEncoding\s*=.*UTF8Encoding/);
+    },
+  );
+
+  // RP-424: the test above pins that `Get-Command git.exe -CommandType
+  // Application` appears SOMEWHERE in the script, but not that its result is
+  // what actually launches git — a regression that resolved git.exe and then
+  // still started a bare `git` name (letting CreateProcess's own cwd-first
+  // search back in, the exact hijack RP-321/RP-266 round 3 closed) would
+  // still match that lone assertion. Pin the two statements together: the
+  // resolved path is assigned to `$gitExe`, and `$gitInfo.FileName` is set
+  // from that same variable, not from a literal.
+  it.each(BOUNDED_STAGE_GUARDS)(
+    "launches git through the resolved application path in %s's wrapper, never a bare git name (RP-424)",
+    async (guardFile) => {
+      const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+        hooks: Record<
+          string,
+          Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>
+        >;
+      };
+      const entry = Object.values(config.hooks)
+        .flatMap((groups) => groups.flatMap((group) => group.hooks))
+        .find((hook) => hook.command.includes(guardFile));
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+
+      expect(
+        windowsScript,
+        `${guardFile}: expected $gitExe assigned from Get-Command git.exe -CommandType Application`,
+      ).toContain('$gitExe = (Get-Command git.exe -CommandType Application');
+      expect(
+        windowsScript,
+        `${guardFile}: expected $gitInfo.FileName set from the resolved $gitExe, not a bare 'git'`,
+      ).toContain('$gitInfo.FileName = $gitExe');
     },
   );
 
@@ -1036,6 +1086,80 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       }
     },
   );
+
+  // RP-424: a documented limit (invariants.md, "State the limits — and test
+  // them") needs a test proving the command really behaves that way. The
+  // POSIX command's root lookup is `git rev-parse --show-toplevel`, run
+  // ahead of the guard itself with no `timeout` of its own — unlike the
+  // guard's own stages, which the four BOUNDED_STAGE_GUARDS cases above pin
+  // as bounded on the Windows wrapper. A `.git/config` whose `[include]`
+  // path is a FIFO with no writer makes git block inside that lookup
+  // indefinitely, before the hook script is ever reached.
+  it('the POSIX Codex command puts no bound of its own on the root lookup: a stalled git rev-parse keeps the hook waiting', async (ctx) => {
+    skipUnless(ctx, posixShellAvailable().ok, posixShellAvailable().reason);
+    skipUnless(ctx, fifosAvailable().ok, fifosAvailable().reason);
+
+    const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const command = Object.values(config.hooks)
+      .flatMap((groups) => groups.flatMap((group) => group.hooks))
+      .find((hook) => hook.command.includes('guard-bash.mjs'))?.command;
+    expect(command, 'guard-bash.mjs has no projected Codex hook entry').toBeDefined();
+
+    const scratch = await mkdtemp(path.join(tmpdir(), 'codex-stalled-root-'));
+    const fifoPath = path.join(scratch, '.git', 'stall.fifo');
+    let child: ReturnType<typeof spawn> | undefined;
+    try {
+      await exec('git', ['init', '-q', scratch], { env: withoutGitLocation() });
+      try {
+        execFileSync('mkfifo', [fifoPath]);
+      } catch (error) {
+        ctx.skip(`mkfifo unavailable on this host: ${String(error)}`);
+        return;
+      }
+      // An `[include]` path git must open to finish parsing config — a FIFO
+      // with no writer leaves that open() call, and everything after it,
+      // blocked forever.
+      await appendFile(path.join(scratch, '.git', 'config'), `\n[include]\n\tpath = ${fifoPath}\n`);
+
+      child = spawn('/bin/sh', ['-c', command!], {
+        cwd: scratch,
+        env: { ...withoutGitLocation(process.env), CLAUDE_PROJECT_DIR: '' },
+        detached: true,
+        stdio: ['pipe', 'ignore', 'ignore'],
+      });
+      let exited = false;
+      child.once('exit', () => {
+        exited = true;
+      });
+      child.stdin!.end(
+        JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'Bash',
+          tool_input: { command: 'echo hi' },
+          cwd: scratch,
+        }),
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+
+      expect(
+        exited,
+        'the command exited within 3 s even though its root lookup should be stalled on an ' +
+          'unreadable FIFO include — the command now bounds that lookup itself',
+      ).toBe(false);
+    } finally {
+      if (child?.pid && !child.killed) {
+        try {
+          process.kill(-child.pid, 'SIGKILL');
+        } catch {
+          // already gone
+        }
+      }
+      await removeFixture(scratch);
+    }
+  });
 
   it('emits each tool at most once in generated Codex hook matchers', async () => {
     const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
@@ -1700,6 +1824,163 @@ describe('Codex apply_patch shape validation keeps its refusal remedy', () => {
   // queue/checkout — and this one did not, so `git rev-parse --show-toplevel`
   // answered about the HOOK's repository and the guard fell open. Same lesson the
   // baseline-commit incident already paid for.
+  it('classifies an initial POSIX move-source device mismatch as changed before it inspects a credential', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-posix-device-mismatch-'));
+    const source = path.join(scratch, 'secret.txt');
+    const trace = path.join(scratch, 'stat-trace');
+    const preload = path.join(scratch, 'preload.mjs');
+    await writeFile(source, `AWS_KEY=${CLOUD_ACCESS_KEY}\n`);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "Object.defineProperty(process, 'platform', { value: 'linux' });",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalStatSync = fs.statSync;',
+        'const target = process.env.RP451_POSIX_TARGET;',
+        'const trace = process.env.RP451_POSIX_TRACE;',
+        'let changed = false;',
+        'fs.statSync = (...args) => {',
+        '  const stat = originalStatSync(...args);',
+        '  if (!changed && args[0] === target) {',
+        '    changed = true;',
+        "    appendFileSync(trace, 'verified-stat\\n');",
+        "    return new Proxy(stat, { get(value, property, receiver) { return property === 'dev' ? value.dev + 1 : Reflect.get(value, property, receiver); } });",
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await runGuardInput(
+        'guard-secret-file.mjs',
+        {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: [
+              '*** Begin Patch',
+              `*** Update File: ${path.relative(repoRoot, source)}`,
+              '*** Move to: notes.md',
+              '*** End Patch',
+            ].join('\n'),
+          },
+          cwd: repoRoot,
+        },
+        undefined,
+        {
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+          RP451_POSIX_TARGET: source,
+          RP451_POSIX_TRACE: trace,
+        },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('verified-stat\n');
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/move source changed during inspection/i);
+      expect(result.stderr).not.toMatch(/credential/i);
+    } finally {
+      await removeFixture(scratch);
+    }
+  });
+
+  it('refuses a regular move source replaced between verification stat and second open', async (ctx) => {
+    skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
+    skipUnless(
+      ctx,
+      process.platform !== 'win32',
+      'on Windows Node renameSync returns EPERM while this fixture holds the original descriptor open, so the POSIX regular-file replacement race cannot be observed',
+    );
+    const scratch = await mkdtemp(path.join(repoRoot, '.codex-second-open-replacement-'));
+    const source = path.join(scratch, 'source.txt');
+    const replacement = path.join(scratch, 'replacement.txt');
+    const trace = path.join(scratch, 'second-open-trace');
+    const preload = path.join(scratch, 'preload.mjs');
+    const original = 'ORIGINAL_HELD_DESCRIPTOR\n';
+    const replacementContent = `AWS_KEY=${CLOUD_ACCESS_KEY}\n`;
+    await writeFile(source, original);
+    await writeFile(replacement, replacementContent);
+    await writeFile(
+      preload,
+      [
+        "import { appendFileSync, readSync, renameSync } from 'node:fs';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalOpenSync = fs.openSync;',
+        'const originalStatSync = fs.statSync;',
+        'const target = process.env.RP459_SECOND_OPEN_TARGET;',
+        'const replacement = process.env.RP459_SECOND_OPEN_REPLACEMENT;',
+        'const trace = process.env.RP459_SECOND_OPEN_TRACE;',
+        'let heldDescriptor;',
+        'let replaced = false;',
+        'fs.openSync = (...args) => {',
+        '  const descriptor = originalOpenSync(...args);',
+        '  if (args[0] === target && heldDescriptor === undefined) {',
+        '    heldDescriptor = descriptor;',
+        "    appendFileSync(trace, 'first-open\\n');",
+        '  }',
+        '  return descriptor;',
+        '};',
+        'fs.statSync = (...args) => {',
+        '  const stat = originalStatSync(...args);',
+        '  if (!replaced && args[0] === target && heldDescriptor !== undefined) {',
+        "    appendFileSync(trace, 'verified-stat\\n');",
+        '    renameSync(replacement, target);',
+        '    const bytes = Buffer.allocUnsafe(64);',
+        '    const count = readSync(heldDescriptor, bytes, 0, bytes.length, 0);',
+        "    appendFileSync(trace, `replaced\\nheld=${bytes.toString('utf8', 0, count)}`);",
+        '    replaced = true;',
+        '  }',
+        '  return stat;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+
+    try {
+      const result = await runGuardInput(
+        'guard-secret-file.mjs',
+        {
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: [
+              '*** Begin Patch',
+              `*** Update File: ${path.relative(repoRoot, source)}`,
+              '*** Move to: notes.md',
+              '*** End Patch',
+            ].join('\n'),
+          },
+          cwd: repoRoot,
+        },
+        undefined,
+        {
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+          RP459_SECOND_OPEN_TARGET: source,
+          RP459_SECOND_OPEN_REPLACEMENT: replacement,
+          RP459_SECOND_OPEN_TRACE: trace,
+        },
+      );
+
+      const recordedTrace = await readFile(trace, 'utf8');
+      if (process.env.RP459_TEST_TRACE_OUTPUT)
+        await writeFile(process.env.RP459_TEST_TRACE_OUTPUT, recordedTrace);
+      expect(recordedTrace).toBe(
+        'first-open\nverified-stat\nreplaced\nheld=ORIGINAL_HELD_DESCRIPTOR\n',
+      );
+      expect(await readFile(source, 'utf8')).toBe(replacementContent);
+      expect(result.code).toBe(2);
+      expect(result.stderr).toMatch(/move source changed during inspection/i);
+      expect(result.stderr).not.toMatch(/credential/i);
+    } finally {
+      await removeFixture(scratch);
+    }
+  });
+
   it('resolves the repository root even when a git hook has exported GIT_DIR', async (ctx) => {
     skipUnless(ctx, needsGitRoot(repoRoot).ok, needsGitRoot(repoRoot).reason);
     // A REAL repository, not an empty directory: with an invalid GIT_DIR the git

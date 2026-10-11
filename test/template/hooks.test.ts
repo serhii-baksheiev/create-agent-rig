@@ -1713,29 +1713,42 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
   // something this file demonstrates, and it is not stated here as though it
   // were.
   it('gates the stop when a check outruns the budget — unmeasured is not a pass', async () => {
-    await setUpProject({ checks: ['sleep 5'], dirty: true });
+    // `spawnSync(..., { shell: true })` can time out its Windows command shell
+    // before its Node child exits. Move the child's cwd out of this fixture so
+    // the real timer cannot pin the fixture directory during cleanup.
+    const check =
+      'node -e "process.chdir(require(\'node:os\').tmpdir()); setTimeout(function () {}, 5000)"';
+    await setUpProject({ checks: [check], dirty: true });
     const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '1000' });
     expect(result.code, result.stderr).toBe(2);
-    expect(result.stderr).toContain('sleep 5');
-    expect(result.stderr).toMatch(/budget/i);
+    expect(result.stderr).toContain(check);
+    expect(result.stderr).toContain('produced no verdict');
+    expect(result.stderr).toContain('inside the 1000 ms budget');
   }, 30_000);
 
   // The budget is for the whole suite, not a fresh allowance per check: three
   // checks each granted the full budget is three times the wall clock the
-  // harness allows, which is the same overrun by a longer route. Two two-second
-  // sleeps under a three-second budget: the first leaves ~1s for the second.
+  // harness allows, which is the same overrun by a longer route. Two portable
+  // two-second Node timers under a three-second budget: the first leaves ~1s
+  // for the second.
   it('spends one budget across the whole suite, not a fresh one per check', async () => {
-    await setUpProject({ checks: ['sleep 2', 'sleep 2'], dirty: true });
+    const check =
+      'node -e "process.chdir(require(\'node:os\').tmpdir()); setTimeout(function () {}, 2000)"';
+    await setUpProject({ checks: [check, check], dirty: true });
     const result = await runStopHook(stop(), { RIG_DOD_BUDGET_MS: '3000' });
     expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('produced no verdict');
+    expect(result.stderr).toContain('inside the 3000 ms budget');
   }, 30_000);
 
   // RP-204: a WSL distro was measured stepping its wall clock back ~1.65 s
-  // every ~32 s, and the test above then passed two `sleep 2` checks under a
-  // 3000 ms budget. The budget is elapsed time, so the wall clock must not
-  // move it: here every `Date.now()` after the first reads 10 s earlier.
+  // every ~32 s, and the test above then passed two 2-second timer checks
+  // under a 3000 ms budget. The budget is elapsed time, so the wall clock must
+  // not move it: here every `Date.now()` after the first reads 10 s earlier.
   it('keeps the shared budget when the wall clock steps back mid-run', async () => {
-    await setUpProject({ checks: ['sleep 2', 'sleep 2'], dirty: true });
+    const check =
+      'node -e "process.chdir(require(\'node:os\').tmpdir()); setTimeout(function () {}, 2000)"';
+    await setUpProject({ checks: [check, check], dirty: true });
     const preload = path.join(projectDir, 'clock-steps-back.mjs');
     await fsp.writeFile(
       preload,
@@ -1747,6 +1760,8 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
       NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
     });
     expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('produced no verdict');
+    expect(result.stderr).toContain('inside the 3000 ms budget');
   }, 30_000);
 
   // The regression pin for the ENOBUFS false gate: `execSync` buffers 1 MB by
