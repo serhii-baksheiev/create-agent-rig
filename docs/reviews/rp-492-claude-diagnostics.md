@@ -13,18 +13,22 @@ owner on the ticket and are left out here.
 
 ## What ran
 
-| Diagnostic                        | Status        | Notes                                                                                                                                                                                                                         |
-| --------------------------------- | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `claude doctor`                   | LIVE OBSERVED | No installation issue attributable to this repository.                                                                                                                                                                        |
-| `/doctor` (prompt audit)          | LIVE OBSERVED | Declined to propose edits to `AGENTS.md`/`CLAUDE.md`/rules: they are synced from `templates/agent-os/universal` and pinned by `test/template/dogfood.test.ts`. One attempted write was refused by this repo's `probity-gate`. |
-| `/skill-doctor`                   | LIVE OBSERVED | Use counts per project skill (below).                                                                                                                                                                                         |
-| Context size, measured (no model) | LIVE OBSERVED | Byte counts; tokens approximated as bytes / 4.                                                                                                                                                                                |
+| Diagnostic                        | Status        | Notes                                                                                                                                                          |
+| --------------------------------- | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `claude doctor`                   | LIVE OBSERVED | No installation issue attributable to this repository.                                                                                                         |
+| `/doctor` (prompt audit)          | LIVE OBSERVED | Declined to propose edits to `AGENTS.md`/`CLAUDE.md`/rules: they are synced from `templates/agent-os/universal` and pinned by `test/template/dogfood.test.ts`. |
+| `/skill-doctor`                   | LIVE OBSERVED | Use counts per project skill (below).                                                                                                                          |
+| Context size, measured (no model) | LIVE OBSERVED | Byte counts; tokens approximated as bytes / 4.                                                                                                                 |
 
 ## Context cost of the rulebook, measured
 
+Byte counts at master `6cac1165`, reproducible with `wc -c <path>`; the
+`inject-rules` row is the byte length of the hook's `additionalContext` for a
+`{"hook_event_name":"SessionStart","source":"startup"}` payload.
+
 | Bytes  | ~Tokens | Path                                            | Loaded (intended; not traced here)                |
 | ------ | ------- | ----------------------------------------------- | ------------------------------------------------- |
-| 90,879 | ~22,720 | `.claude/skills/loop/SKILL.md`                  | full body on use                                  |
+| 90,582 | ~22,645 | `.claude/skills/loop/SKILL.md`                  | full body on use                                  |
 | 29,904 | ~7,476  | `.claude/skills/pr-ship/SKILL.md`               | full body on use                                  |
 | 22,321 | ~5,580  | `AGENTS.md`                                     | at session start (through the `CLAUDE.md` import) |
 | 17,696 | ~4,424  | `.claude/rules/invariants.md`                   | at session start                                  |
