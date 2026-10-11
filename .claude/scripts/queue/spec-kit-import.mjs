@@ -6,6 +6,7 @@ import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { sanitizeDiagnostic } from '../reconcile-external-prs.mjs';
 import { boundedSummary } from './jira.mjs';
+import { specKitVersion } from '../lib/provider-provenance.mjs';
 
 const MAX_TASKS_BYTES = 1024 * 1024;
 const MAX_TASKS = 1000;
@@ -180,13 +181,21 @@ export const dependenciesFor = (task) =>
 // Prefix matching task prose so it cannot create a false blocker.
 const safeTaskText = (title) => (/^\s*(?:blocked by|depends on|blocker)\b/i.test(title) ? `Task: ${title}` : title);
 
-const bodyFor = (task, numbers) => {
+/**
+ * The line that records which Spec Kit version stands behind the imported
+ * tasks (RP-443) — exported so the Jira target writes the same spelling.
+ */
+export const versionMarkerOf = ({ version, source }) =>
+  `<!-- rig-spec-kit-version:${version ?? 'unknown'} (${source}) -->`;
+
+const bodyFor = (task, numbers, versionLine) => {
   const blockers = dependenciesFor(task).map((identity) => numbers[identity]);
   if (blockers.some((number) => !Number.isInteger(number))) {
     throw new Error(`task ${task.identity} cannot project blockers before its GitHub issue numbers exist.`);
   }
   return [
     `<!-- rig-spec-kit-task:${task.identity} -->`,
+    versionLine,
     '',
     safeTaskText(task.title),
     ...(blockers.length ? ['', ...blockers.map((number) => `Blocked by #${number}`)] : []),
@@ -224,7 +233,7 @@ const listIssues = (projectRoot) => {
   return issues;
 };
 
-const changeFor = (task, issue, numbers) => {
+const changeFor = (task, issue, numbers, versionLine) => {
   if (!issue) {
     return { identity: task.identity, action: 'create', dependencies: dependenciesFor(task), body: null };
   }
@@ -234,7 +243,7 @@ const changeFor = (task, issue, numbers) => {
   if (dependenciesFor(task).some((identity) => !Number.isInteger(numbers[identity]))) {
     return { identity: task.identity, action: 'update', dependencies: dependenciesFor(task), body: null };
   }
-  const body = bodyFor(task, numbers);
+  const body = bodyFor(task, numbers, versionLine);
   const action = issue.title === titleOf(task) && issue.body === body ? 'unchanged' : 'update';
   return { identity: task.identity, action, dependencies: dependenciesFor(task), body };
 };
@@ -305,7 +314,7 @@ const importSpecKitToJira = async (options) => {
   return run(options);
 };
 
-export const importSpecKit = ({
+export const importSpecKit = async ({
   projectRoot = process.cwd(),
   tasksPath = null,
   dryRun = false,
@@ -320,13 +329,14 @@ export const importSpecKit = ({
     );
   }
   const { tasks } = parseTasks({ projectRoot: root, tasksPath });
+  const versionLine = versionMarkerOf(await specKitVersion(root));
   // Validate graph topology before label or issue creation. Existing issue
   // numbers are irrelevant to whether a source cycle is a valid projection.
   const ordered = creationOrder(tasks);
   const indexed = identityIndex(listIssues(root), tasks.map((task) => task.identity));
   const numbers = Object.fromEntries([...indexed].map(([identity, issues]) => [identity, Number(issues[0].number)]));
   if (dryRun) {
-    const planned = tasks.map((task) => changeFor(task, indexed.get(task.identity)?.[0] ?? null, numbers));
+    const planned = tasks.map((task) => changeFor(task, indexed.get(task.identity)?.[0] ?? null, numbers, versionLine));
     return reportFor(true, tasks, planned);
   }
 
@@ -335,7 +345,7 @@ export const importSpecKit = ({
   for (const task of ordered) {
     if (numbers[task.identity]) continue;
     const output = gh(root, [
-      'issue', 'create', '--title', titleOf(task), '--body', bodyFor(task, numbers), '--label', PROJECTED_LABEL,
+      'issue', 'create', '--title', titleOf(task), '--body', bodyFor(task, numbers, versionLine), '--label', PROJECTED_LABEL,
     ]);
     numbers[task.identity] = issueNumberOf(output);
     created.add(task.identity);
@@ -344,7 +354,7 @@ export const importSpecKit = ({
   const changes = [];
   for (const task of tasks) {
     const existingIssue = indexed.get(task.identity)?.[0] ?? null;
-    const change = changeFor(task, existingIssue, numbers);
+    const change = changeFor(task, existingIssue, numbers, versionLine);
     if (created.has(task.identity)) {
       changes.push({ ...change, action: 'create' });
     } else if (change.action === 'update') {

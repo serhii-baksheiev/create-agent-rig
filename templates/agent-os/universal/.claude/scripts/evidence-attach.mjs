@@ -47,6 +47,7 @@ import {
   itemRecordPathFor,
   readItemRecordFile,
 } from './lib/item-records.mjs';
+import { playwrightPin, playwrightPinCredentialShaped } from './lib/provider-provenance.mjs';
 
 /** What an external producer may say about its own artifact — data, never a Rig verdict. */
 export const ADVISORY_DECISIONS = Object.freeze(['pass', 'concerns', 'fail']);
@@ -61,6 +62,8 @@ const HASH_CHUNK = 64 * 1024;
 const TOKEN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 /** The producer's own version, e.g. `1.27.2` or `0.0.83`: one token, 1-64 characters. */
 const PRODUCER_VERSION = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+/** Where a stored producerVersion came from: the rig's own wiring, or the command line (RP-443). */
+const PRODUCER_VERSION_SOURCES = Object.freeze(['declared', 'stated']);
 const HEAD_SHA = /^[0-9a-f]{7,64}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
@@ -104,6 +107,22 @@ const authorityClassProblem = (value) => {
   return null;
 };
 
+/**
+ * Why a producerVersion cannot be recorded, or null when it can — the one
+ * implementation both a stated `--producer-version` and a configured
+ * provider pin (RP-443) are held to, with the refusal `--producer-version`
+ * itself uses.
+ */
+const producerVersionProblem = (value) => {
+  if (!PRODUCER_VERSION.test(value)) {
+    return `--producer-version ${JSON.stringify(value)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`;
+  }
+  if (findSecretValues(value).length > 0) {
+    return '--producer-version carries a credential-shaped value; it is never recorded.';
+  }
+  return null;
+};
+
 const isPlainObject = (value) =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -128,6 +147,12 @@ const recordProblem = (record, ticket) => {
     (typeof record.producerVersion !== 'string' || !PRODUCER_VERSION.test(record.producerVersion))
   ) {
     return `producerVersion ${JSON.stringify(record.producerVersion)} is not a version token`;
+  }
+  if (
+    Object.hasOwn(record, 'producerVersionSource') &&
+    !PRODUCER_VERSION_SOURCES.includes(record.producerVersionSource)
+  ) {
+    return `producerVersionSource ${JSON.stringify(record.producerVersionSource)} is not one of ${PRODUCER_VERSION_SOURCES.join(', ')}`;
   }
   const authority = authorityClassProblem(record.authorityClass);
   if (authority) return `authorityClass ${JSON.stringify(record.authorityClass)} ${authority}`;
@@ -311,7 +336,7 @@ const hashLocalArtifact = (file, cwd, projectRoot) => {
   }
 };
 
-const runAttach = (argv, cwd) => {
+const runAttach = async (argv, cwd) => {
   const parsed = parseFlags(argv, ATTACH_FLAGS);
   if (!parsed.ok) return refuse(parsed.error);
   const options = parsed.value;
@@ -334,14 +359,6 @@ const runAttach = (argv, cwd) => {
     if (!TOKEN.test(options[key])) {
       return refuse(`${flag} ${JSON.stringify(options[key])} is not a lowercase token (1-64 of a-z 0-9 . _ -).`);
     }
-  }
-  if (options.producerVersion !== undefined && !PRODUCER_VERSION.test(options.producerVersion)) {
-    return refuse(
-      `--producer-version ${JSON.stringify(options.producerVersion)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`,
-    );
-  }
-  if (options.producerVersion !== undefined && findSecretValues(options.producerVersion).length > 0) {
-    return refuse('--producer-version carries a credential-shaped value; it is never recorded.');
   }
   const authority = authorityClassProblem(options.authorityClass);
   if (authority) return refuse(`--authority-class ${JSON.stringify(options.authorityClass)} ${authority}.`);
@@ -413,6 +430,57 @@ const runAttach = (argv, cwd) => {
 
   const projectRoot = gitValue(['rev-parse', '--show-toplevel'], cwd);
   if (!projectRoot) return refuse('not inside a git repository.');
+
+  // RP-443: a Rig-owned producer never attaches without its known version.
+  let producerVersion = options.producerVersion;
+  let producerVersionSource = producerVersion === undefined ? undefined : 'stated';
+  if (options.producer === 'playwright-mcp') {
+    // A credential-shaped configured pin reads as null from `playwrightPin`
+    // exactly like a dist-tag or a range does — "no exact version" either
+    // way — so this is checked first, unconditionally: it is the only way to
+    // refuse the credential case even when a clean --producer-version was
+    // also given and the null pin otherwise leaves nothing to disagree with.
+    if (playwrightPinCredentialShaped(projectRoot)) {
+      return refuse(
+        'the configured Playwright MCP pin carries a credential-shaped value; it is never recorded.',
+      );
+    }
+    const pin = await playwrightPin(projectRoot);
+    if (producerVersion === undefined) {
+      if (pin === null) {
+        return refuse(
+          '--producer playwright-mcp needs its version: no exact `@playwright/mcp@<version>` pin in ' +
+            '.mcp.json or .codex/config.toml, and no --producer-version.',
+        );
+      }
+      producerVersion = pin;
+      producerVersionSource = 'declared';
+    } else {
+      // The stated value clears its own two checks (shape, credential-shape)
+      // BEFORE it is ever interpolated into the disagreement message below —
+      // `producerVersionProblem`'s refusal never echoes the value it refuses,
+      // and the disagreement refusal does.
+      const statedProblem = producerVersionProblem(producerVersion);
+      if (statedProblem) return refuse(statedProblem);
+      if (pin !== null && pin !== producerVersion) {
+        return refuse(
+          `--producer-version ${producerVersion} disagrees with Playwright MCP ${pin}, the version the ` +
+            "rig's own wiring launches.",
+        );
+      }
+    }
+  } else if (options.producer === 'bmad-tea' && producerVersion === undefined) {
+    return refuse(
+      '--producer bmad-tea needs --producer-version: the tea entry version in _bmad/_config/manifest.yaml.',
+    );
+  }
+  // Whichever producerVersion is finally recorded — stated or taken from a
+  // configured pin above — clears the same two checks a stated
+  // --producer-version always did, before anything is journalled or appended.
+  if (producerVersion !== undefined) {
+    const versionProblem = producerVersionProblem(producerVersion);
+    if (versionProblem) return refuse(versionProblem);
+  }
   const headSha = gitValue(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], cwd);
   if (!headSha) return refuse('the repository has no HEAD commit to bind the evidence to.');
 
@@ -443,7 +511,7 @@ const runAttach = (argv, cwd) => {
     subject,
     authorityClass: options.authorityClass,
     producer: options.producer,
-    ...(options.producerVersion === undefined ? {} : { producerVersion: options.producerVersion }),
+    ...(producerVersion === undefined ? {} : { producerVersion, producerVersionSource }),
     ref: artifact.ref,
     sha256: artifact.sha256,
     item: options.ticket,
@@ -552,7 +620,7 @@ const invokedDirectly = () => {
 
 if (invokedDirectly()) {
   const [command, ...rest] = process.argv.slice(2);
-  if (command === 'attach') runAttach(rest, process.cwd());
+  if (command === 'attach') await runAttach(rest, process.cwd());
   else if (command === 'list') runList(rest, process.cwd());
   else refuse('usage: evidence-attach.mjs attach … | list --ticket <id> [--json]');
 }
