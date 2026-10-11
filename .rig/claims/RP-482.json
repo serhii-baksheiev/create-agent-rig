@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-482",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "039318e42268ce8e882aa816827ae8fc9caf2d9f4489e3e2d5e6d7cff95a98ad",
+      "targetSha": "3065d54d39c3401e86d980abfa386cb35037058a"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "e4cea64757366c4e6d25f66d6780c5058e4bb7b469c8ab9c1af5a59bc1668c0f",
+      "count": 0
+    }
+  },
+  "workflowClaim": {
+    "claimedState": "in-progress"
+  }
+}
