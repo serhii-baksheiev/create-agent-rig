@@ -30,5 +30,9 @@
   "1.5.0": {
     "integrity": "sha512-MeaursMm0j+qX2u+E0Wa86BeMtGZ+YMcbEJI/jfwlwoSpHICsH7KsYy+z5/sL4Nn5aNVNVS0Bj0CanCvGqnh7w==",
     "shasum": "c1106e95246ba459c8afd704bd0ff6f9aa5dfeae"
+  },
+  "1.5.1": {
+    "integrity": "sha512-pKyFtfGMlmISMER/+aMrs4JHTajTITQddS+PVhLRsxzRDAn5T8Ve2zvd/69X0IE41OrF6XnByBdu10bTutLLIQ==",
+    "shasum": "19818c396ffa1c304958641233a94aab79c2aa3c"
   }
 }
