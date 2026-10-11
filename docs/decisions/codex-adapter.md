@@ -63,7 +63,15 @@ is deleting the derived Codex files from the generated project and reverting the
 generator change; Claude files remain usable.
 
 Hook launch also depends on `git rev-parse --show-toplevel`, and that lookup has
-two failure modes rather than one. Both are visible in `.codex/hooks.json`.
+three failure modes rather than one. All three are visible in `.codex/hooks.json`.
+
+The slow one: the POSIX `command` puts no bound of its own on that lookup, so
+a `git rev-parse` that stalls — an `include.path` naming a FIFO is enough —
+keeps the hook waiting until the `timeout` the same entry declares expires;
+the Windows wrapper below turns a stalled stage into a block instead. Pinned
+in the generator's `test/template/codex.test.ts` (absent in a generated rig) ›
+"the POSIX Codex command puts no bound of its own on the root lookup: a
+stalled git rev-parse keeps the hook waiting".
 
 The mild one: if Git is absent or the session is outside a worktree, the
 generated command exits before the hook runs and therefore cannot return the
