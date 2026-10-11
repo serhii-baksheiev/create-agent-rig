@@ -22,5 +22,13 @@
   "1.4.0": {
     "integrity": "sha512-EZu6PbVctaWPtJ9SFsEzZGpDTdyhmm366YhCTqYvsu6j8Ys1c196K286JR9t5FKQe9atAZQYmIX52j7g90hzZw==",
     "shasum": "82ff7513734eaee5ff434085a9b015856c3db55a"
+  },
+  "1.4.1": {
+    "integrity": "sha512-gJuYESSGXNk9OGEFYB454iineVjZskWAn20Q59qp0yk/ohx3Zf+HJNX53JeZoje4395jHQaoJ0fG1rt2tPEavg==",
+    "shasum": "20d23d62f17488e089538ee7745716908cf81bb9"
+  },
+  "1.5.0": {
+    "integrity": "sha512-MeaursMm0j+qX2u+E0Wa86BeMtGZ+YMcbEJI/jfwlwoSpHICsH7KsYy+z5/sL4Nn5aNVNVS0Bj0CanCvGqnh7w==",
+    "shasum": "c1106e95246ba459c8afd704bd0ff6f9aa5dfeae"
   }
 }

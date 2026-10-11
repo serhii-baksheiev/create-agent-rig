@@ -1,26 +1,19 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 1.4.0. Live work, status, dependencies and acceptance
+> **Current release:** 1.5.0. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Registry reconciliation (9 Oct 2026):** npm contains published `1.3.1`
-> (`gitHead` `19a9dc648b336732b495d5dd98eb2e32dd8e3b1f`) and `1.4.0`
-> (`gitHead` `a03c3eed6693658f338fee5aef04102ab02bc83a`); `latest` is `1.4.0`.
+> **Registry reconciliation (11 Oct 2026):** npm contains published `1.4.1`
+> (`gitHead` `92c801c5b5549aa20ed446548807f5f488c76f0f`) and `1.5.0`
+> (`gitHead` `d7f4f53c6a91b138e05f31e228ff195a45c9d636`); `latest` is `1.5.0`.
 > Downloaded tarball SHA1/SHA512 match npm metadata. Their accepted source
-> candidates remain unchanged at `release/1.3.1-rc` and `release/1.4.0-rc`.
-> The original 1.4.0 `1e3db37f` candidate remains preserved at
-> `validation/original-140-1e3db37`.
-> `1.5.0` is accepted and frozen at `release/1.5.0-rc`,
-> `e041e52f16fa713abc41d635c782d58527fe986d`. A subsequent exact-candidate
-> probe reproduced RP-463; RP-471 now tracks a bounded replacement after
-> 1.4.1, preserving that accepted candidate and all prior evidence.
-> Its original `da3b12cf` remains at `validation/original-150-da3b12c`.
-> Exact three-OS release acceptance: Actions run `37813345254`; integration
-> PR #448 reached master `639e750a`. The accepted 1.4.1 replacement is frozen at
-> `release/1.4.1-rc`, `92c801c5b5549aa20ed446548807f5f488c76f0f`.
-> Current engineering prepares the bounded RP-471 replacement, then follows
-> the Jira graph for `1.5.1` and later releases. Preparing a patch after a frozen minor does not move that minor RC.
+> candidates remain unchanged at `release/1.4.1-rc` and at the
+> SHA-addressed replacement ref `release/1.5.0-rc-d7f4f53c6a91b138e05f31e228ff195a45c9d636`;
+> the original, superseded `e041e52f` stays at `release/1.5.0-rc`.
+> Earlier releases, `1.3.1` and `1.4.0` included, are recorded in the ledger.
+> `1.5.1` is the bounded Codex `apply_patch` security patch being prepared;
+> `1.5.2`, `1.6.0`, `1.6.1` and `1.7.0` follow on the Jira graph.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,

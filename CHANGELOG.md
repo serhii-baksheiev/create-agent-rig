@@ -15,7 +15,49 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.5.0 (release candidate)
+## 1.5.1 (release candidate)
+
+This is a patch on the 1.5 line: it brings the credential and rulebook guards'
+reading of Codex `apply_patch` in line with how Codex itself parses and applies
+a patch, without adding a new workflow capability.
+
+### Fixed
+
+- Match `apply_patch` section headers the way Codex parses them: outside an
+  Update section an indented `*** Add File:`, `*** Update File:` or
+  `*** Delete File:` header is still a header, so indentation cannot hide a
+  credential file or a rulebook path from the guards; inside one, an
+  indented line stays hunk context, as it does for Codex (RP-479).
+- Open an Update section's hunk on its first context, added, removed or empty
+  line, as Codex does, so a Move's added lines are inspected even when the
+  patch never spells `@@` (RP-480).
+- Scan the context lines of a non-move Update as well as its added lines:
+  Codex can write a patch's context text into the file after matching it
+  loosely, so a context line could carry a credential past the guard
+  (RP-481).
+- Treat an empty line inside a hunk as empty context, and retry a hunk
+  without its trailing empty context line, as Codex does, so a valid Move
+  is no longer refused as not matching its source (RP-482).
+- Scan every line Codex can write into a Move destination — the source text
+  and the patch's context and added lines — beside the rebuilt destination.
+  Codex matches Move context loosely from a moving cursor, so a removal
+  could take a lookalike line in Codex's output and the real credential in
+  the guard's rebuild (RP-484).
+- Pin these shapes as regression tests, including the largest Move the guard
+  inspects; a credential found in a Move's source is reported at its source
+  line (RP-483).
+
+Two refusals are deliberate over-approximations, and fail closed: an Update
+whose context repeats a credential already in the file, and a Move whose
+patch removes the source's credential.
+
+### Documentation
+
+- `docs/decisions/decision-authority.md` separates the committed claim
+  record that revalidation checks from the working-tree file the
+  delegated-decision reader reads (RP-452).
+
+## 1.5.0
 
 **1.5.0 is additive on the 1.4 line.** It separates two questions a run used
 to answer with one word: whether anyone is watching (execution mode), and who
@@ -122,7 +164,7 @@ records the decision and its consequences.
   directory during a read remains a known Low limitation; the reader is not
   race-proof (RP-454).
 
-## 1.4.1 (release candidate)
+## 1.4.1
 
 This is a patch on the 1.4 line: it corrects guard compatibility and source
 inspection without adding a new workflow capability.
