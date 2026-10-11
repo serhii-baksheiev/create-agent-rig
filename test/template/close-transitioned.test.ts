@@ -259,13 +259,19 @@ describe('find: one item by id, closed included', () => {
     const stub = await stubCommand(
       'gh',
       `require('node:fs').appendFileSync(${JSON.stringify(logFile)}, args.join(' ') + '\\n');
+       // find() also reads the two \`issue list\` windows to cross-index
+       // \`blocks\` (RP-449) — an array, even an empty one, is what a real
+       // \`gh issue list --json\` answers; this fixture's point is the single
+       // \`issue view\`, so the windows just need to be READABLE.
+       if (args[0] === 'issue' && args[1] === 'list') return { stdout: '[]\\n' };
        return { stdout: ${JSON.stringify(payload + '\n')} };`,
     );
     try {
       const { find } = await load('github-issues.mjs');
       const found = find('13');
       expect(found).toMatchObject({ id: '13', state: 'closed', updatedAt: '2026-07-02T00:00:00Z' });
-      // a single view carries no cross-index, so no dependants can be named here
+      // the stubbed list windows come back empty, so the cross-index finds no
+      // dependants for #13 here — not because a single view can never carry one
       expect(found.blocks).toEqual([]);
       const log = (await readFile(logFile, 'utf8')).split('\n').filter(Boolean);
       expect(log[0]).toMatch(/^issue view 13 --json .*updatedAt/);
