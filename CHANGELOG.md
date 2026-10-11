@@ -15,7 +15,42 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.5.1 (release candidate)
+## 1.5.2 (release candidate)
+
+This is a bounded safety and authority patch on the 1.5 line, cut from the
+published 1.5.1, without adding a new workflow capability.
+
+### Fixed
+
+- `run-state.mjs authority` now journals every authority declaration — an
+  `authority-declared` event recording `from` and `to` — and a delegated
+  decision is recorded or resolved only when the journal's last declaration
+  is actually `delegated` (RP-467).
+- The `worktree-task` skill's cleanup now disarms the removed worktree's
+  unattended flag (`unattended-flag.mjs off --root`) before `git worktree
+remove`, so a flag file cannot outlive the worktree it was armed for.
+  Flags now record their canonical `root`, and a new read-only
+  `unattended-flag.mjs list` reports each flag as active, orphaned (remedy:
+  remove that flag file), or without a recorded root — never deleting one
+  itself (RP-421).
+
+### Documentation
+
+- The Codex POSIX hook command's root lookup has no bound of its own — a
+  stalled `git rev-parse` waits for the harness hook timeout instead — now
+  stated in the codex-adapter decision record and pinned by a limit test;
+  the bounded Windows wrappers are pinned to launch git through the
+  resolved `git.exe` path (RP-424).
+
+### Known limitations carried on the 1.5 line
+
+- Delegated-decision `list` reads a decision file behind a 256 KiB size
+  check that does not hold if the file grows concurrently while being read
+  (RP-430, fixed in 1.6.0).
+- Concurrent replacement of `.rig/decisions` during a read is not confined
+  (RP-454, documented).
+
+## 1.5.1
 
 This is a patch on the 1.5 line: it brings the credential and rulebook guards'
 reading of Codex `apply_patch` in line with how Codex itself parses and applies
