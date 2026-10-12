@@ -76,12 +76,16 @@ export const SIGNALS = Object.freeze(
     },
     {
       name: 'interventions',
-      signalVersion: 1,
+      signalVersion: 2,
       definition: 'The recorded escalations and delegated decisions an item needed.',
-      source: 'escalation and delegated-decision records in the run journal and item records',
+      source: 'item-escalated and delegated-decision events in the run journal',
       population: 'items selected in the named runs',
-      unknown: 'an item whose run journal is missing',
-      limits: ['tracker-specific conventions, such as reassignment, are outside the built-in scope'],
+      unknown:
+        'an item taken in a run that journals no item-tied event (item-escalated, item-closed, continuation), which cannot tell none from not recorded',
+      limits: [
+        'tracker-specific conventions, such as reassignment, are outside the built-in scope',
+        'a run in which no item escalated, closed or continued reads unknown, never zero',
+      ],
       comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: [],
     },

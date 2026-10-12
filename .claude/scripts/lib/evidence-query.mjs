@@ -141,10 +141,49 @@ const itemsOf = (occurrences) => {
   const byTicket = new Map();
   for (const occurrence of [...occurrences].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
     const item = byTicket.get(occurrence.ticket);
-    if (item) for (const record of occurrence.records) item.records.push(record);
-    else byTicket.set(occurrence.ticket, { ticket: occurrence.ticket, records: [...occurrence.records] });
+    if (item) {
+      for (const record of occurrence.records) item.records.push(record);
+      item.itemTied &&= occurrence.itemTied;
+    } else {
+      byTicket.set(occurrence.ticket, {
+        ticket: occurrence.ticket,
+        itemTied: occurrence.itemTied,
+        records: [...occurrence.records],
+      });
+    }
   }
   return [...byTicket.values()];
+};
+
+/**
+ * The event kinds 1.7.0 journals with their item (RP-446, RP-447). A run
+ * that carries none of them cannot tell "nothing happened" from "nothing was
+ * recorded", so its items are unknown for the signals that read them.
+ */
+const ITEM_TIED = new Set(['item-escalated', 'item-closed', 'continuation']);
+
+const interventions = (items) => {
+  const distribution = {};
+  let escalations = 0;
+  let delegatedDecisions = 0;
+  let observed = 0;
+  for (const item of items) {
+    if (!item.itemTied) continue;
+    observed += 1;
+    const escalated = item.records.filter((record) => record.kind === 'item-escalated').length;
+    const delegated = item.records.filter((record) => record.kind === 'delegated-decision').length;
+    escalations += escalated;
+    delegatedDecisions += delegated;
+    distribution[escalated + delegated] = (distribution[escalated + delegated] ?? 0) + 1;
+  }
+  return {
+    name: 'interventions',
+    signalVersion: versionOf('interventions'),
+    eligible: items.length,
+    observed,
+    unknown: items.length - observed,
+    result: { escalations, delegatedDecisions, distribution },
+  };
 };
 
 /** The outcome report over already-read runs; a refused run is listed, never dropped. */
@@ -158,12 +197,13 @@ export const outcomeOf = ({ runs }) => {
       continue;
     }
     read.push(entry.run);
-    occurrences.push(...itemOccurrences(entry));
+    const itemTied = (entry.events ?? []).some((event) => ITEM_TIED.has(event.kind));
+    for (const occurrence of itemOccurrences(entry)) occurrences.push({ ...occurrence, itemTied });
   }
   const items = itemsOf(occurrences);
   return {
     schemaVersion: 1,
     runs: { read, skipped },
-    signals: [firstShippingVerdict(items), gateRounds(items)],
+    signals: [firstShippingVerdict(items), gateRounds(items), interventions(items)],
   };
 };

@@ -441,7 +441,11 @@ describe('evidence-query outcomeOf: report shape', () => {
 
     const outcome = mod().outcomeOf({ runs: [r.entry()] });
     expect(outcome.schemaVersion).toBe(1);
-    expect(outcome.signals.map((s) => s.name)).toEqual(['first-shipping-verdict', 'gate-rounds']);
+    expect(outcome.signals.map((s) => s.name)).toEqual([
+      'first-shipping-verdict',
+      'gate-rounds',
+      'interventions',
+    ]);
     for (const s of outcome.signals) {
       expect(Object.keys(s).sort()).toEqual(
         ['eligible', 'name', 'observed', 'result', 'signalVersion', 'unknown'].sort(),
@@ -488,6 +492,30 @@ describe('evidence-query outcomeOf: report shape', () => {
     expect(outcome.runs.skipped[0]!.why).toMatch(/seq|sequence/i);
     const rounds = signal(outcome, 'gate-rounds');
     expect([rounds.eligible, rounds.observed]).toEqual([1, 1]);
+  });
+});
+
+describe('evidence-query outcomeOf: interventions', () => {
+  it('counts recorded escalations and delegated decisions, and a run without that evidence is unknown', async () => {
+    const runsDir = await runsRoot();
+    const recorded = await newRun(runsDir, 'run-new');
+    recorded.take('RP-70');
+    recorded.ev('item-escalated', { schemaVersion: 1, ticket: 'RP-70', stop: 'escalation' });
+    recorded.ev('delegated-decision', { ticket: 'RP-70', decision: 'extra-gate-round' });
+    recorded.take('RP-71');
+    recorded.closed('RP-71');
+    // A run that carries none of the item-tied events cannot tell "none" from
+    // "not recorded".
+    const older = await newRun(runsDir, 'run-old');
+    older.take('RP-72');
+
+    const s = signal(mod().outcomeOf({ runs: [recorded.entry(), older.entry()] }), 'interventions');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 2, 1]);
+    expect(s.result).toEqual({
+      escalations: 1,
+      delegatedDecisions: 1,
+      distribution: { '0': 1, '2': 1 },
+    });
   });
 });
 

@@ -19,7 +19,7 @@ mechanics, each defined once in `.claude/scripts/lib/outcome-signals.mjs`:
 | `first-shipping-verdict` | 2 |
 | `gate-rounds` | 2 |
 | `claim-to-merge` | 1 |
-| `interventions` | 1 |
+| `interventions` | 2 |
 | `continuation` | 1 |
 | `tokens-per-ship` | 1 |
 
