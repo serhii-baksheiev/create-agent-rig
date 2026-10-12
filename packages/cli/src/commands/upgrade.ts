@@ -10,7 +10,7 @@ import {
 } from './init.js';
 import type { ClaudeMdPlacement } from './init.js';
 import { isReadableRulebook } from '../lib/elevated-paths.js';
-import { hookFilesReferencedIn } from '../lib/init-settings.js';
+import { unwiresAnInstalledHook } from '../lib/init-settings.js';
 import { loadHashHistory, presentInEveryRelease } from '../lib/history.js';
 import type { HashHistory } from '../lib/history.js';
 import { ALL_LAYERS, MANIFEST_REL, readManifest, sha256, writeManifest } from '../lib/manifest.js';
@@ -663,33 +663,6 @@ function isReleasedVersion(
     candidates.add(sha256(detokenized));
   }
   return known.hashes.some((hash) => candidates.has(hash));
-}
-
-/**
- * Would writing `next` over `current` stop calling a hook that is still there?
- *
- * The one question the hash arms cannot answer. They prove the bytes belong to
- * the rig; they do not prove the replacement wires the same hooks, and
- * Wiring files have flavours that differ in exactly that. A hook file
- * still on disk with nothing wired to it is the quiet failure
- * `lib/init-settings.ts` names: the rules claim it is enforced and nothing ever
- * calls it.
- *
- * Only hooks whose FILE is still present count. One the user deleted on purpose
- * is not being silenced by this write — it was already gone.
- */
-async function unwiresAnInstalledHook(
-  repoDir: string,
-  current: string,
-  next: string,
-): Promise<boolean> {
-  const nextHooks = hookFilesReferencedIn(next);
-  for (const hook of hookFilesReferencedIn(current)) {
-    if (nextHooks.has(hook)) continue;
-    const onDisk = resolveInside(repoDir, hook);
-    if (onDisk !== null && (await exists(onDisk))) return true;
-  }
-  return false;
 }
 
 /**
