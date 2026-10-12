@@ -189,11 +189,13 @@ describe('setup add probity', () => {
     expect(await readFile(tsConfigPath, 'utf8')).toBe(existing);
   });
 
-  it('refuses a requested version other than the pinned 1.10.1, naming the version problem rather than the generic unknown-provider refusal, and writes nothing', async () => {
+  // RP-445: a different exact version is a deliberate override; a range or a
+  // tag names no exact release, so it is still refused.
+  it('refuses a requested version that is a range rather than one exact release, naming the version problem rather than a generic refusal, and writes nothing', async () => {
     const result = await runIntegrationsCommand({
       cwd: repo,
       verb: 'add',
-      args: [PROBITY, '--harness', 'claude-code', '--version', '1.0.0', '--yes', '--json'],
+      args: [PROBITY, '--harness', 'claude-code', '--version', '^1.10.1', '--yes', '--json'],
       isTTY: false,
     });
 
