@@ -107,4 +107,22 @@ describe('integrations freshness (RP-445)', () => {
       github.every((request) => request.headers.get('user-agent') === 'create-agent-rig/test'),
     ).toBe(true);
   });
+
+  it('reports a truncated tag list as unknown', async () => {
+    const { fetch } = fakeFetch({
+      [SPEC_KIT_TAGS_URL]: {
+        body: JSON.stringify([{ name: 'v1.0.9' }]),
+        headers: {
+          Link: '<https://api.github.com/repositories/1/tags?per_page=100&page=2>; rel="next"',
+        },
+      },
+    });
+
+    const result = await checkFreshness({ fetch, userAgent: 'create-agent-rig/test' });
+
+    const specKit = result.providers.find((provider) => provider.id === 'spec-kit');
+    expect(specKit?.highestTag).toBeUndefined();
+    expect(specKit?.reason).toBe('tag-list-truncated');
+    expect(specKit?.latestRelease).toBe(SPEC_KIT_VERSION);
+  });
 });

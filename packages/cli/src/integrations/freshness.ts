@@ -13,6 +13,7 @@ export type ProviderFreshness = {
   highestStable?: string;
   latestRelease?: string;
   highestTag?: string;
+  reason?: string;
 };
 export type FreshnessReport = { schemaVersion: 1; providers: ProviderFreshness[] };
 export type FreshnessOptions = {
@@ -97,24 +98,28 @@ async function githubFreshness(
   tested: string,
   options: FreshnessOptions,
 ): Promise<ProviderFreshness> {
-  const get = async (url: string): Promise<unknown> =>
-    (
-      await options.fetch(url, {
-        headers: { Accept: 'application/vnd.github+json', 'User-Agent': options.userAgent },
-      })
-    ).json();
+  const get = (url: string): Promise<Response> =>
+    options.fetch(url, {
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': options.userAgent },
+    });
   const unv = (value: unknown) => (typeof value === 'string' ? value.replace(/^v/, '') : '');
-  const release = (await get(`https://api.github.com/repos/${repo}/releases/latest`)) as {
-    tag_name?: unknown;
-  };
-  const tags = (await get(`https://api.github.com/repos/${repo}/tags?per_page=100`)) as {
-    name?: unknown;
-  }[];
+  const release = (await (
+    await get(`https://api.github.com/repos/${repo}/releases/latest`)
+  ).json()) as { tag_name?: unknown };
+  const tagsResponse = await get(`https://api.github.com/repos/${repo}/tags?per_page=100`);
   const latestRelease = unv(release.tag_name);
-  return {
+  const entry: ProviderFreshness = {
     id,
     tested,
     ...(SEMVER.test(latestRelease) ? { latestRelease } : {}),
+  };
+  // One page only: a list with a next page cannot name its highest tag.
+  if (/\brel="next"/.test(tagsResponse.headers.get('link') ?? '')) {
+    return { ...entry, reason: 'tag-list-truncated' };
+  }
+  const tags = (await tagsResponse.json()) as { name?: unknown }[];
+  return {
+    ...entry,
     highestTag: highest(
       tags.map((tag) => unv(tag.name)),
       options.includePrereleases ?? false,
