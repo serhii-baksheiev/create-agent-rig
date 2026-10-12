@@ -307,7 +307,7 @@ const tokensPerShip = (items) => {
 };
 
 /** The outcome report over already-read runs; a refused run is listed, never dropped. */
-export const outcomeOf = ({ runs, commitTime = () => null }) => {
+export const outcomeOf = ({ runs, commitTime = () => null, repository }) => {
   const read = [];
   const skipped = [];
   const occurrences = [];
@@ -323,6 +323,7 @@ export const outcomeOf = ({ runs, commitTime = () => null }) => {
   const items = itemsOf(occurrences);
   return {
     schemaVersion: 1,
+    ...(repository === undefined ? {} : { repository }),
     runs: { read, skipped },
     signals: [
       firstShippingVerdict(items),
@@ -413,10 +414,24 @@ const lanesAgree = (baseline, current) => {
 export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_COVERAGE }) => {
   const baselineLanes = lanesOf(baseline);
   const currentLanes = lanesOf(current);
+  // Run sets of two repositories, or of a report that names none, are never
+  // compared: nothing else in a report can tell them apart.
+  const sameRepository =
+    typeof baseline.repository === 'string' &&
+    baseline.repository !== '' &&
+    baseline.repository === current.repository;
   const signals = [];
   for (const now of current.signals) {
     const before = baseline.signals.find((signal) => signal.name === now.name);
     const entry = { name: now.name, signalVersion: now.signalVersion };
+    if (!sameRepository) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: 'the reports do not name the same repository',
+      });
+      continue;
+    }
     if (!before || before.signalVersion !== now.signalVersion) {
       signals.push({
         ...entry,

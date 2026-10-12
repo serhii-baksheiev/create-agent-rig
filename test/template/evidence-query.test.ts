@@ -648,6 +648,34 @@ describe('evidence-query compareOutcome', () => {
     result: { distribution },
   });
 
+  it('refuses to compare reports of different repositories, or one that names none', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (repository?: string) => ({
+      schemaVersion: 1,
+      ...(repository === undefined ? {} : { repository }),
+      signals: [rounds(2, 2, { '1': 2 })],
+    });
+
+    expect(compare({ baseline: report('a'), current: report('a') }).signals[0]).toMatchObject({
+      comparison: 'comparable',
+    });
+    for (const [before, after] of [
+      ['a', 'b'],
+      [undefined, 'a'],
+      ['a', undefined],
+    ] as const) {
+      const s = compare({ baseline: report(before), current: report(after) }).signals[0];
+      expect(s, `${before} vs ${after}`).toMatchObject({ comparison: 'not comparable' });
+      expect(String(s!.reason)).toMatch(/repository/);
+    }
+  });
+
   it('refuses a lane mix whose share of any lane moved by more than a fifth', () => {
     const compare = (
       mod() as unknown as {
@@ -658,6 +686,7 @@ describe('evidence-query compareOutcome', () => {
     ).compareOutcome;
     const report = (lanes: Record<string, number>) => ({
       schemaVersion: 1,
+      repository: 'r',
       signals: [
         {
           name: 'first-shipping-verdict',
@@ -694,6 +723,7 @@ describe('evidence-query compareOutcome', () => {
     ).compareOutcome;
     const report = (lanes: Record<string, number>) => ({
       schemaVersion: 1,
+      repository: 'r',
       signals: [
         {
           name: 'first-shipping-verdict',
@@ -728,6 +758,7 @@ describe('evidence-query compareOutcome', () => {
     ).compareOutcome;
     const verdicts = (lanes: Record<string, number>, ship: number, hold: number) => ({
       schemaVersion: 1,
+      repository: 'r',
       signals: [
         {
           name: 'first-shipping-verdict',
@@ -774,6 +805,7 @@ describe('evidence-query compareOutcome', () => {
     ).compareOutcome;
     const report = (k: number) => ({
       schemaVersion: 1,
+      repository: 'r',
       signals: [
         {
           name: 'claim-to-merge',
@@ -848,9 +880,10 @@ describe('evidence-query compareOutcome', () => {
     ).compareOutcome;
     const nothing = {
       schemaVersion: 1,
+      repository: 'r',
       signals: [{ ...rounds(2, 0, {}), eligible: 3, unknown: 3 }],
     };
-    const some = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 2 })] };
+    const some = { schemaVersion: 1, repository: 'r', signals: [rounds(2, 2, { '1': 2 })] };
 
     const s = compare({ baseline: nothing, current: some, minCoverage: 0 }).signals[0];
     expect(s).toMatchObject({ comparison: 'insufficient' });
@@ -867,10 +900,15 @@ describe('evidence-query compareOutcome', () => {
     ).compareOutcome;
     const thin = {
       schemaVersion: 1,
+      repository: 'r',
       signals: [{ ...rounds(2, 1, { '1': 1 }), eligible: 4, unknown: 3 }],
     };
-    const full = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 2 })] };
-    const empty = { schemaVersion: 1, signals: [{ ...rounds(2, 0, {}), eligible: 0 }] };
+    const full = { schemaVersion: 1, repository: 'r', signals: [rounds(2, 2, { '1': 2 })] };
+    const empty = {
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [{ ...rounds(2, 0, {}), eligible: 0 }],
+    };
 
     expect(compare({ baseline: thin, current: full }).signals[0]).toMatchObject({
       comparison: 'insufficient',
@@ -892,9 +930,13 @@ describe('evidence-query compareOutcome', () => {
         };
       }
     ).compareOutcome;
-    const baseline = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 1, '3': 1 })] };
-    const sameVersion = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 2 })] };
-    const otherVersion = { schemaVersion: 1, signals: [rounds(3, 2, { '1': 2 })] };
+    const baseline = {
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [rounds(2, 2, { '1': 1, '3': 1 })],
+    };
+    const sameVersion = { schemaVersion: 1, repository: 'r', signals: [rounds(2, 2, { '1': 2 })] };
+    const otherVersion = { schemaVersion: 1, repository: 'r', signals: [rounds(3, 2, { '1': 2 })] };
 
     const [comparable] = compare({ baseline, current: sameVersion }).signals;
     expect(comparable).toEqual({

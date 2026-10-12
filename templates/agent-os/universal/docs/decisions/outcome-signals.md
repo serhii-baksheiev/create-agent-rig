@@ -43,6 +43,25 @@ populations or lanes. Insufficient coverage is reported as `insufficient`. A
 numeric delta is descriptive: it reads as better or worse only when the
 repository configures a direction for that signal.
 
+How `release-evidence.mjs --outcome --baseline` decides each of those
+(`lib/evidence-query.mjs` `compareOutcome`; the generator's
+`test/template/evidence-query.test.ts`, absent in a generated rig):
+
+- A report names its repository — the checkout's origin URL, or its path
+  when it has none — and two reports that name different repositories, or
+  one that names none, are not comparable (› "refuses to compare reports of
+  different repositories, or one that names none").
+- Lane composition agrees when both run sets name the same review lanes and
+  no lane's share moved by more than a fifth; every signal that lists lane is
+  refused otherwise (› "refuses a lane mix whose share of any lane moved by
+  more than a fifth", › "refuses every lane-dependent signal when the run
+  sets reviewed through different lanes").
+- A side is insufficient when it observed nothing, or less than the coverage
+  threshold — half of its eligible population unless `--min-coverage` says
+  otherwise (› "never compares a side that observed nothing, even at a zero
+  threshold", › "the CLI takes the coverage threshold from --min-coverage and
+  refuses one outside (0, 1]").
+
 **Claim-to-merge is total wall time.** It includes waiting on CI and on
 reviews. It is not active engineering time, and subtracting presumed pauses
 does not make it so. A workflow without an authoritative merge endpoint is

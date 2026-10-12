@@ -231,10 +231,27 @@ if (invokedDirectly()) {
         return null;
       }
     };
-    const report = outcomeOf({ runs, commitTime });
+    // The repository a report belongs to: this checkout's origin URL, or its
+    // path when it has no origin. Comparison refuses two that differ.
+    const repository = (() => {
+      try {
+        const url = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+          cwd: checkout,
+          encoding: 'utf8',
+          env: withoutGitLocation(),
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 10_000,
+        }).trim();
+        if (url !== '') return url;
+      } catch {
+        // no origin configured
+      }
+      return realpathSync(checkout);
+    })();
+    const report = outcomeOf({ runs, commitTime, repository });
     // RP-355: a comparison reads a second named run set, never a window.
     if (args.baseline.length > 0) {
-      const baseline = outcomeOf({ runs: named(args.baseline), commitTime });
+      const baseline = outcomeOf({ runs: named(args.baseline), commitTime, repository });
       report.comparison = { baseline, ...compareOutcome({ baseline, current: report, minCoverage }) };
     }
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
