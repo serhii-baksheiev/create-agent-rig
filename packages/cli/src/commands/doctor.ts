@@ -688,6 +688,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           `authority: publication authority: ${report.authority.publicationAuthority}`,
           `authority: safety gates: ${report.authority.safetyGates}`,
           `authority: kill switch: wired ${report.authority.killSwitch.wired}, armed ${report.authority.killSwitch.armed}`,
+          `preset: ${report.preset.name ?? 'none'}`,
+          ...report.preset.integrations.map(
+            (entry) =>
+              `preset: ${entry.id}: declared ${entry.declared ? 'yes' : 'no'}, observed ${entry.observed ? `${entry.observed.status} ${entry.observed.reason}` : 'none'}`,
+          ),
         ].join('\n')}\n`,
     stderr: '',
   };

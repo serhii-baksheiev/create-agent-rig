@@ -252,6 +252,24 @@ describe('doctor: the top-level preset summary (RP-314)', () => {
     );
   });
 
+  // RP-436: the plain-text report names the recorded preset too, not only --json.
+  it('prints the recorded preset and each integration it expects in the plain-text report', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await writeManifest(repo, { ...manifest, preset: 'sdd' } as RigManifest);
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: [],
+      env: { HOME: home, APPDATA: home, PATH: home },
+      guardRunner: passingGuardRunner,
+    });
+
+    expect(result.stdout).toMatch(/^preset: sdd$/m);
+    expect(result.stdout).toMatch(/^preset: spec-kit: declared no, observed none$/m);
+  });
+
   it('adds no new `checks[]` id for the preset summary itself', async () => {
     await initProject(repo, { withWorkflow: true });
     const manifest = await readManifest(repo);
