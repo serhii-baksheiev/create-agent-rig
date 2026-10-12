@@ -31,11 +31,11 @@ export const SIGNALS = Object.freeze(
   [
     {
       name: 'first-shipping-verdict',
-      signalVersion: 1,
+      signalVersion: 2,
       definition: 'The distribution of the first gate verdict recorded for each item: SHIP or HOLD at its first reviewed head.',
       source: 'reviewer verdict records in the run journal (decisions.jsonl)',
-      population: 'items with at least one recorded gate verdict in the named runs',
-      unknown: 'an item with no recorded gate verdict',
+      population: 'items whose first fan-out launched at least one reviewer, in the named runs; every reviewed item counts toward its lane',
+      unknown: 'an item whose first fan-out names no head, or lacks a verdict from a reviewer launched at that head',
       limits: [
         'the review lane is part of the interpretation: a deterministic or fast-path lane launches fewer reviewers',
         'a successor or re-filed item starts its own "first" and can hide an earlier HOLD',
@@ -46,12 +46,17 @@ export const SIGNALS = Object.freeze(
     },
     {
       name: 'gate-rounds',
-      signalVersion: 1,
-      definition: 'The number of gate rounds a branch took before its merge: review and rework cycles.',
-      source: 'the per-branch gate-round counter and reviewer fan-out records',
-      population: 'merged branches whose gate rounds were recorded in the named runs',
-      unknown: 'a branch whose gate evidence stayed local or was not recorded',
-      limits: ['gate evidence kept only on one machine leaves historical runs unknown'],
+      signalVersion: 2,
+      definition:
+        'The number of distinct heads reviewed for an item across its occurrences in the named runs, once the item is closed: review and rework cycles.',
+      source: 'reviewer fan-out records and the item-closed event in the run journal',
+      population: 'items selected in the named runs',
+      unknown: 'an item not closed in the named runs, or whose fan-outs name no head',
+      limits: [
+        'a fan-out recorded again at the same head is one round, where token-report counts each record',
+        'an item worked on several branches adds the rounds of all of them',
+        'closed means the tracker close, not the merge',
+      ],
       comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: ['lane'],
     },

@@ -77,6 +77,7 @@
     ".agents/skills/release-propose/SKILL.md",
     ".claude/scripts/release-evidence.mjs",
     ".claude/scripts/lib/outcome-signals.mjs",
+    ".claude/scripts/lib/evidence-query.mjs",
     ".claude/scripts/token-report.mjs",
     ".claude/scripts/detect-missed-gate.mjs",
     ".claude/scripts/decision-router.mjs",
