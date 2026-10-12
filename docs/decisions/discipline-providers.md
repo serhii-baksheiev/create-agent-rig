@@ -52,27 +52,17 @@ generic `evidence-attach.mjs` path (RP-312) still accepts any producer's
 artifact a session chooses to attach; Rig defines no Probity-specific kind
 until upstream documents a bounded observation format.
 
-Two known limits come from how Probity reads the session, not from Rig. Rig
-does not work around either. Choosing what Probity reads would be Rig
-deciding TDD, which RP-398 retired.
-
-- **Subagent edits are judged against the parent transcript** (RP-429,
-  RP-465). For a tool call inside a Claude Code subagent, the `PreToolUse`
-  payload's `transcript_path` names the parent session's transcript. This
-  is intended upstream: anthropics/claude-code#76333 was closed as not
-  planned. Probity reads that transcript, so a subagent's edit can be
-  refused as production-first even after the subagent ran its own red test.
-  Rig forwards the payload bytes unchanged (the pointer above). Evidence
-  class: upstream-confirmed. It was seen in this repository's dogfood
-  sessions, and no sanitized fixture reproduces it. Workaround: make the
-  edit from the session that observed the red run.
-- **An uncommitted production change counts against the next test.** With
-  Probity 1.10.1 on Claude Code 2.1.296 (observed 2026-10-12, during the
-  1.6.1 work), while a finished cycle's production change was still
-  uncommitted, Probity refused the next new test as test-and-production
-  written together. Committing each green cycle before writing the next
-  test avoided the refusal. Evidence class: live observed in this
-  repository's sessions; not reported upstream yet.
+**Subagent edits are judged against the parent transcript** (RP-429,
+RP-465). For a tool call inside a Claude Code subagent, the `PreToolUse`
+payload's `transcript_path` names the parent session's transcript. This is
+intended upstream: anthropics/claude-code#76333 was closed as not planned.
+Probity reads that transcript, so a subagent's edit can be refused as
+production-first even after the subagent ran its own red test. Rig forwards
+the payload bytes unchanged (the pointer above) and does not work around it:
+choosing what Probity reads would be Rig deciding TDD, which RP-398 retired.
+Evidence class: upstream-confirmed; not reproduced live by a sanitized
+fixture. Workaround: make the edit from the session that observed the red
+run.
 
 ## Superpowers
 
