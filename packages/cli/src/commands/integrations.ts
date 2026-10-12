@@ -547,10 +547,9 @@ export async function runIntegrationsCommand(
       const { name, server } = serverFor(entry);
       const exists = Object.hasOwn(servers, name);
       const ownership = entry.targets?.['claude-code']?.entryHash;
-      if (
-        exists &&
-        (ownership === undefined || hash(servers[name]) !== ownership || ownership !== hash(server))
-      )
+      // Rig's own unmodified entry is the one whose bytes still hash to the
+      // recorded ownership; it is re-wired when the declared version moved (RP-445).
+      if (exists && (ownership === undefined || hash(servers[name]) !== ownership))
         throw new Refusal('foreign-or-modified-mcp-entry');
       if (verb === 'remove') {
         if (!exists || ownership === undefined) throw new Refusal('owned-mcp-entry-absent');
@@ -558,7 +557,7 @@ export async function runIntegrationsCommand(
         entries = entries.filter((candidate) => candidate.id !== entry.id);
         mcpChanges.set(name, undefined);
       } else {
-        if (!exists) {
+        if (!exists || ownership !== hash(server)) {
           servers[name] = server;
           mcpChanges.set(name, server);
         }

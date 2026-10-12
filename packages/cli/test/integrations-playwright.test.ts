@@ -229,6 +229,39 @@ describe('playwright-mcp declared-version override (RP-445)', () => {
     await expect(readFile(declarationPath(), 'utf8')).rejects.toThrow();
   });
 
+  it('changing a declared override re-wires Rig’s own entry at the new version', async () => {
+    const add = (version: string) =>
+      setup('add', ['playwright-mcp', '--version', version, '--harness', 'claude-code', '--yes']);
+    expect((await add('0.0.90')).exitCode).toBe(0);
+
+    const result = await add('0.0.91');
+
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({
+      mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp@0.0.91'] } },
+    });
+  });
+
+  it('removes Rig’s own entry after the declared version drifted from the wired one', async () => {
+    await setup('add', [
+      'playwright-mcp',
+      '--version',
+      '0.0.90',
+      '--harness',
+      'claude-code',
+      '--yes',
+    ]);
+    await writeFile(
+      declarationPath(),
+      (await readFile(declarationPath(), 'utf8')).replace('"0.0.90"', '"0.0.91"'),
+    );
+
+    const result = await setup('remove', ['playwright-mcp', '--yes']);
+
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({ mcpServers: {} });
+  });
+
   it('a declaration of latest keeps the Rig-tested version wired', async () => {
     await mkdir(path.dirname(declarationPath()), { recursive: true });
     await writeFile(
