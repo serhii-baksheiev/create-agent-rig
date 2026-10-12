@@ -13,5 +13,10 @@
     "file": "test/template/vitest-worker-concurrency.test.ts",
     "prefix": "rp371-vitest-worker-probe-",
     "reason": "The configured template include requires native Vitest worker probes inside this checkout; \"bounds default native Vitest workers across configured projects without changing test deadlines\" removes the fixture with removeFixture in its finally block."
+  },
+  {
+    "file": "packages/cli/test/doctor-authority.test.ts",
+    "prefix": ".doctor-authority-run-",
+    "reason": "The relative-runDir fixture must be reachable by a relative path from the test's cwd, and on a Windows runner the os temp dir sits on another drive than the checkout; \"is unknown when the armed flag’s runDir is a relative path — never resolved against the doctor’s own cwd\" removes it with removeFixture in its finally block."
   }
 ]
