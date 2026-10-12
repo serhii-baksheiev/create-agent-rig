@@ -445,6 +445,7 @@ describe('evidence-query outcomeOf: report shape', () => {
       'first-shipping-verdict',
       'gate-rounds',
       'interventions',
+      'continuation',
     ]);
     for (const s of outcome.signals) {
       expect(Object.keys(s).sort()).toEqual(
@@ -455,7 +456,9 @@ describe('evidence-query outcomeOf: report shape', () => {
       expect(s.signalVersion).toBe(definition!.signalVersion);
       for (const count of [s.eligible, s.observed, s.unknown])
         expect(Number.isInteger(count)).toBe(true);
-      expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+      // RP-60 posted no continuation, so that population is empty.
+      const expected = s.name === 'continuation' ? [0, 0, 0] : [1, 1, 0];
+      expect([s.eligible, s.observed, s.unknown]).toEqual(expected);
     }
   });
 
@@ -516,6 +519,37 @@ describe('evidence-query outcomeOf: interventions', () => {
       delegatedDecisions: 1,
       distribution: { '0': 1, '2': 1 },
     });
+  });
+});
+
+describe('evidence-query outcomeOf: continuation', () => {
+  it('reads a continuation as resolved only by a close or re-escalation in a later run', async () => {
+    const runsDir = await runsRoot();
+    const first = await newRun(runsDir, 'run-1');
+    first.take('RP-80');
+    first.ev('continuation', { schemaVersion: 1, ticket: 'RP-80', stop: 'pause', head: 'h80' });
+    // RP-81 escalates in the same run as its note: §6 posts the note and then
+    // escalates, so that is the stop itself, not a resolution.
+    first.take('RP-81');
+    first.ev('continuation', {
+      schemaVersion: 1,
+      ticket: 'RP-81',
+      stop: 'escalation',
+      head: 'h81',
+    });
+    first.ev('item-escalated', { schemaVersion: 1, ticket: 'RP-81', stop: 'escalation' });
+    first.take('RP-82');
+    first.ev('continuation', { schemaVersion: 1, ticket: 'RP-82', stop: 'blocker', head: 'h82' });
+    const second = await newRun(runsDir, 'run-2');
+    for (let i = 0; i < 20; i += 1) second.ev('note', null); // later than every run-1 record
+    second.take('RP-80');
+    second.closed('RP-80');
+    second.take('RP-82');
+    second.ev('item-escalated', { schemaVersion: 1, ticket: 'RP-82', stop: 'escalation' });
+
+    const s = signal(mod().outcomeOf({ runs: [first.entry(), second.entry()] }), 'continuation');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 3, 0]);
+    expect(s.result).toEqual({ resolved: { closed: 1, reEscalated: 1 }, unresolved: 1 });
   });
 });
 

@@ -96,7 +96,11 @@ export const SIGNALS = Object.freeze(
       source: 'continuation records and their resolution events',
       population: 'continuations recorded in the named runs',
       unknown: 'a continuation whose resolution cannot be read',
-      limits: ['open or unresolved work is not counted as a failed recovery'],
+      limits: [
+        'open or unresolved work is not counted as a failed recovery',
+        'resolution is read within the named runs only: a close in a run outside the set leaves the continuation unresolved',
+        'an escalation in the run that wrote the note is the stop itself, not a resolution',
+      ],
       comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: [],
     },

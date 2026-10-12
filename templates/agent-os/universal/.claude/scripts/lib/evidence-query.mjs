@@ -144,11 +144,13 @@ const itemsOf = (occurrences) => {
     if (item) {
       for (const record of occurrence.records) item.records.push(record);
       item.itemTied &&= occurrence.itemTied;
+      item.occurrences.push(occurrence);
     } else {
       byTicket.set(occurrence.ticket, {
         ticket: occurrence.ticket,
         itemTied: occurrence.itemTied,
         records: [...occurrence.records],
+        occurrences: [occurrence],
       });
     }
   }
@@ -186,6 +188,39 @@ const interventions = (items) => {
   };
 };
 
+/**
+ * A continuation is resolved by a close or a re-escalation of its item in a
+ * LATER run than the one that wrote it: §6 posts the note and then escalates
+ * in the same run, so a same-run escalation is the stop itself. An item still
+ * open is unresolved, never a failed recovery (RP-447, Jira RP-447 24373).
+ */
+const continuation = (items) => {
+  const result = { resolved: { closed: 0, reEscalated: 0 }, unresolved: 0 };
+  let eligible = 0;
+  for (const item of items) {
+    for (const occurrence of item.occurrences) {
+      for (const note of occurrence.records.filter((record) => record.kind === 'continuation')) {
+        eligible += 1;
+        const later = item.occurrences.filter(
+          (other) => other.run !== occurrence.run && Date.parse(other.at) > Date.parse(note.at),
+        );
+        const kinds = new Set(later.flatMap((other) => other.records.map((record) => record.kind)));
+        if (kinds.has('item-closed')) result.resolved.closed += 1;
+        else if (kinds.has('item-escalated')) result.resolved.reEscalated += 1;
+        else result.unresolved += 1;
+      }
+    }
+  }
+  return {
+    name: 'continuation',
+    signalVersion: versionOf('continuation'),
+    eligible,
+    observed: eligible,
+    unknown: 0,
+    result,
+  };
+};
+
 /** The outcome report over already-read runs; a refused run is listed, never dropped. */
 export const outcomeOf = ({ runs }) => {
   const read = [];
@@ -204,6 +239,11 @@ export const outcomeOf = ({ runs }) => {
   return {
     schemaVersion: 1,
     runs: { read, skipped },
-    signals: [firstShippingVerdict(items), gateRounds(items), interventions(items)],
+    signals: [
+      firstShippingVerdict(items),
+      gateRounds(items),
+      interventions(items),
+      continuation(items),
+    ],
   };
 };
