@@ -71,12 +71,23 @@ describe('outcome-signals.mjs — the six Outcome Evidence signal definitions (R
     }
   });
 
-  it('every signal carries signalVersion 1, a positive integer', async () => {
+  // RP-355 refined the two signals it first computes after 1.6.0 published
+  // their v1 definitions, so those two moved to 2; the rest are still 1.
+  const EXPECTED_VERSIONS: Record<string, number> = {
+    'first-shipping-verdict': 2,
+    'gate-rounds': 2,
+    'claim-to-merge': 1,
+    interventions: 1,
+    continuation: 1,
+    'tokens-per-ship': 1,
+  };
+
+  it('every signal carries its expected signalVersion, a positive integer', async () => {
     const { SIGNALS } = await loadOutcomeSignals();
     for (const signal of SIGNALS) {
       expect(Number.isInteger(signal.signalVersion), signal.name).toBe(true);
       expect(signal.signalVersion, signal.name).toBeGreaterThan(0);
-      expect(signal.signalVersion, signal.name).toBe(1);
+      expect(signal.signalVersion, signal.name).toBe(EXPECTED_VERSIONS[signal.name]);
     }
   });
 

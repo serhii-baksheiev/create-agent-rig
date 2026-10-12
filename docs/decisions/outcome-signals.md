@@ -16,8 +16,8 @@ mechanics, each defined once in `.claude/scripts/lib/outcome-signals.mjs`:
 
 | signal | signalVersion |
 | --- | --- |
-| `first-shipping-verdict` | 1 |
-| `gate-rounds` | 1 |
+| `first-shipping-verdict` | 2 |
+| `gate-rounds` | 2 |
 | `claim-to-merge` | 1 |
 | `interventions` | 1 |
 | `continuation` | 1 |

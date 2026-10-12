@@ -31,7 +31,7 @@ export const SIGNALS = Object.freeze(
   [
     {
       name: 'first-shipping-verdict',
-      signalVersion: 1,
+      signalVersion: 2,
       definition: 'The distribution of the first gate verdict recorded for each item: SHIP or HOLD at its first reviewed head.',
       source: 'reviewer verdict records in the run journal (decisions.jsonl)',
       population: 'items with at least one recorded reviewer fan-out in the named runs',
@@ -46,7 +46,7 @@ export const SIGNALS = Object.freeze(
     },
     {
       name: 'gate-rounds',
-      signalVersion: 1,
+      signalVersion: 2,
       definition: 'The number of gate rounds a branch took before its merge: review and rework cycles.',
       source: 'reviewer fan-out records and the item-closed event in the run journal',
       population: 'items selected in the named runs',

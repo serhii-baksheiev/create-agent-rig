@@ -409,6 +409,15 @@ describe('evidence-query outcomeOf: report shape', () => {
     }
   });
 
+  it('first-shipping-verdict and gate-rounds are signalVersion 2', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-61');
+
+    const outcome = mod().outcomeOf({ runs: [r.entry()] });
+    expect(signal(outcome, 'first-shipping-verdict').signalVersion).toBe(2);
+    expect(signal(outcome, 'gate-rounds').signalVersion).toBe(2);
+  });
+
   it('a run readRuns refused is listed as skipped with why', async () => {
     const runsDir = await runsRoot();
     const good = await newRun(runsDir, 'run-good');
