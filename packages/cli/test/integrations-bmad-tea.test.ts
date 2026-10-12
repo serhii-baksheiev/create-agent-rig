@@ -621,6 +621,31 @@ describe('doctor: bmad-tea (RP-315)', () => {
     expect(check!.detail).toContain(BMAD_TEA_VERSION);
   });
 
+  it('reports version-drift against the declaration and names the Rig-tested default', async () => {
+    await writeDeclaration([
+      { id: 'bmad-tea', version: '1.28.0', selected: true, harnesses: ['claude-code'] },
+    ]);
+    await writeManifestYaml(realisticTeaManifest(`v${BMAD_TEA_VERSION}`));
+    await writeTeaConfig();
+
+    const { body } = await doctor();
+
+    const checks = body.checks as Array<{ id: string; fix: string }>;
+    const check = checks.find((candidate) => candidate.id === 'bmad-tea');
+    expect(check).toMatchObject({
+      status: 'warn',
+      reason: 'version-drift',
+      version: {
+        state: 'drift',
+        tested: BMAD_TEA_VERSION,
+        declared: '1.28.0',
+        installed: BMAD_TEA_VERSION,
+      },
+    });
+    expect(check!.fix).toContain('declares 1.28.0');
+    expect(check!.fix).toContain(`Rig-tested ${BMAD_TEA_VERSION}`);
+  });
+
   it('never lets an upstream ESC character reach the JSON report, and reports version-unknown instead of version-drift', async () => {
     await writeDeclaration([{ id: 'bmad-tea', selected: true, harnesses: ['claude-code'] }]);
     const manifestFile = path.join(repo, MANIFEST_REL);

@@ -144,6 +144,7 @@ function bmadTeaFix(
   reason: string,
   version: string | undefined,
   found: BmadTeaVersionFound | undefined,
+  declared: string | undefined,
 ): string {
   if (reason === 'not-installed')
     return 'Manual next step, not run by Rig: npx bmad-method install --modules tea.';
@@ -152,7 +153,7 @@ function bmadTeaFix(
   if (reason === 'config-missing')
     return '_bmad/tea/config.yaml is missing; reinstall TEA with npx bmad-method install --modules tea.';
   if (reason === 'version-drift')
-    return `_bmad/_config/manifest.yaml reports tea installed at ${version ?? 'an unknown version'}, while Rig was checked against ${BMAD_TEA_VERSION}; TEA evidence stays advisory regardless.`;
+    return `_bmad/_config/manifest.yaml reports tea installed at ${version ?? 'an unknown version'}, while ${declared === undefined ? `Rig was checked against ${BMAD_TEA_VERSION}` : `this repository declares ${declared} (Rig-tested ${BMAD_TEA_VERSION})`}; TEA evidence stays advisory regardless.`;
   return '_bmad/_config/manifest.yaml could not be read; verify the BMAD installation by hand.';
 }
 
@@ -628,7 +629,12 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                           : check.id.startsWith('probity:')
                             ? probityFix(check.reason, check.version)
                             : check.id === 'bmad-tea'
-                              ? bmadTeaFix(check.reason, teaVersion, teaVersionFound)
+                              ? bmadTeaFix(
+                                  check.reason,
+                                  teaVersion,
+                                  teaVersionFound,
+                                  check.version?.declared,
+                                )
                               : 'Review create-agent-rig setup list and the intended provider wiring.',
       }),
     ),
