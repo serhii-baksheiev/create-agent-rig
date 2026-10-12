@@ -15,20 +15,50 @@ export type FreshnessReport = { schemaVersion: 1; providers: ProviderFreshness[]
 export type FreshnessOptions = {
   fetch: typeof globalThis.fetch;
   userAgent: string;
+  includePrereleases?: boolean;
 };
 
-const SEMVER = /^(\d+)\.(\d+)\.(\d+)$/;
+/** semver.org's grammar without build metadata: no leading zeros, dot-separated prerelease. */
+const IDENTIFIER = '(?:0|[1-9]\\d*|\\d*[A-Za-z-][0-9A-Za-z-]*)';
+const SEMVER = new RegExp(
+  `^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-(${IDENTIFIER}(?:\\.${IDENTIFIER})*))?$`,
+);
+const NUMERIC = /^\d+$/;
 
-function compare(a: string, b: string): number {
-  const left = SEMVER.exec(a)!.slice(1).map(Number);
-  const right = SEMVER.exec(b)!.slice(1).map(Number);
-  for (let i = 0; i < 3; i++) if (left[i] !== right[i]) return left[i]! - right[i]!;
-  return 0;
+/** Digit strings without leading zeros order by length first — no Number() precision loss. */
+function compareNumeric(a: string, b: string): number {
+  return a.length - b.length || (a < b ? -1 : a > b ? 1 : 0);
 }
 
-function highest(candidates: readonly string[]): string | undefined {
+function compare(a: string, b: string): number {
+  const left = SEMVER.exec(a)!;
+  const right = SEMVER.exec(b)!;
+  for (let i = 1; i <= 3; i++) {
+    const order = compareNumeric(left[i]!, right[i]!);
+    if (order !== 0) return order;
+  }
+  const leftPre = left[4]?.split('.') ?? [];
+  const rightPre = right[4]?.split('.') ?? [];
+  if (leftPre.length === 0 || rightPre.length === 0) return rightPre.length - leftPre.length;
+  for (let i = 0; i < Math.min(leftPre.length, rightPre.length); i++) {
+    const x = leftPre[i]!;
+    const y = rightPre[i]!;
+    if (x === y) continue;
+    const xNumeric = NUMERIC.test(x);
+    const yNumeric = NUMERIC.test(y);
+    if (xNumeric && yNumeric) return compareNumeric(x, y);
+    if (xNumeric !== yNumeric) return xNumeric ? -1 : 1;
+    return x < y ? -1 : 1;
+  }
+  return leftPre.length - rightPre.length;
+}
+
+function highest(candidates: readonly string[], includePrereleases: boolean): string | undefined {
   return candidates
-    .filter((value) => SEMVER.test(value))
+    .filter((value) => {
+      const match = SEMVER.exec(value);
+      return match !== null && (includePrereleases || match[4] === undefined);
+    })
     .sort(compare)
     .at(-1);
 }
@@ -54,7 +84,7 @@ async function npmFreshness(
     id,
     tested,
     ...(typeof latest === 'string' && SEMVER.test(latest) ? { latest } : {}),
-    highestStable: highest(Object.keys(body.versions ?? {})),
+    highestStable: highest(Object.keys(body.versions ?? {}), options.includePrereleases ?? false),
   };
 }
 

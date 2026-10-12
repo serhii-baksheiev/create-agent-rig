@@ -43,4 +43,25 @@ describe('integrations freshness (RP-445)', () => {
       highestStable: '1.11.0',
     });
   });
+
+  it('excludes prereleases by default and includes them with includePrereleases', async () => {
+    const routes = {
+      [PROBITY_URL]: npmBody('1.10.1', ['1.10.1', '1.11.0', '1.12.0-beta.1', '1.12.0-alpha.2']),
+    };
+    const probity = (report: Awaited<ReturnType<typeof checkFreshness>>) =>
+      report.providers.find((provider) => provider.id === 'probity');
+
+    const byDefault = await checkFreshness({
+      fetch: fakeFetch(routes).fetch,
+      userAgent: 'create-agent-rig/test',
+    });
+    const included = await checkFreshness({
+      fetch: fakeFetch(routes).fetch,
+      userAgent: 'create-agent-rig/test',
+      includePrereleases: true,
+    });
+
+    expect(probity(byDefault)?.highestStable).toBe('1.11.0');
+    expect(probity(included)?.highestStable).toBe('1.12.0-beta.1');
+  });
 });
