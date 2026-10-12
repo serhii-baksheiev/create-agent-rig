@@ -38,7 +38,7 @@ export const itemOccurrences = (entry) => {
   return occurrences;
 };
 
-const fanOutsOf = (occurrence) => occurrence.records.filter((record) => record.gate === FAN_OUT);
+const fanOutsOf = (item) => item.records.filter((record) => record.gate === FAN_OUT);
 
 const laneOf = (occurrence) => {
   const routed = occurrence.records.find(
@@ -56,9 +56,9 @@ const firstVerdictOf = (occurrence) => {
   if (!Array.isArray(reviewers) || reviewers.length === 0) return null;
   const words = [];
   for (const reviewer of reviewers) {
-    const answer = occurrence.records
-      .filter((record) => record.gate === reviewer && record.headSha === head)
-      .at(-1);
+    const answer = occurrence.records.find(
+      (record) => record.gate === reviewer && record.headSha === head,
+    );
     if (!answer) return null;
     words.push(answer.verdict);
   }
@@ -116,6 +116,21 @@ const gateRounds = (occurrences) => {
   };
 };
 
+/**
+ * One item per ticket across the named runs: its occurrences joined in the
+ * order they were taken, so an item taken again in a later run keeps its
+ * first verdict and the rounds both runs spent.
+ */
+const itemsOf = (occurrences) => {
+  const byTicket = new Map();
+  for (const occurrence of [...occurrences].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
+    const item = byTicket.get(occurrence.ticket);
+    if (item) item.records.push(...occurrence.records);
+    else byTicket.set(occurrence.ticket, { ticket: occurrence.ticket, records: [...occurrence.records] });
+  }
+  return [...byTicket.values()];
+};
+
 /** The outcome report over already-read runs; a refused run is listed, never dropped. */
 export const outcomeOf = ({ runs }) => {
   const read = [];
@@ -129,9 +144,10 @@ export const outcomeOf = ({ runs }) => {
     read.push(entry.run);
     occurrences.push(...itemOccurrences(entry));
   }
+  const items = itemsOf(occurrences);
   return {
     schemaVersion: 1,
     runs: { read, skipped },
-    signals: [firstShippingVerdict(occurrences), gateRounds(occurrences)],
+    signals: [firstShippingVerdict(items), gateRounds(items)],
   };
 };

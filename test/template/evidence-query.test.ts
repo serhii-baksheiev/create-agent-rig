@@ -112,11 +112,11 @@ const mod = () => {
 const runsRoot = () => mkdtemp(path.join(tmpdir(), 'evidence-query-runs-'));
 
 /** A run directory plus writers that stamp strictly increasing times. */
-const newRun = async (runsDir: string, name: string) => {
+const newRun = async (runsDir: string, name: string, startMinute = 0) => {
   const runDir = path.join(runsDir, name);
   await mkdir(runDir, { recursive: true });
   let tick = 0;
-  const now = () => new Date(Date.UTC(2026, 9, 1, 0, 0, ++tick)).toISOString();
+  const now = () => new Date(Date.UTC(2026, 9, 1, 0, startMinute, ++tick)).toISOString();
   const dec = (
     gate: string,
     verdict: string,
@@ -299,6 +299,21 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
       },
     });
   });
+
+  it('reads the first answer at the first head: HOLD then SHIP at that head is HOLD', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-13');
+    r.route('model', ['code-reviewer']);
+    r.fanOut('h13', ['code-reviewer']);
+    r.verdict('code-reviewer', 'HOLD', 'h13');
+    r.verdict('code-reviewer', 'SHIP', 'h13');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+    const result = s.result as VerdictCounts & { byLane: Record<string, VerdictCounts> };
+    expect([result.SHIP, result.HOLD, result.other]).toEqual([0, 1, 0]);
+    expect(result.byLane).toEqual({ model: { SHIP: 0, HOLD: 1, other: 0 } });
+  });
 });
 
 describe('evidence-query outcomeOf: gate-rounds', () => {
@@ -338,6 +353,34 @@ describe('evidence-query outcomeOf: gate-rounds', () => {
     const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'gate-rounds');
     expect([s.eligible, s.observed, s.unknown]).toEqual([2, 1, 1]);
     expect(s.result).toEqual({ distribution: { '1': 1 } });
+  });
+});
+
+describe('evidence-query outcomeOf: an item across runs', () => {
+  it('joins an item taken again in a later run: rounds from both runs, first verdict from the earlier run', async () => {
+    const runsDir = await runsRoot();
+    const first = await newRun(runsDir, 'run-1');
+    first.take('RP-4');
+    first.fanOut('a1', ['code-reviewer']);
+    first.fanOut('a2', ['code-reviewer']);
+    first.fanOut('a3', ['code-reviewer']);
+    first.verdict('code-reviewer', 'HOLD', 'a1');
+    first.stop();
+    const second = await newRun(runsDir, 'run-2', 10);
+    second.take('RP-4');
+    second.fanOut('b1', ['code-reviewer']);
+    second.verdict('code-reviewer', 'SHIP', 'b1');
+    second.closed('RP-4');
+
+    // The later run is passed first: order comes from `at`, not from the list.
+    const outcome = mod().outcomeOf({ runs: [second.entry(), first.entry()] });
+    const rounds = signal(outcome, 'gate-rounds');
+    expect([rounds.eligible, rounds.observed, rounds.unknown]).toEqual([1, 1, 0]);
+    expect(rounds.result).toEqual({ distribution: { '4': 1 } });
+    const verdict = signal(outcome, 'first-shipping-verdict');
+    expect([verdict.eligible, verdict.observed, verdict.unknown]).toEqual([1, 1, 0]);
+    const result = verdict.result as VerdictCounts;
+    expect([result.SHIP, result.HOLD, result.other]).toEqual([0, 1, 0]);
   });
 });
 
