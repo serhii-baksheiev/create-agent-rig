@@ -19,6 +19,7 @@ export type GuardInspection = {
     | 'hook-wiring-invalid'
     | 'hook-integrity-invalid'
     | 'guard-fixture-batch-failed'
+    | 'guard-fixture-batch-timeout'
     | 'guard-fixture-cleanup-failed';
 };
 export type InspectGuardsOptions = { repoDir: string; runner?: typeof runProviderProcess };
@@ -201,6 +202,7 @@ export async function inspectGuards(options: InspectGuardsOptions): Promise<Guar
       cleanupFailed = true;
     }
   }
+  if (batch.status === 'timeout') return failed('guard-fixture-batch-timeout');
   if (batch.status !== 'ok' || batch.exitCode !== 0) return failed('guard-fixture-batch-failed');
   if (cleanupFailed) return failed('guard-fixture-cleanup-failed');
   return { status: 'pass', reason: 'guards-verified' };
