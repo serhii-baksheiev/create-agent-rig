@@ -194,9 +194,10 @@ const interventions = (items) => {
  * in the same run, so a same-run escalation is the stop itself. An item still
  * open is unresolved, never a failed recovery (RP-447, Jira RP-447 24373).
  */
-const continuation = (items) => {
+const continuation = (items, anyRunUnread) => {
   const result = { resolved: { closed: 0, reEscalated: 0 }, unresolved: 0 };
   let eligible = 0;
+  let unknown = 0;
   for (const item of items) {
     for (const occurrence of item.occurrences) {
       for (const note of occurrence.records.filter((record) => record.kind === 'continuation')) {
@@ -207,6 +208,8 @@ const continuation = (items) => {
         const kinds = new Set(later.flatMap((other) => other.records.map((record) => record.kind)));
         if (kinds.has('item-closed')) result.resolved.closed += 1;
         else if (kinds.has('item-escalated')) result.resolved.reEscalated += 1;
+        // A named run that could not be read may hold the resolution.
+        else if (anyRunUnread) unknown += 1;
         else result.unresolved += 1;
       }
     }
@@ -215,8 +218,8 @@ const continuation = (items) => {
     name: 'continuation',
     signalVersion: versionOf('continuation'),
     eligible,
-    observed: eligible,
-    unknown: 0,
+    observed: eligible - unknown,
+    unknown,
     result,
   };
 };
@@ -293,7 +296,7 @@ export const outcomeOf = ({ runs, commitTime = () => null }) => {
       gateRounds(items),
       claimToMerge(items, commitTime),
       interventions(items),
-      continuation(items),
+      continuation(items, skipped.length > 0),
     ],
   };
 };

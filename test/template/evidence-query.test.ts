@@ -525,6 +525,19 @@ describe('evidence-query outcomeOf: interventions', () => {
 });
 
 describe('evidence-query outcomeOf: continuation', () => {
+  it('reads an unresolved continuation as unknown when a named run could not be read', async () => {
+    const r = await newRun(await runsRoot(), 'run-1');
+    r.take('RP-85');
+    r.ev('continuation', { schemaVersion: 1, ticket: 'RP-85', stop: 'pause', head: 'h85' });
+
+    const s = signal(
+      mod().outcomeOf({ runs: [r.entry(), { run: 'run-2', error: 'not found' }] }),
+      'continuation',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toEqual({ resolved: { closed: 0, reEscalated: 0 }, unresolved: 0 });
+  });
+
   it('reads a continuation as resolved only by a close or re-escalation in a later run', async () => {
     const runsDir = await runsRoot();
     const first = await newRun(runsDir, 'run-1');
