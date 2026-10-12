@@ -16,6 +16,12 @@ import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
 import { inspectBmadTea, BMAD_TEA_VERSION, teaPackageVersion } from '../integrations/bmad-tea.js';
 import type { BmadTeaVersionFound } from '../integrations/bmad-tea.js';
 import { classifyVersion, type VersionClassification } from '../integrations/version-state.js';
+import {
+  PLAYWRIGHT_MCP_VERSION,
+  playwrightOverride,
+  wiredPlaywrightVersion,
+} from '../integrations/playwright.js';
+import { readMcpConfig } from '../integrations/mcp-json.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -84,7 +90,7 @@ type Check = {
   teaVersion?: string;
   /** `bmad-tea` only — what a `version-unknown` found instead of a version; stripped like `teaVersion`. */
   teaVersionFound?: BmadTeaVersionFound;
-  /** `probity:<harness>` and `bmad-tea` only — reaches the report as-is (RP-445). */
+  /** `probity:<harness>`, `bmad-tea` and `playwright-mcp:claude-code` only — reaches the report as-is (RP-445). */
   version?: VersionClassification;
 };
 export type DoctorOptions = {
@@ -125,6 +131,27 @@ function rigVersionFix(reason: string, versions: { cli: string; repository: stri
     return `Update create-agent-rig to at least ${versions.repository} before running setup or upgrade in this repository.`;
   }
   return "Compare the CLI version with the version recorded in this repository's manifest by hand before running setup or upgrade.";
+}
+
+/** The version Rig's own `.mcp.json` `playwright` entry launches (RP-445). */
+async function wiredPlaywrightMcpVersion(repoDir: string): Promise<string | undefined> {
+  const file = await readBounded(repoDir, '.mcp.json', 64 * 1024);
+  const source = file.status === 'ok' ? text(file.bytes) : undefined;
+  if (source === undefined) return undefined;
+  try {
+    return wiredPlaywrightVersion(readMcpConfig(source).mcpServers.playwright);
+  } catch {
+    return undefined;
+  }
+}
+
+/** The version Rig's own `.codex/config.toml` `playwright` section launches (RP-445). */
+async function wiredPlaywrightCodexVersion(repoDir: string): Promise<string | undefined> {
+  const file = await readBounded(repoDir, '.codex/config.toml', 64 * 1024);
+  const source = file.status === 'ok' ? text(file.bytes) : undefined;
+  return source?.match(
+    /^\[mcp_servers\.playwright\]\r?\ncommand = "npx"\r?\nargs = \["@playwright\/mcp@([^"\r\n]{1,64})"\]$/m,
+  )?.[1];
 }
 
 /** `probity:<harness>` fix text, by reason (RP-416); a version is the repository's declaration when it has one (RP-445). */
@@ -531,22 +558,42 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       continue;
     }
     for (const [harness, state] of Object.entries(entry.harnesses)) {
+      const version =
+        entry.id === 'playwright-mcp'
+          ? classifyVersion({
+              tested: PLAYWRIGHT_MCP_VERSION,
+              declared: playwrightOverride(
+                intent?.entries.find((candidate) => candidate.id === entry.id)?.version,
+              ),
+              installed:
+                state.wiring !== 'healthy'
+                  ? undefined
+                  : harness === 'codex'
+                    ? await wiredPlaywrightCodexVersion(options.cwd)
+                    : await wiredPlaywrightMcpVersion(options.cwd),
+            })
+          : undefined;
       checks.push({
         id: `${entry.id}:${harness}`,
         status:
           state.wiring === 'unreadable'
             ? 'fail'
             : state.wiring === 'healthy'
-              ? state.launcher === 'missing'
+              ? state.launcher === 'missing' || version?.state === 'drift'
                 ? 'warn'
                 : 'pass'
               : 'warn',
+        // A wired release other than the intended one outranks a launcher
+        // merely absent from this machine's PATH.
         reason:
           state.wiring === 'healthy'
-            ? state.launcher === 'missing'
-              ? 'launcher-missing'
-              : 'wired'
+            ? version?.state === 'drift'
+              ? 'version-drift'
+              : state.launcher === 'missing'
+                ? 'launcher-missing'
+                : 'wired'
             : state.wiring,
+        ...(version === undefined ? {} : { version }),
       });
     }
   }
@@ -637,7 +684,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                                   teaVersionFound,
                                   check.version?.declared,
                                 )
-                              : 'Review create-agent-rig setup list and the intended provider wiring.',
+                              : check.id.startsWith('playwright-mcp:') &&
+                                  check.reason === 'version-drift'
+                                ? `Run create-agent-rig setup apply --yes to re-wire @playwright/mcp@${check.version?.declared ?? PLAYWRIGHT_MCP_VERSION}, the ${check.version?.declared === undefined ? 'pinned' : 'declared'} version (Rig-tested ${PLAYWRIGHT_MCP_VERSION}).`
+                                : 'Review create-agent-rig setup list and the intended provider wiring.',
       }),
     ),
     integrations,

@@ -11,7 +11,7 @@
 // restated here, so a future version bump in production is pinned by this
 // test rather than silently drifting from it.
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -168,6 +168,118 @@ describe('Playwright MCP integration wiring (RP-313)', () => {
     expect(result.exitCode).toBe(1);
     expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual(foreign);
     await expect(readFile(declarationPath(), 'utf8')).rejects.toThrow();
+  });
+});
+
+// RP-445: an exact declared version is the repository's override of the
+// Rig-tested PLAYWRIGHT_MCP_VERSION; anything else keeps the tested one.
+describe('playwright-mcp declared-version override (RP-445)', () => {
+  it('setup add playwright-mcp --version 0.0.90 wires @playwright/mcp@0.0.90', async () => {
+    const result = await setup('add', [
+      'playwright-mcp',
+      '--version',
+      '0.0.90',
+      '--harness',
+      'claude-code',
+      '--harness',
+      'codex',
+      '--yes',
+      '--json',
+    ]);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({
+      mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp@0.0.90'] } },
+    });
+    expect(await readFile(codexPath(), 'utf8')).toContain(
+      '[mcp_servers.playwright]\ncommand = "npx"\nargs = ["@playwright/mcp@0.0.90"]',
+    );
+  });
+
+  it('the plan names the declared version npx launches, not the Rig-tested one', async () => {
+    const result = await setup('add', [
+      'playwright-mcp',
+      '--version',
+      '0.0.90',
+      '--harness',
+      'claude-code',
+      '--dry-run',
+    ]);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain('launched by npx at 0.0.90');
+  });
+
+  it('a non-exact --version for playwright-mcp is refused with playwright-mcp-exact-version-required', async () => {
+    const result = await setup('add', [
+      'playwright-mcp',
+      '--version',
+      'latest',
+      '--harness',
+      'claude-code',
+      '--yes',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      outcome: 'refused',
+      reason: 'playwright-mcp-exact-version-required',
+    });
+    await expect(readFile(declarationPath(), 'utf8')).rejects.toThrow();
+  });
+
+  it('changing a declared override re-wires Rig’s own entry at the new version', async () => {
+    const add = (version: string) =>
+      setup('add', ['playwright-mcp', '--version', version, '--harness', 'claude-code', '--yes']);
+    expect((await add('0.0.90')).exitCode).toBe(0);
+
+    const result = await add('0.0.91');
+
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({
+      mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp@0.0.91'] } },
+    });
+  });
+
+  it('removes Rig’s own entry after the declared version drifted from the wired one', async () => {
+    await setup('add', [
+      'playwright-mcp',
+      '--version',
+      '0.0.90',
+      '--harness',
+      'claude-code',
+      '--yes',
+    ]);
+    await writeFile(
+      declarationPath(),
+      (await readFile(declarationPath(), 'utf8')).replace('"0.0.90"', '"0.0.91"'),
+    );
+
+    const result = await setup('remove', ['playwright-mcp', '--yes']);
+
+    expect(result.exitCode, result.stdout + result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({ mcpServers: {} });
+  });
+
+  it('a declaration of latest keeps the Rig-tested version wired', async () => {
+    await mkdir(path.dirname(declarationPath()), { recursive: true });
+    await writeFile(
+      declarationPath(),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        integrations: [
+          { id: 'playwright-mcp', version: 'latest', harnesses: ['claude-code'], selected: true },
+        ],
+      })}\n`,
+    );
+
+    const result = await setup('apply', ['--yes', '--json']);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({
+      mcpServers: { playwright: PLAYWRIGHT_SERVER },
+    });
   });
 });
 
