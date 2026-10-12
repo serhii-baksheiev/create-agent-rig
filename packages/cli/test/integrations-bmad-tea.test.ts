@@ -621,6 +621,35 @@ describe('doctor: bmad-tea (RP-315)', () => {
     expect(check!.detail).toContain(BMAD_TEA_VERSION);
   });
 
+  it('reports tested for a declared v1.27.2 equal to the installed version', async () => {
+    await writeDeclaration([
+      {
+        id: 'bmad-tea',
+        version: `v${BMAD_TEA_VERSION}`,
+        selected: true,
+        harnesses: ['claude-code'],
+      },
+    ]);
+    await writeManifestYaml(realisticTeaManifest(`v${BMAD_TEA_VERSION}`));
+    await writeTeaConfig();
+
+    const { result, body } = await doctor();
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const checks = body.checks as Array<{ id: string }>;
+    const check = checks.find((candidate) => candidate.id === 'bmad-tea');
+    expect(check).toMatchObject({
+      status: 'ok',
+      reason: 'installed',
+      version: {
+        state: 'tested',
+        tested: BMAD_TEA_VERSION,
+        declared: BMAD_TEA_VERSION,
+        installed: BMAD_TEA_VERSION,
+      },
+    });
+  });
+
   it('reports version-drift against the declaration and names the Rig-tested default', async () => {
     await writeDeclaration([
       { id: 'bmad-tea', version: '1.28.0', selected: true, harnesses: ['claude-code'] },

@@ -510,7 +510,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       continue;
     }
     if (entry.id === 'bmad-tea') {
-      const declared = intent?.entries.find((candidate) => candidate.id === 'bmad-tea')?.version;
+      const declaredTag = intent?.entries.find((candidate) => candidate.id === 'bmad-tea')?.version;
+      const declared = declaredTag === undefined ? undefined : teaPackageVersion(declaredTag);
       const inspection = await inspectBmadTea(options.cwd, declared);
       checks.push({
         id: 'bmad-tea',
