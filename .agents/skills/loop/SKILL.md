@@ -903,10 +903,14 @@ resolutions":
   For `elevated-path-scope` the decision is `elevated-change-acceptance`. Record
   it on the item's branch once the gated head is committed — the record names
   the branch and head it was made on — and only then commit the record file.
-  Any other commit after the record voids it: gate that head and record again
-  before merging. After recording it, comment on the PR naming the recorded
-  decision as a delegated acceptance, note in the run's journal entry that the
-  gate sweep will report this merge, then merge on the usual criterion. The run does **not** apply
+  The merge head is then that record commit, not the gated head: its required
+  checks must be green on it like any head's, while reviewer coverage is read
+  for the gated head the record names (`verdict.mjs coverage <that head>`),
+  because no reviewer ran on the record commit. Any other commit after the
+  record voids it: gate that head and record again before merging. After
+  recording it, comment on the PR naming the recorded decision as a delegated
+  acceptance, note in the run's journal entry that the gate sweep will report
+  this merge, then merge. The run does **not** apply
   the `human-review` label, the only thing that suppresses a gate-sweep
   finding (`autonomy.md`, the gate sweep). The sweep will report the merge,
   and that report is correct — no human read the diff — with the record and
