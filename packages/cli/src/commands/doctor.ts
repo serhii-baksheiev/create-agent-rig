@@ -219,7 +219,10 @@ const TRACKER_REQUIRED_ENV: Record<string, string[]> = {
  * otherwise the required names still missing from the environment.
  */
 type TrackerState =
-  { kind: 'unreadable' } | { kind: 'none' } | { kind: 'required'; missing: string[] };
+  | { kind: 'unreadable' }
+  | { kind: 'none' }
+  | { kind: 'unknown-adapter' }
+  | { kind: 'required'; missing: string[] };
 
 async function readTrackerState(root: string, env: NodeJS.ProcessEnv): Promise<TrackerState> {
   const source = await readBounded(root, QUEUE_CONFIG_REL, MAX_PERSONAL_CHECK_BYTES);
@@ -249,7 +252,8 @@ async function readTrackerState(root: string, env: NodeJS.ProcessEnv): Promise<T
   const required = Object.hasOwn(TRACKER_REQUIRED_ENV, adapter)
     ? TRACKER_REQUIRED_ENV[adapter]
     : undefined;
-  if (required === undefined || required.length === 0) return { kind: 'none' };
+  if (required === undefined) return { kind: 'unknown-adapter' };
+  if (required.length === 0) return { kind: 'none' };
   return { kind: 'required', missing: required.filter((name) => !env[name]) };
 }
 
@@ -268,7 +272,7 @@ function personalTrackerCheck(state: TrackerState): Check | undefined {
 
 /** The same state, as the posture contract's `tracker-credentials-missing` reads it. */
 function trackerOutcome(state: TrackerState): Outcome {
-  if (state.kind === 'unreadable') return 'unknown';
+  if (state.kind === 'unreadable' || state.kind === 'unknown-adapter') return 'unknown';
   return state.kind === 'required' && state.missing.length > 0 ? 'fail' : 'pass';
 }
 

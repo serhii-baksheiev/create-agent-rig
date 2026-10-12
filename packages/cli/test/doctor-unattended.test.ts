@@ -197,6 +197,18 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     expect(condition(await doctor(), 'tracker-credentials-missing')?.outcome).toBe('unknown');
   });
 
+  it('reports tracker-credentials-missing as unknown for an adapter doctor does not know (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await writeFile(
+      path.join(repo, '.claude', 'queue.json'),
+      `${JSON.stringify({ adapter: 'linear' })}\n`,
+    );
+    expect(condition(await doctor(), 'tracker-credentials-missing')).toMatchObject({
+      outcome: 'unknown',
+      status: 'warn',
+    });
+  });
+
   it('takes hook-wiring-missing and guard-integrity-failed from the guard inspection doctor already runs', async () => {
     await initProject(repo, { withWorkflow: true });
     const verified = await doctor();
