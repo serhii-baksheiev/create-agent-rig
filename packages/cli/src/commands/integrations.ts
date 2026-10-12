@@ -17,7 +17,7 @@ import {
   type Harness,
   type ProviderDescriptor,
 } from '../integrations/registry.js';
-import { PLAYWRIGHT_MCP_VERSION } from '../integrations/playwright.js';
+import { PLAYWRIGHT_MCP_VERSION, playwrightOverride } from '../integrations/playwright.js';
 import { resolveReadableInside, resolveWritableInside } from '../lib/safe-path.js';
 import { hasControlCharacter } from '../lib/safe-text.js';
 import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
@@ -61,7 +61,7 @@ export const INTEGRATIONS_VERBS = ['list', 'add', 'apply', 'remove'] as const;
 class Refusal extends Error {}
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-function serverFor(id: string) {
+function serverFor({ id, version }: DeclaredIntegration) {
   if (id === 'figma-mcp')
     return { name: 'figma', server: { type: 'http', url: 'https://mcp.figma.com/mcp' } };
   if (id === 'atlassian-mcp')
@@ -71,12 +71,15 @@ function serverFor(id: string) {
   if (id === 'playwright-mcp')
     return {
       name: 'playwright',
-      server: { command: 'npx', args: [`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`] },
+      server: {
+        command: 'npx',
+        args: [`@playwright/mcp@${playwrightOverride(version) ?? PLAYWRIGHT_MCP_VERSION}`],
+      },
     };
   throw new Refusal('not-in-matrix');
 }
-function codexSection(id: string): string {
-  const { name, server } = serverFor(id);
+function codexSection(entry: DeclaredIntegration): string {
+  const { name, server } = serverFor(entry);
   if ('type' in server && server.type === 'http')
     return `[mcp_servers.${name}]\nurl = ${JSON.stringify(server.url)}\n`;
   if ('command' in server && Array.isArray(server.args))
@@ -137,7 +140,7 @@ async function hasMachineMemoryManifest(env: NodeJS.ProcessEnv): Promise<boolean
 function renderCodexConfig(base: string, entries: readonly DeclaredIntegration[]): Buffer {
   const sections = entries
     .filter((entry) => !NON_MCP_PROVIDER_IDS.has(entry.id) && entry.harnesses?.includes('codex'))
-    .map((entry) => codexSection(entry.id))
+    .map((entry) => codexSection(entry))
     .sort((a, b) => a.localeCompare(b));
   return Buffer.from(
     `${base.replace(/\n*$/, '\n')}${sections.length ? `\n${sections.join('\n')}` : ''}`,
@@ -351,6 +354,13 @@ export async function runIntegrationsCommand(
         !EXACT_VERSION_PATTERN.test(values.version)
       )
         throw new Refusal('probity-exact-version-required');
+      // A declaration file may still carry a tag; a new override names one release.
+      if (
+        id === 'playwright-mcp' &&
+        typeof values.version === 'string' &&
+        !EXACT_VERSION_PATTERN.test(values.version)
+      )
+        throw new Refusal('playwright-mcp-exact-version-required');
       const harnesses = [
         ...new Set([
           ...(previous?.harnesses ?? []),
@@ -534,13 +544,12 @@ export async function runIntegrationsCommand(
         if (verb === 'remove') entries = entries.filter((candidate) => candidate.id !== entry.id);
         continue;
       }
-      const { name, server } = serverFor(entry.id);
+      const { name, server } = serverFor(entry);
       const exists = Object.hasOwn(servers, name);
       const ownership = entry.targets?.['claude-code']?.entryHash;
-      if (
-        exists &&
-        (ownership === undefined || hash(servers[name]) !== ownership || ownership !== hash(server))
-      )
+      // Rig's own unmodified entry is the one whose bytes still hash to the
+      // recorded ownership; it is re-wired when the declared version moved (RP-445).
+      if (exists && (ownership === undefined || hash(servers[name]) !== ownership))
         throw new Refusal('foreign-or-modified-mcp-entry');
       if (verb === 'remove') {
         if (!exists || ownership === undefined) throw new Refusal('owned-mcp-entry-absent');
@@ -548,7 +557,7 @@ export async function runIntegrationsCommand(
         entries = entries.filter((candidate) => candidate.id !== entry.id);
         mcpChanges.set(name, undefined);
       } else {
-        if (!exists) {
+        if (!exists || ownership !== hash(server)) {
           servers[name] = server;
           mcpChanges.set(name, server);
         }
@@ -560,7 +569,7 @@ export async function runIntegrationsCommand(
     if (codexSelected) {
       const fragment = selectedMcp
         .filter((entry) => entry.harnesses?.includes('codex'))
-        .map((entry) => codexSection(entry.id))
+        .map((entry) => codexSection(entry))
         .join('\n');
       const manifest =
         manifestFile.bytes === null ? null : parseManifest(decode(manifestFile.bytes));
@@ -617,8 +626,9 @@ export async function runIntegrationsCommand(
     const basicBoundary = basicMemory
       ? ' Basic Memory is a wiring-only preview: it configures local, per-machine storage only; does not automatically access Memory; does not synchronize across machines; and uvx is a launcher, not a verified runtime.'
       : '';
-    const playwrightBoundary = selected.some((entry) => entry.id === 'playwright-mcp')
-      ? ` Playwright MCP is launched by npx at ${PLAYWRIGHT_MCP_VERSION}, fetched from the configured npm registry at the first harness launch; npx is a launcher, not a verified runtime, and browser verification through it is attended only.`
+    const playwright = selected.find((entry) => entry.id === 'playwright-mcp');
+    const playwrightBoundary = playwright
+      ? ` Playwright MCP is launched by npx at ${playwrightOverride(playwright.version) ?? PLAYWRIGHT_MCP_VERSION}, fetched from the configured npm registry at the first harness launch; npx is a launcher, not a verified runtime, and browser verification through it is attended only.`
       : '';
     // The MCP authorization/connectivity/trust disclaimer only applies to an
     // actual MCP provider selection — Probity is neither an MCP server nor
