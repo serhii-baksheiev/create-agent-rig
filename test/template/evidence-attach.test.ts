@@ -391,6 +391,28 @@ describe('evidence-attach.mjs attach — flag parsing', () => {
     await expectNothingWritten(dir, 'RP-1');
   });
 
+  it('never echoes a refused --producer value (RP-436)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const producer = 'postgres://bot:' + 'pw' + '@db/x';
+    const result = await runCli(attachArgs({ ...VALID_REF, producer }), dir, envFor(runDir));
+    expect(result.code, result.out).not.toBe(0);
+    expectDidNotCrash(result);
+    expect(result.stderr).not.toContain(producer);
+  });
+
+  it('never echoes a refused --authority-class value (RP-436)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const authorityClass = 'postgres://bot:' + 'pw' + '@db/x';
+    const result = await runCli(attachArgs({ ...VALID_REF, authorityClass }), dir, envFor(runDir));
+    expect(result.code, result.out).not.toBe(0);
+    expectDidNotCrash(result);
+    expect(result.stderr).not.toContain(authorityClass);
+  });
+
   const VERDICT_WORD_AUTHORITY_CLASSES = ['ship', 'HOLD', 'Healthy'];
   it.each(VERDICT_WORD_AUTHORITY_CLASSES)(
     'refuses --authority-class %j — a Rig verdict word, naming the reason',

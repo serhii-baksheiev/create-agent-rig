@@ -371,11 +371,12 @@ const runAttach = async (argv, cwd) => {
     ['--subject-kind', 'subjectKind'],
   ]) {
     if (!TOKEN.test(options[key])) {
-      return refuse(`${flag} ${JSON.stringify(options[key])} is not a lowercase token (1-64 of a-z 0-9 . _ -).`);
+      // RP-436: the refused value is not printed — it may be a credential.
+      return refuse(`${flag} is not a lowercase token (1-64 of a-z 0-9 . _ -).`);
     }
   }
   const authority = authorityClassProblem(options.authorityClass);
-  if (authority) return refuse(`--authority-class ${JSON.stringify(options.authorityClass)} ${authority}.`);
+  if (authority) return refuse(`--authority-class ${authority}.`);
   if ((options.file === undefined) === (options.ref === undefined)) {
     return refuse('exactly one of --file or --ref is required.');
   }
