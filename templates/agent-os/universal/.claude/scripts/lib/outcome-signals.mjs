@@ -34,7 +34,7 @@ export const SIGNALS = Object.freeze(
       signalVersion: 2,
       definition: 'The distribution of the first gate verdict recorded for each item: SHIP or HOLD at its first reviewed head.',
       source: 'reviewer verdict records in the run journal (decisions.jsonl)',
-      population: 'items with at least one recorded reviewer fan-out in the named runs',
+      population: 'items whose first fan-out launched at least one reviewer, in the named runs; every reviewed item counts toward its lane',
       unknown: 'an item whose first fan-out names no head, or lacks a verdict from a reviewer launched at that head',
       limits: [
         'the review lane is part of the interpretation: a deterministic or fast-path lane launches fewer reviewers',

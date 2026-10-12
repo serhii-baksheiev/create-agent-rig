@@ -234,6 +234,7 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
       SHIP: 1,
       HOLD: 1,
       other: 1,
+      lanes: { model: 3 },
       byLane: { model: { SHIP: 1, HOLD: 1, other: 1 } },
     });
   });
@@ -292,12 +293,26 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
       SHIP: 2,
       HOLD: 2,
       other: 0,
+      lanes: { model: 2, 'fast-path': 1, unknown: 1 },
       byLane: {
         model: { SHIP: 1, HOLD: 1, other: 0 },
         'fast-path': { SHIP: 0, HOLD: 1, other: 0 },
         unknown: { SHIP: 1, HOLD: 0, other: 0 },
       },
     });
+  });
+
+  it('shows a deterministic lane with an empty fan-out in lanes, outside the verdict population', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-5');
+    r.route('deterministic', []);
+    r.fanOut('d1', []);
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([0, 0, 0]);
+    const result = s.result as { lanes: Record<string, number>; byLane: Record<string, unknown> };
+    expect(result.lanes).toEqual({ deterministic: 1 });
+    expect(result.byLane).toEqual({});
   });
 
   it('reads the first answer at the first head: HOLD then SHIP at that head is HOLD', async () => {
@@ -484,6 +499,7 @@ describe('release-evidence.mjs --outcome', () => {
       SHIP: 1,
       HOLD: 1,
       other: 0,
+      lanes: { model: 2 },
       byLane: { model: { SHIP: 1, HOLD: 1, other: 0 } },
     });
     expect(signal(outcome, 'gate-rounds').result).toEqual({ distribution: { '1': 2 } });

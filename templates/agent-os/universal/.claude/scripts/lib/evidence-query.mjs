@@ -69,9 +69,22 @@ const firstVerdictOf = (occurrence) => {
 
 const counts = () => ({ SHIP: 0, HOLD: 0, other: 0 });
 
+/** Whether the first fan-out launched no reviewer at all — the deterministic lane's shape. */
+const launchedNoReviewer = (item) => {
+  const fanOuts = fanOutsOf(item);
+  const head = fanOuts[0]?.headSha;
+  const reviewers = fanOuts.filter((fan) => fan.headSha === head).at(-1)?.reviewers;
+  return Array.isArray(reviewers) && reviewers.length === 0;
+};
+
 const firstShippingVerdict = (occurrences) => {
-  const eligible = occurrences.filter((occurrence) => fanOutsOf(occurrence).length > 0);
-  const result = { ...counts(), byLane: {} };
+  const reviewed = occurrences.filter((occurrence) => fanOutsOf(occurrence).length > 0);
+  // Every reviewed item counts toward its lane, so a shift toward the
+  // deterministic lane — which launches no reviewer — stays visible.
+  const lanes = {};
+  for (const item of reviewed) lanes[laneOf(item)] = (lanes[laneOf(item)] ?? 0) + 1;
+  const eligible = reviewed.filter((item) => !launchedNoReviewer(item));
+  const result = { ...counts(), lanes, byLane: {} };
   let observed = 0;
   for (const occurrence of eligible) {
     const verdict = firstVerdictOf(occurrence);
