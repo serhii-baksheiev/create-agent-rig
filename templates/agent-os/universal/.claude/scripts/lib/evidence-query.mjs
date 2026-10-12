@@ -42,7 +42,8 @@ const fanOutsOf = (item) => item.records.filter((record) => record.gate === FAN_
 
 const laneOf = (occurrence) => {
   const routed = occurrence.records.find(
-    (record) => record.gate?.startsWith(ROUTING) && record.verdict === 'route',
+    (record) =>
+      typeof record.gate === 'string' && record.gate.startsWith(ROUTING) && record.verdict === 'route',
   );
   return routed ? routed.gate.slice(ROUTING.length) : 'unknown';
 };

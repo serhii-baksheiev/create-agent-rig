@@ -329,6 +329,23 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
     expect(({} as Record<string, unknown>).SHIP).toBeUndefined();
   });
 
+  it('reads a non-string gate as no routing, not a crash', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-37');
+    r.fanOut('h37', ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', 'h37');
+    const entry = r.entry();
+    entry.decisions!.push({
+      seq: 99,
+      at: '2026-10-01T00:01:00.000Z',
+      gate: 7 as unknown as string,
+      verdict: 'route',
+    });
+
+    const s = signal(mod().outcomeOf({ runs: [entry] }), 'first-shipping-verdict');
+    expect((s.result as { lanes: Record<string, number> }).lanes).toEqual({ unknown: 1 });
+  });
+
   it('reads the first answer at the first head: HOLD then SHIP at that head is HOLD', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
     r.take('RP-13');
