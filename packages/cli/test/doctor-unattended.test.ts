@@ -197,6 +197,17 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     expect(condition(await doctor(), 'tracker-credentials-missing')?.outcome).toBe('unknown');
   });
 
+  it('reports dod-checks-missing fail when an entry is one gate-stop-dod cannot run as a command (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const dod = path.join(repo, '.claude', 'hooks', 'dod-checks.json');
+    const seen: Array<string | undefined> = [];
+    for (const checks of ['[123]', '[""]', '["npm test", 123]']) {
+      await writeFile(dod, `${checks}\n`);
+      seen.push(condition(await doctor(), 'dod-checks-missing')?.outcome);
+    }
+    expect(seen).toEqual(['fail', 'fail', 'fail']);
+  });
+
   it('reports tracker-credentials-missing as unknown for an adapter doctor does not know (RP-423)', async () => {
     await initProject(repo, { withWorkflow: true });
     await writeFile(

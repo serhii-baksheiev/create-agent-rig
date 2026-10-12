@@ -83,9 +83,14 @@ async function detectionContract(repoDir: string): Promise<Outcome> {
 
 /**
  * The Definition-of-Done gate has something to run: `.claude/hooks/dod-checks.json`
- * is a non-empty array, the shape `gate-stop-dod` reads. Absent or empty is the
- * inert gate; a file that does not parse was not judged.
+ * is a non-empty array of entries `gate-stop-dod` runs as commands — a non-empty
+ * string with no NUL, the hook's own `runnable` predicate. Absent or empty is
+ * the inert gate, and any other entry is a check that produces no verdict; a
+ * file that does not parse was not judged.
  */
+const runnable = (command: unknown): boolean =>
+  typeof command === 'string' && command !== '' && !command.includes('\0');
+
 async function dodChecks(repoDir: string): Promise<Outcome> {
   const source = await readBounded(repoDir, '.claude/hooks/dod-checks.json', 64 * 1024);
   if (source.status === 'absent') return 'fail';
@@ -97,7 +102,7 @@ async function dodChecks(repoDir: string): Promise<Outcome> {
     return 'unknown';
   }
   if (!Array.isArray(checks)) return 'unknown';
-  return checks.length > 0 ? 'pass' : 'fail';
+  return checks.length > 0 && checks.every(runnable) ? 'pass' : 'fail';
 }
 
 /**
