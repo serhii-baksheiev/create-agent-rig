@@ -24,6 +24,8 @@ export type FreshnessOptions = {
   fetch: typeof globalThis.fetch;
   userAgent: string;
   includePrereleases?: boolean;
+  /** Per request, body included; a request that outlives it is reported as `timeout`. */
+  timeoutMs?: number;
 };
 
 /** semver.org's grammar without build metadata: no leading zeros, dot-separated prerelease. */
@@ -62,13 +64,13 @@ function compare(a: string, b: string): number {
 }
 
 function highest(candidates: readonly string[], includePrereleases: boolean): string | undefined {
-  return candidates
-    .filter((value) => {
-      const match = SEMVER.exec(value);
-      return match !== null && (includePrereleases || match[4] === undefined);
-    })
-    .sort(compare)
-    .at(-1);
+  let best: string | undefined;
+  for (const value of candidates) {
+    const match = SEMVER.exec(value);
+    if (match === null || (!includePrereleases && match[4] !== undefined)) continue;
+    if (best === undefined || compare(value, best) > 0) best = value;
+  }
+  return best;
 }
 
 /** Where the provider's newest upstream version stands relative to the Rig-tested one. */
@@ -78,27 +80,93 @@ function classify(tested: string, newest: string | undefined): FreshnessState {
   return order === 0 ? 'current' : order > 0 ? 'behind' : 'ahead';
 }
 
+/** A provider whose freshness could not be decided; `reason` is the report's word for why. */
+class Unknown extends Error {
+  constructor(readonly reason: string) {
+    super(reason);
+  }
+}
+
+const NPM_MAX_BYTES = 16 * 1024 * 1024;
+const GITHUB_MAX_BYTES = 1024 * 1024;
+
+/** One GET; a rejected fetch or a non-2xx answer becomes the reason word, never a throw upward. */
+async function request(url: string, accept: string, options: FreshnessOptions): Promise<Response> {
+  let response: Response;
+  try {
+    response = await options.fetch(url, {
+      headers: { Accept: accept, 'User-Agent': options.userAgent },
+      signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
+    });
+  } catch (error) {
+    throw transportFailure(error);
+  }
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    throw new Unknown(
+      response.status === 403 || response.status === 429
+        ? 'rate-limited'
+        : `http-${response.status}`,
+    );
+  }
+  return response;
+}
+
+function transportFailure(error: unknown): Unknown {
+  return new Unknown(
+    (error as Error | undefined)?.name === 'TimeoutError' ? 'timeout' : 'network-error',
+  );
+}
+
+/** The body as JSON, read no further than `maxBytes`. */
+async function readJson(response: Response, maxBytes: number): Promise<unknown> {
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  const reader = response.body?.getReader();
+  try {
+    for (;;) {
+      const next = await reader?.read();
+      if (next === undefined || next.done) break;
+      total += next.value.byteLength;
+      if (total > maxBytes) {
+        await reader?.cancel().catch(() => undefined);
+        throw new Unknown('response-too-large');
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    throw error instanceof Unknown ? error : transportFailure(error);
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  } catch {
+    throw new Unknown('invalid-response');
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
 async function npmFreshness(
   id: string,
   pkg: string,
   tested: string,
   options: FreshnessOptions,
 ): Promise<ProviderFreshness> {
-  const response = await options.fetch(`https://registry.npmjs.org/${pkg.replace('/', '%2f')}`, {
-    headers: {
-      Accept: 'application/vnd.npm.install-v1+json',
-      'User-Agent': options.userAgent,
-    },
-  });
-  const body = (await response.json()) as {
-    'dist-tags'?: { latest?: unknown };
-    versions?: Record<string, unknown>;
-  };
-  const latest = body['dist-tags']?.latest;
+  const response = await request(
+    `https://registry.npmjs.org/${pkg.replace('/', '%2f')}`,
+    'application/vnd.npm.install-v1+json',
+    options,
+  );
+  const body = await readJson(response, NPM_MAX_BYTES);
+  if (!isRecord(body)) throw new Unknown('invalid-response');
+  const tags = body['dist-tags'];
+  const latest = isRecord(tags) ? tags.latest : undefined;
   const highestStable = highest(
-    Object.keys(body.versions ?? {}),
+    isRecord(body.versions) ? Object.keys(body.versions) : [],
     options.includePrereleases ?? false,
   );
+  if (highestStable === undefined) throw new Unknown('no-stable-version');
   return {
     id,
     tested,
@@ -114,44 +182,64 @@ async function githubFreshness(
   tested: string,
   options: FreshnessOptions,
 ): Promise<ProviderFreshness> {
-  const get = (url: string): Promise<Response> =>
-    options.fetch(url, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': options.userAgent },
-    });
+  const get = (url: string) => request(url, 'application/vnd.github+json', options);
   const unv = (value: unknown) => (typeof value === 'string' ? value.replace(/^v/, '') : '');
-  const release = (await (
-    await get(`https://api.github.com/repos/${repo}/releases/latest`)
-  ).json()) as { tag_name?: unknown };
-  const tagsResponse = await get(`https://api.github.com/repos/${repo}/tags?per_page=100`);
-  const tagName = unv(release.tag_name);
-  const latestRelease = SEMVER.test(tagName) ? tagName : undefined;
+  const release = await readJson(
+    await get(`https://api.github.com/repos/${repo}/releases/latest`),
+    GITHUB_MAX_BYTES,
+  );
+  const tagName = unv(isRecord(release) ? release.tag_name : undefined);
+  if (!SEMVER.test(tagName)) throw new Unknown('no-stable-version');
   const entry: ProviderFreshness = {
     id,
     tested,
-    state: classify(tested, latestRelease),
-    ...(latestRelease === undefined ? {} : { latestRelease }),
+    state: classify(tested, tagName),
+    latestRelease: tagName,
   };
+  const tagsResponse = await get(`https://api.github.com/repos/${repo}/tags?per_page=100`);
   // One page only: a list with a next page cannot name its highest tag.
   if (/\brel="next"/.test(tagsResponse.headers.get('link') ?? '')) {
+    await tagsResponse.body?.cancel().catch(() => undefined);
     return { ...entry, reason: 'tag-list-truncated' };
   }
-  const tags = (await tagsResponse.json()) as { name?: unknown }[];
-  return {
-    ...entry,
-    highestTag: highest(
-      tags.map((tag) => unv(tag.name)),
-      options.includePrereleases ?? false,
-    ),
-  };
+  const tags = await readJson(tagsResponse, GITHUB_MAX_BYTES);
+  if (!Array.isArray(tags)) throw new Unknown('invalid-response');
+  const highestTag = highest(
+    tags.map((tag: unknown) => unv(isRecord(tag) ? tag.name : undefined)),
+    options.includePrereleases ?? false,
+  );
+  return highestTag === undefined
+    ? { ...entry, reason: 'no-stable-version' }
+    : { ...entry, highestTag };
+}
+
+/** Every failure inside one provider is that provider's unknown, never the whole report's. */
+async function settle(
+  id: string,
+  tested: string,
+  run: () => Promise<ProviderFreshness>,
+): Promise<ProviderFreshness> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!(error instanceof Unknown)) throw error;
+    return { id, tested, state: 'unknown', reason: error.reason };
+  }
 }
 
 export async function checkFreshness(options: FreshnessOptions): Promise<FreshnessReport> {
   return {
     schemaVersion: 1,
     providers: [
-      await npmFreshness('probity', '@nizos/probity', PROBITY_VERSION, options),
-      await npmFreshness('playwright-mcp', '@playwright/mcp', PLAYWRIGHT_MCP_VERSION, options),
-      await githubFreshness('spec-kit', 'github/spec-kit', SPEC_KIT_VERSION, options),
+      await settle('probity', PROBITY_VERSION, () =>
+        npmFreshness('probity', '@nizos/probity', PROBITY_VERSION, options),
+      ),
+      await settle('playwright-mcp', PLAYWRIGHT_MCP_VERSION, () =>
+        npmFreshness('playwright-mcp', '@playwright/mcp', PLAYWRIGHT_MCP_VERSION, options),
+      ),
+      await settle('spec-kit', SPEC_KIT_VERSION, () =>
+        githubFreshness('spec-kit', 'github/spec-kit', SPEC_KIT_VERSION, options),
+      ),
       // Rig records no upstream repository for TEA, so there is nothing to ask.
       {
         id: 'bmad-tea',

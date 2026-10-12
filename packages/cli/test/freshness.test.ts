@@ -10,7 +10,27 @@ const PLAYWRIGHT_MCP_URL = 'https://registry.npmjs.org/@playwright%2fmcp';
 const SPEC_KIT_RELEASE_URL = 'https://api.github.com/repos/github/spec-kit/releases/latest';
 const SPEC_KIT_TAGS_URL = 'https://api.github.com/repos/github/spec-kit/tags?per_page=100';
 
-type Route = { status?: number; body: string; headers?: Record<string, string> };
+type Route = {
+  status?: number;
+  body?: string | (() => ReadableStream<Uint8Array>);
+  headers?: Record<string, string>;
+  /** `network`: the fetch rejects; `hang`: it settles only when its signal aborts. */
+  fail?: 'network' | 'hang';
+};
+
+/** A body of `size` bytes, produced lazily so a large one never sits in memory at once. */
+const bytes = (size: number) => () => {
+  const chunk = new Uint8Array(64 * 1024).fill(0x61);
+  let left = size;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (left <= 0) return controller.close();
+      const next = chunk.subarray(0, Math.min(chunk.length, left));
+      left -= next.length;
+      controller.enqueue(next);
+    },
+  });
+};
 
 const npmBody = (latest: string, versions: string[]): Route => ({
   body: JSON.stringify({
@@ -36,7 +56,14 @@ function fakeFetch(overrides: Record<string, Route>) {
     requests.push({ url, headers: new Headers(init?.headers) });
     const route = routes[url];
     if (route === undefined) return new Response('not found', { status: 404 });
-    return new Response(route.body, { status: route.status ?? 200, headers: route.headers });
+    if (route.fail === 'network') throw new TypeError('fetch failed');
+    if (route.fail === 'hang') {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      });
+    }
+    const body = typeof route.body === 'function' ? route.body() : route.body;
+    return new Response(body, { status: route.status ?? 200, headers: route.headers });
   };
   return { fetch: fetch as typeof globalThis.fetch, requests };
 }
@@ -161,6 +188,67 @@ describe('integrations freshness (RP-445)', () => {
       'playwright-mcp': 'ahead',
       'spec-kit': 'current',
       'bmad-tea': 'unknown',
+    });
+  });
+
+  it('reports network error, timeout, 403/429, oversize and invalid JSON as unknown with a reason', async () => {
+    const reasons = async (overrides: Record<string, Route>) => {
+      const { fetch } = fakeFetch(overrides);
+      const result = await checkFreshness({
+        fetch,
+        userAgent: 'create-agent-rig/test',
+        timeoutMs: 50,
+      });
+      return Object.fromEntries(
+        result.providers
+          .filter((provider) => provider.state === 'unknown')
+          .map((provider) => [provider.id, provider]),
+      );
+    };
+    const unknown = (id: string, tested: string, reason: string) => ({
+      id,
+      tested,
+      state: 'unknown',
+      reason,
+    });
+
+    expect(
+      await reasons({
+        [PROBITY_URL]: { fail: 'network' },
+        [PLAYWRIGHT_MCP_URL]: { fail: 'hang' },
+        [SPEC_KIT_RELEASE_URL]: { status: 403, body: '{}' },
+      }),
+    ).toEqual({
+      probity: unknown('probity', PROBITY_VERSION, 'network-error'),
+      'playwright-mcp': unknown('playwright-mcp', PLAYWRIGHT_MCP_VERSION, 'timeout'),
+      'spec-kit': unknown('spec-kit', SPEC_KIT_VERSION, 'rate-limited'),
+      'bmad-tea': unknown('bmad-tea', BMAD_TEA_VERSION, 'upstream-not-recorded'),
+    });
+    expect(
+      await reasons({
+        [PROBITY_URL]: { status: 429, body: '{}' },
+        [PLAYWRIGHT_MCP_URL]: { status: 500, body: '{}' },
+        [SPEC_KIT_TAGS_URL]: { body: bytes(1024 * 1024 + 1) },
+      }),
+    ).toMatchObject({
+      probity: { reason: 'rate-limited' },
+      'playwright-mcp': { reason: 'http-500' },
+      'spec-kit': { reason: 'response-too-large' },
+    });
+    expect(
+      await reasons({
+        [PROBITY_URL]: { body: bytes(16 * 1024 * 1024 + 1) },
+        [PLAYWRIGHT_MCP_URL]: { body: 'not json' },
+        [SPEC_KIT_RELEASE_URL]: { body: JSON.stringify({ tag_name: 'nightly' }) },
+      }),
+    ).toMatchObject({
+      probity: { reason: 'response-too-large' },
+      'playwright-mcp': { reason: 'invalid-response' },
+      'spec-kit': { reason: 'no-stable-version' },
+    });
+    // A 16 MiB npm document is within the cap; the cap is per upstream, not one shared figure.
+    expect(await reasons({ [PROBITY_URL]: { body: bytes(16 * 1024 * 1024) } })).toMatchObject({
+      probity: { reason: 'invalid-response' },
     });
   });
 });
