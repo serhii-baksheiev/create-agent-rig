@@ -315,4 +315,20 @@ describe('create-agent-rig integrations freshness (RP-445)', () => {
       '',
     ]);
   });
+
+  it('an undeclared freshness flag or an extra argument exits 2 without a request', async () => {
+    for (const args of [
+      ['freshness', '--yes'],
+      ['freshness', 'probity'],
+    ]) {
+      const { fetch, requests } = fakeFetch({});
+
+      const result = await runFreshnessCommand({ args, fetch });
+
+      expect(result.exitCode, args.join(' ')).toBe(2);
+      expect(result.stdout, args.join(' ')).toBe('');
+      expect(result.stderr, args.join(' ')).not.toBe('');
+      expect(requests, args.join(' ')).toEqual([]);
+    }
+  });
 });

@@ -1,3 +1,4 @@
+import { parseArgs } from 'node:util';
 import { checkFreshness, type ProviderFreshness } from '../integrations/freshness.js';
 import { packageVersion } from '../lib/version.js';
 
@@ -20,11 +21,21 @@ export async function runFreshnessCommand(
       stderr: 'Unknown integrations subcommand: expected freshness.\n',
     };
   }
+  let values: { json?: boolean };
+  try {
+    ({ values } = parseArgs({
+      args: options.args.slice(1),
+      options: { json: { type: 'boolean' } },
+      allowPositionals: false,
+    }));
+  } catch (error) {
+    return { exitCode: 2, stdout: '', stderr: `${(error as Error).message}\n` };
+  }
   const report = await checkFreshness({
     fetch: options.fetch,
     userAgent: `create-agent-rig/${await packageVersion()}`,
   });
-  const stdout = options.args.includes('--json')
+  const stdout = values.json
     ? `${JSON.stringify(report)}\n`
     : report.providers.map((provider) => `${renderLine(provider)}\n`).join('');
   return { exitCode: 0, stdout, stderr: '' };
