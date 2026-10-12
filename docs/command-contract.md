@@ -343,6 +343,9 @@ fields:
 - `detail` — what was observed.
 - `fix` — what a human should do about it.
 
+A `probity:<harness>` and a `bmad-tea` record also carry a per-check `version`
+object — see "Declared versions (RP-445)" below.
+
 `id` has a closed set of eleven fixed values as of the RP-230 minor bump. A
 single id may be emitted from more than one branch of
 `packages/cli/src/commands/doctor.ts` — one per outcome of the same check —
@@ -442,7 +445,13 @@ A declared version for `probity`, `bmad-tea` or `spec-kit` is one exact
 the version it accepted before —
 `packages/cli/test/integrations-declaration.test.ts` › "rejects a range or
 tag as the declared version of a pinned provider as malformed, accepts an
-exact one, and leaves unpinned providers alone".
+exact one, and leaves unpinned providers alone". `bmad-tea` alone also
+accepts the leading `v` BMAD's installer records (`v1.27.2`), still never a
+range or a tag, and doctor compares it without the `v` —
+`packages/cli/test/integrations-declaration.test.ts` › "accepts v1.27.2 for
+bmad-tea and still rejects ranges", and
+`packages/cli/test/integrations-bmad-tea.test.ts` › "reports tested for a
+declared v1.27.2 equal to the installed version".
 
 ### `rig-version` (RP-229)
 
