@@ -274,6 +274,16 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     ).not.toEqual([]);
   });
 
+  // RP-445: integrations freshness is the CLI's one networked command, so the
+  // module that issues its requests is reviewed like the integrations surface.
+  it('declares the freshness command, the one module that makes network requests', async () => {
+    const detector = await loadDetector();
+    const declared = await loadDeclaredPaths();
+    expect(
+      detector.elevatedPathsIn(['packages/cli/src/commands/freshness.ts'], declared),
+    ).not.toEqual([]);
+  });
+
   // RP-211: `layers.json` decides which payload files reach a generated
   // project per layer (`packages/cli/src/commands/init.ts` reads it), so a
   // merge that quietly narrowed or emptied a layer's file list is exactly the

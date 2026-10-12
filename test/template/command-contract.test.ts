@@ -2355,6 +2355,8 @@ describe('the 1.0 contract-freeze sections (RP-184)', () => {
       setup: 1,
       doctor: 2,
       memory: 2,
+      // RP-445: an unknown integrations subcommand, flag or argument is a usage error.
+      'integrations freshness': 2,
     };
     for (const [command, code] of Object.entries(CODES)) {
       it(`states exit ${code} for a wrong invocation of ${command}`, async () => {

@@ -264,6 +264,7 @@ contracts/
 scripts/dogfood/
 packages/cli/src/integrations/
 packages/cli/src/commands/integrations.ts
+packages/cli/src/commands/freshness.ts
 .claude/
 .rig/revalidation.json
 templates/agent-os/universal/.rig/revalidation.json
