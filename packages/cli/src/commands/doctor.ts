@@ -14,6 +14,7 @@ import {
 } from '../integrations/spec-kit.js';
 import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
 import { inspectBmadTea, BMAD_TEA_VERSION } from '../integrations/bmad-tea.js';
+import type { BmadTeaVersionFound } from '../integrations/bmad-tea.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -80,6 +81,8 @@ type Check = {
    * stripped before the record reaches the report.
    */
   teaVersion?: string;
+  /** `bmad-tea` only — what a `version-unknown` found instead of a version; stripped like `teaVersion`. */
+  teaVersionFound?: BmadTeaVersionFound;
 };
 export type DoctorOptions = {
   cwd: string;
@@ -134,11 +137,15 @@ function probityFix(reason: string): string {
 }
 
 /** `bmad-tea` fix text, by reason (RP-315). TEA evidence stays advisory either way. */
-function bmadTeaFix(reason: string, version: string | undefined): string {
+function bmadTeaFix(
+  reason: string,
+  version: string | undefined,
+  found: BmadTeaVersionFound | undefined,
+): string {
   if (reason === 'not-installed')
     return 'Manual next step, not run by Rig: npx bmad-method install --modules tea.';
   if (reason === 'version-unknown')
-    return '_bmad/_config/manifest.yaml lists a tea module entry with no version field; reinstall TEA to record one.';
+    return `_bmad/_config/manifest.yaml lists a tea module entry ${found === 'null' ? 'whose version is null' : found === 'not-a-token' ? 'whose version is not a version token' : 'with no version field'}; reinstall TEA to record one.`;
   if (reason === 'config-missing')
     return '_bmad/tea/config.yaml is missing; reinstall TEA with npx bmad-method install --modules tea.';
   if (reason === 'version-drift')
@@ -503,6 +510,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
         status: inspection.status,
         reason: inspection.reason,
         ...(inspection.version === undefined ? {} : { teaVersion: inspection.version }),
+        ...(inspection.versionFound === undefined
+          ? {}
+          : { teaVersionFound: inspection.versionFound }),
       });
       continue;
     }
@@ -565,7 +575,14 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     schemaVersion: 1,
     status: status === 'pass' ? 'ok' : status,
     checks: checks.map(
-      ({ rigVersion, ownedFilePaths, trackerMissingVars, teaVersion, ...check }) => ({
+      ({
+        rigVersion,
+        ownedFilePaths,
+        trackerMissingVars,
+        teaVersion,
+        teaVersionFound,
+        ...check
+      }) => ({
         ...check,
         status: check.status === 'pass' ? 'ok' : check.status,
         detail:
@@ -598,7 +615,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                           : check.id.startsWith('probity:')
                             ? probityFix(check.reason)
                             : check.id === 'bmad-tea'
-                              ? bmadTeaFix(check.reason, teaVersion)
+                              ? bmadTeaFix(check.reason, teaVersion, teaVersionFound)
                               : 'Review create-agent-rig setup list and the intended provider wiring.',
       }),
     ),
@@ -628,7 +645,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           .sort((a, b) => rank(b) - rank(a))[0];
         return {
           id,
-          declared: intent?.entries.some((entry) => entry.id === id) ?? false,
+          // Read from the parsed entries, not `intent`: one rejected entry
+          // empties `intent` without making a valid entry undeclared.
+          declared:
+            declaration?.status === 'ok' && declaration.entries.some((entry) => entry.id === id),
           observed: check
             ? { status: check.status === 'pass' ? 'ok' : check.status, reason: check.reason }
             : null,
@@ -675,6 +695,11 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           `authority: publication authority: ${report.authority.publicationAuthority}`,
           `authority: safety gates: ${report.authority.safetyGates}`,
           `authority: kill switch: wired ${report.authority.killSwitch.wired}, armed ${report.authority.killSwitch.armed}`,
+          `preset: ${report.preset.name ?? 'none'}`,
+          ...report.preset.integrations.map(
+            (entry) =>
+              `preset: ${entry.id}: declared ${entry.declared ? 'yes' : 'no'}, observed ${entry.observed ? `${entry.observed.status} ${entry.observed.reason}` : 'none'}`,
+          ),
         ].join('\n')}\n`,
     stderr: '',
   };

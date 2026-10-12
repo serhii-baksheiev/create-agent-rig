@@ -2526,6 +2526,120 @@ describe('guard-secret-file: an empty hunk line is empty context, matching Codex
   });
 });
 
+// RP-485. Codex's `seek_sequence` in `codex-rs/apply-patch/src/seek_sequence.rs`
+// retries a chunk's context after trimEnd, then trim, then trim plus Unicode
+// punctuation normalisation. An exact-only search refused such a Move although
+// Codex applies it.
+describe("guard-secret-file: a Move whose context matches only after Codex's fuzzy fallback (RP-485)", () => {
+  let fixtureRoot = '';
+
+  beforeEach(async () => {
+    fixtureRoot = await realpath(await mkdtemp(path.join(tmpdir(), 'rp485-move-root-')));
+    await run('git', ['init', '-q', fixtureRoot]);
+    await mkdir(path.join(fixtureRoot, 'src'), { recursive: true });
+  });
+
+  afterEach(async () => {
+    await removeFixture(fixtureRoot);
+  });
+
+  const source = (text: string) => writeFile(path.join(fixtureRoot, 'src', 'a.txt'), text);
+  const moveCommand = (hunkLines: string[]) => ({
+    hook_event_name: 'PreToolUse',
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: [
+        '*** Begin Patch',
+        '*** Update File: src/a.txt',
+        '*** Move to: src/b.txt',
+        ...hunkLines,
+        '*** End Patch',
+      ].join('\n'),
+    },
+  });
+
+  it('allows a Move whose context differs only by trailing whitespace', async () => {
+    await source('first   \nsecond\n');
+    const result = await runHook(
+      moveCommand(['@@', ' first', '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('allows a Move whose context differs only by leading and trailing whitespace', async () => {
+    await source('  first \nsecond\n');
+    const result = await runHook(
+      moveCommand(['@@', ' first', '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('allows a Move whose context matches only after Codex normalises typographic punctuation', async () => {
+    await source('say “hi” — now\nsecond\n');
+    const result = await runHook(
+      moveCommand(['@@', ' say "hi" - now', '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('still refuses a credential added in a fuzzy-matched Move', async () => {
+    await source('first   \nsecond\n');
+    const result = await runHook(
+      moveCommand(['@@', ' first', `+aws_access_key_id = ${CLOUD_ACCESS_KEY}`]),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('cloud-access-key');
+  });
+
+  it('still refuses a Move whose context matches under no fallback pass', async () => {
+    await source('first\nsecond\n');
+    const result = await runHook(
+      moveCommand(['@@', ' firsT', '+export const ordinary = true;']),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('context does not match');
+  });
+
+  it('the fuzzy passes still exhaust the shared move context comparison budget', async () => {
+    // The exact pass spends ~1.2M of the 2M comparisons without a match; the
+    // trimEnd pass would match only at the last line and runs out first.
+    await source(`${'same\n'.repeat(1_199)}needle   \n`);
+    const result = await runHook(
+      moveCommand(['@@', ...Array<string>(999).fill(' same'), ' needle']),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('move context comparison budget was exhausted');
+  });
+
+  it('charges the fuzzy passes per character, refusing a long-line source before the work grows (RP-485)', async () => {
+    // 500 lines of ~2,000 characters (~1 MB, under the 1 MiB move source cap);
+    // each hunk names one line's id, found only by the trim pass, so every hunk
+    // trims every long line while being charged one unit per line.
+    const pad = ' '.repeat(1000);
+    const ids = Array.from({ length: 500 }, (_, i) => `L${String(i).padStart(4, '0')}`);
+    await source(ids.map((id) => `${pad}${id}${pad}\n`).join(''));
+    const result = await runHook(
+      moveCommand(ids.flatMap((id) => ['@@', ` ${id}`])),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('move context comparison budget was exhausted');
+  });
+});
+
 // RP-484. Codex matches Move context fuzzily from a moving cursor, while the
 // guard rebuilt the destination by exact match from the top, so a removal could
 // take the real credential in the guard's rebuild and a lookalike in Codex's

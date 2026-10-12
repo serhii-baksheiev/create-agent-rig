@@ -2646,6 +2646,59 @@ describe('delegated-decision.mjs — the run authority must match its journalled
     expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(1);
   });
 
+  // RP-487: the authority check reads the journal before `recordEvent` takes
+  // the journal lock. An owner declaration that lands in between must stop
+  // the evidence write. The preload runs `run-state.mjs authority owner` in
+  // a child the moment `record` first tries to take the lock.
+  it('writes no evidence when an owner declaration lands between the check and the journal write', async () => {
+    const { dir, runDir, env } = await delegatedFixture();
+    const preloadDir = await mkdtemp(path.join(tmpdir(), 'delegated-decision-race-'));
+    const preload = path.join(preloadDir, 'race.mjs');
+    await writeFile(
+      preload,
+      [
+        "import { execFileSync } from 'node:child_process';",
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalOpenSync = fs.openSync;',
+        'let raced = false;',
+        'fs.openSync = (...args) => {',
+        "  if (!raced && String(args[0]).endsWith('.journal.lock')) {",
+        '    raced = true;',
+        '    const childEnv = { ...process.env };',
+        '    delete childEnv.NODE_OPTIONS;',
+        "    execFileSync(process.execPath, [process.env.RP487_RUN_STATE, 'authority', 'owner'], { env: childEnv });",
+        '  }',
+        '  return originalOpenSync(...args);',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    try {
+      const result = await runCli(
+        recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+        dir,
+        {
+          ...env,
+          NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
+          RP487_RUN_STATE: scriptPath('run-state.mjs'),
+        },
+      );
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.stderr).toMatch(/owner/);
+      await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+      const { readRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+        readRun: (input: { runDir: string }) => {
+          events: Array<{ kind: string; data?: { to?: string } }>;
+        };
+      };
+      const declared = readRun({ runDir }).events.filter((e) => e.kind === 'authority-declared');
+      expect(declared.at(-1)?.data?.to).toBe('owner');
+    } finally {
+      await removeFixture(preloadDir);
+    }
+  });
+
   it('refuses to resolve under a hand-written delegated authority', async () => {
     const { dir } = await newProject();
     const runDir = await newRunDir();
@@ -2657,5 +2710,71 @@ describe('delegated-decision.mjs — the run authority must match its journalled
     );
     expect(result.code, result.out).not.toBe(0);
     expect(result.stdout).not.toMatch(/decide-and-continue/);
+  });
+
+  it('refuses to resolve as delegated once the run has ended', async () => {
+    const { dir, runDir, env } = await delegatedFixture();
+    const { endRun } = (await import(pathToFileURL(scriptPath('run-journal.mjs')).href)) as {
+      endRun: (input: { runDir: string; stop: string; now: string }) => unknown;
+    };
+    endRun({ runDir, stop: 'queue-empty', now: new Date().toISOString() });
+    const result = await runCli(['resolve', '--stop', 'elevated-path-scope', '--json'], dir, env);
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stdout).not.toMatch(/decide-and-continue/);
+    expect(result.stderr).toMatch(/run has ended/);
+  });
+
+  it('names the read failure, not "none", when the journal cannot be read', async () => {
+    const { dir, runDir, env } = await delegatedFixture();
+    await writeFile(path.join(runDir, 'events.jsonl'), 'not json\n{"also":"bad"\n');
+    const result = await runCli(
+      recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+      dir,
+      env,
+    );
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stderr).toMatch(/could not be read/);
+    expect(result.stderr).not.toMatch(/declaration is none/);
+    await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+  });
+
+  // RP-487: the journal is read again after the decision is journalled. The
+  // preload appends a garbage line right behind the decision event, so the
+  // first read passes and only the re-read cannot parse the journal.
+  it('names the read failure, not "none", when the journal cannot be read after the decision is journalled', async () => {
+    const { dir, env } = await delegatedFixture();
+    const preloadDir = await mkdtemp(path.join(tmpdir(), 'delegated-decision-unreadable-'));
+    const preload = path.join(preloadDir, 'garble.mjs');
+    await writeFile(
+      preload,
+      [
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalAppendFileSync = fs.appendFileSync;',
+        'let garbled = false;',
+        'fs.appendFileSync = (...args) => {',
+        '  const result = originalAppendFileSync(...args);',
+        "  if (!garbled && String(args[0]).endsWith('events.jsonl') && String(args[1]).includes('delegated-decision')) {",
+        '    garbled = true;',
+        "    originalAppendFileSync(args[0], 'not json\\n');",
+        '  }',
+        '  return result;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    try {
+      const result = await runCli(
+        recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+        dir,
+        { ...env, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
+      );
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.stderr).toMatch(/could not be read/);
+      expect(result.stderr).not.toMatch(/before it is none/);
+      await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+    } finally {
+      await removeFixture(preloadDir);
+    }
   });
 });
