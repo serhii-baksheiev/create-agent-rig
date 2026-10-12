@@ -355,6 +355,21 @@ const MEASURES = {
     measure: 'mean rounds per observed item',
     of: (signal) => mean(signal.result.distribution),
   },
+  'claim-to-merge': {
+    measure: 'median total wall time, milliseconds',
+    of: (signal) => signal.result.wallTimeMs?.median ?? null,
+  },
+  interventions: {
+    measure: 'mean recorded interventions per observed item',
+    of: (signal) => mean(signal.result.distribution),
+  },
+  continuation: {
+    measure: 'share of observed continuations resolved',
+    of: (signal) =>
+      signal.observed === 0
+        ? null
+        : (signal.result.resolved.closed + signal.result.resolved.reEscalated) / signal.observed,
+  },
 };
 
 /**
@@ -379,6 +394,10 @@ export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_CO
         comparison: 'not comparable',
         reason: `signalVersion differs: baseline ${before?.signalVersion ?? 'absent'}, current ${now.signalVersion}`,
       });
+      continue;
+    }
+    if (before.result?.computed === false || now.result?.computed === false) {
+      signals.push({ ...entry, comparison: 'not comparable', reason: 'the signal is not computed' });
       continue;
     }
     // A first verdict depends on the review lane, so the comparison holds

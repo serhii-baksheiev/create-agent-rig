@@ -694,6 +694,80 @@ describe('evidence-query compareOutcome', () => {
     expect(String(shifted!.reason)).toMatch(/lane/);
   });
 
+  it('states a measure for every computed signal, and refuses a signal that is not computed', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (k: number) => ({
+      schemaVersion: 1,
+      signals: [
+        {
+          name: 'claim-to-merge',
+          signalVersion: 1,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { wallTimeMs: { min: 1000, median: 1000 * k, max: 9000 } },
+        },
+        {
+          name: 'interventions',
+          signalVersion: 2,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { escalations: k, delegatedDecisions: 0, distribution: { '0': 2 - k, '1': k } },
+        },
+        {
+          name: 'continuation',
+          signalVersion: 1,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { resolved: { closed: k, reEscalated: 0 }, unresolved: 2 - k },
+        },
+        {
+          name: 'tokens-per-ship',
+          signalVersion: 2,
+          eligible: 2,
+          observed: 0,
+          unknown: 2,
+          result: { computed: false, reason: 'not computed' },
+        },
+      ],
+    });
+
+    const byName = Object.fromEntries(
+      compare({ baseline: report(1), current: report(2) }).signals.map((s) => [s.name, s]),
+    );
+    expect(byName['claim-to-merge']).toMatchObject({
+      comparison: 'comparable',
+      measure: 'median total wall time, milliseconds',
+      baseline: 1000,
+      current: 2000,
+      delta: 1000,
+    });
+    expect(byName.interventions).toMatchObject({
+      comparison: 'comparable',
+      measure: 'mean recorded interventions per observed item',
+      baseline: 0.5,
+      current: 1,
+      delta: 0.5,
+    });
+    expect(byName.continuation).toMatchObject({
+      comparison: 'comparable',
+      measure: 'share of observed continuations resolved',
+      baseline: 0.5,
+      current: 1,
+      delta: 0.5,
+    });
+    expect(byName['tokens-per-ship']).toMatchObject({ comparison: 'not comparable' });
+    expect(String(byName['tokens-per-ship']!.reason)).toMatch(/not computed/);
+  });
+
   it('reads too little coverage on either side as insufficient', () => {
     const compare = (
       mod() as unknown as {
