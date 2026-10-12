@@ -315,6 +315,20 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
     expect(result.byLane).toEqual({});
   });
 
+  it('counts a lane named __proto__ under its own key and leaves Object.prototype alone', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-35');
+    r.route('__proto__', ['code-reviewer']);
+    r.fanOut('h35', ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', 'h35');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    const json = JSON.stringify(s.result);
+    expect(json).toContain('"byLane":{"__proto__":{"SHIP":1,"HOLD":0,"other":0}}');
+    expect(json).toContain('"lanes":{"__proto__":1}');
+    expect(({} as Record<string, unknown>).SHIP).toBeUndefined();
+  });
+
   it('reads the first answer at the first head: HOLD then SHIP at that head is HOLD', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
     r.take('RP-13');

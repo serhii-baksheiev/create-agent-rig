@@ -81,10 +81,12 @@ const firstShippingVerdict = (occurrences) => {
   const reviewed = occurrences.filter((occurrence) => fanOutsOf(occurrence).length > 0);
   // Every reviewed item counts toward its lane, so a shift toward the
   // deterministic lane — which launches no reviewer — stays visible.
-  const lanes = {};
+  // Null-prototype maps: a lane name is journal text, and `__proto__` or
+  // `constructor` must land under its own key, never on Object.prototype.
+  const lanes = Object.create(null);
   for (const item of reviewed) lanes[laneOf(item)] = (lanes[laneOf(item)] ?? 0) + 1;
   const eligible = reviewed.filter((item) => !launchedNoReviewer(item));
-  const result = { ...counts(), lanes, byLane: {} };
+  const result = { ...counts(), lanes, byLane: Object.create(null) };
   let observed = 0;
   for (const occurrence of eligible) {
     const verdict = firstVerdictOf(occurrence);
