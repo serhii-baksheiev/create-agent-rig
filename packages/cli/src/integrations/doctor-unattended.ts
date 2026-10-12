@@ -3,6 +3,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { gitEnv } from '../lib/git-env.js';
+import { substituteContent } from '../lib/substitute.js';
 import { MANIFEST_REL, parseManifest, type RigManifest } from '../lib/manifest.js';
 import { agentOsUniversalDir } from '../templates.js';
 import type { GuardInspection } from './doctor-guards.js';
@@ -40,14 +41,8 @@ type StopFlagModule = {
   armedFlag: (paths: string[]) => { path: string; code: string | null } | null;
 };
 
-/**
- * Exported so `doctor-authority.ts` substitutes the same literal rather than
- * carrying its own second copy (`.claude/rules/invariants.md`, "one spelling
- * of a fact") — it faces the same `__PROJECT_NAME__` placeholder problem for
- * `unattended-flag.mjs`'s `FLAG_BASENAME` that this file already solved for
- * `stop-flag.mjs`'s own flag names below.
- */
-export const PROJECT_PLACEHOLDER = ['__PROJECT', 'NAME__'].join('_');
+/** Recognises a flag name the substitution placeholder has not been filled in. */
+const PROJECT_PLACEHOLDER = ['__PROJECT', 'NAME__'].join('_');
 
 const loadScript = async <T>(...rel: string[]): Promise<T> =>
   (await import(
@@ -68,7 +63,7 @@ async function killSwitch(env: NodeJS.ProcessEnv, project: string | undefined): 
     return armedFlag(named) === null ? 'unknown' : 'fail';
   }
   const armed = armedFlag(
-    stopFlags(env).map((flag) => flag.replaceAll(PROJECT_PLACEHOLDER, project)),
+    stopFlags(env).map((flag) => substituteContent(flag, { projectName: project })),
   );
   return armed === null ? 'pass' : 'fail';
 }

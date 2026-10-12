@@ -1,12 +1,8 @@
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { substituteContent } from '../lib/substitute.js';
 import { agentOsUniversalDir } from '../templates.js';
-import {
-  PROJECT_PLACEHOLDER,
-  readManifest,
-  type Outcome,
-  type UnattendedReport,
-} from './doctor-unattended.js';
+import { readManifest, type Outcome, type UnattendedReport } from './doctor-unattended.js';
 import { readBounded } from './verify.js';
 
 /**
@@ -120,7 +116,7 @@ async function candidateFlagPaths(
     const basename =
       placeholderPath === undefined
         ? ''
-        : path.basename(placeholderPath).replaceAll(PROJECT_PLACEHOLDER, project);
+        : substituteContent(path.basename(placeholderPath), { projectName: project });
     return { home, rel: `.claude/${basename}` };
   });
 }
