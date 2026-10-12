@@ -638,7 +638,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           .sort((a, b) => rank(b) - rank(a))[0];
         return {
           id,
-          declared: intent?.entries.some((entry) => entry.id === id) ?? false,
+          // Read from the parsed entries, not `intent`: one rejected entry
+          // empties `intent` without making a valid entry undeclared.
+          declared:
+            declaration?.status === 'ok' && declaration.entries.some((entry) => entry.id === id),
           observed: check
             ? { status: check.status === 'pass' ? 'ok' : check.status, reason: check.reason }
             : null,

@@ -232,6 +232,26 @@ describe('doctor: the top-level preset summary (RP-314)', () => {
     });
   });
 
+  // RP-436: one rejected entry beside a valid spec-kit entry must not make
+  // the valid one read as undeclared.
+  it('reports spec-kit declared: true when another declaration entry is rejected', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const manifest = await readManifest(repo);
+    if (manifest === null) throw new Error('fixture: no manifest');
+    await writeManifest(repo, { ...manifest, preset: 'sdd' } as RigManifest);
+    await writeDeclaration([
+      { id: 'spec-kit', version: SPEC_KIT_VERSION, selected: true, harnesses: ['claude-code'] },
+      { id: 'not-a-provider', selected: true },
+    ]);
+
+    const { body } = await doctor();
+
+    const preset = body.preset as { integrations: Array<{ id: string; declared: boolean }> };
+    expect(preset.integrations).toContainEqual(
+      expect.objectContaining({ id: 'spec-kit', declared: true }),
+    );
+  });
+
   it('adds no new `checks[]` id for the preset summary itself', async () => {
     await initProject(repo, { withWorkflow: true });
     const manifest = await readManifest(repo);
