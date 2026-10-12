@@ -21,11 +21,11 @@ export async function runFreshnessCommand(
       stderr: 'Unknown integrations subcommand: expected freshness.\n',
     };
   }
-  let values: { json?: boolean };
+  let values: { json?: boolean; 'include-prereleases'?: boolean };
   try {
     ({ values } = parseArgs({
       args: options.args.slice(1),
-      options: { json: { type: 'boolean' } },
+      options: { json: { type: 'boolean' }, 'include-prereleases': { type: 'boolean' } },
       allowPositionals: false,
     }));
   } catch (error) {
@@ -34,6 +34,7 @@ export async function runFreshnessCommand(
   const report = await checkFreshness({
     fetch: options.fetch,
     userAgent: `create-agent-rig/${await packageVersion()}`,
+    includePrereleases: values['include-prereleases'] === true,
   });
   const stdout = values.json
     ? `${JSON.stringify(report)}\n`

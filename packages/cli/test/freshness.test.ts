@@ -331,4 +331,19 @@ describe('create-agent-rig integrations freshness (RP-445)', () => {
       expect(requests, args.join(' ')).toEqual([]);
     }
   });
+
+  it('integrations freshness --include-prereleases counts prereleases', async () => {
+    const { fetch } = fakeFetch({
+      [PROBITY_URL]: npmBody(PROBITY_VERSION, [PROBITY_VERSION, '999.0.0-rc.1']),
+    });
+
+    const result = await runFreshnessCommand({
+      args: ['freshness', '--json', '--include-prereleases'],
+      fetch,
+    });
+
+    expect(result.exitCode).toBe(0);
+    const report = JSON.parse(result.stdout) as Awaited<ReturnType<typeof checkFreshness>>;
+    expect(report.providers[0]).toMatchObject({ id: 'probity', highestStable: '999.0.0-rc.1' });
+  });
 });
