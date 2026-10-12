@@ -981,6 +981,35 @@ describe('the workflow layer is opt-in (RP-180)', () => {
     expect(withWorkflow.files.map((f) => f.path)).toContain('.claude/skills/loop/SKILL.md');
   });
 
+  // RP-495: adding the layer to an existing Core rig left both wiring files
+  // "kept", so record-dispatch.mjs was installed and never called.
+  it('adding the layer to a Core rig rewires the hook files it wrote and the owner never edited', async () => {
+    await initProject(repo, {});
+    const result = await initProject(repo, { withWorkflow: true });
+
+    for (const rel of ['.claude/settings.json', '.codex/hooks.json']) {
+      const wiring = await readFile(path.join(repo, ...rel.split('/')), 'utf8');
+      expect(wiring, rel).toContain('.claude/hooks/record-dispatch.mjs');
+      expect(result.written, rel).toContain(rel);
+      expect(result.skipped, rel).not.toContain(rel);
+      const manifest = await readManifest(repo);
+      expect(manifest?.files[rel], rel).toBe(sha256(wiring));
+    }
+  });
+
+  it('adding the layer keeps wiring the owner edited, byte for byte', async () => {
+    await initProject(repo, {});
+    const settings = path.join(repo, '.claude', 'settings.json');
+    const edited = `${(await readFile(settings, 'utf8')).trimEnd()}\n\n`;
+    await writeFile(settings, edited);
+
+    const result = await initProject(repo, { withWorkflow: true });
+
+    expect(await readFile(settings, 'utf8')).toBe(edited);
+    expect(result.skipped).toContain('.claude/settings.json');
+    expect(result.written).not.toContain('.claude/settings.json');
+  });
+
   it('re-running plain init on a rig that already opted in keeps the workflow layer installed', async () => {
     await initProject(repo, { withWorkflow: true });
     const result = await initProject(repo, {});

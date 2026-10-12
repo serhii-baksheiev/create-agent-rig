@@ -254,6 +254,24 @@ export async function layerOnlyPaths(layer: Layer): Promise<string[]> {
   return manifest[layer];
 }
 
+/**
+ * RP-495: the two wiring files are derived from the installed layers, so
+ * adding a layer changes them. Bytes this rig wrote and the owner never
+ * edited are the rig's to rewrite; anything else is kept.
+ */
+async function isStaleUneditedWiring(
+  rel: string,
+  dest: string,
+  previous: RigManifest | null,
+  rendered: string | undefined,
+): Promise<boolean> {
+  if (rel !== SETTINGS && rel !== CODEX_HOOKS) return false;
+  const installed = previous?.files[rel];
+  if (installed === undefined || rendered === undefined) return false;
+  const bytes = await readFile(dest).catch(() => null);
+  return bytes !== null && sha256(bytes) === installed && sha256(rendered) !== installed;
+}
+
 async function exists(p: string): Promise<boolean> {
   try {
     await access(p);
@@ -613,7 +631,9 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
     const dest = destinations.get(rel)!;
     if (await exists(dest)) {
       // never overwrite a file init did not write (a user's own copy)
-      return { rel, verdict: 'skipped' as const };
+      if (!(await isStaleUneditedWiring(rel, dest, previous, contents.get(rel)))) {
+        return { rel, verdict: 'skipped' as const };
+      }
     }
     // A seed-once path (RP-257) absent from disk but already recorded — in
     // either manifest bucket, `kept` (this release's shape) or `files` (a
