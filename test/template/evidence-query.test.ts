@@ -648,6 +648,39 @@ describe('evidence-query compareOutcome', () => {
     result: { distribution },
   });
 
+  it('refuses a harness-dependent signal whose two sides name different harnesses, or none', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    // A computed tokens-per-ship as a later release would report it.
+    const report = (harness?: string) => ({
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [
+        {
+          name: 'tokens-per-ship',
+          signalVersion: 2,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { ...(harness === undefined ? {} : { harness }), tokensPerShip: 1000 },
+        },
+      ],
+    });
+    for (const [before, after] of [
+      ['claude', 'codex'],
+      [undefined, 'claude'],
+    ] as const) {
+      const s = compare({ baseline: report(before), current: report(after) }).signals[0];
+      expect(s, `${before} vs ${after}`).toMatchObject({ comparison: 'not comparable' });
+      expect(String(s!.reason)).toMatch(/harness/);
+    }
+  });
+
   it('names a repository by its origin URL without credentials', () => {
     const { repositoryIdentity } = mod() as unknown as {
       repositoryIdentity: (url: string) => string;

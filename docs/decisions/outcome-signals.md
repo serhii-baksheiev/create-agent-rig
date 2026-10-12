@@ -56,6 +56,9 @@ How `release-evidence.mjs --outcome --baseline` decides each of those
   refused otherwise (› "refuses a lane mix whose share of any lane moved by
   more than a fifth", › "refuses every lane-dependent signal when the run
   sets reviewed through different lanes").
+- A signal that lists harness is compared only when both sides name the
+  same one (› "refuses a harness-dependent signal whose two sides name
+  different harnesses, or none").
 - A side is insufficient when it observed nothing, or less than the coverage
   threshold — half of its eligible population unless `--min-coverage` says
   otherwise (› "never compares a side that observed nothing, even at a zero

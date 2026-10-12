@@ -454,9 +454,20 @@ export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_CO
     // holds only when both run sets reviewed through compatible lanes; the
     // run set's lane mix is the one first-shipping-verdict counts, and both
     // mixes are printed beside the result.
-    const dependsOnLane = SIGNALS.find((signal) => signal.name === now.name)?.comparableOn.includes(
-      'lane',
-    );
+    const comparableOn = SIGNALS.find((signal) => signal.name === now.name)?.comparableOn ?? [];
+    // A signal compared per harness holds only when both sides name the same one.
+    if (
+      comparableOn.includes('harness') &&
+      (typeof before.result?.harness !== 'string' || before.result.harness !== now.result?.harness)
+    ) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: 'the two sides do not name the same harness',
+      });
+      continue;
+    }
+    const dependsOnLane = comparableOn.includes('lane');
     const lanes =
       dependsOnLane && (baselineLanes || currentLanes)
         ? { lanes: { baseline: baselineLanes ?? {}, current: currentLanes ?? {} } }
