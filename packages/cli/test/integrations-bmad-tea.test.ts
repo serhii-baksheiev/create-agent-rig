@@ -332,6 +332,20 @@ describe('inspectBmadTea (RP-315): read-only doctor surface over the BMAD instal
     expect(result).not.toHaveProperty('version');
   });
 
+  // RP-436: YAML 1.2's core schema spells null as null, Null or NULL too.
+  it.each(['Null', 'NULL'])(
+    'warns version-unknown with no version field when the tea entry version is the YAML null scalar spelled %s',
+    async (versionLiteral) => {
+      await writeManifestYaml(realisticTeaManifest(versionLiteral));
+      await writeTeaConfig();
+
+      const result = await inspectBmadTea(repo);
+
+      expect(result).toEqual({ status: 'warn', reason: 'version-unknown' });
+      expect(result).not.toHaveProperty('version');
+    },
+  );
+
   it('warns manifest-unreadable when the manifest is a directory, not a file', async () => {
     await mkdir(path.join(repo, MANIFEST_REL), { recursive: true });
 

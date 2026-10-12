@@ -18,6 +18,8 @@ const TEA_CONFIG_REL = '_bmad/tea/config.yaml';
 const MAX_MANIFEST_BYTES = 64 * 1024;
 /** The shape `evidence-attach.mjs --producer-version` accepts; any other upstream text never reaches diagnostics. */
 const VERSION_TOKEN = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
+/** YAML 1.2 core-schema null spellings that would otherwise pass VERSION_TOKEN (`~` and empty never do). */
+const YAML_NULLS = new Set(['null', 'Null', 'NULL']);
 
 export type BmadTeaInspectionStatus = 'pass' | 'warn';
 export type BmadTeaInspectionReason =
@@ -107,7 +109,7 @@ export async function inspectBmadTea(repoDir: string): Promise<BmadTeaInspection
   const tea = findTeaModuleVersion(text);
   if (!tea.found) return { status: 'warn', reason: 'not-installed' };
   // YAML's null scalars are no version at all.
-  if (tea.version === undefined || tea.version === 'null' || !VERSION_TOKEN.test(tea.version))
+  if (tea.version === undefined || YAML_NULLS.has(tea.version) || !VERSION_TOKEN.test(tea.version))
     return { status: 'warn', reason: 'version-unknown' };
 
   const config = await resolveReadableInside(repoDir, TEA_CONFIG_REL, 'file');
