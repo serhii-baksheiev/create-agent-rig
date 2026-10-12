@@ -145,6 +145,15 @@ async function wiredPlaywrightMcpVersion(repoDir: string): Promise<string | unde
   }
 }
 
+/** The version Rig's own `.codex/config.toml` `playwright` section launches (RP-445). */
+async function wiredPlaywrightCodexVersion(repoDir: string): Promise<string | undefined> {
+  const file = await readBounded(repoDir, '.codex/config.toml', 64 * 1024);
+  const source = file.status === 'ok' ? text(file.bytes) : undefined;
+  return source?.match(
+    /^\[mcp_servers\.playwright\]\r?\ncommand = "npx"\r?\nargs = \["@playwright\/mcp@([^"\r\n]{1,64})"\]$/m,
+  )?.[1];
+}
+
 /** `probity:<harness>` fix text, by reason (RP-416); a version is the repository's declaration when it has one (RP-445). */
 function probityFix(reason: string, version: VersionClassification | undefined): string {
   if (reason === 'config-missing')
@@ -550,16 +559,18 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     }
     for (const [harness, state] of Object.entries(entry.harnesses)) {
       const version =
-        entry.id === 'playwright-mcp' && harness === 'claude-code'
+        entry.id === 'playwright-mcp'
           ? classifyVersion({
               tested: PLAYWRIGHT_MCP_VERSION,
               declared: playwrightOverride(
                 intent?.entries.find((candidate) => candidate.id === entry.id)?.version,
               ),
               installed:
-                state.wiring === 'healthy'
-                  ? await wiredPlaywrightMcpVersion(options.cwd)
-                  : undefined,
+                state.wiring !== 'healthy'
+                  ? undefined
+                  : harness === 'codex'
+                    ? await wiredPlaywrightCodexVersion(options.cwd)
+                    : await wiredPlaywrightMcpVersion(options.cwd),
             })
           : undefined;
       checks.push({

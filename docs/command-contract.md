@@ -415,12 +415,14 @@ running the launcher.
 
 ### Declared versions (RP-445)
 
-A `probity:<harness>` check, the `bmad-tea` check and the
-`playwright-mcp:claude-code` check each carry a `version` object,
+A `probity:<harness>` check, the `bmad-tea` check and a
+`playwright-mcp:<harness>` check each carry a `version` object,
 `{ state, tested, declared?, installed? }`: `tested` is the Rig-tested
 default, `declared` the declaration entry's exact `version` when it has one,
 `installed` the version doctor read — for `playwright-mcp`, the
-`@playwright/mcp@<version>` argument of Rig's own `.mcp.json` entry. `state`
+`@playwright/mcp@<version>` argument of Rig's own `.mcp.json` entry or
+`.codex/config.toml` section (`packages/cli/test/doctor.test.ts` › "doctor
+reports a codex playwright-mcp override against the Rig-tested version"). `state`
 is one of:
 
 - `tested` — the installed version is the Rig-tested default, and any

@@ -344,6 +344,38 @@ describe('aggregated doctor (RP-21)', () => {
     expect(check).toMatchObject({ status: 'warn', reason: 'version-drift' });
   });
 
+  it('doctor reports a codex playwright-mcp override against the Rig-tested version', async () => {
+    await initProject(repo, {});
+    expect(
+      (
+        await runIntegrationsCommand({
+          cwd: repo,
+          verb: 'add',
+          args: ['playwright-mcp', '--version', '0.0.90', '--harness', 'codex', '--yes'],
+        })
+      ).exitCode,
+    ).toBe(0);
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: '' },
+      guardRunner: passingGuardRunner,
+    });
+
+    const check = (JSON.parse(result.stdout) as Report).checks.find(
+      (candidate) => candidate.id === 'playwright-mcp:codex',
+    );
+    expect(check).toMatchObject({
+      version: {
+        state: 'overridden',
+        tested: PLAYWRIGHT_MCP_VERSION,
+        declared: '0.0.90',
+        installed: '0.0.90',
+      },
+    });
+  });
+
   it('the playwright-mcp drift fix names the declared and the Rig-tested version', async () => {
     await initProject(repo, {});
     await runIntegrationsCommand({
