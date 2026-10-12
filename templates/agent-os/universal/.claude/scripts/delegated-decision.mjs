@@ -914,11 +914,16 @@ const runRecord = async (argv, cwd) => {
   // RP-487: the authority check above read the journal before
   // `recordEvent` took its lock, so a declaration can land in between. The
   // one that governs this decision is the latest one journalled before it.
-  const governing = journalledAuthorityBefore(runDir, journalled.seq);
-  if (governing !== 'delegated') {
+  const governing = journalledAuthority(runDir, journalled.seq);
+  if (governing.state !== 'declared' || governing.to !== 'delegated') {
+    const why =
+      governing.state === 'unreadable'
+        ? 'its run journal could not be read back'
+        : governing.state === 'ended'
+          ? 'the run has ended'
+          : `the latest declaration journalled before it is ${governing.to ?? 'none'}, not delegated`;
     return refuse(
-      'delegated-decision: the decision above was journalled but the evidence was NOT written — ' +
-        `the latest declaration journalled before it is ${governing ?? 'none'}, not delegated.`,
+      `delegated-decision: the decision above was journalled but the evidence was NOT written — ${why}.`,
     );
   }
 
@@ -1059,8 +1064,9 @@ const parseResolveArgs = (argv) => {
 // RP-467: the authority `run-state.mjs authority` last journalled for this
 // run. A state file that says delegated is acted on only when this agrees.
 // RP-487: an ended run declares nothing any more, and a journal that cannot
-// be read is reported as such rather than as "none".
-const journalledAuthority = (runDir) => {
+// be read is reported as such rather than as "none". `beforeSeq` limits it to
+// the declarations journalled before that record.
+const journalledAuthority = (runDir, beforeSeq = Infinity) => {
   let run;
   try {
     run = readRun({ runDir });
@@ -1068,20 +1074,10 @@ const journalledAuthority = (runDir) => {
     return { state: 'unreadable' };
   }
   if (run.ended) return { state: 'ended' };
-  const declared = run.events.filter((event) => event.kind === 'authority-declared');
+  const declared = run.events.filter(
+    (event) => event.kind === 'authority-declared' && event.seq < beforeSeq,
+  );
   return { state: 'declared', to: declared.at(-1)?.data?.to ?? null };
-};
-
-/** The authority declared last before journal record `seq`, or null. */
-const journalledAuthorityBefore = (runDir, seq) => {
-  try {
-    const declared = readRun({ runDir }).events.filter(
-      (event) => event.kind === 'authority-declared' && event.seq < seq,
-    );
-    return declared.at(-1)?.data?.to ?? null;
-  } catch {
-    return null;
-  }
 };
 
 const unjournalledDelegation = (runDir) => {

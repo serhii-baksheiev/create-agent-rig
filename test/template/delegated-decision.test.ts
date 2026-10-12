@@ -2737,4 +2737,44 @@ describe('delegated-decision.mjs — the run authority must match its journalled
     expect(result.stderr).not.toMatch(/declaration is none/);
     await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
   });
+
+  // RP-487: the journal is read again after the decision is journalled. The
+  // preload appends a garbage line right behind the decision event, so the
+  // first read passes and only the re-read cannot parse the journal.
+  it('names the read failure, not "none", when the journal cannot be read after the decision is journalled', async () => {
+    const { dir, env } = await delegatedFixture();
+    const preloadDir = await mkdtemp(path.join(tmpdir(), 'delegated-decision-unreadable-'));
+    const preload = path.join(preloadDir, 'garble.mjs');
+    await writeFile(
+      preload,
+      [
+        "import { createRequire, syncBuiltinESMExports } from 'node:module';",
+        "const fs = createRequire(import.meta.url)('node:fs');",
+        'const originalAppendFileSync = fs.appendFileSync;',
+        'let garbled = false;',
+        'fs.appendFileSync = (...args) => {',
+        '  const result = originalAppendFileSync(...args);',
+        "  if (!garbled && String(args[0]).endsWith('events.jsonl') && String(args[1]).includes('delegated-decision')) {",
+        '    garbled = true;',
+        "    originalAppendFileSync(args[0], 'not json\\n');",
+        '  }',
+        '  return result;',
+        '};',
+        'syncBuiltinESMExports();',
+      ].join('\n'),
+    );
+    try {
+      const result = await runCli(
+        recordArgs({ ticket: 'RP-1', decision: 'merge', summary: 'merged after a full gate' }),
+        dir,
+        { ...env, NODE_OPTIONS: `--import=${pathToFileURL(preload).href}` },
+      );
+      expect(result.code, result.out).not.toBe(0);
+      expect(result.stderr).toMatch(/could not be read/);
+      expect(result.stderr).not.toMatch(/before it is none/);
+      await expect(readFile(decisionsFile(dir, 'RP-1'), 'utf8')).rejects.toThrow();
+    } finally {
+      await removeFixture(preloadDir);
+    }
+  });
 });
