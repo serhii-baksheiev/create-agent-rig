@@ -365,7 +365,9 @@ export async function runIntegrationsCommand(
         ...(values.required !== undefined ? { required: values.required } : {}),
         ...(values.version !== undefined ? { version: values.version } : {}),
         ...(id === 'spec-kit' ? { version: values.version ?? SPEC_KIT_VERSION } : {}),
-        ...(id === 'probity' ? { version: values.version ?? PROBITY_VERSION } : {}),
+        ...(id === 'probity'
+          ? { version: values.version ?? previous?.version ?? PROBITY_VERSION }
+          : {}),
       };
       const checked = parseDeclaration(
         JSON.stringify({ schemaVersion: 1, integrations: [candidate] }),

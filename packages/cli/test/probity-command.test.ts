@@ -234,6 +234,33 @@ describe('setup add probity', () => {
     expect(await exists(mjsConfigPath())).toBe(false);
   });
 
+  it('a re-run of setup add probity without --version keeps the declared override', async () => {
+    const first = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'claude-code', '--version', '1.11.0', '--yes', '--json'],
+      isTTY: false,
+    });
+    expect(first.exitCode, first.stderr).toBe(0);
+
+    const second = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'codex', '--yes', '--json'],
+      isTTY: false,
+    });
+
+    expect(second.exitCode, second.stderr).toBe(0);
+    const declaration = JSON.parse(await readFile(declarationPath(), 'utf8'));
+    expect(declaration.integrations).toEqual([
+      expect.objectContaining({
+        id: PROBITY,
+        version: '1.11.0',
+        harnesses: ['claude-code', 'codex'],
+      }),
+    ]);
+  });
+
   // RP-416 round 2, point 1: probity is neither an MCP server nor rendered
   // into .codex/config.toml, so a Codex MCP provider added afterward must
   // not be refused on probity's account. `renderCodexConfig` is called with
