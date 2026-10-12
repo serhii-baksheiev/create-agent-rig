@@ -340,6 +340,10 @@ export async function runIntegrationsCommand(
           new Set(requested).size !== requested.length)
       )
         throw new Refusal('malformed-provider-selection');
+      // Ahead of the declaration's own exact-version check (RP-445), so a
+      // tag or range keeps Spec Kit's pinned-version refusal.
+      if (id === 'spec-kit' && values.version !== undefined && values.version !== SPEC_KIT_VERSION)
+        throw new Refusal('spec-kit-pinned-version-and-upstream-ownership-required');
       const harnesses = [
         ...new Set([
           ...(previous?.harnesses ?? []),
