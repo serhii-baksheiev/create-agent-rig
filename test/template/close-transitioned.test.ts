@@ -321,7 +321,7 @@ describe('plan-md close proves the transition by re-parsing the plan', () => {
   it("reports transitioned: true once the item's line is gone", async () => {
     const planPath = await planFile();
     const { close } = await load('plan-md.mjs');
-    const result = close({ id: '2' }, { planPath });
+    const result = await close({ id: '2' }, { planPath });
     expect(result).toMatchObject({ ok: true, transitioned: true });
     expect(await readFile(planPath, 'utf8')).not.toContain('- remove me');
   });
@@ -329,7 +329,7 @@ describe('plan-md close proves the transition by re-parsing the plan', () => {
   it('reports transitioned: false for an id the plan does not carry', async () => {
     const planPath = await planFile();
     const { close } = await load('plan-md.mjs');
-    const result = close({ id: '9' }, { planPath });
+    const result = await close({ id: '9' }, { planPath });
     expect(result).toMatchObject({ ok: true, transitioned: false });
     expect(await readFile(planPath, 'utf8')).toBe(PLAN);
   });
@@ -423,5 +423,30 @@ describe('close journals an item-closed event only when it transitioned', () => 
     const events = await itemClosedEvents(runDir);
     expect(events).toHaveLength(1);
     expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '13' });
+  });
+
+  it('a close that did not transition journals nothing', async () => {
+    const runDir = await freshRunDir();
+    await installGh('OPEN');
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' }, { env: { ...process.env, RIG_RUN_DIR: runDir } });
+    expect(result).toMatchObject({ transitioned: false });
+    expect(await itemClosedEvents(runDir)).toEqual([]);
+  });
+
+  it('plan-md close journals one item-closed event when the line is gone', async () => {
+    const runDir = await freshRunDir();
+    const dir = await mkdtemp(path.join(tmpdir(), 'close-plan-'));
+    const planPath = path.join(dir, 'PLAN.md');
+    await writeFile(planPath, '# P\n\n## Agent queue\n\n- keep me\n- remove me\n\n## Journal\n');
+    const { close } = await load('plan-md.mjs');
+    const result = await close(
+      { id: '2' },
+      { planPath, env: { ...process.env, RIG_RUN_DIR: runDir } },
+    );
+    expect(result).toMatchObject({ transitioned: true });
+    const events = await itemClosedEvents(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '2' });
   });
 });
