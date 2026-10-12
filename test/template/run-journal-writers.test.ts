@@ -397,6 +397,22 @@ describe('readRun tolerates a record another writer has not finished flushing', 
     const error = await refusalFrom(() => recordEvent({ runDir, kind: 'second', now: T2 }));
     expect((error as Error & { failure?: unknown }).failure).toBe('unusable');
   });
+
+  it('refuses to append on top of a complete record that lacks its trailing newline (RP-500)', async () => {
+    const runDir = await newRunDir();
+    const eventsPath = path.join(runDir, 'events.jsonl');
+    // A tail that PARSES is still unterminated: appending after it glues the
+    // next record onto the same line, and `readRun` then refuses the run.
+    const unterminated = JSON.stringify({ seq: 1, at: T0, kind: 'first', data: null });
+    await writeFile(eventsPath, unterminated);
+
+    const { recordEvent, readRun } = await load();
+    const error = await refusalFrom(() => recordEvent({ runDir, kind: 'second', now: T2 }));
+    expect((error as Error & { failure?: unknown }).failure).toBe('unusable');
+
+    expect(await readFile(eventsPath, 'utf8')).toBe(unterminated);
+    await expect(Promise.resolve(readRun({ runDir }))).resolves.toBeDefined();
+  });
 });
 
 // code-reviewer's advisory list, promoted: "EACCES/EPERM on a non-writable dir
