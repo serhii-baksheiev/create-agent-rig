@@ -444,6 +444,7 @@ describe('evidence-query outcomeOf: report shape', () => {
     expect(outcome.signals.map((s) => s.name)).toEqual([
       'first-shipping-verdict',
       'gate-rounds',
+      'claim-to-merge',
       'interventions',
       'continuation',
     ]);
@@ -456,8 +457,9 @@ describe('evidence-query outcomeOf: report shape', () => {
       expect(s.signalVersion).toBe(definition!.signalVersion);
       for (const count of [s.eligible, s.observed, s.unknown])
         expect(Number.isInteger(count)).toBe(true);
-      // RP-60 posted no continuation, so that population is empty.
-      const expected = s.name === 'continuation' ? [0, 0, 0] : [1, 1, 0];
+      // RP-60 posted no continuation and recorded no claim, so those two
+      // populations are empty.
+      const expected = ['continuation', 'claim-to-merge'].includes(s.name) ? [0, 0, 0] : [1, 1, 0];
       expect([s.eligible, s.observed, s.unknown]).toEqual(expected);
     }
   });
@@ -553,6 +555,40 @@ describe('evidence-query outcomeOf: continuation', () => {
   });
 });
 
+describe('evidence-query outcomeOf: claim-to-merge', () => {
+  it('measures total wall time from the first valid claim to the merged commit, and excludes an item without both', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    // RP-90: claimed at 00:00:02, its merge commit committed at 01:00:02.
+    r.take('RP-90');
+    r.ev('revalidation', { ticket: 'RP-90', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-90',
+      point: 'BEFORE_CLOSE',
+      action: 'hold',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+    // RP-91: a held claim is not a valid one, and nothing records its merge.
+    r.take('RP-91');
+    r.ev('revalidation', { ticket: 'RP-91', point: 'SELECT', action: 'hold' });
+    // RP-92: claimed, but its merge commit is not in this clone.
+    r.take('RP-92');
+    r.ev('revalidation', { ticket: 'RP-92', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-92',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'c'.repeat(40) } },
+    });
+    const commitTime = (sha: string): string | null =>
+      sha === 'b'.repeat(40) ? '2026-10-01T01:00:03.000Z' : null;
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()], commitTime } as never), 'claim-to-merge');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 1, 2]);
+    // The SELECT event is the run's second record: 2026-10-01T00:00:02Z.
+    expect(s.result).toEqual({ wallTimeMs: { min: 3601000, median: 3601000, max: 3601000 } });
+  });
+});
+
 describe('release-evidence.mjs --outcome', () => {
   it('the CLI --outcome prints the named runs only and leaves the runs directory unchanged', async () => {
     const runsDir = await runsRoot();
@@ -597,6 +633,34 @@ describe('release-evidence.mjs --outcome', () => {
     });
     expect(signal(outcome, 'gate-rounds').result).toEqual({ distribution: { '1': 2 } });
     expect(await snapshot(runsDir)).toEqual(before);
+  });
+
+  it('the CLI reads the merge time from the commit in this checkout', async () => {
+    const git = (args: string[]): Promise<string> =>
+      new Promise((resolve, reject) =>
+        execFile('git', args, { cwd: repoRoot, env: withoutGitLocation() }, (error, out) =>
+          error ? reject(error) : resolve(out.trim()),
+        ),
+      );
+    const sha = await git(['rev-parse', 'HEAD']);
+    const committed = Date.parse(await git(['show', '-s', '--format=%cI', sha]));
+    const runsDir = await runsRoot();
+    const r = await newRun(runsDir, 'run-a');
+    r.take('RP-95');
+    const claim = r.ev('revalidation', { ticket: 'RP-95', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-95',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: sha, to: sha } },
+    });
+
+    const result = await cli(['--outcome', '--runs', runsDir, '--run', 'run-a']);
+    expect(result.code, result.stderr).toBe(0);
+    const s = signal(JSON.parse(result.stdout) as Outcome, 'claim-to-merge');
+    expect([s.eligible, s.observed]).toEqual([1, 1]);
+    const wall = committed - Date.parse(claim.at);
+    expect(s.result).toEqual({ wallTimeMs: { min: wall, median: wall, max: wall } });
   });
 
   it('the CLI reads a repeated --run name once', async () => {

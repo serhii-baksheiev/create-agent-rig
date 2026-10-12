@@ -221,8 +221,57 @@ const continuation = (items) => {
   };
 };
 
+const median = (sorted) =>
+  sorted.length % 2 === 1
+    ? sorted[(sorted.length - 1) / 2]
+    : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+
+/**
+ * Total wall time from an item's first valid claim (a SELECT revalidation
+ * that continued) to the commit its close revalidation proved it merged
+ * (`evidence.ownMergeAdvance.to`), read through `commitTime`. Nothing is
+ * subtracted: CI and review waits are part of it. An item without both ends
+ * is excluded and counted as unknown.
+ */
+const isClaim = (record) => record.kind === 'revalidation' && record.data?.point === 'SELECT';
+
+const claimToMerge = (items, commitTime) => {
+  const claimed = items.filter((item) => item.records.some(isClaim));
+  const durations = [];
+  for (const item of claimed) {
+    const claim = item.records.find(
+      (record) => isClaim(record) && record.data?.action === 'continue',
+    );
+    const merged = item.records.find(
+      (record) =>
+        record.kind === 'revalidation' &&
+        record.data?.point === 'BEFORE_CLOSE' &&
+        typeof record.data?.evidence?.ownMergeAdvance?.to === 'string',
+    );
+    if (!claim || !merged) continue;
+    const end = Date.parse(commitTime(merged.data.evidence.ownMergeAdvance.to) ?? '');
+    const start = Date.parse(claim.at);
+    if (!Number.isFinite(end) || !Number.isFinite(start)) continue;
+    durations.push(end - start);
+  }
+  durations.sort((a, b) => a - b);
+  return {
+    name: 'claim-to-merge',
+    signalVersion: versionOf('claim-to-merge'),
+    eligible: claimed.length,
+    observed: durations.length,
+    unknown: claimed.length - durations.length,
+    result: {
+      wallTimeMs:
+        durations.length === 0
+          ? null
+          : { min: durations[0], median: median(durations), max: durations.at(-1) },
+    },
+  };
+};
+
 /** The outcome report over already-read runs; a refused run is listed, never dropped. */
-export const outcomeOf = ({ runs }) => {
+export const outcomeOf = ({ runs, commitTime = () => null }) => {
   const read = [];
   const skipped = [];
   const occurrences = [];
@@ -242,6 +291,7 @@ export const outcomeOf = ({ runs }) => {
     signals: [
       firstShippingVerdict(items),
       gateRounds(items),
+      claimToMerge(items, commitTime),
       interventions(items),
       continuation(items),
     ],

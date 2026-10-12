@@ -70,6 +70,7 @@ export const SIGNALS = Object.freeze(
       limits: [
         'total wall time includes waiting on CI and on reviews',
         'it is not active engineering time, and no subtraction of pauses turns it into one',
+        'the merge end is the commit the close revalidation proved the item merged to (ownMergeAdvance), read from this checkout; an item without that proof is unknown',
       ],
       comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: [],
