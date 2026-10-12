@@ -5723,6 +5723,21 @@ describe('RP-446: an escalation is journalled with its item', () => {
     expect(await read(runDir, 'events.jsonl')).not.toContain(credential);
   });
 
+  it('bounds the ticket the way every structured journal field is bounded', async () => {
+    const recordEscalation = await loadRecorder();
+    const runDir = await newRunDir();
+
+    await recordEscalation(runDir, { ticket: 'a\nb\r\nc' });
+    await recordEscalation(runDir, { ticket: 'x'.repeat(5000) });
+
+    const [lines, long] = (await escalationEventsIn(runDir)).map(
+      (event) => (event.data as { ticket: string }).ticket,
+    );
+    expect(lines).toBe('a⏎b⏎c');
+    expect(long!.length).toBeLessThanOrEqual(2000);
+    expect(long!.endsWith('[truncated]')).toBe(true);
+  });
+
   it('journals nothing when the count itself could not be written', async () => {
     const recordEscalation = await loadRecorder();
     const runDir = await newRunDir();

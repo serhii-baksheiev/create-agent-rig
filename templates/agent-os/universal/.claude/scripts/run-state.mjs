@@ -71,7 +71,6 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DECISION_AUTHORITIES } from './lib/authority.mjs';
-import { findSecretValues } from './lib/secrets.mjs';
 
 const STATE = 'state.json';
 const MAX_STATE_BYTES = 256 * 1024;
@@ -242,7 +241,8 @@ const writeState = (runDir, current, patch) => {
 export const updateState = (runDir, patch) => writeState(runDir, readState(runDir), patch);
 
 /**
- * Count one task that hit a wall, and hand back the new total.
+ * Count one task that hit a wall, journal which item it was (RP-446), and
+ * resolve to the new total.
  *
  * 🔴 **One recorder, called by three adapters — not three counters.** Every
  * adapter's `escalate()` needs this, and three copies of read-then-increment is
@@ -303,30 +303,22 @@ export const recordEscalation = async (runDir, { ticket } = {}) => {
   return current + 1;
 };
 
-const TICKET_FIELD_CAP = 200;
-
-/** A ticket id as the journal may hold it: withheld whole when it carries a credential shape. */
-const ticketField = (ticket) => {
-  if (ticket === undefined || ticket === null) return 'unknown';
-  const raw = String(ticket).slice(0, TICKET_FIELD_CAP + 128);
-  if (findSecretValues(raw).length > 0) return '[redacted]';
-  return raw.slice(0, TICKET_FIELD_CAP).replace(/[\r\n\u2028\u2029\u0085]+/g, ' ');
-};
-
 /**
  * RP-446: the count says how many walls the run hit; this event says which
  * item. Written only after the count landed, so the two never disagree, and
- * tolerated like the count, because the tracker is already mutated. Imported
- * here, not at the top, like the journal writes below: the queue CLI loads
- * this module before it checks that the journal module is present.
+ * tolerated like the count, because the tracker is already mutated. Both
+ * modules are imported here, not at the top: the queue CLI loads this module
+ * before it checks that the journal module is present, and `continuation.mjs
+ * --post` loads the queue adapters, so a static import would never settle.
  */
 const journalEscalation = async (runDir, ticket) => {
   try {
     const { recordEvent } = await import('./run-journal.mjs');
+    const { composeTextField } = await import('./continuation.mjs');
     recordEvent({
       runDir,
       kind: 'item-escalated',
-      data: { schemaVersion: 1, ticket: ticketField(ticket), stop: 'escalation' },
+      data: { schemaVersion: 1, ticket: composeTextField(ticket), stop: 'escalation' },
       now: new Date().toISOString(),
     });
   } catch (error) {
