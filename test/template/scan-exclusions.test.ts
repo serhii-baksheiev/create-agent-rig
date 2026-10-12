@@ -39,6 +39,7 @@ describe('one exclusion list for every repository scan', () => {
       '**/.codex-*/**',
       '**/.prepare-*/**',
       '**/rp371-vitest-worker-probe-*/**',
+      '**/.doctor-authority-run-*/**',
     ]);
   });
 

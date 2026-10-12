@@ -39,7 +39,9 @@ import { readBounded } from './verify.js';
  * check). `guard-rulebook` is the authority on whether a flag actually
  * authorizes an edit; this is a read-only report of what a flag APPEARS to
  * declare, for a human or a controller reading `doctor`, not a second
- * enforcement path.
+ * enforcement path. A symlinked `~/.claude` hides a live flag: `readBounded`
+ * refuses the symlink, so it reads as unreadable (`unknown`/`unknown`), never
+ * as absent — the safe direction.
  */
 
 export type GateState = 'enforced' | 'not-enforced' | 'unknown';
@@ -64,7 +66,10 @@ type AuthorityModule = {
 };
 
 type HomesModule = { homesOf: (env: NodeJS.ProcessEnv) => string[] };
-type UnattendedFlagPathsModule = { unattendedFlags: (env: NodeJS.ProcessEnv) => string[] };
+type UnattendedFlagPathsModule = {
+  unattendedFlags: (env: NodeJS.ProcessEnv) => string[];
+  FLAG_BASENAME: string;
+};
 
 const loadScript = async <T>(...rel: string[]): Promise<T> =>
   (await import(
@@ -104,24 +109,28 @@ type FlagLookup =
  * one field to `repoDir` before calling it — the INSPECTED repo, never the
  * caller's own `env.CLAUDE_PROJECT_DIR` (RP-343 slice B round 1). `homes` is
  * read the same way, from the unmodified env, so the two lists share both
- * length and order.
+ * length and order. `legacyRel` is the unscoped `FLAG_BASENAME` record in the
+ * same home, which the installed `readUnattended` reports as unreadable when
+ * no scoped flag is present (RP-431).
  */
 async function candidateFlagPaths(
   repoDir: string,
   env: NodeJS.ProcessEnv,
   project: string,
-): Promise<Array<{ home: string; rel: string }>> {
+): Promise<Array<{ home: string; rel: string; legacyRel: string }>> {
   const { homesOf } = await loadScript<HomesModule>('stop-flag.mjs');
-  const { unattendedFlags } = await loadScript<UnattendedFlagPathsModule>('unattended-flag.mjs');
+  const { unattendedFlags, FLAG_BASENAME } =
+    await loadScript<UnattendedFlagPathsModule>('unattended-flag.mjs');
   const homes = homesOf(env);
   const placeholderPaths = unattendedFlags({ ...env, CLAUDE_PROJECT_DIR: repoDir });
+  const legacyRel = `.claude/${FLAG_BASENAME.replaceAll(PROJECT_PLACEHOLDER, project)}`;
   return homes.map((home, index) => {
     const placeholderPath = placeholderPaths[index];
     const basename =
       placeholderPath === undefined
         ? ''
         : path.basename(placeholderPath).replaceAll(PROJECT_PLACEHOLDER, project);
-    return { home, rel: `.claude/${basename}` };
+    return { home, rel: `.claude/${basename}`, legacyRel };
   });
 }
 
@@ -145,6 +154,10 @@ async function armedFlagFor(repoDir: string, env: NodeJS.ProcessEnv): Promise<Fl
     }
     const runDir = (parsed as RawFlag).runDir;
     return { kind: 'armed', runDir: typeof runDir === 'string' ? runDir : null };
+  }
+  for (const { home, legacyRel } of candidates) {
+    const legacy = await readBounded(home, legacyRel, MAX_FLAG_BYTES);
+    if (legacy.status !== 'absent') return { kind: 'unreadable' };
   }
   return { kind: 'absent' };
 }

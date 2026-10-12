@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runDoctor } from '../src/commands/doctor.js';
 import { initProject } from '../src/commands/init.js';
@@ -24,9 +24,11 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 // hand, the same way `doctor-unattended.test.ts` hand-writes the kill-switch
 // brake file, rather than by calling `writeUnattended` — `writeUnattended`
 // mirrors into BOTH `env.HOME` and the real OS home
-// (`unattended-flag.mjs`'s `homesOf`), and this file must never read or write
-// the real `~/.claude`. Writing only to the `env.HOME`-derived path, under
-// this test's own fixture `home`, never touches the real one.
+// (`unattended-flag.mjs`'s `homesOf`), and this file must never write the
+// real `~/.claude`. Writing only to the `env.HOME`-derived path, under this
+// test's own fixture `home`, never touches the real one. Reading is another
+// matter: `homesOf` also yields the real OS home, so doctor itself reads the
+// real `~/.claude` for flag candidates — read-only.
 //
 // RP-343 slice B round 1 (independent-oracle invariant,
 // `.claude/rules/invariants.md`): the flag path is no longer derived by
@@ -39,6 +41,8 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 // deliberately separate, hand-written reimplementation of that module's own
 // `checkoutId`/`scopedBasename` derivation, and the project name comes from
 // the INSTALLED rig's own manifest, never from the template.
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 const passingGuardRunner = async (): Promise<ProviderProcessResult> => ({
   status: 'ok',
@@ -322,16 +326,50 @@ describe('authority.decisionAuthority (RP-343 slice B)', () => {
     expect(authority?.decisionAuthority).not.toBe('owner');
   });
 
+  // RP-431: the installed `readUnattended` reports a legacy unscoped
+  // `<project>-loop-UNATTENDED` record as unreadable when no checkout-scoped
+  // flag exists, and `guard-rulebook` blocks on it — so doctor must not read
+  // that same file as "no flag armed" (`owner`). The legacy name is
+  // hand-written here, never derived from production.
+  it('is unknown, never owner, when only a legacy unscoped <project>-loop-UNATTENDED flag is present', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const runDir = await makeRunDir(JSON.stringify({ decisionAuthority: 'delegated' }));
+    await mkdir(path.join(home, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(home, '.claude', `${await projectName()}-loop-UNATTENDED`),
+      flagBody(runDir),
+    );
+    const authority = (await doctorJson()).authority;
+    expect(authority?.decisionAuthority).toBe('unknown');
+    expect(authority?.executionMode).toBe('unknown');
+  });
+
   // RP-343 slice B round 1: `runDir` is resolved as a root passed straight
   // to a bounded file read — a relative value must never be resolved
   // against whatever directory the doctor process happens to be running
-  // from.
+  // from. RP-431: the relative path names a real run directory from this
+  // process's cwd, whose state.json says `delegated` — so resolving it
+  // against the cwd would read `delegated`, and only the refusal reads
+  // `unknown`. The run directory sits inside this checkout, not the os temp
+  // dir: on a Windows runner those are on different drives, and no relative
+  // path crosses a drive.
   it('is unknown when the armed flag’s runDir is a relative path — never resolved against the doctor’s own cwd', async () => {
     await initProject(repo, { withWorkflow: true });
-    await plantUnattendedFlag(
-      `${JSON.stringify({ item: 'rp343b-fixture', runDir: 'runs/x', allow: [] })}\n`,
-    );
-    expect((await doctorJson()).authority?.decisionAuthority).toBe('unknown');
+    const runDir = await mkdtemp(path.join(repoRoot, '.doctor-authority-run-'));
+    try {
+      await writeFile(
+        path.join(runDir, 'state.json'),
+        JSON.stringify({ decisionAuthority: 'delegated' }),
+      );
+      const relativeRunDir = path.relative(process.cwd(), runDir);
+      expect(path.isAbsolute(relativeRunDir)).toBe(false);
+      await plantUnattendedFlag(
+        `${JSON.stringify({ item: 'rp343b-fixture', runDir: relativeRunDir, allow: [] })}\n`,
+      );
+      expect((await doctorJson()).authority?.decisionAuthority).toBe('unknown');
+    } finally {
+      await removeFixture(runDir);
+    }
   });
 
   // RP-343 slice B round 1: a flag with no `runDir` field at all names no
