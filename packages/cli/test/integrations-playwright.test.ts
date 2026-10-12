@@ -11,7 +11,7 @@
 // restated here, so a future version bump in production is pinned by this
 // test rather than silently drifting from it.
 import { createHash } from 'node:crypto';
-import { mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -194,6 +194,26 @@ describe('playwright-mcp declared-version override (RP-445)', () => {
     expect(await readFile(codexPath(), 'utf8')).toContain(
       '[mcp_servers.playwright]\ncommand = "npx"\nargs = ["@playwright/mcp@0.0.90"]',
     );
+  });
+
+  it('a declaration of latest keeps the Rig-tested version wired', async () => {
+    await mkdir(path.dirname(declarationPath()), { recursive: true });
+    await writeFile(
+      declarationPath(),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        integrations: [
+          { id: 'playwright-mcp', version: 'latest', harnesses: ['claude-code'], selected: true },
+        ],
+      })}\n`,
+    );
+
+    const result = await setup('apply', ['--yes', '--json']);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({
+      mcpServers: { playwright: PLAYWRIGHT_SERVER },
+    });
   });
 });
 

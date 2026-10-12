@@ -17,7 +17,7 @@ import {
   type Harness,
   type ProviderDescriptor,
 } from '../integrations/registry.js';
-import { PLAYWRIGHT_MCP_VERSION } from '../integrations/playwright.js';
+import { PLAYWRIGHT_MCP_VERSION, playwrightOverride } from '../integrations/playwright.js';
 import { resolveReadableInside, resolveWritableInside } from '../lib/safe-path.js';
 import { hasControlCharacter } from '../lib/safe-text.js';
 import { editMcpServers, readMcpConfig } from '../integrations/mcp-json.js';
@@ -71,7 +71,10 @@ function serverFor({ id, version }: DeclaredIntegration) {
   if (id === 'playwright-mcp')
     return {
       name: 'playwright',
-      server: { command: 'npx', args: [`@playwright/mcp@${version ?? PLAYWRIGHT_MCP_VERSION}`] },
+      server: {
+        command: 'npx',
+        args: [`@playwright/mcp@${playwrightOverride(version) ?? PLAYWRIGHT_MCP_VERSION}`],
+      },
     };
   throw new Refusal('not-in-matrix');
 }
