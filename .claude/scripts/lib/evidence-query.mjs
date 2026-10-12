@@ -347,6 +347,10 @@ const mean = (distribution) => {
 
 /** The one number a comparison reads from each signal, and what it measures. */
 const MEASURES = {
+  'first-shipping-verdict': {
+    measure: 'share of observed items whose first verdict was SHIP',
+    of: (signal) => (signal.observed === 0 ? null : signal.result.SHIP / signal.observed),
+  },
   'gate-rounds': {
     measure: 'mean rounds per observed item',
     of: (signal) => mean(signal.result.distribution),
@@ -377,6 +381,22 @@ export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_CO
       });
       continue;
     }
+    // A first verdict depends on the review lane, so the comparison holds
+    // only over the same set of lanes, and both mixes are printed.
+    const lanes =
+      now.name === 'first-shipping-verdict'
+        ? { lanes: { baseline: before.result.lanes, current: now.result.lanes } }
+        : {};
+    const laneSet = (signal) => Object.keys(signal.result.lanes).sort().join(',');
+    if (lanes.lanes && laneSet(before) !== laneSet(now)) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: 'the review lanes differ between baseline and current',
+        ...lanes,
+      });
+      continue;
+    }
     if (!covered(before, minCoverage) || !covered(now, minCoverage)) {
       signals.push({
         ...entry,
@@ -395,6 +415,7 @@ export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_CO
       baseline: was,
       current: is,
       delta: is - was,
+      ...lanes,
     });
   }
   return { schemaVersion: 1, minCoverage, signals };

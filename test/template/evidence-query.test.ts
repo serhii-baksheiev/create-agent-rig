@@ -648,6 +648,52 @@ describe('evidence-query compareOutcome', () => {
     result: { distribution },
   });
 
+  it('compares first verdicts only over the same lanes, and prints both lane mixes', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const verdicts = (lanes: Record<string, number>, ship: number, hold: number) => ({
+      schemaVersion: 1,
+      signals: [
+        {
+          name: 'first-shipping-verdict',
+          signalVersion: 2,
+          eligible: ship + hold,
+          observed: ship + hold,
+          unknown: 0,
+          result: { SHIP: ship, HOLD: hold, other: 0, lanes, byLane: {} },
+        },
+      ],
+    });
+
+    const same = compare({
+      baseline: verdicts({ model: 4 }, 1, 3),
+      current: verdicts({ model: 4 }, 3, 1),
+    }).signals[0];
+    expect(same).toMatchObject({
+      comparison: 'comparable',
+      measure: 'share of observed items whose first verdict was SHIP',
+      baseline: 0.25,
+      current: 0.75,
+      delta: 0.5,
+      lanes: { baseline: { model: 4 }, current: { model: 4 } },
+    });
+
+    const shifted = compare({
+      baseline: verdicts({ model: 4 }, 1, 3),
+      current: verdicts({ model: 2, deterministic: 2 }, 1, 1),
+    }).signals[0];
+    expect(shifted).toMatchObject({
+      comparison: 'not comparable',
+      lanes: { baseline: { model: 4 }, current: { model: 2, deterministic: 2 } },
+    });
+    expect(String(shifted!.reason)).toMatch(/lane/);
+  });
+
   it('reads too little coverage on either side as insufficient', () => {
     const compare = (
       mod() as unknown as {
