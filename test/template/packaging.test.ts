@@ -113,6 +113,7 @@ describe('the root manifest is publish-complete', () => {
       'RP-422',
       'RP-433',
       'RP-429',
+      'RP-465',
       'RP-428',
     ]) {
       expect(first?.[2]).toMatch(new RegExp(ticket));

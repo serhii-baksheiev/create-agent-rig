@@ -35,9 +35,11 @@ capability: it fixes defects that 1.6.0's gate reviewers and the 1.6.0
   rendered wiring differs, `init` rewrites it instead of reporting a
   conflict — unless the rewrite would stop calling a hook still installed on
   disk. Then the file is kept, and `init` says so and points to
-  `create-agent-rig upgrade` to merge the wiring by hand (RP-495). That
-  warning is rendered from the layers the manifest records after the
-  install, so it names the added layer's wiring too (RP-499).
+  `create-agent-rig upgrade` to merge the wiring by hand (RP-495).
+- **`init`'s "already exists — it was kept" warning for edited wiring**
+  hands over the entries of the layers the manifest records after the
+  install, so `--layer workflow` no longer prints Core-only wiring to merge
+  (RP-499).
 - **Delegated decisions re-check authority after journalling.**
   `delegated-decision.mjs record` re-reads the governing authority
   declaration after the decision is journalled and refuses the evidence
@@ -79,7 +81,11 @@ capability: it fixes defects that 1.6.0's gate reviewers and the 1.6.0
     integrity, not a required failure;
   - `codex-hook-trust` is omitted on a rig with no Codex hook wiring;
   - a legacy unscoped unattended flag reports decision authority as
-    `unknown`, not `owner`.
+    `unknown`, not `owner`;
+  - in the `unattended` report, a queue adapter `doctor` does not know
+    reads `tracker-credentials-missing` as `unknown`, not `pass`, and an
+    armed kill switch on a rig with no manifest reads as `fail`, not
+    `unknown`.
 - **`preflight.mjs`** escapes control characters in the unattended-flag
   detail it prints, as its queue detail already did (RP-422).
 
@@ -88,9 +94,9 @@ capability: it fixes defects that 1.6.0's gate reviewers and the 1.6.0
 - The `loop` skill's §6.0 pins a recorded elevated-change acceptance to the
   gated head: any later commit other than the record voids it, and the
   merge head is the record commit (RP-433).
-- `docs/decisions/discipline-providers.md` and the README state the two
-  known limits of how Probity reads a session, including the subagent
-  parent-transcript limit (RP-429, RP-465).
+- `docs/decisions/discipline-providers.md` and the README state that
+  Probity judges a subagent's edit against the parent session's transcript
+  (RP-429, RP-465).
 - `test/template/authority.test.ts` checks against its own independent
   expected lists instead of production's (RP-428).
 
