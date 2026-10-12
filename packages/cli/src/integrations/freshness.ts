@@ -1,3 +1,4 @@
+import { BMAD_TEA_VERSION } from './bmad-tea.js';
 import { PROBITY_VERSION } from './probity.js';
 import { SPEC_KIT_VERSION } from './spec-kit.js';
 
@@ -6,9 +7,11 @@ import { SPEC_KIT_VERSION } from './spec-kit.js';
  * was tested against. Read-only and explicitly networked — the one place the
  * CLI asks a registry anything; doctor and release evidence stay offline.
  */
+export type FreshnessState = 'unknown';
 export type ProviderFreshness = {
   id: string;
   tested: string;
+  state?: FreshnessState;
   latest?: string;
   highestStable?: string;
   latestRelease?: string;
@@ -133,6 +136,13 @@ export async function checkFreshness(options: FreshnessOptions): Promise<Freshne
     providers: [
       await npmFreshness('probity', '@nizos/probity', PROBITY_VERSION, options),
       await githubFreshness('spec-kit', 'github/spec-kit', SPEC_KIT_VERSION, options),
+      // Rig records no upstream repository for TEA, so there is nothing to ask.
+      {
+        id: 'bmad-tea',
+        tested: BMAD_TEA_VERSION,
+        state: 'unknown',
+        reason: 'upstream-not-recorded',
+      },
     ],
   };
 }

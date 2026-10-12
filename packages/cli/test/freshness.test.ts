@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { BMAD_TEA_VERSION } from '../src/integrations/bmad-tea.js';
 import { checkFreshness } from '../src/integrations/freshness.js';
 import { PROBITY_VERSION } from '../src/integrations/probity.js';
 import { SPEC_KIT_VERSION } from '../src/integrations/spec-kit.js';
@@ -124,5 +125,20 @@ describe('integrations freshness (RP-445)', () => {
     expect(specKit?.highestTag).toBeUndefined();
     expect(specKit?.reason).toBe('tag-list-truncated');
     expect(specKit?.latestRelease).toBe(SPEC_KIT_VERSION);
+  });
+
+  it('reports bmad-tea as unknown without a request', async () => {
+    const { fetch, requests } = fakeFetch({});
+
+    const result = await checkFreshness({ fetch, userAgent: 'create-agent-rig/test' });
+
+    expect(result.providers.find((provider) => provider.id === 'bmad-tea')).toEqual({
+      id: 'bmad-tea',
+      tested: BMAD_TEA_VERSION,
+      state: 'unknown',
+      reason: 'upstream-not-recorded',
+    });
+    // Every request went to another provider's upstream; none was made for bmad-tea.
+    expect(requests.filter((request) => !(request.url in BASE_ROUTES))).toEqual([]);
   });
 });
