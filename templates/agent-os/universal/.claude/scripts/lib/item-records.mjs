@@ -130,7 +130,12 @@ export const appendItemRecordLine = (recordPath, line) => {
   // on Windows: an open-flag defence alone would follow a link there. A path
   // that does not exist yet is created with `O_EXCL`, which refuses anything
   // already at the name on every platform; an existing one must be a regular
-  // file with exactly one name, and the opened handle must be that same file.
+  // file with exactly one name, and the opened handle must be that same file:
+  // the same inode as the path (and on POSIX the same device), and the same
+  // device and inode as a second open of the path, which is where Windows
+  // gets its device check (item-records.test.ts, absent in a generated rig,
+  // › "refuses on Windows when
+  // the opened record is on another device than a re-open of its path").
   let pathStat = null;
   try {
     pathStat = lstatSync(recordPath);
@@ -174,6 +179,29 @@ export const appendItemRecordLine = (recordPath, line) => {
       (stat.ino !== pathStat.ino || (process.platform !== 'win32' && stat.dev !== pathStat.dev))
     ) {
       throw new Error(`${recordPath} changed under the check; refusing to write.`);
+    }
+    if (pathStat) {
+      const current = lstatSync(recordPath);
+      if (current.isSymbolicLink() || !current.isFile() || current.nlink !== 1) {
+        throw new Error(`${recordPath} changed under the check; refusing to write.`);
+      }
+      const currentFd = openSync(
+        recordPath,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+      );
+      try {
+        const currentOpened = fstatSync(currentFd);
+        if (
+          !currentOpened.isFile() ||
+          currentOpened.nlink !== 1 ||
+          currentOpened.dev !== stat.dev ||
+          currentOpened.ino !== stat.ino
+        ) {
+          throw new Error(`${recordPath} changed under the check; refusing to write.`);
+        }
+      } finally {
+        closeSync(currentFd);
+      }
     }
     writeSync(fd, line);
   } finally {
