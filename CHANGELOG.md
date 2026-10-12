@@ -15,7 +15,96 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.6.0 (release candidate)
+## 1.6.1 (release candidate)
+
+**1.6.1 is a corrections patch on the published 1.6.0.** It adds no workflow
+capability: it fixes defects that 1.6.0's gate reviewers and the 1.6.0
+"Known limitations" named, each re-verified on `master` before it was taken.
+
+### Fixed
+
+- **The Windows second-open identity check is back.** The dispatch
+  transcript reader (`record-dispatch.mjs` `readBoundedLines`) and the shared
+  item-record append (`lib/item-records.mjs` `appendItemRecordLine`, used by
+  `delegated-decision.mjs` and `evidence-attach.mjs`) re-open the path and
+  require the same device and inode again, as 1.5.0–1.5.2 did. This closes
+  the limitation the 1.6.0 notes tracked for 1.6.1; POSIX behaviour is
+  unchanged (RP-494).
+- **`init` adding a layer rewires unedited hook wiring.** When the manifest
+  vouches for `.claude/settings.json` or `.codex/hooks.json` and the newly
+  rendered wiring differs, `init` rewrites it instead of reporting a
+  conflict — unless the rewrite would stop calling a hook still installed on
+  disk. Then the file is kept, and `init` says so and points to
+  `create-agent-rig upgrade` to merge the wiring by hand (RP-495). That
+  warning is rendered from the layers the manifest records after the
+  install, so it names the added layer's wiring too (RP-499).
+- **Delegated decisions re-check authority after journalling.**
+  `delegated-decision.mjs record` re-reads the governing authority
+  declaration after the decision is journalled and refuses the evidence
+  write unless it is `delegated`; an ended run no longer reads as
+  `delegated`, and an unreadable journal is reported as unreadable
+  (RP-487).
+- **`run-journal.mjs` append refuses an unterminated tail.** A complete
+  record missing its trailing newline was counted and the next record glued
+  onto the same line, after which the run read as unusable; `append` now
+  refuses any final line without a newline, as the module header stated
+  (RP-500).
+- **`apply_patch` Move context matches the way Codex does.** A Move whose
+  context matches the source only after Codex's own fallback (trailing
+  whitespace, surrounding whitespace, typographic punctuation) is no longer
+  refused, and each relaxed pass is charged per character against the
+  existing comparison budget, so long lines cannot keep the guard working
+  past the hook timeout (RP-485).
+- **`evidence-attach.mjs` refusals** (RP-436):
+  - a remote reference is refused when it carries a signed-URL query
+    parameter, or — for a non-special scheme only — userinfo spelled with
+    non-ASCII, `%40` or `%3A` separators in its authority;
+  - the `github-pat` credential shape in `lib/secrets.mjs` also matches a
+    token glued to a preceding word character;
+  - refusals of `--producer`, `--producer-version`, `--kind`,
+    `--subject-kind` and `--authority-class` name the flag and never print
+    the refused value;
+  - `attach` refuses, before journalling, an append that would grow the
+    evidence file past the bound `list` reads.
+- **`doctor` precision** (RP-436, RP-423, RP-431):
+  - a preset's `declared` state is read from the parsed declaration
+    entries, so one rejected entry no longer marks a valid integration
+    undeclared; the plain-text report names the recorded preset; a YAML
+    `Null`/`NULL` BMAD TEA version reads as version-unknown;
+  - `dod-checks` fails an entry `gate-stop-dod` cannot run, through one
+    shared predicate (`.claude/scripts/lib/dod-checks.mjs`);
+  - ignored runtime paths are decided by `git check-ignore`, not by
+    matching `.gitignore` lines literally;
+  - a timed-out or failed-cleanup guard fixture batch reads as unknown
+    integrity, not a required failure;
+  - `codex-hook-trust` is omitted on a rig with no Codex hook wiring;
+  - a legacy unscoped unattended flag reports decision authority as
+    `unknown`, not `owner`.
+- **`preflight.mjs`** escapes control characters in the unattended-flag
+  detail it prints, as its queue detail already did (RP-422).
+
+### Documentation and tests
+
+- The `loop` skill's §6.0 pins a recorded elevated-change acceptance to the
+  gated head: any later commit other than the record voids it, and the
+  merge head is the record commit (RP-433).
+- `docs/decisions/discipline-providers.md` and the README state the two
+  known limits of how Probity reads a session, including the subagent
+  parent-transcript limit (RP-429, RP-465).
+- `test/template/authority.test.ts` checks against its own independent
+  expected lists instead of production's (RP-428).
+
+### Known limitations
+
+- Remaining `evidence-attach.mjs` and `doctor` follow-ups verified after
+  RP-436 — a sibling-run SELECT, value echo in three further refusals, the
+  size check's read-then-append window under concurrent attaches, and three
+  `doctor` checks that still read declaration intent — are tracked in
+  RP-501.
+- The Windows test-harness follow-ups RP-461, RP-474 and RP-476 need a
+  native Windows host and are not part of this release.
+
+## 1.6.0
 
 **1.6.0 is additive on the 1.5 line — Composable Evidence & Capabilities.** It
 opens a bounded path for an externally produced verification artifact to
@@ -96,6 +185,20 @@ list` reads the record back bounded and refuses a forged line, naming it.
   documented bound; a file that grew after its `fstat` check is refused whole
   instead of silently returning a truncated read. This closes the race the
   1.5.2 "Known limitations" note named as deferred to 1.6.0 (RP-430).
+- **Windows credential paths written through an alternate data stream or a
+  drive-relative spelling** — `.env:acceptance`,
+  `secrets::$INDEX_ALLOCATION/config`, `C:secrets::$INDEX_ALLOCATION/config`
+  — are now recognised as credential paths on Windows by `isCredentialPath`
+  in `.claude/scripts/lib/secrets.mjs`, which `guard-secret-file` reads.
+  1.5.2 let these spellings through on native Windows; POSIX is unaffected
+  (RP-496).
+- **Codex on Windows keeps a guard's refusal.** An outer PowerShell
+  `-Command` launch can turn a guard's blocking exit 2 into exit 1, which
+  Codex reads as a failed hook rather than a denial. The Windows guard
+  wrappers in `.codex/hooks.json` now emit a structured `PreToolUse`
+  `permissionDecision: "deny"` on stdout and exit 0, for a guard's refusal
+  and for a wrapper failure or an expired stage bound alike;
+  `docs/decisions/codex-adapter.md` states the contract (RP-498).
 
 ### Known limitations
 

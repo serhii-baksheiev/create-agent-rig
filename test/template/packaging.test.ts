@@ -86,7 +86,7 @@ describe('the root manifest is publish-complete', () => {
     expect(compareSemver(root.version, highestReleased)).toBeGreaterThan(0);
   });
 
-  it('puts the 1.6.0 release candidate first and preserves the published 1.5.2, 1.5.1, 1.5.0 and 1.4.1 history', async () => {
+  it('puts the 1.6.1 release candidate first and preserves the published 1.6.0, 1.5.2, 1.5.1 and 1.5.0 history', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     // RP-374: the previous form of this regex required the heading's digits
     // to be followed immediately by a newline, so a "(release candidate)"
@@ -96,10 +96,42 @@ describe('the root manifest is publish-complete', () => {
     const first = changelog.match(
       /^## (\d+\.\d+\.\d+)(?: \(release candidate\))?\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m,
     );
-    expect(first?.[1]).toBe('1.6.0');
+    expect(first?.[1]).toBe('1.6.1');
     // The named subjects of THIS release, not words any release note would
-    // contain — so an entry copied forward from 1.5.2 fails here. Each pin
+    // contain — so an entry copied forward from 1.6.0 fails here. Each pin
     // pairs the shipped behavior with the ticket that owns it.
+    for (const ticket of [
+      'RP-494',
+      'RP-495',
+      'RP-499',
+      'RP-487',
+      'RP-500',
+      'RP-485',
+      'RP-436',
+      'RP-423',
+      'RP-431',
+      'RP-422',
+      'RP-433',
+      'RP-429',
+      'RP-428',
+    ]) {
+      expect(first?.[2]).toMatch(new RegExp(ticket));
+    }
+    // A patch must say why it is a patch, independently of the version digits.
+    expect(first?.[2]).toMatch(/is a corrections patch on the published 1\.6\.0/i);
+    // RP-494 is the limitation the 1.6.0 notes tracked for 1.6.1; the fix is
+    // stated here, not merely implied by the ticket number.
+    expect(first?.[2]).toMatch(/second-open identity check is back/i);
+    // The known limitations this patch still carries are stated, not left
+    // for a reader to find.
+    expect(first?.[2]).toMatch(/Known limitations/i);
+    expect(first?.[2]).toMatch(/RP-501/);
+    // 1.6.0 is published, so its heading is reconciled to the plain form and
+    // its pins move one release down.
+    const evidenceMinor = changelog.match(/^## 1\.6\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
+    // RP-496 and RP-498 shipped in the published 1.6.0 and are recorded there.
+    expect(evidenceMinor?.[1]).toMatch(/RP-496/);
+    expect(evidenceMinor?.[1]).toMatch(/RP-498/);
     for (const ticket of [
       'RP-312',
       'RP-313',
@@ -117,23 +149,23 @@ describe('the root manifest is publish-complete', () => {
       'RP-450',
       'RP-430',
     ]) {
-      expect(first?.[2]).toMatch(new RegExp(ticket));
+      expect(evidenceMinor?.[1]).toMatch(new RegExp(ticket));
     }
     // A minor must say why it is a minor, independently of the version digits.
-    expect(first?.[2]).toMatch(/Composable Evidence/i);
-    expect(first?.[2]).toMatch(/evidence-attach\.mjs/);
-    expect(first?.[2]).toMatch(/Playwright/);
-    expect(first?.[2]).toMatch(/BMAD TEA/);
-    expect(first?.[2]).toMatch(/--preset/);
-    expect(first?.[2]).toMatch(/maxDelegatedRounds/);
+    expect(evidenceMinor?.[1]).toMatch(/Composable Evidence/i);
+    expect(evidenceMinor?.[1]).toMatch(/evidence-attach\.mjs/);
+    expect(evidenceMinor?.[1]).toMatch(/Playwright/);
+    expect(evidenceMinor?.[1]).toMatch(/BMAD TEA/);
+    expect(evidenceMinor?.[1]).toMatch(/--preset/);
+    expect(evidenceMinor?.[1]).toMatch(/maxDelegatedRounds/);
     // RP-430 is the exact bound the 1.5.2 "Known limitations" note named as
     // fixed in 1.6.0; the fix is stated here, not merely implied by the
     // ticket number appearing somewhere in the release.
-    expect(first?.[2]).toMatch(/refused whole/i);
+    expect(evidenceMinor?.[1]).toMatch(/refused whole/i);
     // The known limitations this minor still carries are stated, not left
     // for a reader to find.
-    expect(first?.[2]).toMatch(/Known limitations/i);
-    expect(first?.[2]).toMatch(/per-checkout/i);
+    expect(evidenceMinor?.[1]).toMatch(/Known limitations/i);
+    expect(evidenceMinor?.[1]).toMatch(/per-checkout/i);
     // 1.5.2 is published, so its heading is reconciled to the plain form and
     // its pins move one release down.
     const safetyPatch = changelog.match(/^## 1\.5\.2\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
@@ -231,6 +263,7 @@ describe('the root manifest is publish-complete', () => {
     expect(reliabilityPatch?.[1]).toMatch(/RP-267/);
     const numbering = changelog.slice(0, changelog.search(/^## \d/m));
     expect(numbering).toMatch(/1\.2\.1 is the\s+third/);
+    expect(changelog.indexOf('## 1.6.1')).toBeLessThan(changelog.indexOf('## 1.6.0'));
     expect(changelog.indexOf('## 1.6.0')).toBeLessThan(changelog.indexOf('## 1.5.2'));
     expect(changelog.indexOf('## 1.5.2')).toBeLessThan(changelog.indexOf('## 1.5.1'));
     expect(changelog.indexOf('## 1.5.1')).toBeLessThan(changelog.indexOf('## 1.5.0'));
@@ -390,22 +423,26 @@ describe('the root manifest is publish-complete', () => {
     // those would grow a list forever against a shape that cannot recur.
     //
     expect(plan).toMatch(
-      /npm contains published `1\.5\.1`\s*\r?\n>\s*\(`gitHead` `57d4dc31351a3f80f1f303153c324144541ecee1`\) and `1\.5\.2`/,
+      /npm contains published `1\.5\.2`\s*\r?\n>\s*\(`gitHead` `dca34da953276996cf007047ed9de11061fee1b2`\) and `1\.6\.0`/,
     );
     expect(plan).toMatch(
-      /and `1\.5\.2`\s*\r?\n>\s*\(`gitHead` `dca34da953276996cf007047ed9de11061fee1b2`\); `latest` is `1\.5\.2`\./,
+      /and `1\.6\.0`\s*\r?\n>\s*\(`gitHead` `536fe59f980d3ee0bea9d53e51f6589453ffb9bb`\); `latest` is `1\.6\.0`\./,
     );
-    expect(plan).toMatch(/`latest` is `1\.5\.2`/);
-    expect(plan).toMatch(/Current release:\*\* 1\.5\.2/);
-    // 1.5.1 and 1.5.2 are live, so neither may be described as pending.
+    expect(plan).toMatch(/`latest` is `1\.6\.0`/);
+    expect(plan).toMatch(/Current release:\*\* 1\.6\.0/);
+    // 1.5.1, 1.5.2 and 1.6.0 are live, so none may be described as pending.
     expect(plan).not.toMatch(
       /`?1\.5\.1`? (?:is )?prepared|`?1\.5\.1`? is the release candidate|1\.5\.1 publish pending|owner publishes `?1\.5\.1`?|`?1\.5\.1`? is waiting on the owner/,
     );
     expect(plan).not.toMatch(
       /`?1\.5\.2`? (?:is )?prepared|`?1\.5\.2`? is the release candidate|1\.5\.2 publish pending|owner publishes `?1\.5\.2`?|`?1\.5\.2`? is waiting on the owner/,
     );
+    expect(plan).not.toMatch(
+      /`?1\.6\.0`? is (?:the [^.`]*)?(?:being )?prepared|`?1\.6\.0`? prepared|`?1\.6\.0`? is the release candidate|1\.6\.0 publish pending|owner publishes `?1\.6\.0`?|`?1\.6\.0`? is waiting on the owner/,
+    );
     // and no superseded version may still be called `latest` — the 0.7.0
     // mistake, kept red for every version that has been overtaken.
+    expect(plan).not.toMatch(/`?1\.5\.2`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.5\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.5\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.4\.1`? is `latest`/);
@@ -426,15 +463,13 @@ describe('the root manifest is publish-complete', () => {
     expect(plan).not.toMatch(/`?0\.7\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.7\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
-    // 1.6.0 is being prepared and remains unpublished: no voice of this file
+    // 1.6.1 is being prepared and remains unpublished: no voice of this file
     // may announce it as shipped.
-    expect(plan).toMatch(
-      /`1\.6\.0` is the Composable Evidence & Capabilities minor being prepared/,
-    );
-    expect(plan).not.toMatch(/Status \(1\.6\.0 published/);
-    expect(plan).not.toMatch(/`?1\.6\.0`? is `latest`/);
-    expect(plan).not.toMatch(/through `?1\.6\.0`? are live/);
-    expect(plan).not.toMatch(/done through `1\.6\.0`/);
+    expect(plan).toMatch(/`1\.6\.1` is the corrections patch on 1\.6\.0 being prepared/);
+    expect(plan).not.toMatch(/Status \(1\.6\.1 published/);
+    expect(plan).not.toMatch(/`?1\.6\.1`? is `latest`/);
+    expect(plan).not.toMatch(/through `?1\.6\.1`? are live/);
+    expect(plan).not.toMatch(/done through `1\.6\.1`/);
 
     // 🔴 What is deliberately NOT here any more, so the next reader does not
     // restore it: while 0.9.0 was prepared, an ENUMERATED negative forbade
@@ -476,8 +511,10 @@ describe('the root manifest is publish-complete', () => {
     expect(ledger['1.5.0']).toBe('d7f4f53c6a91b138e05f31e228ff195a45c9d636');
     expect(ledger['1.5.1']).toBe('57d4dc31351a3f80f1f303153c324144541ecee1');
     expect(ledger['1.5.2']).toBe('dca34da953276996cf007047ed9de11061fee1b2');
-    // 1.6.0 is being prepared and unpublished, so it has no ledger row.
-    expect(ledger).not.toHaveProperty('1.6.0');
+    // `npm view create-agent-rig@1.6.0 gitHead`, read on 2026-10-12.
+    expect(ledger['1.6.0']).toBe('536fe59f980d3ee0bea9d53e51f6589453ffb9bb');
+    // 1.6.1 is being prepared and unpublished, so it has no ledger row.
+    expect(ledger).not.toHaveProperty('1.6.1');
     // and every row is a full sha, never an abbreviation
     for (const [version, sha] of Object.entries(ledger)) {
       if (sha !== null) expect(sha, `${version} is not a full sha`).toMatch(/^[0-9a-f]{40}$/);
