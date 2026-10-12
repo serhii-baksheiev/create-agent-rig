@@ -246,7 +246,7 @@ describe('github-issues re-records the marker after each write of its own', () =
           if (op === 'claim') adapter.claim(ticket);
           if (op === 'comment') adapter.comment(ticket, 'a note');
           if (op === 'close') adapter.close(ticket, { prUrl: 'https://x/1' });
-          if (op === 'escalate') adapter.escalate(ticket, 'a diagnosis');
+          if (op === 'escalate') await adapter.escalate(ticket, 'a diagnosis');
         }),
       );
       expect(readState(runDir).takeUps).toEqual({ '7': '2026-08-26T10:00:00Z' });

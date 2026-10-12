@@ -241,7 +241,8 @@ const writeState = (runDir, current, patch) => {
 export const updateState = (runDir, patch) => writeState(runDir, readState(runDir), patch);
 
 /**
- * Count one task that hit a wall, and hand back the new total.
+ * Count one task that hit a wall, journal which item it was (RP-446), and
+ * resolve to the new total.
  *
  * 🔴 **One recorder, called by three adapters — not three counters.** Every
  * adapter's `escalate()` needs this, and three copies of read-then-increment is
@@ -267,13 +268,12 @@ export const updateState = (runDir, patch) => writeState(runDir, readState(runDi
  * must not be able to make the count `NaN`, which compares false against every
  * threshold and silently disables the stop it feeds.
  */
-export const recordEscalation = (runDir) => {
+export const recordEscalation = async (runDir, { ticket } = {}) => {
   if (!runDir) return 0;
   const onDisk = readState(runDir).escalations;
   const current = Number.isInteger(onDisk) && onDisk >= 0 ? onDisk : 0;
   try {
     updateState(runDir, { escalations: current + 1 });
-    return current + 1;
   } catch (error) {
     // 🔴 **This one call tolerates a failed write, and the reason is the caller,
     // not the value.** Two of the three adapters run this AFTER the tracker is
@@ -298,6 +298,33 @@ export const recordEscalation = (runDir) => {
     // The count actually on disk, not the one intended: a caller journalling
     // this number must not record a streak the state file does not carry.
     return current;
+  }
+  await journalEscalation(runDir, ticket);
+  return current + 1;
+};
+
+/**
+ * RP-446: the count says how many walls the run hit; this event says which
+ * item. Written only after the count landed, so the two never disagree, and
+ * tolerated like the count, because the tracker is already mutated. Both
+ * modules are imported here, not at the top: the queue CLI loads this module
+ * before it checks that the journal module is present, and `continuation.mjs
+ * --post` loads the queue adapters, so a static import would never settle.
+ */
+const journalEscalation = async (runDir, ticket) => {
+  try {
+    const { recordEvent } = await import('./run-journal.mjs');
+    const { composeTextField } = await import('./continuation.mjs');
+    recordEvent({
+      runDir,
+      kind: 'item-escalated',
+      data: { schemaVersion: 1, ticket: composeTextField(ticket), stop: 'escalation' },
+      now: new Date().toISOString(),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `run state: the escalation was counted but not journalled in ${runDir} — ${error.message}\n`,
+    );
   }
 };
 
