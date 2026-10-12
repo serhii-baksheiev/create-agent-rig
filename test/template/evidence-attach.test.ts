@@ -2318,9 +2318,41 @@ describe('evidence-attach.mjs list', () => {
     );
     expect(result.code, result.out).toBe(2);
   });
+
+  it('refuses to append evidence that would grow the file past the bound list reads, so list stays readable (RP-436)', async () => {
+    const bound = 256 * 1024;
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const first = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(first.code, first.out).toBe(0);
+
+    // Every attach of VALID_REF at this HEAD stores a line of the same length,
+    // so filling the file with copies of the first one leaves it at or under
+    // the bound while one more such line would cross it.
+    const line = await readFile(evidenceFile(dir, 'RP-1'), 'utf8');
+    const copies = Math.floor(bound / Buffer.byteLength(line));
+    await writeFile(evidenceFile(dir, 'RP-1'), line.repeat(copies));
+    const before = await readFile(evidenceFile(dir, 'RP-1'));
+    expect(before.length).toBeLessThanOrEqual(bound);
+    expect(before.length + Buffer.byteLength(line)).toBeGreaterThan(bound);
+
+    const attached = await runCli(attachArgs(VALID_REF), dir, envFor(runDir));
+    expect(attached.code, attached.out).not.toBe(0);
+    expect(attached.out).toMatch(/262144|256 KiB/);
+    expect((await readFile(evidenceFile(dir, 'RP-1'))).equals(before)).toBe(true);
+
+    const listed = await run(
+      process.execPath,
+      [evidenceAttachScript, 'list', '--ticket', 'RP-1', '--json'],
+      dir,
+      envFor(undefined),
+    );
+    expect(listed.code, listed.out).toBe(0);
+  });
 });
 
-// --- C: advisory-only, as a unit property -----------------------------------
+// ---C: advisory-only, as a unit property -----------------------------------
 
 describe('evidence-attach.mjs — ADVISORY_DECISIONS and parseEvidence (pure helpers)', () => {
   it('ADVISORY_DECISIONS names exactly pass, concerns, fail, and is frozen', async () => {

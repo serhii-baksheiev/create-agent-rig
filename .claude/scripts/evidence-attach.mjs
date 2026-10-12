@@ -560,6 +560,22 @@ const runAttach = async (argv, cwd) => {
     }
   }
 
+  // RP-436: `list` refuses a file over MAX_EVIDENCE_BYTES whole, so an append
+  // that would cross it is refused here, before anything is journalled.
+  const line = `${JSON.stringify(descriptor)}\n`;
+  let currentBytes = 0;
+  try {
+    currentBytes = lstatSync(evidencePath).size;
+  } catch {
+    // absent: the append creates it
+  }
+  if (currentBytes + Buffer.byteLength(line) > MAX_EVIDENCE_BYTES) {
+    return refuse(
+      `${relative(projectRoot, evidencePath)} would grow past the ${MAX_EVIDENCE_BYTES}-byte bound ` +
+        '`list` reads; nothing was attached.',
+    );
+  }
+
   // Journal first: a run that cannot record what it attached attaches nothing.
   try {
     recordEvent({ runDir, kind: 'artifact-evidence', data: descriptor, now: descriptor.producedAt });
@@ -569,7 +585,7 @@ const runAttach = async (argv, cwd) => {
 
   try {
     ensureItemRecordDir(projectRoot, 'evidence');
-    appendItemRecordLine(evidencePath, `${JSON.stringify(descriptor)}\n`);
+    appendItemRecordLine(evidencePath, line);
   } catch (error) {
     process.stderr.write(
       `evidence-attach: ${printable(`journaled, but ${relative(projectRoot, evidencePath)} was not written — ${error.message}`)}\n`,
