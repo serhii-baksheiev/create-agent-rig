@@ -180,14 +180,8 @@ const MAX_PERSONAL_CHECK_BYTES = 64 * 1024;
 /**
  * Required tracker credential env var NAMES, by queue adapter (RP-230).
  * `plan-md` needs nothing and `github-issues` delegates auth entirely to the
- * `gh` CLI, so both map to an empty list — spelled out here for a reader of
- * this map, not because `personalTrackerCheck` tells the two apart at
- * runtime: a known adapter with an empty list and an adapter name this map
- * has no entry for both take the same `required === undefined || required
- * .length === 0` branch below and both omit the check silently (RP-230
- * round 2 comment fix — an earlier version of this comment claimed the two
- * were distinguished; they are not). The full list of ways this check omits
- * itself silently is in `docs/command-contract.md`'s RP-230 subsection.
+ * `gh` CLI, so both map to an empty list. The full list of ways this check
+ * omits itself silently is in `docs/command-contract.md`'s RP-230 subsection.
  *
  * `jira`'s list is a second copy of
  * `templates/agent-os/universal/.claude/scripts/queue/jira.mjs`'s own
@@ -203,15 +197,6 @@ const TRACKER_REQUIRED_ENV: Record<string, string[]> = {
   jira: ['JIRA_BASE_URL', 'JIRA_EMAIL', 'JIRA_API_TOKEN'],
 };
 
-/**
- * Presence-only report of the tracker credential env vars the repository's
- * own `.claude/queue.json` adapter requires (RP-230). `undefined` — no check
- * emitted at all — when there is nothing personal to check: no queue.json,
- * an unreadable or unparseable one, or an adapter this map does not require
- * anything for (`plan-md`, `github-issues`, or a name this map does not
- * know). Never inspects a credential VALUE, only whether its env var NAME is
- * set.
- */
 /**
  * What `.claude/queue.json` asks of this machine's tracker credentials:
  * `unreadable` when the file exists but cannot be read or parsed, `none` when
