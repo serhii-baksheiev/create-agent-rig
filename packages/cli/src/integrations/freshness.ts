@@ -1,4 +1,5 @@
 import { PROBITY_VERSION } from './probity.js';
+import { SPEC_KIT_VERSION } from './spec-kit.js';
 
 /**
  * RP-445: how a provider's newest upstream release relates to the version Rig
@@ -10,6 +11,8 @@ export type ProviderFreshness = {
   tested: string;
   latest?: string;
   highestStable?: string;
+  latestRelease?: string;
+  highestTag?: string;
 };
 export type FreshnessReport = { schemaVersion: 1; providers: ProviderFreshness[] };
 export type FreshnessOptions = {
@@ -88,9 +91,43 @@ async function npmFreshness(
   };
 }
 
+async function githubFreshness(
+  id: string,
+  repo: string,
+  tested: string,
+  options: FreshnessOptions,
+): Promise<ProviderFreshness> {
+  const get = async (url: string): Promise<unknown> =>
+    (
+      await options.fetch(url, {
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': options.userAgent },
+      })
+    ).json();
+  const unv = (value: unknown) => (typeof value === 'string' ? value.replace(/^v/, '') : '');
+  const release = (await get(`https://api.github.com/repos/${repo}/releases/latest`)) as {
+    tag_name?: unknown;
+  };
+  const tags = (await get(`https://api.github.com/repos/${repo}/tags?per_page=100`)) as {
+    name?: unknown;
+  }[];
+  const latestRelease = unv(release.tag_name);
+  return {
+    id,
+    tested,
+    ...(SEMVER.test(latestRelease) ? { latestRelease } : {}),
+    highestTag: highest(
+      tags.map((tag) => unv(tag.name)),
+      options.includePrereleases ?? false,
+    ),
+  };
+}
+
 export async function checkFreshness(options: FreshnessOptions): Promise<FreshnessReport> {
   return {
     schemaVersion: 1,
-    providers: [await npmFreshness('probity', '@nizos/probity', PROBITY_VERSION, options)],
+    providers: [
+      await npmFreshness('probity', '@nizos/probity', PROBITY_VERSION, options),
+      await githubFreshness('spec-kit', 'github/spec-kit', SPEC_KIT_VERSION, options),
+    ],
   };
 }
