@@ -42,12 +42,12 @@ nothing updates a provider on its own.
   naming its item; `continuation.mjs --post` journals a `continuation`
   record when the tracker took the note, or when the adapter answers that
   the journal is where it lands (`plan-md`) (RP-446, RP-447).
-- **`create-agent-rig integrations freshness [--json]
-[--include-prereleases]`** — read-only, and the one command that makes
-  network requests: it reports the newest npm and GitHub releases of the
-  pinned providers next to the Rig-tested versions. A network failure is an
-  `unknown` result, not an error; it writes nothing and changes no pin.
-  `doctor` stays offline (RP-445).
+- **`create-agent-rig integrations freshness [--json] [--include-prereleases]`**
+  — read-only and explicitly networked: it reports the newest npm and GitHub
+  releases of Probity, Playwright MCP and Spec Kit next to the Rig-tested
+  versions; BMAD TEA is `unknown`, since Rig records no upstream for it. A
+  network failure is an `unknown` result, not an error; it writes nothing and
+  changes no pin. `doctor` stays offline (RP-445).
 - **Exact repository version overrides.** A declared version of Probity,
   BMAD TEA or Spec Kit must name one exact release; a range or a tag is
   rejected as `malformed`. A repository may declare an exact Probity, BMAD
@@ -76,8 +76,9 @@ nothing updates a provider on its own.
   Rig's own hash-matching entry without a version-shape check; the plain-text
   output never prints it.
 - The `evidence-attach.mjs` and `doctor` follow-ups recorded for 1.6.1 remain
-  in RP-501, and the hosted Windows runner's per-case git fixture cost is
-  tracked on RP-476.
+  in RP-501. RP-476 made the `delegated-rounds` test fixture build once per
+  file; the same per-case git fixture cost in other test files still times
+  out on the hosted Windows runner at times, recorded on RP-476.
 
 ## 1.6.1
 
