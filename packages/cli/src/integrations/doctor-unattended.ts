@@ -1,5 +1,8 @@
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+import { gitEnv } from '../lib/git-env.js';
 import { MANIFEST_REL, parseManifest, type RigManifest } from '../lib/manifest.js';
 import { agentOsUniversalDir } from '../templates.js';
 import type { GuardInspection } from './doctor-guards.js';
@@ -125,7 +128,48 @@ export const RUNTIME_IGNORES = Object.freeze({
   ]),
 });
 
-async function gitignoreEntries(repoDir: string, layers: readonly string[]): Promise<Outcome> {
+const runFile = promisify(execFile);
+
+/**
+ * The paths git ignores among `paths`, by this repository's own ignore rules —
+ * the user's global excludes file is switched off, since it does not travel
+ * with a clone — or null when git cannot answer here (no repository, no git,
+ * or no answer inside the bound).
+ */
+async function gitIgnored(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  paths: readonly string[],
+): Promise<Set<string> | null> {
+  try {
+    const { stdout } = await runFile(
+      'git',
+      ['-c', 'core.excludesFile=', 'check-ignore', '--no-index', '--', ...paths],
+      { cwd: repoDir, env: gitEnv(env), timeout: 10_000, killSignal: 'SIGKILL' },
+    );
+    return new Set(stdout.split(/\r?\n/));
+  } catch (error) {
+    // Exit 1 is git's answer "none of them is ignored", not a failure to answer.
+    const code =
+      typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : null;
+    return code === 1 ? new Set() : null;
+  }
+}
+
+async function gitignoreEntries(
+  repoDir: string,
+  layers: readonly string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Outcome> {
+  const required = [
+    ...RUNTIME_IGNORES.core,
+    ...(layers.includes('workflow') ? RUNTIME_IGNORES.workflow : []),
+  ];
+  // A directory entry is asked about through a path inside it, which git
+  // matches whether or not the directory exists yet.
+  const probes = required.map((entry) => (entry.endsWith('/') ? `${entry}probe` : entry));
+  const ignored = await gitIgnored(repoDir, env, probes);
+  if (ignored !== null) return probes.every((probe) => ignored.has(probe)) ? 'pass' : 'fail';
   const source = await readBounded(repoDir, '.gitignore', 1024 * 1024);
   if (source.status === 'absent') return 'fail';
   if (source.status !== 'ok') return 'unknown';
@@ -135,10 +179,6 @@ async function gitignoreEntries(repoDir: string, layers: readonly string[]): Pro
       .split(/\r?\n/)
       .map((line) => line.trim().replace(/^\//, '')),
   );
-  const required = [
-    ...RUNTIME_IGNORES.core,
-    ...(layers.includes('workflow') ? RUNTIME_IGNORES.workflow : []),
-  ];
   return required.every((entry) => lines.has(entry)) ? 'pass' : 'fail';
 }
 
@@ -188,7 +228,9 @@ export async function inspectUnattended(options: {
     'tracker-credentials-missing': options.tracker ?? 'unknown',
     'dod-checks-missing': await dodChecks(options.repoDir),
     'gitignore-runtime-entries-missing':
-      manifest === null ? 'unknown' : await gitignoreEntries(options.repoDir, manifest.layers),
+      manifest === null
+        ? 'unknown'
+        : await gitignoreEntries(options.repoDir, manifest.layers, options.env),
     'workflow-layer-missing':
       manifest === null ? 'unknown' : manifest.layers.includes('workflow') ? 'pass' : 'fail',
   };

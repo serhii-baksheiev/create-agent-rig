@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -164,6 +165,26 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
       ].join('\n'),
     );
     expect(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome).toBe('pass');
+  });
+
+  it('reports gitignore-runtime-entries-missing pass for patterns git itself ignores the paths by, in a git repository (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    execFileSync('git', ['init', '--quiet'], {
+      cwd: repo,
+      env: { HOME: home, PATH: process.env.PATH ?? '', GIT_CONFIG_NOSYSTEM: '1' },
+    });
+    const gitignore = path.join(repo, '.gitignore');
+    const seen: Array<string | undefined> = [];
+    await writeFile(
+      gitignore,
+      '.claude/worktrees\n.claude/runs\n.claude/*.json\n.claude/queue.board\n',
+    );
+    seen.push(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome);
+    await writeFile(gitignore, '/.claude/\n');
+    seen.push(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome);
+    await writeFile(gitignore, '.claude/worktrees\n');
+    seen.push(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome);
+    expect(seen).toEqual(['pass', 'pass', 'fail']);
   });
 
   it('reports dod-checks-missing from .claude/hooks/dod-checks.json: absent or empty warns, a command list passes, unparseable is unknown', async () => {
