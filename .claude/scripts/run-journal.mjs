@@ -317,8 +317,18 @@ const linesOf = (runDir, file, { tolerateUnterminatedTail = false } = {}) => {
   }
 
   let lines = raw.split('\n').filter((line) => line.trim() !== '');
-  if (tolerateUnterminatedTail && lines.length > 0 && !raw.endsWith('\n')) {
-    lines = lines.slice(0, -1);
+  if (lines.length > 0 && !raw.endsWith('\n')) {
+    if (tolerateUnterminatedTail) {
+      lines = lines.slice(0, -1);
+    } else {
+      // RP-500: a final record with no newline — even one that parses — is
+      // one a writer may not have finished; appending would glue onto it.
+      throw new RunJournalError(
+        'unusable',
+        `${path} ends without a newline, so its last record may be unfinished. ` +
+          'Refusing to append on top of a line nobody can vouch for.',
+      );
+    }
   }
 
   return lines.map((line, index) => {
