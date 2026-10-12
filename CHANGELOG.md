@@ -36,7 +36,7 @@ capability: it fixes defects that 1.6.0's gate reviewers and the 1.6.0
   conflict — unless the rewrite would stop calling a hook still installed on
   disk. Then the file is kept, and `init` says so and points to
   `create-agent-rig upgrade` to merge the wiring by hand (RP-495).
-- **`init`'s "already exists — it was kept" warning for edited wiring**
+- **`init`'s "already exists — it was kept" warning for kept wiring**
   hands over the entries of the layers the manifest records after the
   install, so `--layer workflow` no longer prints Core-only wiring to merge
   (RP-499).
@@ -83,9 +83,9 @@ capability: it fixes defects that 1.6.0's gate reviewers and the 1.6.0
   - a legacy unscoped unattended flag reports decision authority as
     `unknown`, not `owner`;
   - in the `unattended` report, a queue adapter `doctor` does not know
-    reads `tracker-credentials-missing` as `unknown`, not `pass`, and an
-    armed kill switch on a rig with no manifest reads as `fail`, not
-    `unknown`.
+    reads `tracker-credentials-missing` as `unknown`, not `pass`, and on a
+    rig with no manifest an existing `AGENT_LOOP_STOP` kill-switch path
+    reads as `fail`, not `unknown`.
 - **`preflight.mjs`** escapes control characters in the unattended-flag
   detail it prints, as its queue detail already did (RP-422).
 
