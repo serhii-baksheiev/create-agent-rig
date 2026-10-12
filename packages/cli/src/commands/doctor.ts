@@ -16,6 +16,12 @@ import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
 import { inspectBmadTea, BMAD_TEA_VERSION, teaPackageVersion } from '../integrations/bmad-tea.js';
 import type { BmadTeaVersionFound } from '../integrations/bmad-tea.js';
 import { classifyVersion, type VersionClassification } from '../integrations/version-state.js';
+import {
+  PLAYWRIGHT_MCP_VERSION,
+  playwrightOverride,
+  wiredPlaywrightVersion,
+} from '../integrations/playwright.js';
+import { readMcpConfig } from '../integrations/mcp-json.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -84,7 +90,7 @@ type Check = {
   teaVersion?: string;
   /** `bmad-tea` only — what a `version-unknown` found instead of a version; stripped like `teaVersion`. */
   teaVersionFound?: BmadTeaVersionFound;
-  /** `probity:<harness>` and `bmad-tea` only — reaches the report as-is (RP-445). */
+  /** `probity:<harness>`, `bmad-tea` and `playwright-mcp:claude-code` only — reaches the report as-is (RP-445). */
   version?: VersionClassification;
 };
 export type DoctorOptions = {
@@ -125,6 +131,18 @@ function rigVersionFix(reason: string, versions: { cli: string; repository: stri
     return `Update create-agent-rig to at least ${versions.repository} before running setup or upgrade in this repository.`;
   }
   return "Compare the CLI version with the version recorded in this repository's manifest by hand before running setup or upgrade.";
+}
+
+/** The version Rig's own `.mcp.json` `playwright` entry launches (RP-445). */
+async function wiredPlaywrightMcpVersion(repoDir: string): Promise<string | undefined> {
+  const file = await readBounded(repoDir, '.mcp.json', 64 * 1024);
+  const source = file.status === 'ok' ? text(file.bytes) : undefined;
+  if (source === undefined) return undefined;
+  try {
+    return wiredPlaywrightVersion(readMcpConfig(source).mcpServers.playwright);
+  } catch {
+    return undefined;
+  }
 }
 
 /** `probity:<harness>` fix text, by reason (RP-416); a version is the repository's declaration when it has one (RP-445). */
@@ -531,6 +549,19 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       continue;
     }
     for (const [harness, state] of Object.entries(entry.harnesses)) {
+      const version =
+        entry.id === 'playwright-mcp' && harness === 'claude-code'
+          ? classifyVersion({
+              tested: PLAYWRIGHT_MCP_VERSION,
+              declared: playwrightOverride(
+                intent?.entries.find((candidate) => candidate.id === entry.id)?.version,
+              ),
+              installed:
+                state.wiring === 'healthy'
+                  ? await wiredPlaywrightMcpVersion(options.cwd)
+                  : undefined,
+            })
+          : undefined;
       checks.push({
         id: `${entry.id}:${harness}`,
         status:
@@ -547,6 +578,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
               ? 'launcher-missing'
               : 'wired'
             : state.wiring,
+        ...(version === undefined ? {} : { version }),
       });
     }
   }

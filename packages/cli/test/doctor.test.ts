@@ -9,6 +9,7 @@ import { runIntegrationsCommand } from '../src/commands/integrations.js';
 import { applyUpgrade, planUpgrade } from '../src/commands/upgrade.js';
 import { readManifest, writeManifest } from '../src/lib/manifest.js';
 import type { ProviderProcessResult } from '../src/integrations/spawn.js';
+import { PLAYWRIGHT_MCP_VERSION } from '../src/integrations/playwright.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 // Same walk `version.test.ts` uses from `test/` to the repo root — an
@@ -269,6 +270,48 @@ describe('aggregated doctor (RP-21)', () => {
         reason: 'pristine',
       }),
     );
+  });
+
+  // RP-445: the version doctor reads is the one wired in the owned entry's args.
+  it('doctor reports playwright-mcp overridden when the wired version equals the declared one', async () => {
+    await initProject(repo, {});
+    expect(
+      (
+        await runIntegrationsCommand({
+          cwd: repo,
+          verb: 'add',
+          args: ['playwright-mcp', '--version', '0.0.90', '--harness', 'claude-code', '--yes'],
+        })
+      ).exitCode,
+    ).toBe(0);
+    const bin = path.join(home, 'bin');
+    await mkdir(bin);
+    await writeFile(path.join(bin, process.platform === 'win32' ? 'npx.cmd' : 'npx'), '', {
+      mode: 0o755,
+    });
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: bin },
+      guardRunner: passingGuardRunner,
+    });
+
+    const check = (JSON.parse(result.stdout) as Report).checks.find(
+      (candidate) => candidate.id === 'playwright-mcp:claude-code',
+    );
+    expect(check).toMatchObject({
+      status: 'ok',
+      reason: 'wired',
+      version: {
+        state: 'overridden',
+        tested: PLAYWRIGHT_MCP_VERSION,
+        declared: '0.0.90',
+        installed: '0.0.90',
+      },
+    });
+    expect(check?.detail).toContain('0.0.90');
+    expect(check?.detail).toContain(PLAYWRIGHT_MCP_VERSION);
   });
 
   it('distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets', async () => {
