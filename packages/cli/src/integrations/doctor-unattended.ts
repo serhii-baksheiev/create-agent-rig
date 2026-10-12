@@ -84,17 +84,22 @@ async function detectionContract(repoDir: string): Promise<Outcome> {
   }
 }
 
+interface DodChecksModule {
+  isRunnableDodEntry: (command: unknown) => boolean;
+}
+
 /**
  * The Definition-of-Done gate has something to run: `.claude/hooks/dod-checks.json`
- * is a non-empty array of entries `gate-stop-dod` runs as commands — a non-empty
- * string with no NUL, the hook's own `runnable` predicate. Absent or empty is
- * the inert gate, and any other entry is a check that produces no verdict; a
- * file that does not parse was not judged.
+ * is a non-empty array of entries `gate-stop-dod` runs as commands — the one
+ * predicate in `.claude/scripts/lib/dod-checks.mjs`, which the hook imports
+ * too. Absent or empty is the inert gate, and any other entry is a check that
+ * produces no verdict; a file that does not parse was not judged.
  */
-const runnable = (command: unknown): boolean =>
-  typeof command === 'string' && command !== '' && !command.includes('\0');
-
 async function dodChecks(repoDir: string): Promise<Outcome> {
+  const { isRunnableDodEntry: runnable } = await loadScript<DodChecksModule>(
+    'lib',
+    'dod-checks.mjs',
+  );
   const source = await readBounded(repoDir, '.claude/hooks/dod-checks.json', 64 * 1024);
   if (source.status === 'absent') return 'fail';
   if (source.status !== 'ok') return 'unknown';
@@ -197,8 +202,10 @@ function guardOutcomes(guards: GuardInspection | undefined): Record<string, Outc
   if (guards.reason === 'hook-wiring-invalid') {
     return { 'hook-wiring-missing': 'fail', 'guard-integrity-failed': 'unknown' };
   }
-  // A fixture root left behind, or a batch that never finished, says nothing
-  // about whether the guards held.
+  // A batch that never finished says nothing about whether the guards held;
+  // a cleanup failure is only reported after the batch exited 0, so there the
+  // guards held but the run left a fixture behind. Neither is a guard that
+  // failed, which stays `fail` below.
   const inconclusive =
     guards.reason === 'guard-fixture-cleanup-failed' ||
     guards.reason === 'guard-fixture-batch-timeout';

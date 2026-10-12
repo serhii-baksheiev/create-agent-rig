@@ -201,6 +201,7 @@ const TRACKER_REQUIRED_ENV: Record<string, string[]> = {
  * What `.claude/queue.json` asks of this machine's tracker credentials:
  * `unreadable` when the file exists but cannot be read or parsed, `none` when
  * nothing is required (no file, or an adapter with no required names),
+ * `unknown-adapter` when it names an adapter this map has no entry for,
  * otherwise the required names still missing from the environment.
  */
 type TrackerState =

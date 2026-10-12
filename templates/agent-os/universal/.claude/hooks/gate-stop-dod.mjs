@@ -66,6 +66,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from '../scripts/git-env.mjs';
+import { isRunnableDodEntry } from '../scripts/lib/dod-checks.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
 
 // 🔴 The tree this gate measures is the project the hook BELONGS to — the
@@ -239,12 +240,10 @@ function main() {
   //   see hooks.test.ts (absent in a generated rig) › "never lets an unusable config entry hide a failing check behind it (an empty string)"
   //   see hooks.test.ts (absent in a generated rig) › "refuses the stop for an empty config entry it skipped, even though every check it could run passed"
   //
-  // The predicate is exactly the three shapes `spawnSync` throws on, and no
-  // wider: the shell answers every other unrunnable string with 127, which is
-  // a verdict. Filtering past these three converts a real block into a skip.
+  // The predicate (`lib/dod-checks.mjs`, shared with doctor) is exactly the
+  // three shapes `spawnSync` throws on, and no wider.
   //   see hooks.test.ts (absent in a generated rig) › "refuses the stop for a config it could read but cannot use, and names the file to fix"
-  const runnable = (command) =>
-    typeof command === 'string' && command !== '' && !command.includes('\0');
+  const runnable = isRunnableDodEntry;
   const usable = checks.filter(runnable);
   const skipped = checks.map((command, index) => index).filter((index) => !runnable(checks[index]));
 

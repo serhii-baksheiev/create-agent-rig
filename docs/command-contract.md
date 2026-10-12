@@ -577,7 +577,9 @@ workflow layer and preserves its frozen mechanism bytes".
 Unattended readiness (RP-282) is a separate `unattended` object beside
 `checks`. It holds one entry per condition that the posture contract
 (`.claude/scripts/lib/posture.mjs`, read from this package's own copy) puts on
-the doctor surface, each with its `outcome` and the contract's status for it,
+the doctor surface — except `codex-hook-trust` on a rig with no
+`.codex/hooks.json`, where there is no Codex wiring to trust (RP-423) —
+each with its `outcome` and the contract's status for it,
 plus the worst of those statuses. It changes neither the top-level `status` nor
 the exit code. Doctor names the native state it cannot observe, but only as
 `unknown`. The kill switch and the detection contract are read through the same

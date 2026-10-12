@@ -2164,18 +2164,21 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // (`.claude/scripts/lib/provider-provenance.mjs`), also WORKFLOW-only
   // (121→122); the core-only figure stays 68 because that file is
   // workflow-only.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 122 manifest entries to 68', async () => {
+  // RP-423 adds the dod-checks predicate gate-stop-dod and doctor share
+  // (`.claude/scripts/lib/dod-checks.mjs`), PROCESS layer: both figures
+  // move by one (122→123, 68→69).
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 123 manifest entries to 69', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(122);
+    expect(Object.keys(before!.files).length).toBe(123);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(68);
+    expect(Object.keys(after!.files).length).toBe(69);
   });
 });
 

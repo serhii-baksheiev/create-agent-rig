@@ -53,6 +53,7 @@
     ".claude/scripts/lib/secrets.mjs",
     ".claude/scripts/lib/shell-tools.mjs",
     ".claude/scripts/lib/posture.mjs",
+    ".claude/scripts/lib/dod-checks.mjs",
     ".claude/scripts/lib/authority.mjs",
     "PLAN.md",
     "docs/decisions/fail-open-guards.md",
