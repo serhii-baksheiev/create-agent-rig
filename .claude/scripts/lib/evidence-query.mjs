@@ -388,6 +388,12 @@ const DEFAULT_MIN_COVERAGE = 0.5;
 const covered = (signal, minCoverage) =>
   signal.observed > 0 && signal.observed / signal.eligible >= minCoverage;
 
+/**
+ * The name a report gives its repository: an origin URL with any user and
+ * password removed, so a credential in the remote never reaches the report.
+ */
+export const repositoryIdentity = (url) => url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, '$1');
+
 /** The lane mix a report's first-shipping-verdict counted, or undefined when it has none. */
 const lanesOf = (report) =>
   report.signals.find((signal) => signal.name === 'first-shipping-verdict')?.result?.lanes;

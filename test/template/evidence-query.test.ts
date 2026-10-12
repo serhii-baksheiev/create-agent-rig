@@ -648,6 +648,26 @@ describe('evidence-query compareOutcome', () => {
     result: { distribution },
   });
 
+  it('names a repository by its origin URL without credentials', () => {
+    const { repositoryIdentity } = mod() as unknown as {
+      repositoryIdentity: (url: string) => string;
+    };
+    const token = 'ghp_' + 'F'.repeat(36);
+    expect(repositoryIdentity(`https://alice:${token}@example.invalid/o/r.git`)).toBe(
+      'https://example.invalid/o/r.git',
+    );
+    expect(repositoryIdentity(`https://${token}@example.invalid/o/r.git`)).toBe(
+      'https://example.invalid/o/r.git',
+    );
+    expect(repositoryIdentity('ssh://git@example.invalid/o/r.git')).toBe(
+      'ssh://example.invalid/o/r.git',
+    );
+    expect(repositoryIdentity('git@example.invalid:o/r.git')).toBe('git@example.invalid:o/r.git');
+    expect(repositoryIdentity('https://example.invalid/o/r.git')).toBe(
+      'https://example.invalid/o/r.git',
+    );
+  });
+
   it('refuses to compare reports of different repositories, or one that names none', () => {
     const compare = (
       mod() as unknown as {

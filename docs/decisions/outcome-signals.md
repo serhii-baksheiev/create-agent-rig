@@ -47,8 +47,8 @@ How `release-evidence.mjs --outcome --baseline` decides each of those
 (`lib/evidence-query.mjs` `compareOutcome`; the generator's
 `test/template/evidence-query.test.ts`, absent in a generated rig):
 
-- A report names its repository — the checkout's origin URL, or its path
-  when it has none — and two reports that name different repositories, or
+- A report names its repository — the checkout's origin URL without
+  credentials, or its path when it has none — and two reports that name different repositories, or
   one that names none, are not comparable (› "refuses to compare reports of
   different repositories, or one that names none").
 - Lane composition agrees when both run sets name the same review lanes and

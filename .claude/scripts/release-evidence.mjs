@@ -43,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRuns } from './revalidation-report.mjs';
-import { compareOutcome, outcomeOf } from './lib/evidence-query.mjs';
+import { compareOutcome, outcomeOf, repositoryIdentity } from './lib/evidence-query.mjs';
 
 export const REPEATED_MIN_RUNS = 2;
 
@@ -231,8 +231,9 @@ if (invokedDirectly()) {
         return null;
       }
     };
-    // The repository a report belongs to: this checkout's origin URL, or its
-    // path when it has no origin. Comparison refuses two that differ.
+    // The repository a report belongs to: this checkout's origin URL without
+    // credentials, or its path when it has no origin. Comparison refuses two
+    // that differ.
     const repository = (() => {
       try {
         const url = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
@@ -242,7 +243,7 @@ if (invokedDirectly()) {
           stdio: ['ignore', 'pipe', 'ignore'],
           timeout: 10_000,
         }).trim();
-        if (url !== '') return url;
+        if (url !== '') return repositoryIdentity(url);
       } catch {
         // no origin configured
       }
