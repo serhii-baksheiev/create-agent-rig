@@ -135,7 +135,7 @@ describe('github close proves the transition by asking gh for the state', () => 
   it('runs `issue view <id> --json state` after `issue close` and reports transitioned: true on CLOSED', async () => {
     await installGh('CLOSED');
     const { close } = await load('github-issues.mjs');
-    const result = close({ id: '13' }, { prUrl: 'https://example.invalid/pr/1' });
+    const result = await close({ id: '13' }, { prUrl: 'https://example.invalid/pr/1' });
     expect(result).toMatchObject({ ok: true, transitioned: true });
     const log = await argvLog();
     const closeAt = log.findIndex((line) => line.startsWith('issue close 13'));
@@ -148,14 +148,14 @@ describe('github close proves the transition by asking gh for the state', () => 
   it('reports transitioned: false when gh still sees the issue OPEN', async () => {
     await installGh('OPEN');
     const { close } = await load('github-issues.mjs');
-    const result = close({ id: '13' });
+    const result = await close({ id: '13' });
     expect(result).toMatchObject({ ok: true, transitioned: false });
   });
 
   it('leaves the in-progress label on an issue whose close did not land', async () => {
     await installGh('OPEN');
     const { close } = await load('github-issues.mjs');
-    close({ id: '13' });
+    await close({ id: '13' });
     const log = await argvLog();
     expect(log.some((line) => line.includes('--remove-label'))).toBe(false);
   });
@@ -163,7 +163,7 @@ describe('github close proves the transition by asking gh for the state', () => 
   it('removes the in-progress label only after the read-back says CLOSED', async () => {
     await installGh('CLOSED');
     const { close } = await load('github-issues.mjs');
-    close({ id: '13' });
+    await close({ id: '13' });
     const log = await argvLog();
     const viewAt = log.findIndex((line) => line.startsWith('issue view 13'));
     const labelAt = log.findIndex((line) => line.includes('--remove-label in-progress'));
@@ -394,5 +394,34 @@ describe('close journals an item-closed event only when it transitioned', () => 
     } finally {
       globalThis.fetch = realFetch;
     }
+  });
+
+  /** The same `gh` the github close tests above install: it answers `issue view` with `state`. */
+  let stub: StubHandle | undefined;
+  const installGh = async (state: 'CLOSED' | 'OPEN'): Promise<void> => {
+    stub = await stubCommand(
+      'gh',
+      `if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"state":"${state}"}\\n' };
+       return {};`,
+    );
+  };
+
+  afterEach(() => {
+    stub?.restore();
+    stub = undefined;
+  });
+
+  it('github-issues close journals one item-closed event when it transitioned', async () => {
+    const runDir = await freshRunDir();
+    await installGh('CLOSED');
+    const { close } = await load('github-issues.mjs');
+    const result = await close(
+      { id: '13' },
+      { prUrl: 'https://example.invalid/pr/1', env: { ...process.env, RIG_RUN_DIR: runDir } },
+    );
+    expect(result).toMatchObject({ transitioned: true });
+    const events = await itemClosedEvents(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '13' });
   });
 });

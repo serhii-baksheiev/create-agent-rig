@@ -16,7 +16,7 @@
 import { execFileSync } from 'node:child_process';
 import { duplicateOf, fingerprintOf, lifecycleOf, ownerOfLabels, validateProposal } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
-import { recordEscalation, recordTakeUp } from '../run-state.mjs';
+import { recordEscalation, recordItemClosed, recordTakeUp } from '../run-state.mjs';
 import { recordClaimTransition } from '../lib/claim-records.mjs';
 
 export const name = 'github-issues';
@@ -558,7 +558,7 @@ export const find = (id, { limit = 100, issues = null } = {}) => {
   return { ...ticket, blocks: blocksIndex(all)[ticket.id] ?? [] };
 };
 
-export const close = (ticket, { prUrl = null } = {}) => {
+export const close = async (ticket, { prUrl = null, env = process.env } = {}) => {
   const note = prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.';
   ghText(['issue', 'comment', ticket.id, '--body', note]);
   ghText(['issue', 'close', ticket.id]);
@@ -570,6 +570,7 @@ export const close = (ticket, { prUrl = null } = {}) => {
   const transitioned = String(after?.state ?? '').toUpperCase() === 'CLOSED';
   if (transitioned) ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
   rebaseline(ticket);
+  if (transitioned) await recordItemClosed(env.RIG_RUN_DIR, { ticket: ticket.id });
   return { ok: true, transitioned };
 };
 
