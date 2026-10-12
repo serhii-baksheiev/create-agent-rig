@@ -82,6 +82,16 @@ const REQUIRED_KEYS = Object.freeze([
 
 /** `scheme://authority…` — group 1 the scheme, group 2 the authority. */
 const REMOTE_REF = /^([a-z][a-z0-9+.-]*):\/\/([^/?#\s]*)/i;
+/** Query keys that carry a signed URL's credential in common object stores, compared lowercased. */
+const SIGNED_URL_KEYS = new Set([
+  'x-amz-signature',
+  'x-amz-credential',
+  'x-amz-security-token',
+  'x-goog-signature',
+  'x-goog-credential',
+  'sig',
+  'signature',
+]);
 
 /**
  * The item a run took up: the SELECT revalidation event the queue journals at
@@ -114,11 +124,13 @@ const authorityClassProblem = (value) => {
  * itself uses.
  */
 const producerVersionProblem = (value) => {
-  if (!PRODUCER_VERSION.test(value)) {
-    return `--producer-version ${JSON.stringify(value)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`;
-  }
+  // RP-436: the credential check comes first, so the shape refusal below,
+  // which echoes the value, never prints a credential.
   if (findSecretValues(value).length > 0) {
     return '--producer-version carries a credential-shaped value; it is never recorded.';
+  }
+  if (!PRODUCER_VERSION.test(value)) {
+    return `--producer-version ${JSON.stringify(value)} is not a version token (1-64 of A-Z a-z 0-9 . + _ -).`;
   }
   return null;
 };
@@ -407,6 +419,19 @@ const runAttach = async (argv, cwd) => {
     }
     if (parsed.username !== '' || parsed.password !== '') {
       return refuse('--ref carries URL userinfo; credentials in a reference are never recorded.');
+    }
+    // RP-436: a non-special scheme's authority is opaque to the parser, so
+    // userinfo spelled with fullwidth or percent-encoded separators is not
+    // reported as userinfo there, and would be stored verbatim.
+    if (/[^\x21-\x7e]/u.test(remote[2]) || /%(?:40|3a)/i.test(remote[2])) {
+      return refuse(
+        '--ref carries userinfo the URL parser does not report (a non-ASCII or percent-encoded ' +
+          'authority); credentials in a reference are never recorded.',
+      );
+    }
+    // A signed URL carries its credential in the query string.
+    if ([...parsed.searchParams.keys()].some((key) => SIGNED_URL_KEYS.has(key.toLowerCase()))) {
+      return refuse('--ref is a signed URL (it carries a signature query parameter); it is never recorded.');
     }
   }
 

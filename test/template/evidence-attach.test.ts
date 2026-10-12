@@ -1158,6 +1158,76 @@ describe('evidence-attach.mjs attach — the --ref ACCEPT set carries no userinf
   );
 });
 
+// --- A: --ref userinfo no URL parser reads as userinfo (RP-436) -------------
+
+describe('evidence-attach.mjs attach — --ref userinfo the URL parser does not report (RP-436)', () => {
+  /** 64 lowercase hex characters, assembled at runtime — the shape of an X-Amz-Signature. */
+  const amzSignature = (): string =>
+    Array.from({ length: 64 }, (_, i) => ((i * 7 + 3) % 16).toString(16)).join('');
+  /** A base64-ish Azure SAS `sig` value, assembled at runtime and percent-encoded the way a SAS URL carries it. */
+  const sasSignature = (): string =>
+    `${Array.from({ length: 43 }, (_, i) => String.fromCharCode(65 + ((i * 11 + 5) % 26))).join('')}%3D`;
+
+  const SIGNED_REFS: Array<[string, () => string]> = [
+    [
+      'an S3 presigned URL (X-Amz-Signature)',
+      () =>
+        `https://bucket.s3.amazonaws.com/k?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Signature=${amzSignature()}`,
+    ],
+    [
+      'an Azure SAS URL (sig)',
+      () => `https://acct.blob.core.windows.net/c/b?sv=2024-01-01&sig=${sasSignature()}`,
+    ],
+  ];
+
+  it.each(SIGNED_REFS)(
+    'refuses a --ref that carries a signed-URL signature query parameter (RP-436): %s',
+    async (_label, build) => {
+      const { dir } = await newProject();
+      const runDir = await newRunDir();
+      await journalSelect(runDir, 'RP-1');
+      const ref = build();
+      const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+      expect(result.code, result.out).toBe(1);
+      expectDidNotCrash(result);
+      expect(result.stderr.toLowerCase()).toMatch(/signed url|signature/);
+      await expectNothingWritten(dir, 'RP-1');
+    },
+  );
+
+  it('refuses a non-special-scheme --ref whose authority carries percent-encoded userinfo (RP-436)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'postgres://user%3Apw%40host/x';
+    // The independent oracle: the WHATWG parser reports no userinfo here at all.
+    const parsed = new URL(ref);
+    expect(parsed.username).toBe('');
+    expect(parsed.password).toBe('');
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.stderr.toLowerCase()).toMatch(/userinfo|percent-encoded/);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('refuses a non-special-scheme --ref whose authority carries fullwidth userinfo characters (RP-436)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 's3://bot：pw＠bucket/k'; // FULLWIDTH COLON, FULLWIDTH COMMERCIAL AT
+    // The independent oracle: the WHATWG parser reports no userinfo here at all.
+    const parsed = new URL(ref);
+    expect(parsed.username).toBe('');
+    expect(parsed.password).toBe('');
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.stderr.toLowerCase()).toMatch(/userinfo|non-ascii/);
+    await expectNothingWritten(dir, 'RP-1');
+  });
+});
+
 // --- A: more refusals (RP-312 gate round 2) ----------------------------------
 
 describe('evidence-attach.mjs attach — more refusals (RP-312 gate round 2)', () => {
@@ -1436,6 +1506,20 @@ describe('evidence-attach.mjs attach — --producer-version (RP-315)', () => {
       expect(after).toEqual(before);
     },
   );
+
+  it('never echoes a credential-shaped --producer-version that also fails the version-token shape (RP-436)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const producerVersion = `${CLOUD_ACCESS_KEY}!`;
+    const result = await runCli(attachArgs({ ...VALID_REF, producerVersion }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(1);
+    expectDidNotCrash(result);
+    expect(result.stderr).not.toContain(CLOUD_ACCESS_KEY);
+    expect(result.stderr).toContain('--producer-version');
+    expect(result.stderr.toLowerCase()).toMatch(/credential/);
+    await expectNothingWritten(dir, 'RP-1');
+  });
 
   it('accepts a --producer-version at exactly 64 characters', async () => {
     const { dir } = await newProject();
