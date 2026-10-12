@@ -111,7 +111,7 @@ export const POSTURE_CONDITIONS = Object.freeze([
     'advisory',
     ['doctor'],
     'both',
-    '.claude/hooks/dod-checks.json is absent, so gate-stop-dod has nothing to run.',
+    '.claude/hooks/dod-checks.json is absent, empty, or has an entry gate-stop-dod cannot run.',
   ),
   condition(
     'gitignore-runtime-entries-missing',

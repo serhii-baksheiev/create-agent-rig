@@ -274,7 +274,7 @@ describe('doctor guard inspection', () => {
 
       const killedResult = await inspectGuards({ repoDir: repo, runner: killedRunner });
 
-      expect(killedResult).toEqual({ status: 'fail', reason: 'guard-fixture-batch-failed' });
+      expect(killedResult).toEqual({ status: 'fail', reason: 'guard-fixture-batch-timeout' });
       if (killedRoot === undefined) throw new Error('the runner never ran — nothing to assert');
 
       expect(await fixtureFlagsForExactRoot(killedRoot)).toEqual([]);
@@ -395,6 +395,15 @@ describe('doctor guard inspection', () => {
 
     expect(result).toEqual({ status: 'fail', reason: 'hook-integrity-invalid' });
     expect(await exists(marker)).toBe(false);
+  });
+
+  it('names a fixture batch that timed out apart from one whose guards answered wrongly (RP-423)', async () => {
+    const result = await inspectGuards({
+      repoDir: repo,
+      runner: async () => batchResult('timeout', null),
+    });
+
+    expect(result).toEqual({ status: 'fail', reason: 'guard-fixture-batch-timeout' });
   });
 
   it('fails when the compiled fixture batch reports a denied guard with the wrong exit', async () => {

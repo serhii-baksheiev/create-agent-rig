@@ -187,14 +187,8 @@ const MAX_PERSONAL_CHECK_BYTES = 64 * 1024;
 /**
  * Required tracker credential env var NAMES, by queue adapter (RP-230).
  * `plan-md` needs nothing and `github-issues` delegates auth entirely to the
- * `gh` CLI, so both map to an empty list — spelled out here for a reader of
- * this map, not because `personalTrackerCheck` tells the two apart at
- * runtime: a known adapter with an empty list and an adapter name this map
- * has no entry for both take the same `required === undefined || required
- * .length === 0` branch below and both omit the check silently (RP-230
- * round 2 comment fix — an earlier version of this comment claimed the two
- * were distinguished; they are not). The full list of ways this check omits
- * itself silently is in `docs/command-contract.md`'s RP-230 subsection.
+ * `gh` CLI, so both map to an empty list. The full list of ways this check
+ * omits itself silently is in `docs/command-contract.md`'s RP-230 subsection.
  *
  * `jira`'s list is a second copy of
  * `templates/agent-os/universal/.claude/scripts/queue/jira.mjs`'s own
@@ -211,22 +205,17 @@ const TRACKER_REQUIRED_ENV: Record<string, string[]> = {
 };
 
 /**
- * Presence-only report of the tracker credential env vars the repository's
- * own `.claude/queue.json` adapter requires (RP-230). `undefined` — no check
- * emitted at all — when there is nothing personal to check: no queue.json,
- * an unreadable or unparseable one, or an adapter this map does not require
- * anything for (`plan-md`, `github-issues`, or a name this map does not
- * know). Never inspects a credential VALUE, only whether its env var NAME is
- * set.
- */
-/**
  * What `.claude/queue.json` asks of this machine's tracker credentials:
  * `unreadable` when the file exists but cannot be read or parsed, `none` when
  * nothing is required (no file, or an adapter with no required names),
+ * `unknown-adapter` when it names an adapter this map has no entry for,
  * otherwise the required names still missing from the environment.
  */
 type TrackerState =
-  { kind: 'unreadable' } | { kind: 'none' } | { kind: 'required'; missing: string[] };
+  | { kind: 'unreadable' }
+  | { kind: 'none' }
+  | { kind: 'unknown-adapter' }
+  | { kind: 'required'; missing: string[] };
 
 async function readTrackerState(root: string, env: NodeJS.ProcessEnv): Promise<TrackerState> {
   const source = await readBounded(root, QUEUE_CONFIG_REL, MAX_PERSONAL_CHECK_BYTES);
@@ -256,7 +245,8 @@ async function readTrackerState(root: string, env: NodeJS.ProcessEnv): Promise<T
   const required = Object.hasOwn(TRACKER_REQUIRED_ENV, adapter)
     ? TRACKER_REQUIRED_ENV[adapter]
     : undefined;
-  if (required === undefined || required.length === 0) return { kind: 'none' };
+  if (required === undefined) return { kind: 'unknown-adapter' };
+  if (required.length === 0) return { kind: 'none' };
   return { kind: 'required', missing: required.filter((name) => !env[name]) };
 }
 
@@ -275,7 +265,7 @@ function personalTrackerCheck(state: TrackerState): Check | undefined {
 
 /** The same state, as the posture contract's `tracker-credentials-missing` reads it. */
 function trackerOutcome(state: TrackerState): Outcome {
-  if (state.kind === 'unreadable') return 'unknown';
+  if (state.kind === 'unreadable' || state.kind === 'unknown-adapter') return 'unknown';
   return state.kind === 'required' && state.missing.length > 0 ? 'fail' : 'pass';
 }
 

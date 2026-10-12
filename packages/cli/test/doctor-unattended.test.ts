@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -166,6 +167,26 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     expect(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome).toBe('pass');
   });
 
+  it('reports gitignore-runtime-entries-missing pass for patterns git itself ignores the paths by, in a git repository (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    execFileSync('git', ['init', '--quiet'], {
+      cwd: repo,
+      env: { HOME: home, PATH: process.env.PATH ?? '', GIT_CONFIG_NOSYSTEM: '1' },
+    });
+    const gitignore = path.join(repo, '.gitignore');
+    const seen: Array<string | undefined> = [];
+    await writeFile(
+      gitignore,
+      '.claude/worktrees\n.claude/runs\n.claude/*.json\n.claude/queue.board\n',
+    );
+    seen.push(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome);
+    await writeFile(gitignore, '/.claude/\n');
+    seen.push(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome);
+    await writeFile(gitignore, '.claude/worktrees\n');
+    seen.push(condition(await doctor(), 'gitignore-runtime-entries-missing')?.outcome);
+    expect(seen).toEqual(['pass', 'pass', 'fail']);
+  });
+
   it('reports dod-checks-missing from .claude/hooks/dod-checks.json: absent or empty warns, a command list passes, unparseable is unknown', async () => {
     await initProject(repo, { withWorkflow: true });
     const dod = path.join(repo, '.claude', 'hooks', 'dod-checks.json');
@@ -195,6 +216,63 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     expect(condition(await doctor(), 'tracker-credentials-missing')?.outcome).toBe('pass');
     await writeFile(queue, '{ not json');
     expect(condition(await doctor(), 'tracker-credentials-missing')?.outcome).toBe('unknown');
+  });
+
+  it('reports guard-integrity-failed unknown, not a required failure, when only the fixture cleanup failed (RP-423)', async () => {
+    const { inspectUnattended } = await import('../src/integrations/doctor-unattended.js');
+    await initProject(repo, { withWorkflow: true });
+    const report = await inspectUnattended({
+      repoDir: repo,
+      env: { HOME: home },
+      guards: { status: 'fail', reason: 'guard-fixture-cleanup-failed' },
+    });
+    expect(report.conditions.find((c) => c.id === 'guard-integrity-failed')).toMatchObject({
+      outcome: 'unknown',
+      status: 'warn',
+    });
+  });
+
+  it('reports guard-integrity-failed unknown, not a required failure, when the guard fixture batch timed out (RP-423)', async () => {
+    const { inspectUnattended } = await import('../src/integrations/doctor-unattended.js');
+    await initProject(repo, { withWorkflow: true });
+    const report = await inspectUnattended({
+      repoDir: repo,
+      env: { HOME: home },
+      guards: { status: 'fail', reason: 'guard-fixture-batch-timeout' },
+    });
+    expect(report.conditions.find((c) => c.id === 'guard-integrity-failed')).toMatchObject({
+      outcome: 'unknown',
+      status: 'warn',
+    });
+  });
+
+  it('omits codex-hook-trust on a rig with no Codex hook wiring (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await rm(path.join(repo, '.codex', 'hooks.json'));
+    expect(condition(await doctor(), 'codex-hook-trust')).toBeUndefined();
+  });
+
+  it('reports dod-checks-missing fail when an entry is one gate-stop-dod cannot run as a command (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const dod = path.join(repo, '.claude', 'hooks', 'dod-checks.json');
+    const seen: Array<string | undefined> = [];
+    for (const checks of ['[123]', '[""]', '["npm test", 123]']) {
+      await writeFile(dod, `${checks}\n`);
+      seen.push(condition(await doctor(), 'dod-checks-missing')?.outcome);
+    }
+    expect(seen).toEqual(['fail', 'fail', 'fail']);
+  });
+
+  it('reports tracker-credentials-missing as unknown for an adapter doctor does not know (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await writeFile(
+      path.join(repo, '.claude', 'queue.json'),
+      `${JSON.stringify({ adapter: 'linear' })}\n`,
+    );
+    expect(condition(await doctor(), 'tracker-credentials-missing')).toMatchObject({
+      outcome: 'unknown',
+      status: 'warn',
+    });
   });
 
   it('takes hook-wiring-missing and guard-integrity-failed from the guard inspection doctor already runs', async () => {
@@ -336,6 +414,18 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     const body = await doctor();
     const ids = (body.unattended?.conditions ?? []).map((c) => c.id).sort();
     expect(ids).toEqual(DOCTOR_CONDITIONS);
+  });
+
+  it('reports kill-switch-armed fail from an existing AGENT_LOOP_STOP path even without a manifest (RP-423)', async () => {
+    const extra = path.join(home, 'extra-brake');
+    expect(condition(await doctor({ AGENT_LOOP_STOP: extra }), 'kill-switch-armed')?.outcome).toBe(
+      'unknown',
+    );
+    await writeFile(extra, '');
+    expect(condition(await doctor({ AGENT_LOOP_STOP: extra }), 'kill-switch-armed')).toMatchObject({
+      outcome: 'fail',
+      status: 'fail',
+    });
   });
 
   it('reports kill-switch-armed as a failure when the brake file is on', async () => {

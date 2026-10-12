@@ -1457,6 +1457,13 @@ describe('gate-stop-dod hook (the Definition of Done as a mechanical gate)', () 
       path.join(hooksDir, '..', 'scripts', 'git-env.mjs'),
       path.join(scriptDir, 'git-env.mjs'),
     );
+    // And `lib/dod-checks.mjs`, the runnable-entry predicate the gate shares
+    // with doctor (RP-423), shipped in the same `process` layer.
+    await mkdirP(path.join(scriptDir, 'lib'), { recursive: true });
+    await copyFile(
+      path.join(hooksDir, '..', 'scripts', 'lib', 'dod-checks.mjs'),
+      path.join(scriptDir, 'lib', 'dod-checks.mjs'),
+    );
     // Same reasoning as `git-env.mjs`: every hook reads its payload through
     // `lib/hook-input.mjs`, `layers.json` ships it in the same `process` layer,
     // and a fixture without it is a fixture of a project that does not exist.

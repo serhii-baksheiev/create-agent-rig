@@ -1,5 +1,9 @@
+import { execFile } from 'node:child_process';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { promisify } from 'node:util';
+import { gitEnv } from '../lib/git-env.js';
+import { substituteContent } from '../lib/substitute.js';
 import { MANIFEST_REL, parseManifest, type RigManifest } from '../lib/manifest.js';
 import { agentOsUniversalDir } from '../templates.js';
 import type { GuardInspection } from './doctor-guards.js';
@@ -23,7 +27,12 @@ export type UnattendedCondition = {
 export type UnattendedReport = { status: UnattendedStatus; conditions: UnattendedCondition[] };
 
 type PostureModule = {
-  POSTURE_CONDITIONS: ReadonlyArray<{ id: string; classification: string; surfaces: string[] }>;
+  POSTURE_CONDITIONS: ReadonlyArray<{
+    id: string;
+    classification: string;
+    surfaces: string[];
+    harness: string;
+  }>;
   doctorStatus: (id: string, outcome: Outcome) => UnattendedStatus;
 };
 
@@ -32,14 +41,8 @@ type StopFlagModule = {
   armedFlag: (paths: string[]) => { path: string; code: string | null } | null;
 };
 
-/**
- * Exported so `doctor-authority.ts` substitutes the same literal rather than
- * carrying its own second copy (`.claude/rules/invariants.md`, "one spelling
- * of a fact") — it faces the same `__PROJECT_NAME__` placeholder problem for
- * `unattended-flag.mjs`'s `FLAG_BASENAME` that this file already solved for
- * `stop-flag.mjs`'s own flag names below.
- */
-export const PROJECT_PLACEHOLDER = ['__PROJECT', 'NAME__'].join('_');
+/** Recognises a flag name the substitution placeholder has not been filled in. */
+const PROJECT_PLACEHOLDER = ['__PROJECT', 'NAME__'].join('_');
 
 const loadScript = async <T>(...rel: string[]): Promise<T> =>
   (await import(
@@ -50,12 +53,17 @@ const loadScript = async <T>(...rel: string[]): Promise<T> =>
  * The kill switch, read through the package's own `stop-flag.mjs` — the module
  * preflight and `guard-bash` read it through — with the one substitution
  * placeholder filled in from this repository's manifest, as `init` fills it.
+ * Without a manifest the home flags cannot be named, but an AGENT_LOOP_STOP
+ * path carries no placeholder and is still checked: armed there is `fail`.
  */
 async function killSwitch(env: NodeJS.ProcessEnv, project: string | undefined): Promise<Outcome> {
-  if (project === undefined) return 'unknown';
   const { stopFlags, armedFlag } = await loadScript<StopFlagModule>('stop-flag.mjs');
+  if (project === undefined) {
+    const named = stopFlags(env).filter((flag) => !flag.includes(PROJECT_PLACEHOLDER));
+    return armedFlag(named) === null ? 'unknown' : 'fail';
+  }
   const armed = armedFlag(
-    stopFlags(env).map((flag) => flag.replaceAll(PROJECT_PLACEHOLDER, project)),
+    stopFlags(env).map((flag) => substituteContent(flag, { projectName: project })),
   );
   return armed === null ? 'pass' : 'fail';
 }
@@ -76,12 +84,22 @@ async function detectionContract(repoDir: string): Promise<Outcome> {
   }
 }
 
+interface DodChecksModule {
+  isRunnableDodEntry: (command: unknown) => boolean;
+}
+
 /**
  * The Definition-of-Done gate has something to run: `.claude/hooks/dod-checks.json`
- * is a non-empty array, the shape `gate-stop-dod` reads. Absent or empty is the
- * inert gate; a file that does not parse was not judged.
+ * is a non-empty array of entries `gate-stop-dod` runs as commands — the one
+ * predicate in `.claude/scripts/lib/dod-checks.mjs`, which the hook imports
+ * too. Absent or empty is the inert gate, and any other entry is a check that
+ * produces no verdict; a file that does not parse was not judged.
  */
 async function dodChecks(repoDir: string): Promise<Outcome> {
+  const { isRunnableDodEntry: runnable } = await loadScript<DodChecksModule>(
+    'lib',
+    'dod-checks.mjs',
+  );
   const source = await readBounded(repoDir, '.claude/hooks/dod-checks.json', 64 * 1024);
   if (source.status === 'absent') return 'fail';
   if (source.status !== 'ok') return 'unknown';
@@ -92,7 +110,7 @@ async function dodChecks(repoDir: string): Promise<Outcome> {
     return 'unknown';
   }
   if (!Array.isArray(checks)) return 'unknown';
-  return checks.length > 0 ? 'pass' : 'fail';
+  return checks.length > 0 && checks.every(runnable) ? 'pass' : 'fail';
 }
 
 /**
@@ -110,7 +128,48 @@ export const RUNTIME_IGNORES = Object.freeze({
   ]),
 });
 
-async function gitignoreEntries(repoDir: string, layers: readonly string[]): Promise<Outcome> {
+const runFile = promisify(execFile);
+
+/**
+ * The paths git ignores among `paths`, by this repository's own ignore rules —
+ * the user's global excludes file is switched off, since it does not travel
+ * with a clone — or null when git cannot answer here (no repository, no git,
+ * or no answer inside the bound).
+ */
+async function gitIgnored(
+  repoDir: string,
+  env: NodeJS.ProcessEnv,
+  paths: readonly string[],
+): Promise<Set<string> | null> {
+  try {
+    const { stdout } = await runFile(
+      'git',
+      ['-c', 'core.excludesFile=', 'check-ignore', '--no-index', '--', ...paths],
+      { cwd: repoDir, env: gitEnv(env), timeout: 10_000, killSignal: 'SIGKILL' },
+    );
+    return new Set(stdout.split(/\r?\n/));
+  } catch (error) {
+    // Exit 1 is git's answer "none of them is ignored", not a failure to answer.
+    const code =
+      typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : null;
+    return code === 1 ? new Set() : null;
+  }
+}
+
+async function gitignoreEntries(
+  repoDir: string,
+  layers: readonly string[],
+  env: NodeJS.ProcessEnv,
+): Promise<Outcome> {
+  const required = [
+    ...RUNTIME_IGNORES.core,
+    ...(layers.includes('workflow') ? RUNTIME_IGNORES.workflow : []),
+  ];
+  // A directory entry is asked about through a path inside it, which git
+  // matches whether or not the directory exists yet.
+  const probes = required.map((entry) => (entry.endsWith('/') ? `${entry}probe` : entry));
+  const ignored = await gitIgnored(repoDir, env, probes);
+  if (ignored !== null) return probes.every((probe) => ignored.has(probe)) ? 'pass' : 'fail';
   const source = await readBounded(repoDir, '.gitignore', 1024 * 1024);
   if (source.status === 'absent') return 'fail';
   if (source.status !== 'ok') return 'unknown';
@@ -120,10 +179,6 @@ async function gitignoreEntries(repoDir: string, layers: readonly string[]): Pro
       .split(/\r?\n/)
       .map((line) => line.trim().replace(/^\//, '')),
   );
-  const required = [
-    ...RUNTIME_IGNORES.core,
-    ...(layers.includes('workflow') ? RUNTIME_IGNORES.workflow : []),
-  ];
   return required.every((entry) => lines.has(entry)) ? 'pass' : 'fail';
 }
 
@@ -147,9 +202,16 @@ function guardOutcomes(guards: GuardInspection | undefined): Record<string, Outc
   if (guards.reason === 'hook-wiring-invalid') {
     return { 'hook-wiring-missing': 'fail', 'guard-integrity-failed': 'unknown' };
   }
+  // A batch that never finished says nothing about whether the guards held;
+  // a cleanup failure is only reported after the batch exited 0, so there the
+  // guards held but the run left a fixture behind. Neither is a guard that
+  // failed, which stays `fail` below.
+  const inconclusive =
+    guards.reason === 'guard-fixture-cleanup-failed' ||
+    guards.reason === 'guard-fixture-batch-timeout';
   return {
     'hook-wiring-missing': 'pass',
-    'guard-integrity-failed': guards.status === 'pass' ? 'pass' : 'fail',
+    'guard-integrity-failed': guards.status === 'pass' ? 'pass' : inconclusive ? 'unknown' : 'fail',
   };
 }
 
@@ -168,21 +230,26 @@ export async function inspectUnattended(options: {
     'tracker-credentials-missing': options.tracker ?? 'unknown',
     'dod-checks-missing': await dodChecks(options.repoDir),
     'gitignore-runtime-entries-missing':
-      manifest === null ? 'unknown' : await gitignoreEntries(options.repoDir, manifest.layers),
+      manifest === null
+        ? 'unknown'
+        : await gitignoreEntries(options.repoDir, manifest.layers, options.env),
     'workflow-layer-missing':
       manifest === null ? 'unknown' : manifest.layers.includes('workflow') ? 'pass' : 'fail',
   };
-  const conditions = posture.POSTURE_CONDITIONS.filter((c) => c.surfaces.includes('doctor')).map(
-    (c): UnattendedCondition => {
-      const outcome = outcomes[c.id] ?? 'unknown';
-      return {
-        id: c.id,
-        classification: c.classification,
-        outcome,
-        status: posture.doctorStatus(c.id, outcome),
-      };
-    },
-  );
+  // A Codex-only condition says nothing about a rig with no Codex hook wiring.
+  const codexWired =
+    (await readBounded(options.repoDir, '.codex/hooks.json', 1024 * 1024)).status !== 'absent';
+  const conditions = posture.POSTURE_CONDITIONS.filter(
+    (c) => c.surfaces.includes('doctor') && (codexWired || c.harness !== 'codex'),
+  ).map((c): UnattendedCondition => {
+    const outcome = outcomes[c.id] ?? 'unknown';
+    return {
+      id: c.id,
+      classification: c.classification,
+      outcome,
+      status: posture.doctorStatus(c.id, outcome),
+    };
+  });
   const status: UnattendedStatus = conditions.some((c) => c.status === 'fail')
     ? 'fail'
     : conditions.some((c) => c.status === 'warn')
