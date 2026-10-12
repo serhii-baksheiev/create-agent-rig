@@ -141,7 +141,7 @@ const itemsOf = (occurrences) => {
   const byTicket = new Map();
   for (const occurrence of [...occurrences].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
     const item = byTicket.get(occurrence.ticket);
-    if (item) item.records.push(...occurrence.records);
+    if (item) for (const record of occurrence.records) item.records.push(record);
     else byTicket.set(occurrence.ticket, { ticket: occurrence.ticket, records: [...occurrence.records] });
   }
   return [...byTicket.values()];

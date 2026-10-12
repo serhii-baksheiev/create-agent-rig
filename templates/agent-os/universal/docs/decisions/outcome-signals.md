@@ -50,7 +50,12 @@ excluded from the signal rather than forced into it.
 
 **Signal-specific limits.** The first shipping verdict depends on the review
 lane, and a successor or re-filed item starts its own "first". Gate rounds
-kept only on one machine leave historical runs `unknown`. Interventions cover
+count distinct reviewed heads: a fan-out recorded again at the same head
+corrects the reviewer set rather than starting a round, so this signal and
+`token-report.mjs`, which counts each fan-out record, can differ for one item
+(the generator's `test/template/evidence-query.test.ts`, absent in a generated
+rig, › "gate-rounds counts distinct fan-out heads and never reports 0 for an item without fan-out").
+Interventions cover
 recorded escalations and delegated decisions; tracker-specific conventions
 stay outside. A continuation that is still open is unresolved, not a failed
 recovery. Tokens per SHIP is conditional on trustworthy dispatch usage

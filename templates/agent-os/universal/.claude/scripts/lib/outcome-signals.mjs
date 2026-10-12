@@ -47,11 +47,16 @@ export const SIGNALS = Object.freeze(
     {
       name: 'gate-rounds',
       signalVersion: 2,
-      definition: 'The number of gate rounds a branch took before its merge: review and rework cycles.',
+      definition:
+        'The number of distinct heads reviewed for an item across its occurrences in the named runs, once the item is closed: review and rework cycles.',
       source: 'reviewer fan-out records and the item-closed event in the run journal',
       population: 'items selected in the named runs',
       unknown: 'an item not closed in the named runs, or whose fan-outs name no head',
-      limits: ['gate evidence kept only on one machine leaves historical runs unknown'],
+      limits: [
+        'a fan-out recorded again at the same head is one round, where token-report counts each record',
+        'an item worked on several branches adds the rounds of all of them',
+        'closed means the tracker close, not the merge',
+      ],
       comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: ['lane'],
     },
