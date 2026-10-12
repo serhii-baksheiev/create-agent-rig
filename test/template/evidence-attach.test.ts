@@ -1226,6 +1226,19 @@ describe('evidence-attach.mjs attach — --ref userinfo the URL parser does not 
     expect(result.stderr.toLowerCase()).toMatch(/userinfo|non-ascii/);
     await expectNothingWritten(dir, 'RP-1');
   });
+
+  it('accepts a special-scheme --ref with a non-ASCII host (RP-436)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    const ref = 'https://bücher.example/x';
+    // The independent oracle: the WHATWG parser reads an IDN host and no userinfo.
+    const parsed = new URL(ref);
+    expect(parsed.username).toBe('');
+    expect(parsed.password).toBe('');
+    const result = await runCli(attachArgs({ ...VALID_REF, ref }), dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
+  });
 });
 
 // --- A: more refusals (RP-312 gate round 2) ----------------------------------
@@ -1519,6 +1532,19 @@ describe('evidence-attach.mjs attach — --producer-version (RP-315)', () => {
     expect(result.stderr).toContain('--producer-version');
     expect(result.stderr.toLowerCase()).toMatch(/credential/);
     await expectNothingWritten(dir, 'RP-1');
+  });
+
+  it('never echoes a --producer-version that fails the version-token shape, even one the credential scanner does not recognise (RP-436)', async () => {
+    const { dir } = await newProject();
+    const runDir = await newRunDir();
+    await journalSelect(runDir, 'RP-1');
+    // Assembled at runtime so no credential-bearing literal sits in the source.
+    const producerVersion = 'postgres://bot:' + 'pw' + '@db/x';
+    const result = await runCli(attachArgs({ ...VALID_REF, producerVersion }), dir, envFor(runDir));
+    expect(result.code, result.out).not.toBe(0);
+    expectDidNotCrash(result);
+    expect(result.stderr).toContain('--producer-version');
+    expect(result.stderr).not.toContain(producerVersion);
   });
 
   it('accepts a --producer-version at exactly 64 characters', async () => {
