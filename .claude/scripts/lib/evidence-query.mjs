@@ -391,8 +391,24 @@ const covered = (signal, minCoverage) =>
 const lanesOf = (report) =>
   report.signals.find((signal) => signal.name === 'first-shipping-verdict')?.result?.lanes;
 
-const lanesAgree = (baseline, current) =>
-  Object.keys(baseline).sort().join(',') === Object.keys(current).sort().join(',');
+/** How far one lane's share may move between run sets before they stop being comparable. */
+const MAX_LANE_SHARE_SHIFT = 0.2;
+
+/**
+ * Two lane mixes agree when they name the same lanes and no lane's share of
+ * its run set moved by more than MAX_LANE_SHARE_SHIFT.
+ */
+const lanesAgree = (baseline, current) => {
+  const names = Object.keys(baseline).sort();
+  if (names.join(',') !== Object.keys(current).sort().join(',')) return false;
+  const total = (mix) => Object.values(mix).reduce((sum, count) => sum + count, 0);
+  const before = total(baseline);
+  const after = total(current);
+  if (before === 0 || after === 0) return before === after;
+  return names.every(
+    (name) => Math.abs(baseline[name] / before - current[name] / after) <= MAX_LANE_SHARE_SHIFT,
+  );
+};
 
 export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_COVERAGE }) => {
   const baselineLanes = lanesOf(baseline);
@@ -428,7 +444,7 @@ export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_CO
       signals.push({
         ...entry,
         comparison: 'not comparable',
-        reason: 'the review lanes differ between baseline and current',
+        reason: `the review lanes differ, or a lane's share moved by more than ${MAX_LANE_SHARE_SHIFT}`,
         ...lanes,
       });
       continue;

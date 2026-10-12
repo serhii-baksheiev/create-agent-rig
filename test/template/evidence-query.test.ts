@@ -648,6 +648,42 @@ describe('evidence-query compareOutcome', () => {
     result: { distribution },
   });
 
+  it('refuses a lane mix whose share of any lane moved by more than a fifth', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (lanes: Record<string, number>) => ({
+      schemaVersion: 1,
+      signals: [
+        {
+          name: 'first-shipping-verdict',
+          signalVersion: 2,
+          eligible: 10,
+          observed: 10,
+          unknown: 0,
+          result: { SHIP: 5, HOLD: 5, other: 0, lanes, byLane: {} },
+        },
+      ],
+    });
+    // model share 0.9 -> 0.1: same lanes, materially different mix.
+    const shifted = compare({
+      baseline: report({ model: 9, 'fast-path': 1 }),
+      current: report({ model: 1, 'fast-path': 9 }),
+    }).signals[0];
+    expect(shifted).toMatchObject({ comparison: 'not comparable' });
+    expect(String(shifted!.reason)).toMatch(/lane/);
+    // model share 0.6 -> 0.5: within a fifth.
+    const close = compare({
+      baseline: report({ model: 6, 'fast-path': 4 }),
+      current: report({ model: 5, 'fast-path': 5 }),
+    }).signals[0];
+    expect(close).toMatchObject({ comparison: 'comparable' });
+  });
+
   it('refuses every lane-dependent signal when the run sets reviewed through different lanes', () => {
     const compare = (
       mod() as unknown as {
