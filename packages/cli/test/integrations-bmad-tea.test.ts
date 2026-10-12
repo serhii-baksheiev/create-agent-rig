@@ -243,7 +243,11 @@ describe('inspectBmadTea (RP-315): read-only doctor surface over the BMAD instal
 
       const result = await inspectBmadTea(repo);
 
-      expect(result).toEqual({ status: 'warn', reason: 'version-unknown' });
+      expect(result).toEqual({
+        status: 'warn',
+        reason: 'version-unknown',
+        versionFound: 'not-a-token',
+      });
       expect(result).not.toHaveProperty('version');
     },
   );
@@ -318,7 +322,7 @@ describe('inspectBmadTea (RP-315): read-only doctor surface over the BMAD instal
 
     const result = await inspectBmadTea(repo);
 
-    expect(result).toEqual({ status: 'warn', reason: 'version-unknown' });
+    expect(result).toEqual({ status: 'warn', reason: 'version-unknown', versionFound: 'null' });
     expect(result).not.toHaveProperty('version');
   });
 
@@ -328,9 +332,23 @@ describe('inspectBmadTea (RP-315): read-only doctor surface over the BMAD instal
 
     const result = await inspectBmadTea(repo);
 
-    expect(result).toEqual({ status: 'warn', reason: 'version-unknown' });
+    expect(result).toEqual({ status: 'warn', reason: 'version-unknown', versionFound: 'null' });
     expect(result).not.toHaveProperty('version');
   });
+
+  // RP-436: YAML 1.2's core schema spells null as null, Null or NULL too.
+  it.each(['Null', 'NULL'])(
+    'warns version-unknown with no version field when the tea entry version is the YAML null scalar spelled %s',
+    async (versionLiteral) => {
+      await writeManifestYaml(realisticTeaManifest(versionLiteral));
+      await writeTeaConfig();
+
+      const result = await inspectBmadTea(repo);
+
+      expect(result).toEqual({ status: 'warn', reason: 'version-unknown', versionFound: 'null' });
+      expect(result).not.toHaveProperty('version');
+    },
+  );
 
   it('warns manifest-unreadable when the manifest is a directory, not a file', async () => {
     await mkdir(path.join(repo, MANIFEST_REL), { recursive: true });
@@ -590,6 +608,27 @@ describe('doctor: bmad-tea (RP-315)', () => {
     const check = checks.find((candidate) => candidate.id === 'bmad-tea');
     expect(check).toMatchObject({ status: 'warn', reason: 'version-unknown' });
   });
+
+  // RP-436: version-unknown covers three findings; the fix names the one found.
+  it.each([
+    ['a YAML null', 'NULL', 'whose version is null'],
+    ['a non-token value', '1.27.2 ; rm -rf ~', 'whose version is not a version token'],
+  ])(
+    'names %s, not a missing field, in the version-unknown fix',
+    async (_label, versionLiteral, expected) => {
+      await writeDeclaration([{ id: 'bmad-tea', selected: true, harnesses: ['claude-code'] }]);
+      await writeManifestYaml(teaManifest(versionLiteral));
+      await writeTeaConfig();
+
+      const { body } = await doctor();
+
+      const checks = body.checks as Array<{ id: string; reason: string; fix: string }>;
+      const check = checks.find((candidate) => candidate.id === 'bmad-tea');
+      expect(check).toMatchObject({ reason: 'version-unknown' });
+      expect(check!.fix).toContain(expected);
+      expect(check!.fix).not.toContain('no version field');
+    },
+  );
 
   it('reports ok/installed when TEA is fully installed at the pinned version', async () => {
     await writeDeclaration([{ id: 'bmad-tea', selected: true, harnesses: ['claude-code'] }]);
