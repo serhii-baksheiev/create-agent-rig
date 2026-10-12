@@ -627,8 +627,9 @@ export async function runIntegrationsCommand(
     const basicBoundary = basicMemory
       ? ' Basic Memory is a wiring-only preview: it configures local, per-machine storage only; does not automatically access Memory; does not synchronize across machines; and uvx is a launcher, not a verified runtime.'
       : '';
-    const playwrightBoundary = selected.some((entry) => entry.id === 'playwright-mcp')
-      ? ` Playwright MCP is launched by npx at ${PLAYWRIGHT_MCP_VERSION}, fetched from the configured npm registry at the first harness launch; npx is a launcher, not a verified runtime, and browser verification through it is attended only.`
+    const playwright = selected.find((entry) => entry.id === 'playwright-mcp');
+    const playwrightBoundary = playwright
+      ? ` Playwright MCP is launched by npx at ${playwrightOverride(playwright.version) ?? PLAYWRIGHT_MCP_VERSION}, fetched from the configured npm registry at the first harness launch; npx is a launcher, not a verified runtime, and browser verification through it is attended only.`
       : '';
     // The MCP authorization/connectivity/trust disclaimer only applies to an
     // actual MCP provider selection — Probity is neither an MCP server nor

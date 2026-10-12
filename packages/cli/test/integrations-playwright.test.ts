@@ -196,6 +196,20 @@ describe('playwright-mcp declared-version override (RP-445)', () => {
     );
   });
 
+  it('the plan names the declared version npx launches, not the Rig-tested one', async () => {
+    const result = await setup('add', [
+      'playwright-mcp',
+      '--version',
+      '0.0.90',
+      '--harness',
+      'claude-code',
+      '--dry-run',
+    ]);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(result.stdout).toContain('launched by npx at 0.0.90');
+  });
+
   it('a non-exact --version for playwright-mcp is refused with playwright-mcp-exact-version-required', async () => {
     const result = await setup('add', [
       'playwright-mcp',
