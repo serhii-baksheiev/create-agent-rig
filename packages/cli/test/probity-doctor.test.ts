@@ -271,6 +271,22 @@ describe('doctor: probity (RP-416)', () => {
     expect(check?.fix).toContain(`Rig-tested ${VERSION}`);
   });
 
+  it('names the declared version, not the Rig-tested one, in the launcher-missing fix', async () => {
+    await writeDeclaration([
+      { id: PROBITY, version: '1.11.0', harnesses: ['claude-code'], selected: true },
+    ]);
+    await writeProbityConfig();
+    await writeWiring('claude-code', true);
+
+    const { body: report } = await body();
+
+    const check = (report.checks as (CheckRecord & { fix: string })[]).find(
+      (candidate) => candidate.id === 'probity:claude-code',
+    );
+    expect(check).toMatchObject({ status: 'warn', reason: 'launcher-missing' });
+    expect(check?.fix).toContain('@nizos/probity@1.11.0');
+  });
+
   // RP-416 round 2, point 3: `inspectProbity` never compares the on-disk
   // config's bytes against the declaration's own `configHash` at all — it
   // only checks that a recognised config FILENAME exists

@@ -133,7 +133,8 @@ function probityFix(reason: string, version: VersionClassification | undefined):
     return 'Run create-agent-rig setup add probity (or --adopt an existing config) to generate probity.config.mjs.';
   if (reason === 'config-drift')
     return 'probity.config.mjs differs from the bytes Rig generated; keep the edit with create-agent-rig setup add probity --adopt, or restore the generated file.';
-  if (reason === 'launcher-missing') return `Run npm install -D @nizos/probity@${PROBITY_VERSION}.`;
+  if (reason === 'launcher-missing')
+    return `Run npm install -D @nizos/probity@${version?.declared ?? PROBITY_VERSION}.`;
   if (reason === 'version-drift')
     return `Run npm install -D @nizos/probity@${version?.declared ?? PROBITY_VERSION} to match the ${version?.declared === undefined ? 'pinned' : 'declared'} version (Rig-tested ${PROBITY_VERSION}).`;
   return "Wire the Probity gate hook into this harness's own hook configuration.";
