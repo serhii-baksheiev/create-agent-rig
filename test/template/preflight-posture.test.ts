@@ -197,6 +197,35 @@ describe('preflight refuses an unattended flag already on disk for this checkout
     });
   });
 
+  it('does not stop this checkout on a flag armed for a different checkout (RP-422)', async () => {
+    const { checkUnattendedFlag } = await load('preflight.mjs');
+    await withHome(async (home, root) => {
+      const other = path.join(path.dirname(root), 'other-checkout');
+      await mkdir(other, { recursive: true });
+      const env = { ...process.env, HOME: home };
+      await writeFile(await flagPath(home, other), JSON.stringify({ item: 'RP-9999', allow: [] }));
+      // The flag is real: it stops the checkout it was armed for.
+      expect(checkUnattendedFlag(other, env)).toMatchObject({ ok: false });
+      expect(checkUnattendedFlag(root, env)).toMatchObject({ ok: true });
+    });
+  });
+
+  it('keeps control characters out of the rendered flag detail (RP-422)', async () => {
+    const { checkUnattendedFlag } = await load('preflight.mjs');
+    const ESC = String.fromCharCode(27);
+    const CR = String.fromCharCode(13);
+    await withHome(async (home, root) => {
+      await writeFile(
+        await flagPath(home, root),
+        JSON.stringify({ item: `RP-1${ESC}[31mX${CR}`, allow: [] }),
+      );
+      const check = checkUnattendedFlag(root, { ...process.env, HOME: home }) as Check;
+      expect(check.ok).toBe(false);
+      expect(check.detail).not.toContain(ESC);
+      expect(check.detail).not.toContain(CR);
+    });
+  });
+
   it('stops on a flag that is on disk but unreadable, saying why', async () => {
     const { checkUnattendedFlag } = await load('preflight.mjs');
     await withHome(async (home, root) => {

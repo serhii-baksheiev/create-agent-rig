@@ -109,7 +109,7 @@ export const neighbourOf = (rel) => {
   return path.posix.join(dir, `${stem}.test.mjs`);
 };
 
-/** The same ladder `preflight.mjs` uses: any FAIL stops, any unknown cautions. */
+/** Doctor's own ladder over its marks: any FAIL stops, any unknown cautions. */
 export const verdictOf = (marks) => {
   if (marks.some((mark) => mark === 'FAIL')) return 'STOP';
   if (marks.some((mark) => mark === 'unknown')) return 'CAUTION';
