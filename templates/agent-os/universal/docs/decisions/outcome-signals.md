@@ -21,7 +21,7 @@ mechanics, each defined once in `.claude/scripts/lib/outcome-signals.mjs`:
 | `claim-to-merge` | 1 |
 | `interventions` | 2 |
 | `continuation` | 1 |
-| `tokens-per-ship` | 1 |
+| `tokens-per-ship` | 2 |
 
 The module carries each signal's definition, evidence source, eligible
 population, what `unknown` means for it, its known limits, the dimensions a

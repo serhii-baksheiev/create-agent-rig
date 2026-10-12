@@ -273,27 +273,26 @@ const claimToMerge = (items, commitTime) => {
   };
 };
 
-/** Whether every reviewer launched at the item's last reviewed head answered SHIP there. */
-const shipped = (item) => {
-  const fanOuts = fanOutsOf(item);
-  const head = fanOuts.at(-1)?.headSha;
-  if (typeof head !== 'string' || head === '') return false;
-  const reviewers = fanOuts.filter((fan) => fan.headSha === head).at(-1).reviewers ?? [];
-  if (!Array.isArray(reviewers) || reviewers.length === 0) return false;
-  return reviewers.every(
-    (reviewer) =>
-      item.records.find((record) => record.gate === reviewer && record.headSha === head)
-        ?.verdict === 'SHIP',
-  );
+/** The SHIP verdicts of reviewers launched at the head they answered for. */
+const shipVerdictsOf = (item) => {
+  const launchedAt = new Map();
+  for (const fan of fanOutsOf(item)) {
+    if (typeof fan.headSha === 'string' && Array.isArray(fan.reviewers))
+      launchedAt.set(fan.headSha, fan.reviewers);
+  }
+  return item.records.filter(
+    (record) =>
+      record.verdict === 'SHIP' && launchedAt.get(record.headSha)?.includes(record.gate) === true,
+  ).length;
 };
 
 /**
  * Tokens per SHIP is conditional on trustworthy dispatch usage evidence, and
  * no run this rig has recorded carries any (Jira RP-355 24376), so 1.7.0 does
- * not compute it: every shipped item is unknown, and the report says why.
+ * not compute it: every SHIP verdict is unknown, and the report says why.
  */
 const tokensPerShip = (items) => {
-  const eligible = items.filter(shipped).length;
+  const eligible = items.reduce((sum, item) => sum + shipVerdictsOf(item), 0);
   return {
     name: 'tokens-per-ship',
     signalVersion: versionOf('tokens-per-ship'),

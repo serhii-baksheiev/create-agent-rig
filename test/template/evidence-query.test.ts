@@ -609,8 +609,13 @@ describe('evidence-query outcomeOf: claim-to-merge', () => {
 });
 
 describe('evidence-query outcomeOf: tokens-per-ship', () => {
-  it('states tokens-per-ship as not computed, with its shipped items unknown and the reason', async () => {
+  it('states tokens-per-ship as not computed, with every SHIP verdict unknown and the reason', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
+    // Three SHIP verdicts: two reviewers at h95, and one at RP-96's second head.
+    r.take('RP-95');
+    r.fanOut('h95', ['code-reviewer', 'security-scanner']);
+    r.verdict('code-reviewer', 'SHIP', 'h95');
+    r.verdict('security-scanner', 'SHIP', 'h95');
     r.take('RP-96');
     r.fanOut('h96a', ['code-reviewer']);
     r.verdict('code-reviewer', 'HOLD', 'h96a');
@@ -621,8 +626,8 @@ describe('evidence-query outcomeOf: tokens-per-ship', () => {
     r.verdict('code-reviewer', 'HOLD', 'h97');
 
     const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'tokens-per-ship');
-    expect(s.signalVersion).toBe(1);
-    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.signalVersion).toBe(2);
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 0, 3]);
     const result = s.result as { computed: boolean; reason: string };
     expect(result.computed).toBe(false);
     expect(result.reason).toMatch(/dispatch usage/);

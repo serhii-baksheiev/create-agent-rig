@@ -71,7 +71,7 @@ describe('outcome-signals.mjs — the six Outcome Evidence signal definitions (R
     }
   });
 
-  // RP-355 changed the population or unknown of three published v1
+  // RP-355 changed the population or unknown of four published v1
   // definitions, so those moved to 2; the rest keep their v1 meaning.
   const EXPECTED_VERSIONS: Record<string, number> = {
     'first-shipping-verdict': 2,
@@ -79,7 +79,7 @@ describe('outcome-signals.mjs — the six Outcome Evidence signal definitions (R
     'claim-to-merge': 1,
     interventions: 2,
     continuation: 1,
-    'tokens-per-ship': 1,
+    'tokens-per-ship': 2,
   };
 
   it('every signal carries its expected signalVersion, a positive integer', async () => {
