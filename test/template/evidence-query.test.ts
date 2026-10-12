@@ -441,7 +441,14 @@ describe('evidence-query outcomeOf: report shape', () => {
 
     const outcome = mod().outcomeOf({ runs: [r.entry()] });
     expect(outcome.schemaVersion).toBe(1);
-    expect(outcome.signals.map((s) => s.name)).toEqual(['first-shipping-verdict', 'gate-rounds']);
+    expect(outcome.signals.map((s) => s.name)).toEqual([
+      'first-shipping-verdict',
+      'gate-rounds',
+      'claim-to-merge',
+      'interventions',
+      'continuation',
+      'tokens-per-ship',
+    ]);
     for (const s of outcome.signals) {
       expect(Object.keys(s).sort()).toEqual(
         ['eligible', 'name', 'observed', 'result', 'signalVersion', 'unknown'].sort(),
@@ -451,7 +458,15 @@ describe('evidence-query outcomeOf: report shape', () => {
       expect(s.signalVersion).toBe(definition!.signalVersion);
       for (const count of [s.eligible, s.observed, s.unknown])
         expect(Number.isInteger(count)).toBe(true);
-      expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+      // RP-60 posted no continuation and recorded no claim, so those two
+      // populations are empty.
+      // tokens-per-ship is not computed, so its one shipped item is unknown.
+      const expected = ['continuation', 'claim-to-merge'].includes(s.name)
+        ? [0, 0, 0]
+        : s.name === 'tokens-per-ship'
+          ? [1, 0, 1]
+          : [1, 1, 0];
+      expect([s.eligible, s.observed, s.unknown]).toEqual(expected);
     }
   });
 
@@ -488,6 +503,134 @@ describe('evidence-query outcomeOf: report shape', () => {
     expect(outcome.runs.skipped[0]!.why).toMatch(/seq|sequence/i);
     const rounds = signal(outcome, 'gate-rounds');
     expect([rounds.eligible, rounds.observed]).toEqual([1, 1]);
+  });
+});
+
+describe('evidence-query outcomeOf: interventions', () => {
+  it('counts recorded escalations and delegated decisions, and a run without that evidence is unknown', async () => {
+    const runsDir = await runsRoot();
+    const recorded = await newRun(runsDir, 'run-new');
+    recorded.take('RP-70');
+    recorded.ev('item-escalated', { schemaVersion: 1, ticket: 'RP-70', stop: 'escalation' });
+    recorded.ev('delegated-decision', { ticket: 'RP-70', decision: 'extra-gate-round' });
+    recorded.take('RP-71');
+    recorded.closed('RP-71');
+    // A run that carries none of the item-tied events cannot tell "none" from
+    // "not recorded".
+    const older = await newRun(runsDir, 'run-old');
+    older.take('RP-72');
+
+    const s = signal(mod().outcomeOf({ runs: [recorded.entry(), older.entry()] }), 'interventions');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 2, 1]);
+    expect(s.result).toEqual({
+      escalations: 1,
+      delegatedDecisions: 1,
+      distribution: { '0': 1, '2': 1 },
+    });
+  });
+});
+
+describe('evidence-query outcomeOf: continuation', () => {
+  it('reads an unresolved continuation as unknown when a named run could not be read', async () => {
+    const r = await newRun(await runsRoot(), 'run-1');
+    r.take('RP-85');
+    r.ev('continuation', { schemaVersion: 1, ticket: 'RP-85', stop: 'pause', head: 'h85' });
+
+    const s = signal(
+      mod().outcomeOf({ runs: [r.entry(), { run: 'run-2', error: 'not found' }] }),
+      'continuation',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toEqual({ resolved: { closed: 0, reEscalated: 0 }, unresolved: 0 });
+  });
+
+  it('reads a continuation as resolved only by a close or re-escalation in a later run', async () => {
+    const runsDir = await runsRoot();
+    const first = await newRun(runsDir, 'run-1');
+    first.take('RP-80');
+    first.ev('continuation', { schemaVersion: 1, ticket: 'RP-80', stop: 'pause', head: 'h80' });
+    // RP-81 escalates in the same run as its note: §6 posts the note and then
+    // escalates, so that is the stop itself, not a resolution.
+    first.take('RP-81');
+    first.ev('continuation', {
+      schemaVersion: 1,
+      ticket: 'RP-81',
+      stop: 'escalation',
+      head: 'h81',
+    });
+    first.ev('item-escalated', { schemaVersion: 1, ticket: 'RP-81', stop: 'escalation' });
+    first.take('RP-82');
+    first.ev('continuation', { schemaVersion: 1, ticket: 'RP-82', stop: 'blocker', head: 'h82' });
+    const second = await newRun(runsDir, 'run-2');
+    for (let i = 0; i < 20; i += 1) second.ev('note', null); // later than every run-1 record
+    second.take('RP-80');
+    second.closed('RP-80');
+    second.take('RP-82');
+    second.ev('item-escalated', { schemaVersion: 1, ticket: 'RP-82', stop: 'escalation' });
+
+    const s = signal(mod().outcomeOf({ runs: [first.entry(), second.entry()] }), 'continuation');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 3, 0]);
+    expect(s.result).toEqual({ resolved: { closed: 1, reEscalated: 1 }, unresolved: 1 });
+  });
+});
+
+describe('evidence-query outcomeOf: claim-to-merge', () => {
+  it('measures total wall time from the first valid claim to the merged commit, and excludes an item without both', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    // RP-90: claimed at 00:00:02, its merge commit committed at 01:00:02.
+    r.take('RP-90');
+    r.ev('revalidation', { ticket: 'RP-90', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-90',
+      point: 'BEFORE_CLOSE',
+      action: 'hold',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+    // RP-91: a held claim is not a valid one, and nothing records its merge.
+    r.take('RP-91');
+    r.ev('revalidation', { ticket: 'RP-91', point: 'SELECT', action: 'hold' });
+    // RP-92: claimed, but its merge commit is not in this clone.
+    r.take('RP-92');
+    r.ev('revalidation', { ticket: 'RP-92', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-92',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'c'.repeat(40) } },
+    });
+    const commitTime = (sha: string): string | null =>
+      sha === 'b'.repeat(40) ? '2026-10-01T01:00:03.000Z' : null;
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()], commitTime } as never), 'claim-to-merge');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 1, 2]);
+    // The SELECT event is the run's second record: 2026-10-01T00:00:02Z.
+    expect(s.result).toEqual({ wallTimeMs: { min: 3601000, median: 3601000, max: 3601000 } });
+  });
+});
+
+describe('evidence-query outcomeOf: tokens-per-ship', () => {
+  it('states tokens-per-ship as not computed, with every SHIP verdict unknown and the reason', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    // Three SHIP verdicts: two reviewers at h95, and one at RP-96's second head.
+    r.take('RP-95');
+    r.fanOut('h95', ['code-reviewer', 'security-scanner']);
+    r.verdict('code-reviewer', 'SHIP', 'h95');
+    r.verdict('security-scanner', 'SHIP', 'h95');
+    r.take('RP-96');
+    r.fanOut('h96a', ['code-reviewer']);
+    r.verdict('code-reviewer', 'HOLD', 'h96a');
+    r.fanOut('h96b', ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', 'h96b');
+    r.take('RP-97');
+    r.fanOut('h97', ['code-reviewer']);
+    r.verdict('code-reviewer', 'HOLD', 'h97');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'tokens-per-ship');
+    expect(s.signalVersion).toBe(2);
+    expect([s.eligible, s.observed, s.unknown]).toEqual([3, 0, 3]);
+    const result = s.result as { computed: boolean; reason: string };
+    expect(result.computed).toBe(false);
+    expect(result.reason).toMatch(/dispatch usage/);
   });
 });
 
@@ -535,6 +678,34 @@ describe('release-evidence.mjs --outcome', () => {
     });
     expect(signal(outcome, 'gate-rounds').result).toEqual({ distribution: { '1': 2 } });
     expect(await snapshot(runsDir)).toEqual(before);
+  });
+
+  it('the CLI reads the merge time from the commit in this checkout', async () => {
+    const git = (args: string[]): Promise<string> =>
+      new Promise((resolve, reject) =>
+        execFile('git', args, { cwd: repoRoot, env: withoutGitLocation() }, (error, out) =>
+          error ? reject(error) : resolve(out.trim()),
+        ),
+      );
+    const sha = await git(['rev-parse', 'HEAD']);
+    const committed = Date.parse(await git(['show', '-s', '--format=%cI', sha]));
+    const runsDir = await runsRoot();
+    const r = await newRun(runsDir, 'run-a');
+    r.take('RP-95');
+    const claim = r.ev('revalidation', { ticket: 'RP-95', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-95',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: sha, to: sha } },
+    });
+
+    const result = await cli(['--outcome', '--runs', runsDir, '--run', 'run-a']);
+    expect(result.code, result.stderr).toBe(0);
+    const s = signal(JSON.parse(result.stdout) as Outcome, 'claim-to-merge');
+    expect([s.eligible, s.observed]).toEqual([1, 1]);
+    const wall = committed - Date.parse(claim.at);
+    expect(s.result).toEqual({ wallTimeMs: { min: wall, median: wall, max: wall } });
   });
 
   it('the CLI reads a repeated --run name once', async () => {

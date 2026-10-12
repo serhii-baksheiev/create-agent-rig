@@ -141,14 +141,173 @@ const itemsOf = (occurrences) => {
   const byTicket = new Map();
   for (const occurrence of [...occurrences].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))) {
     const item = byTicket.get(occurrence.ticket);
-    if (item) for (const record of occurrence.records) item.records.push(record);
-    else byTicket.set(occurrence.ticket, { ticket: occurrence.ticket, records: [...occurrence.records] });
+    if (item) {
+      for (const record of occurrence.records) item.records.push(record);
+      item.itemTied &&= occurrence.itemTied;
+      item.occurrences.push(occurrence);
+    } else {
+      byTicket.set(occurrence.ticket, {
+        ticket: occurrence.ticket,
+        itemTied: occurrence.itemTied,
+        records: [...occurrence.records],
+        occurrences: [occurrence],
+      });
+    }
   }
   return [...byTicket.values()];
 };
 
+/**
+ * The event kinds 1.7.0 journals with their item (RP-446, RP-447). A run
+ * that carries none of them cannot tell "nothing happened" from "nothing was
+ * recorded", so its items are unknown for the signals that read them.
+ */
+const ITEM_TIED = new Set(['item-escalated', 'item-closed', 'continuation']);
+
+const interventions = (items) => {
+  const distribution = {};
+  let escalations = 0;
+  let delegatedDecisions = 0;
+  let observed = 0;
+  for (const item of items) {
+    if (!item.itemTied) continue;
+    observed += 1;
+    const escalated = item.records.filter((record) => record.kind === 'item-escalated').length;
+    const delegated = item.records.filter((record) => record.kind === 'delegated-decision').length;
+    escalations += escalated;
+    delegatedDecisions += delegated;
+    distribution[escalated + delegated] = (distribution[escalated + delegated] ?? 0) + 1;
+  }
+  return {
+    name: 'interventions',
+    signalVersion: versionOf('interventions'),
+    eligible: items.length,
+    observed,
+    unknown: items.length - observed,
+    result: { escalations, delegatedDecisions, distribution },
+  };
+};
+
+/**
+ * A continuation is resolved by a close or a re-escalation of its item in a
+ * LATER run than the one that wrote it: §6 posts the note and then escalates
+ * in the same run, so a same-run escalation is the stop itself. An item still
+ * open is unresolved, never a failed recovery (RP-447, Jira RP-447 24373).
+ */
+const continuation = (items, anyRunUnread) => {
+  const result = { resolved: { closed: 0, reEscalated: 0 }, unresolved: 0 };
+  let eligible = 0;
+  let unknown = 0;
+  for (const item of items) {
+    for (const occurrence of item.occurrences) {
+      for (const note of occurrence.records.filter((record) => record.kind === 'continuation')) {
+        eligible += 1;
+        const later = item.occurrences.filter(
+          (other) => other.run !== occurrence.run && Date.parse(other.at) > Date.parse(note.at),
+        );
+        const kinds = new Set(later.flatMap((other) => other.records.map((record) => record.kind)));
+        if (kinds.has('item-closed')) result.resolved.closed += 1;
+        else if (kinds.has('item-escalated')) result.resolved.reEscalated += 1;
+        // A named run that could not be read may hold the resolution.
+        else if (anyRunUnread) unknown += 1;
+        else result.unresolved += 1;
+      }
+    }
+  }
+  return {
+    name: 'continuation',
+    signalVersion: versionOf('continuation'),
+    eligible,
+    observed: eligible - unknown,
+    unknown,
+    result,
+  };
+};
+
+const median = (sorted) =>
+  sorted.length % 2 === 1
+    ? sorted[(sorted.length - 1) / 2]
+    : (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2;
+
+/**
+ * Total wall time from an item's first valid claim (a SELECT revalidation
+ * that continued) to the commit its close revalidation proved it merged
+ * (`evidence.ownMergeAdvance.to`), read through `commitTime`. Nothing is
+ * subtracted: CI and review waits are part of it. An item without both ends
+ * is excluded and counted as unknown.
+ */
+const isClaim = (record) => record.kind === 'revalidation' && record.data?.point === 'SELECT';
+
+const claimToMerge = (items, commitTime) => {
+  const claimed = items.filter((item) => item.records.some(isClaim));
+  const durations = [];
+  for (const item of claimed) {
+    const claim = item.records.find(
+      (record) => isClaim(record) && record.data?.action === 'continue',
+    );
+    const merged = item.records.find(
+      (record) =>
+        record.kind === 'revalidation' &&
+        record.data?.point === 'BEFORE_CLOSE' &&
+        typeof record.data?.evidence?.ownMergeAdvance?.to === 'string',
+    );
+    if (!claim || !merged) continue;
+    const end = Date.parse(commitTime(merged.data.evidence.ownMergeAdvance.to) ?? '');
+    const start = Date.parse(claim.at);
+    if (!Number.isFinite(end) || !Number.isFinite(start)) continue;
+    durations.push(end - start);
+  }
+  durations.sort((a, b) => a - b);
+  return {
+    name: 'claim-to-merge',
+    signalVersion: versionOf('claim-to-merge'),
+    eligible: claimed.length,
+    observed: durations.length,
+    unknown: claimed.length - durations.length,
+    result: {
+      wallTimeMs:
+        durations.length === 0
+          ? null
+          : { min: durations[0], median: median(durations), max: durations.at(-1) },
+    },
+  };
+};
+
+/** The SHIP verdicts of reviewers launched at the head they answered for. */
+const shipVerdictsOf = (item) => {
+  const launchedAt = new Map();
+  for (const fan of fanOutsOf(item)) {
+    if (typeof fan.headSha === 'string' && Array.isArray(fan.reviewers))
+      launchedAt.set(fan.headSha, fan.reviewers);
+  }
+  return item.records.filter(
+    (record) =>
+      record.verdict === 'SHIP' && launchedAt.get(record.headSha)?.includes(record.gate) === true,
+  ).length;
+};
+
+/**
+ * Tokens per SHIP is conditional on trustworthy dispatch usage evidence, and
+ * no run this rig has recorded carries any (Jira RP-355 24376), so 1.7.0 does
+ * not compute it: every SHIP verdict is unknown, and the report says why.
+ */
+const tokensPerShip = (items) => {
+  const eligible = items.reduce((sum, item) => sum + shipVerdictsOf(item), 0);
+  return {
+    name: 'tokens-per-ship',
+    signalVersion: versionOf('tokens-per-ship'),
+    eligible,
+    observed: 0,
+    unknown: eligible,
+    result: {
+      computed: false,
+      reason: 'not computed in this release: no dispatch usage evidence is trustworthy enough to count',
+    },
+  };
+};
+
 /** The outcome report over already-read runs; a refused run is listed, never dropped. */
-export const outcomeOf = ({ runs }) => {
+export const outcomeOf = ({ runs, commitTime = () => null }) => {
   const read = [];
   const skipped = [];
   const occurrences = [];
@@ -158,12 +317,20 @@ export const outcomeOf = ({ runs }) => {
       continue;
     }
     read.push(entry.run);
-    occurrences.push(...itemOccurrences(entry));
+    const itemTied = (entry.events ?? []).some((event) => ITEM_TIED.has(event.kind));
+    for (const occurrence of itemOccurrences(entry)) occurrences.push({ ...occurrence, itemTied });
   }
   const items = itemsOf(occurrences);
   return {
     schemaVersion: 1,
     runs: { read, skipped },
-    signals: [firstShippingVerdict(items), gateRounds(items)],
+    signals: [
+      firstShippingVerdict(items),
+      gateRounds(items),
+      claimToMerge(items, commitTime),
+      interventions(items),
+      continuation(items, skipped.length > 0),
+      tokensPerShip(items),
+    ],
   };
 };

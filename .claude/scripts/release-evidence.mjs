@@ -32,9 +32,11 @@
  * this script has no way to detect and would then double-count as two.
  */
 
+import { execFileSync } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withoutGitLocation } from './git-env.mjs';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRuns } from './revalidation-report.mjs';
 import { outcomeOf } from './lib/evidence-query.mjs';
@@ -193,7 +195,24 @@ if (invokedDirectly()) {
     const runs = [...new Set(args.named)].map(
       (name) => byName.get(name) ?? { run: name, error: 'not found' },
     );
-    process.stdout.write(`${JSON.stringify(outcomeOf({ runs }), null, 2)}\n`);
+    // The merge end of claim-to-merge is a commit's committer date, read from
+    // this checkout; a commit it does not have is unknown, never a guess.
+    const checkout = mainCheckoutRoot(join(scriptsDir, '..', '..'));
+    const commitTime = (sha) => {
+      if (!/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) return null;
+      try {
+        return execFileSync('git', ['show', '-s', '--format=%cI', sha], {
+          cwd: checkout,
+          encoding: 'utf8',
+          env: withoutGitLocation(),
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 10_000,
+        }).trim();
+      } catch {
+        return null;
+      }
+    };
+    process.stdout.write(`${JSON.stringify(outcomeOf({ runs, commitTime }), null, 2)}\n`);
     process.exit(0);
   }
   if (!args.since || Number.isNaN(Date.parse(args.since))) {
