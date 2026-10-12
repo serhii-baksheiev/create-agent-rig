@@ -297,4 +297,22 @@ describe('create-agent-rig integrations freshness (RP-445)', () => {
     ]);
     expect(requests[0]?.headers.get('user-agent')).toMatch(/^create-agent-rig\/\d+\.\d+\.\d+/);
   });
+
+  it('integrations freshness prints one line per provider without --json', async () => {
+    const { fetch } = fakeFetch({
+      [PROBITY_URL]: npmBody(PROBITY_VERSION, [PROBITY_VERSION, '999.0.0']),
+      [PLAYWRIGHT_MCP_URL]: { fail: 'network' },
+    });
+
+    const result = await runFreshnessCommand({ args: ['freshness'], fetch });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout.split('\n')).toEqual([
+      `probity: behind (tested ${PROBITY_VERSION}; latest ${PROBITY_VERSION}; highest stable 999.0.0)`,
+      `playwright-mcp: unknown (tested ${PLAYWRIGHT_MCP_VERSION}; reason network-error)`,
+      `spec-kit: current (tested ${SPEC_KIT_VERSION}; latest release ${SPEC_KIT_VERSION}; highest tag ${SPEC_KIT_VERSION})`,
+      `bmad-tea: unknown (tested ${BMAD_TEA_VERSION}; reason upstream-not-recorded)`,
+      '',
+    ]);
+  });
 });

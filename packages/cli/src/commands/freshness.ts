@@ -1,4 +1,4 @@
-import { checkFreshness } from '../integrations/freshness.js';
+import { checkFreshness, type ProviderFreshness } from '../integrations/freshness.js';
 import { packageVersion } from '../lib/version.js';
 
 export type FreshnessCommandOptions = {
@@ -24,5 +24,25 @@ export async function runFreshnessCommand(
     fetch: options.fetch,
     userAgent: `create-agent-rig/${await packageVersion()}`,
   });
-  return { exitCode: 0, stdout: `${JSON.stringify(report)}\n`, stderr: '' };
+  const stdout = options.args.includes('--json')
+    ? `${JSON.stringify(report)}\n`
+    : report.providers.map((provider) => `${renderLine(provider)}\n`).join('');
+  return { exitCode: 0, stdout, stderr: '' };
+}
+
+const LABELS = [
+  ['latest', 'latest'],
+  ['highestStable', 'highest stable'],
+  ['latestRelease', 'latest release'],
+  ['highestTag', 'highest tag'],
+  ['reason', 'reason'],
+] as const;
+
+function renderLine(provider: ProviderFreshness): string {
+  const details = [`tested ${provider.tested}`];
+  for (const [key, label] of LABELS) {
+    const value = provider[key];
+    if (value !== undefined) details.push(`${label} ${value}`);
+  }
+  return `${provider.id}: ${provider.state} (${details.join('; ')})`;
 }
