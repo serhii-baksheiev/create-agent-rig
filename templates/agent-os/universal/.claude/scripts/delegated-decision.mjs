@@ -892,8 +892,9 @@ const runRecord = async (argv, cwd) => {
   // is the safe side of the ambiguity (see the module header). Never a
   // substitute input to a check that reads its own inputs (see the module
   // header's "Limits" section): this is a run EVENT, not a gate VERDICT.
+  let journalled;
   try {
-    recordEvent({
+    journalled = recordEvent({
       runDir,
       kind: 'delegated-decision',
       data: {
@@ -907,6 +908,17 @@ const runRecord = async (argv, cwd) => {
   } catch (error) {
     return refuse(
       `delegated-decision: the decision was NOT recorded — the run journal refused it: ${error.message}`,
+    );
+  }
+
+  // RP-487: the authority check above read the journal before
+  // `recordEvent` took its lock, so a declaration can land in between. The
+  // one that governs this decision is the latest one journalled before it.
+  const governing = journalledAuthorityBefore(runDir, journalled.seq);
+  if (governing !== 'delegated') {
+    return refuse(
+      'delegated-decision: the decision above was journalled but the evidence was NOT written — ' +
+        `the latest declaration journalled before it is ${governing ?? 'none'}, not delegated.`,
     );
   }
 
@@ -1045,12 +1057,26 @@ const parseResolveArgs = (argv) => {
 };
 
 // RP-467: the authority `run-state.mjs authority` last journalled for this
-// run, or null when there is none (or the journal cannot be read). A state
-// file that says delegated is acted on only when this agrees.
+// run. A state file that says delegated is acted on only when this agrees.
+// RP-487: an ended run declares nothing any more, and a journal that cannot
+// be read is reported as such rather than as "none".
 const journalledAuthority = (runDir) => {
+  let run;
+  try {
+    run = readRun({ runDir });
+  } catch {
+    return { state: 'unreadable' };
+  }
+  if (run.ended) return { state: 'ended' };
+  const declared = run.events.filter((event) => event.kind === 'authority-declared');
+  return { state: 'declared', to: declared.at(-1)?.data?.to ?? null };
+};
+
+/** The authority declared last before journal record `seq`, or null. */
+const journalledAuthorityBefore = (runDir, seq) => {
   try {
     const declared = readRun({ runDir }).events.filter(
-      (event) => event.kind === 'authority-declared',
+      (event) => event.kind === 'authority-declared' && event.seq < seq,
     );
     return declared.at(-1)?.data?.to ?? null;
   } catch {
@@ -1060,10 +1086,19 @@ const journalledAuthority = (runDir) => {
 
 const unjournalledDelegation = (runDir) => {
   const journalled = journalledAuthority(runDir);
-  if (journalled === 'delegated') return null;
+  if (journalled.state === 'declared' && journalled.to === 'delegated') return null;
+  if (journalled.state === 'unreadable') {
+    return (
+      "this run's state says delegated, but its run journal could not be read, so no " +
+      'journalled declaration backs it.'
+    );
+  }
+  if (journalled.state === 'ended') {
+    return "this run has ended, so its delegated authority no longer applies.";
+  }
   return (
     "this run's state says delegated, but its latest journalled declaration is " +
-    `${journalled ?? 'none'}. Declare the authority with \`run-state.mjs authority\` ` +
+    `${journalled.to ?? 'none'}. Declare the authority with \`run-state.mjs authority\` ` +
     'so the declaration is journalled; a state file alone is not a declaration.'
   );
 };

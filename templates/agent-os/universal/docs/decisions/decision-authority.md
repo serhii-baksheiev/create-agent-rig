@@ -113,8 +113,10 @@ read from this checkout's run journals; a second clone with no verdicts of its
 own does not see it spent.
 
 The run's authority is self-declared. In the opt-in workflow layer,
-`run-state.mjs authority` journals each declaration with the value before and after it, and the record and
-resolve commands act on a delegated authority only when the state file matches
+`run-state.mjs authority` journals each declaration with the value before and after it —
+`test/template/run-state-authority.test.ts` (absent in a generated rig) ›
+"journals the first declaration and a later change, each with the previous and new value" —
+and the record and resolve commands act on a delegated authority only when the state file matches
 the latest journalled declaration — pinned in the generator's
 `test/template/delegated-decision.test.ts` (absent in a generated rig) ›
 "refuses to record under a delegated authority that was written by hand and
