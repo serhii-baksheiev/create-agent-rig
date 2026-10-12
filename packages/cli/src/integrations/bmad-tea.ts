@@ -1,5 +1,6 @@
 import { resolveReadableInside } from '../lib/safe-path.js';
 import { readBounded } from './verify.js';
+import { classifyVersion } from './version-state.js';
 
 /**
  * BMAD Method's Test Architecture Enterprise (TEA) module (RP-315): an
@@ -37,6 +38,11 @@ export type BmadTeaInspection = {
   version?: string;
   versionFound?: BmadTeaVersionFound;
 };
+
+/** The installer records an external module's git tag (`v1.27.2`), not its package version. */
+export function teaPackageVersion(recorded: string): string {
+  return recorded.replace(/^v/, '');
+}
 
 /** Strip one pair of matching surrounding quotes from a YAML scalar. */
 function stripQuotes(value: string): string {
@@ -96,9 +102,14 @@ function findTeaModuleVersion(text: string): { found: boolean; version?: string 
  * (`_bmad/_config/manifest.yaml`) and the TEA module's own config
  * (`_bmad/tea/config.yaml`). Never spawns a process, never writes anything,
  * and never fails hard — the furthest this goes is `warn`, because TEA
- * evidence is advisory, not a gate.
+ * evidence is advisory, not a gate. `declaredVersion` is the repository's
+ * exact override of {@link BMAD_TEA_VERSION} (RP-445): the installed version
+ * is compared against it when present.
  */
-export async function inspectBmadTea(repoDir: string): Promise<BmadTeaInspection> {
+export async function inspectBmadTea(
+  repoDir: string,
+  declaredVersion?: string,
+): Promise<BmadTeaInspection> {
   const manifest = await readBounded(repoDir, MANIFEST_REL, MAX_MANIFEST_BYTES);
   if (manifest.status === 'absent') return { status: 'warn', reason: 'not-installed' };
   if (manifest.status !== 'ok') return { status: 'warn', reason: 'manifest-unreadable' };
@@ -123,8 +134,11 @@ export async function inspectBmadTea(repoDir: string): Promise<BmadTeaInspection
   const config = await resolveReadableInside(repoDir, TEA_CONFIG_REL, 'file');
   if (config.status !== 'ok') return { status: 'warn', reason: 'config-missing' };
 
-  // The installer records an external module's git tag (`v1.27.2`), not its package version.
-  if (version.replace(/^v/, '') !== BMAD_TEA_VERSION)
-    return { status: 'warn', reason: 'version-drift', version };
+  const { state } = classifyVersion({
+    tested: BMAD_TEA_VERSION,
+    declared: declaredVersion,
+    installed: teaPackageVersion(version),
+  });
+  if (state === 'drift') return { status: 'warn', reason: 'version-drift', version };
   return { status: 'pass', reason: 'installed', version };
 }

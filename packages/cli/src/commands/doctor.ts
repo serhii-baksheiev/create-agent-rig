@@ -13,9 +13,9 @@ import {
   type SpecKitInspection,
 } from '../integrations/spec-kit.js';
 import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
-import { inspectBmadTea, BMAD_TEA_VERSION } from '../integrations/bmad-tea.js';
+import { inspectBmadTea, BMAD_TEA_VERSION, teaPackageVersion } from '../integrations/bmad-tea.js';
 import type { BmadTeaVersionFound } from '../integrations/bmad-tea.js';
-import type { VersionClassification } from '../integrations/version-state.js';
+import { classifyVersion, type VersionClassification } from '../integrations/version-state.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -508,11 +508,18 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       continue;
     }
     if (entry.id === 'bmad-tea') {
-      const inspection = await inspectBmadTea(options.cwd);
+      const declared = intent?.entries.find((candidate) => candidate.id === 'bmad-tea')?.version;
+      const inspection = await inspectBmadTea(options.cwd, declared);
       checks.push({
         id: 'bmad-tea',
         status: inspection.status,
         reason: inspection.reason,
+        version: classifyVersion({
+          tested: BMAD_TEA_VERSION,
+          declared,
+          installed:
+            inspection.version === undefined ? undefined : teaPackageVersion(inspection.version),
+        }),
         ...(inspection.version === undefined ? {} : { teaVersion: inspection.version }),
         ...(inspection.versionFound === undefined
           ? {}

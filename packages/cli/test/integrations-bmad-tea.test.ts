@@ -593,6 +593,34 @@ describe('doctor: bmad-tea (RP-315)', () => {
     expect(check!.fix).toContain('1.27.2');
   });
 
+  // RP-445: a repository may deliberately declare a different exact TEA
+  // version; an installation matching that declaration is an override.
+  it('reports overridden, not version-drift, when the installed version equals a declared non-default version', async () => {
+    await writeDeclaration([
+      { id: 'bmad-tea', version: '1.28.0', selected: true, harnesses: ['claude-code'] },
+    ]);
+    await writeManifestYaml(realisticTeaManifest('v1.28.0'));
+    await writeTeaConfig();
+
+    const { result, body } = await doctor();
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const checks = body.checks as Array<{ id: string; detail: string }>;
+    const check = checks.find((candidate) => candidate.id === 'bmad-tea');
+    expect(check).toMatchObject({
+      status: 'ok',
+      reason: 'installed',
+      version: {
+        state: 'overridden',
+        tested: BMAD_TEA_VERSION,
+        declared: '1.28.0',
+        installed: '1.28.0',
+      },
+    });
+    expect(check!.detail).toContain('1.28.0');
+    expect(check!.detail).toContain(BMAD_TEA_VERSION);
+  });
+
   it('never lets an upstream ESC character reach the JSON report, and reports version-unknown instead of version-drift', async () => {
     await writeDeclaration([{ id: 'bmad-tea', selected: true, harnesses: ['claude-code'] }]);
     const manifestFile = path.join(repo, MANIFEST_REL);
