@@ -50,10 +50,15 @@ const loadScript = async <T>(...rel: string[]): Promise<T> =>
  * The kill switch, read through the package's own `stop-flag.mjs` — the module
  * preflight and `guard-bash` read it through — with the one substitution
  * placeholder filled in from this repository's manifest, as `init` fills it.
+ * Without a manifest the home flags cannot be named, but an AGENT_LOOP_STOP
+ * path carries no placeholder and is still checked: armed there is `fail`.
  */
 async function killSwitch(env: NodeJS.ProcessEnv, project: string | undefined): Promise<Outcome> {
-  if (project === undefined) return 'unknown';
   const { stopFlags, armedFlag } = await loadScript<StopFlagModule>('stop-flag.mjs');
+  if (project === undefined) {
+    const named = stopFlags(env).filter((flag) => !flag.includes(PROJECT_PLACEHOLDER));
+    return armedFlag(named) === null ? 'unknown' : 'fail';
+  }
   const armed = armedFlag(
     stopFlags(env).map((flag) => flag.replaceAll(PROJECT_PLACEHOLDER, project)),
   );

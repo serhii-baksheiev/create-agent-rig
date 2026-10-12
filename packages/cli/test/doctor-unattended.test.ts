@@ -338,6 +338,18 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     expect(ids).toEqual(DOCTOR_CONDITIONS);
   });
 
+  it('reports kill-switch-armed fail from an existing AGENT_LOOP_STOP path even without a manifest (RP-423)', async () => {
+    const extra = path.join(home, 'extra-brake');
+    expect(condition(await doctor({ AGENT_LOOP_STOP: extra }), 'kill-switch-armed')?.outcome).toBe(
+      'unknown',
+    );
+    await writeFile(extra, '');
+    expect(condition(await doctor({ AGENT_LOOP_STOP: extra }), 'kill-switch-armed')).toMatchObject({
+      outcome: 'fail',
+      status: 'fail',
+    });
+  });
+
   it('reports kill-switch-armed as a failure when the brake file is on', async () => {
     await initProject(repo, { withWorkflow: true });
     await mkdir(path.join(home, '.claude'), { recursive: true });
