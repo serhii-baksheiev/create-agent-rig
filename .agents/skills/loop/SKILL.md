@@ -900,14 +900,20 @@ resolutions":
   the tracker comment failed; one that is not listed was not made, and the
   stop escalates instead.
 
-  For `elevated-path-scope` the decision is `elevated-change-acceptance`: after
-  recording it, comment on the PR naming the recorded decision as a delegated
-  acceptance, then merge on the usual criterion. The run does **not** apply
+  For `elevated-path-scope` the decision is `elevated-change-acceptance`. Record
+  it on the item's branch once the gated head is committed — the record names
+  the branch and head it was made on — and only then commit the record file.
+  Any other commit after the record voids it: gate that head and record again
+  before merging. After recording it, comment on the PR naming the recorded
+  decision as a delegated acceptance, note in the run's journal entry that the
+  gate sweep will report this merge, then merge on the usual criterion. The run does **not** apply
   the `human-review` label, the only thing that suppresses a gate-sweep
   finding (`autonomy.md`, the gate sweep). The sweep will report the merge,
   and that report is correct — no human read the diff — with the record and
   the comment as its explanation. Under owner
   authority the same stop escalates, which here means leaving the merge to the
+  owner; that escalation counts toward §3's "two in a row" like any other, so
+  two such items in a row end an owner-authority run, both waiting on the
   owner.
 
   A decide-and-continue is not an escalation: the item is not marked, and no
