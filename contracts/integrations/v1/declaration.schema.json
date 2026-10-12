@@ -16,6 +16,38 @@
         "type": "object",
         "additionalProperties": false,
         "required": ["id", "selected"],
+        "allOf": [
+          {
+            "if": {
+              "required": ["id"],
+              "properties": { "id": { "enum": ["probity", "spec-kit"] } }
+            },
+            "then": {
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "description": "One exact release, MAJOR.MINOR.PATCH[-prerelease]: no range, no tag, no leading v.",
+                  "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["id"],
+              "properties": { "id": { "const": "bmad-tea" } }
+            },
+            "then": {
+              "properties": {
+                "version": {
+                  "type": "string",
+                  "description": "One exact release, optionally with the leading v BMAD's installer records.",
+                  "pattern": "^v?(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\\.[0-9A-Za-z-]+)*)?$"
+                }
+              }
+            }
+          }
+        ],
         "properties": {
           "id": {
             "type": "string",
