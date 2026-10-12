@@ -648,6 +648,33 @@ describe('evidence-query compareOutcome', () => {
     result: { distribution },
   });
 
+  it('reads too little coverage on either side as insufficient', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown; minCoverage?: number }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const thin = {
+      schemaVersion: 1,
+      signals: [{ ...rounds(2, 1, { '1': 1 }), eligible: 4, unknown: 3 }],
+    };
+    const full = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 2 })] };
+    const empty = { schemaVersion: 1, signals: [{ ...rounds(2, 0, {}), eligible: 0 }] };
+
+    expect(compare({ baseline: thin, current: full }).signals[0]).toMatchObject({
+      comparison: 'insufficient',
+    });
+    expect(compare({ baseline: full, current: empty }).signals[0]).toMatchObject({
+      comparison: 'insufficient',
+    });
+    // At a 25% threshold one observed item in four is enough.
+    expect(compare({ baseline: thin, current: full, minCoverage: 0.25 }).signals[0]).toMatchObject({
+      comparison: 'comparable',
+    });
+  });
+
   it('gives a numeric delta for a comparable signal and refuses a signalVersion mismatch', () => {
     const compare = (
       mod() as unknown as {

@@ -358,7 +358,13 @@ const MEASURES = {
  * delta is descriptive only: no direction is read into it. Two values of
  * different signal versions are never compared.
  */
-export const compareOutcome = ({ baseline, current }) => {
+const DEFAULT_MIN_COVERAGE = 0.5;
+
+/** Whether a signal observed enough of its eligible population to stand on. */
+const covered = (signal, minCoverage) =>
+  signal.eligible > 0 && signal.observed / signal.eligible >= minCoverage;
+
+export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_COVERAGE }) => {
   const signals = [];
   for (const now of current.signals) {
     const before = baseline.signals.find((signal) => signal.name === now.name);
@@ -368,6 +374,14 @@ export const compareOutcome = ({ baseline, current }) => {
         ...entry,
         comparison: 'not comparable',
         reason: `signalVersion differs: baseline ${before?.signalVersion ?? 'absent'}, current ${now.signalVersion}`,
+      });
+      continue;
+    }
+    if (!covered(before, minCoverage) || !covered(now, minCoverage)) {
+      signals.push({
+        ...entry,
+        comparison: 'insufficient',
+        reason: `observed below ${minCoverage} of eligible on at least one side`,
       });
       continue;
     }
@@ -383,5 +397,5 @@ export const compareOutcome = ({ baseline, current }) => {
       delta: is - was,
     });
   }
-  return { schemaVersion: 1, signals };
+  return { schemaVersion: 1, minCoverage, signals };
 };
