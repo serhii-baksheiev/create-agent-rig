@@ -211,6 +211,20 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     });
   });
 
+  it('reports guard-integrity-failed unknown, not a required failure, when the guard fixture batch timed out (RP-423)', async () => {
+    const { inspectUnattended } = await import('../src/integrations/doctor-unattended.js');
+    await initProject(repo, { withWorkflow: true });
+    const report = await inspectUnattended({
+      repoDir: repo,
+      env: { HOME: home },
+      guards: { status: 'fail', reason: 'guard-fixture-batch-timeout' },
+    });
+    expect(report.conditions.find((c) => c.id === 'guard-integrity-failed')).toMatchObject({
+      outcome: 'unknown',
+      status: 'warn',
+    });
+  });
+
   it('omits codex-hook-trust on a rig with no Codex hook wiring (RP-423)', async () => {
     await initProject(repo, { withWorkflow: true });
     await rm(path.join(repo, '.codex', 'hooks.json'));
