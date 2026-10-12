@@ -36,7 +36,7 @@ export function hookFilesReferencedIn(settingsText: string): Set<string> {
  *
  * The one question the hash arms cannot answer. They prove the bytes belong to
  * the rig; they do not prove the replacement wires the same hooks, and
- * Wiring files have flavours that differ in exactly that. A hook file
+ * wiring files have flavours that differ in exactly that. A hook file
  * still on disk with nothing wired to it is the quiet failure this module
  * names: the rules claim it is enforced and nothing ever calls it.
  *

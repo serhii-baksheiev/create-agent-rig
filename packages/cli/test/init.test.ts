@@ -1023,6 +1023,33 @@ describe('the workflow layer is opt-in (RP-180)', () => {
     expect(result.written).not.toContain('.claude/settings.json');
   });
 
+  it('says to run upgrade when it keeps vouched wiring because a rewrite would unwire a hook on disk', async () => {
+    await initProject(repo, {});
+    const hook = '.claude/hooks/extra-guard.mjs';
+    await writeFile(path.join(repo, ...hook.split('/')), '// a guard an older rig wired\n');
+    const settings = path.join(repo, '.claude', 'settings.json');
+    const parsed = JSON.parse(await readFile(settings, 'utf8')) as {
+      hooks: Record<string, unknown[]>;
+    };
+    parsed.hooks.PreToolUse = [
+      ...(parsed.hooks.PreToolUse ?? []),
+      { matcher: 'Bash', hooks: [{ type: 'command', command: `node "${hook}"` }] },
+    ];
+    const vouched = `${JSON.stringify(parsed, null, 2)}\n`;
+    await writeFile(settings, vouched);
+    const manifest = await readManifest(repo);
+    await writeManifest(repo, {
+      ...manifest!,
+      files: { ...manifest!.files, '.claude/settings.json': sha256(vouched) },
+    });
+
+    const result = await initProject(repo, { withWorkflow: true });
+
+    expect(result.warnings.find((w) => w.includes('.claude/settings.json'))).toMatch(
+      /create-agent-rig upgrade/,
+    );
+  });
+
   it('the plan for adding the layer lists the wiring it will rewrite as planned, not as kept', async () => {
     await initProject(repo, {});
 

@@ -263,14 +263,16 @@ const MAX_WIRING_BYTES = 1024 * 1024;
  * run may rewrite, with the bytes it read: still exactly what the manifest
  * says this rig wrote, rendered differently now, and the new wiring keeps
  * calling every hook the current one calls that is still on disk — the same
- * gate `upgrade` applies to these files. Anything else is kept.
+ * gate `upgrade` applies to these files. Anything else is kept; `unwiring`
+ * names the files kept only because the rewrite would unwire such a hook.
  */
 async function rewritableWiring(
   repoDir: string,
   previous: RigManifest | null,
   contents: ReadonlyMap<string, string>,
-): Promise<Map<string, Buffer>> {
+): Promise<{ rewritable: Map<string, Buffer>; unwiring: string[] }> {
   const rewritable = new Map<string, Buffer>();
+  const unwiring: string[] = [];
   for (const rel of [SETTINGS, CODEX_HOOKS]) {
     const installed = previous?.files[rel];
     const rendered = contents.get(rel);
@@ -279,10 +281,13 @@ async function rewritableWiring(
     }
     const bytes = await readBoundedFileInRepo(repoDir, path.join(repoDir, rel), MAX_WIRING_BYTES);
     if (bytes === null || sha256(bytes) !== installed) continue;
-    if (await unwiresAnInstalledHook(repoDir, bytes.toString('utf8'), rendered)) continue;
+    if (await unwiresAnInstalledHook(repoDir, bytes.toString('utf8'), rendered)) {
+      unwiring.push(rel);
+      continue;
+    }
     rewritable.set(rel, bytes);
   }
-  return rewritable;
+  return { rewritable, unwiring };
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -419,7 +424,7 @@ export async function planInit(repoDir: string, options: PlanInitOptions = {}): 
   const layers = effectiveLayers(previous, wantsWorkflow(options));
   const placement = await claudeMdPlacementForInstall(repoDir, previous);
   const files = (await initManifest(layers, placement)).map((f) => f.rel);
-  const rewritable = await rewritableWiring(
+  const { rewritable } = await rewritableWiring(
     repoDir,
     previous,
     await initFileContents(repoDir, undefined, layers, placement),
@@ -645,7 +650,7 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // handling) has the rendered body available.
   const filesToWrite =
     existingAgentsBytes !== null ? files.filter((rel) => rel !== AGENTS_MAP) : files;
-  const rewritable = await rewritableWiring(repoDir, previous, contents);
+  const { rewritable, unwiring } = await rewritableWiring(repoDir, previous, contents);
   const actions = await mapConcurrent(filesToWrite, 16, async (rel) => {
     const dest = destinations.get(rel)!;
     if (await exists(dest)) {
@@ -696,7 +701,11 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // seed-gone path — a plain `init` never plants one (see the loop above),
   // so it is not among the files THIS run would actually write either.
   const plannedCount = files.length - seedGone.length;
-  const warnings: string[] = [];
+  const warnings: string[] = unwiring.map(
+    (rel) =>
+      `${rel} was kept: rewriting it would stop calling a hook that is still installed. ` +
+      'Run create-agent-rig upgrade to see the wiring to merge by hand.',
+  );
 
   // RP-256 slice 2: the append itself. `existingAgentsBytes` is only ever
   // set once the marker check above has already let this run through, so
