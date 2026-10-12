@@ -189,6 +189,30 @@ describe('setup add probity', () => {
     expect(await readFile(tsConfigPath, 'utf8')).toBe(existing);
   });
 
+  it('declares an exact version other than the Rig-tested 1.10.1 as an override and pins the manual install step to it', async () => {
+    const add = (mode: string) =>
+      runIntegrationsCommand({
+        cwd: repo,
+        verb: 'add',
+        args: [PROBITY, '--harness', 'claude-code', '--version', '1.11.0', mode, '--json'],
+        isTTY: false,
+      });
+
+    const planned = await add('--dry-run');
+    expect(planned.exitCode, planned.stderr).toBe(0);
+    const { plan } = JSON.parse(planned.stdout);
+    expect(plan).toContain('npm install -D @nizos/probity@1.11.0');
+    expect(plan).not.toContain(`@nizos/probity@${VERSION}`);
+
+    const written = await add('--yes');
+    expect(written.exitCode, written.stderr).toBe(0);
+    const declaration = JSON.parse(await readFile(declarationPath(), 'utf8'));
+    expect(declaration.integrations).toEqual([
+      expect.objectContaining({ id: PROBITY, version: '1.11.0', harnesses: ['claude-code'] }),
+    ]);
+    expect(await exists(mjsConfigPath())).toBe(true);
+  });
+
   // RP-445: a different exact version is a deliberate override; a range or a
   // tag names no exact release, so it is still refused.
   it('refuses a requested version that is a range rather than one exact release, naming the version problem rather than a generic refusal, and writes nothing', async () => {
