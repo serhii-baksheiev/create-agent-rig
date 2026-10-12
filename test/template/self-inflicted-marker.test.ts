@@ -245,7 +245,7 @@ describe('github-issues re-records the marker after each write of its own', () =
         withRunDir(runDir, async () => {
           if (op === 'claim') adapter.claim(ticket);
           if (op === 'comment') adapter.comment(ticket, 'a note');
-          if (op === 'close') adapter.close(ticket, { prUrl: 'https://x/1' });
+          if (op === 'close') await adapter.close(ticket, { prUrl: 'https://x/1' });
           if (op === 'escalate') await adapter.escalate(ticket, 'a diagnosis');
         }),
       );

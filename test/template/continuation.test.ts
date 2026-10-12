@@ -2241,8 +2241,8 @@ describe('continuation.mjs CLI — the continuation event in the run journal', (
     }
   });
 
-  it('--post refused by plan-md journals nothing', async () => {
-    const { repoDir } = await freshRepo();
+  it('--post on plan-md, which cannot post, still records the continuation locally', async () => {
+    const { repoDir, headSha } = await freshRepo();
     const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-447-'));
     const result = await runCli(
       repoDir,
@@ -2250,7 +2250,14 @@ describe('continuation.mjs CLI — the continuation event in the run journal', (
       hermeticEnv({ RIG_RUN_DIR: runDir }),
     );
     expect(result.code).not.toBe(0);
-    expect(await continuationEvents(runDir)).toEqual([]);
+    const events = await continuationEvents(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toEqual({
+      schemaVersion: 1,
+      ticket: 'RP-1',
+      stop: 'pause',
+      head: headSha,
+    });
   });
 
   it('--post on an ended run still exits 0 and says the continuation was not journalled', async () => {

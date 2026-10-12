@@ -570,7 +570,7 @@ export const close = async (ticket, { prUrl = null, env = process.env } = {}) =>
   const transitioned = String(after?.state ?? '').toUpperCase() === 'CLOSED';
   if (transitioned) ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
   rebaseline(ticket);
-  if (transitioned) await recordItemClosed(env.RIG_RUN_DIR, { ticket: ticket.id });
+  if (transitioned) await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   return { ok: true, transitioned };
 };
 

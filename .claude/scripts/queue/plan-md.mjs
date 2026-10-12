@@ -244,7 +244,7 @@ export const close = async (ticket, { prUrl = null, planPath: p, env = process.e
   // that changed no state (AR-135).
   const gone = !parsePlan(readFileSync(file, 'utf8')).some((item) => item.id === String(ticket.id));
   const transitioned = present && gone;
-  if (transitioned) await recordItemClosed(env.RIG_RUN_DIR, { ticket: ticket.id });
+  if (transitioned) await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   return { ok: true, prUrl, transitioned };
 };
 

@@ -434,6 +434,20 @@ describe('close journals an item-closed event only when it transitioned', () => 
     expect(await itemClosedEvents(runDir)).toEqual([]);
   });
 
+  it('a plan-md close of an id the plan does not carry journals nothing', async () => {
+    const runDir = await freshRunDir();
+    const dir = await mkdtemp(path.join(tmpdir(), 'close-plan-'));
+    const planPath = path.join(dir, 'PLAN.md');
+    await writeFile(planPath, '# P\n\n## Agent queue\n\n- keep me\n\n## Journal\n');
+    const { close } = await load('plan-md.mjs');
+    const result = await close(
+      { id: '9' },
+      { planPath, env: { ...process.env, RIG_RUN_DIR: runDir } },
+    );
+    expect(result).toMatchObject({ transitioned: false });
+    expect(await itemClosedEvents(runDir)).toEqual([]);
+  });
+
   it('plan-md close journals one item-closed event when the line is gone', async () => {
     const runDir = await freshRunDir();
     const dir = await mkdtemp(path.join(tmpdir(), 'close-plan-'));
