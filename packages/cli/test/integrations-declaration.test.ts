@@ -174,4 +174,33 @@ describe('integration intent declaration', () => {
       rejected: [{ id: 'probity', reason: 'malformed' }],
     });
   });
+  // RP-445: a repository may declare a different exact version of a pinned
+  // provider, never a range or a tag — the doctor compares installed bytes
+  // against one exact version, and a range names none.
+  it('rejects a range or tag as the declared version of a pinned provider as malformed, accepts an exact one, and leaves unpinned providers alone', () => {
+    const declare = (id: string, version: string) =>
+      parseDeclaration(
+        JSON.stringify({ schemaVersion: 1, integrations: [{ id, version, selected: true }] }),
+        REGISTRY,
+      );
+    for (const id of ['probity', 'playwright-mcp', 'spec-kit', 'bmad-tea']) {
+      for (const version of ['latest', '1.x', '^1.2.3', '~1.2.3', 'v1.2.3', '1.2', '01.2.3'])
+        expect(declare(id, version), `${id}@${version}`).toMatchObject({
+          status: 'ok',
+          entries: [],
+          rejected: [{ id, reason: 'malformed' }],
+        });
+      for (const version of ['1.2.3', '0.0.83', '2.0.0-rc.1'])
+        expect(declare(id, version), `${id}@${version}`).toMatchObject({
+          status: 'ok',
+          rejected: [],
+          entries: [{ id, version }],
+        });
+    }
+    expect(declare('figma-mcp', 'latest')).toMatchObject({
+      status: 'ok',
+      rejected: [],
+      entries: [{ id: 'figma-mcp', version: 'latest' }],
+    });
+  });
 });
