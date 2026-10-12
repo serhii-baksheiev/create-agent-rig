@@ -8,10 +8,13 @@ export const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** `MAJOR.MINOR.PATCH[-prerelease]`: no leading `v`, no range, no tag (RP-445). */
 export const EXACT_VERSION_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
-/** Providers with a Rig-tested default version; a declared version must name one exact release. */
+/**
+ * Providers with a Rig-tested default version whose declared version must name
+ * one exact release. playwright-mcp joins with its own override; until then a
+ * declaration it already accepted stays valid.
+ */
 export const PINNED_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'probity',
-  'playwright-mcp',
   'spec-kit',
   'bmad-tea',
 ]);

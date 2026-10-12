@@ -436,10 +436,10 @@ default, `declared` the declaration entry's exact `version` when it has one,
 - `unknown` — doctor classified no installed version: none could be read,
   or (`bmad-tea`) the check stopped at an earlier finding first.
 
-A declared version for a provider with a Rig-tested default — `probity`,
-`bmad-tea`, `spec-kit`, `playwright-mcp` — is one exact
+A declared version for `probity`, `bmad-tea` or `spec-kit` is one exact
 `MAJOR.MINOR.PATCH[-prerelease]` release: a range or a tag (`latest`, `1.x`,
-`^1.2.3`) is rejected as `malformed` —
+`^1.2.3`) is rejected as `malformed`, while `playwright-mcp` keeps accepting
+the version it accepted before —
 `packages/cli/test/integrations-declaration.test.ts` › "rejects a range or
 tag as the declared version of a pinned provider as malformed, accepts an
 exact one, and leaves unpinned providers alone".

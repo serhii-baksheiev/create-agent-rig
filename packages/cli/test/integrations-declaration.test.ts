@@ -183,7 +183,7 @@ describe('integration intent declaration', () => {
         JSON.stringify({ schemaVersion: 1, integrations: [{ id, version, selected: true }] }),
         REGISTRY,
       );
-    for (const id of ['probity', 'playwright-mcp', 'spec-kit', 'bmad-tea']) {
+    for (const id of ['probity', 'spec-kit', 'bmad-tea']) {
       for (const version of ['latest', '1.x', '^1.2.3', '~1.2.3', 'v1.2.3', '1.2', '01.2.3'])
         expect(declare(id, version), `${id}@${version}`).toMatchObject({
           status: 'ok',
@@ -197,6 +197,13 @@ describe('integration intent declaration', () => {
           entries: [{ id, version }],
         });
     }
+    // playwright-mcp's override is a later slice; until then an existing
+    // declaration of `latest` stays as valid as it was before RP-445.
+    expect(declare('playwright-mcp', 'latest')).toMatchObject({
+      status: 'ok',
+      rejected: [],
+      entries: [{ id: 'playwright-mcp', version: 'latest' }],
+    });
     expect(declare('figma-mcp', 'latest')).toMatchObject({
       status: 'ok',
       rejected: [],
