@@ -114,5 +114,10 @@ flag is gone". A flag path that cannot be inspected counts as armed:
 `test/template/guard-hardening.test.ts` › "denies gh pr merge when
 AGENT_LOOP_STOP names a STOP file whose directory is chmod 000".
 
+Arming the brake does not halt a run that is already going: the run stops at
+the next task boundary, after finishing, pushing and journaling the task in
+hand — `test/template/queue.test.ts` › "the kill switch stops at the task
+boundary, not by abandoning work".
+
 The loop's own stop conditions, and how a run turns its unattended flag off
 when it stops, are in the `loop` skill.
