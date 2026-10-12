@@ -24,6 +24,7 @@ import {
   posixShellAvailable,
   skipUnless,
 } from '../helpers/env.js';
+import { preToolUseDeny } from '../helpers/codex-windows-wrapper.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 import { CLOUD_ACCESS_KEY } from './secrets-fixtures.js';
 
@@ -289,7 +290,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     expect(editGroup?.hooks.some((hook) => hook.command.includes('guard-secret-file.mjs'))).toBe(
       true,
     );
-    for (const groups of Object.values(config.hooks)) {
+    for (const [event, groups] of Object.entries(config.hooks)) {
       for (const group of groups) {
         for (const hook of group.hooks) {
           expect(hook.command).toContain('git rev-parse --show-toplevel');
@@ -319,7 +320,16 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
               '[Console]::OpenStandardInput().CopyTo($child.StandardInput.BaseStream)',
             );
           }
-          expect(windowsScript).toContain('exit $child.ExitCode');
+          if (event === 'PreToolUse' && BOUNDED_STAGE_GUARDS.includes(hookFile ?? '')) {
+            expect(windowsScript).toContain('hookSpecificOutput');
+            expect(windowsScript).toContain('permissionDecision');
+            expect(windowsScript).toContain('permissionDecisionReason');
+            expect(windowsScript).toContain('PreToolUse');
+            expect(windowsScript).toContain('exit 0');
+          } else {
+            expect(windowsScript).toContain('exit $child.ExitCode');
+            expect(windowsScript).not.toMatch(/hookSpecificOutput|permissionDecision/);
+          }
           // `command` is what Codex executes on macOS and Linux. Keep it valid
           // for the platform-provided POSIX shell and independent of GNU tools.
           expect(hook.command).toMatch(/node [^\n]*\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/);
@@ -373,9 +383,11 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
 
       expect(
         windowsScript,
-        'a crossed bound must write the stage and its budget to stderr and exit 2',
+        'a crossed bound must write the stage and its budget to stderr before a structured deny',
       ).toMatch(/codex wrapper: [^"'\n]*timed out after [^"'\n]*/i);
-      expect(windowsScript).toMatch(/exit\s+2\b/);
+      expect(windowsScript).toContain('hookSpecificOutput');
+      expect(windowsScript).toContain('permissionDecision');
+      expect(windowsScript).toContain('exit 0');
     },
   );
 
@@ -416,7 +428,7 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         guardedKills.length,
         `${guardFile}: every taskkill site must sit inside its own try/catch so a ` +
           'PS 5.1 NativeCommandError from an already-exited process cannot escape and skip ' +
-          `the wrapper's own exit 2. Found ${taskkillCount} taskkill site(s), ${guardedKills.length} guarded:\n${windowsScript}`,
+          `the wrapper's own structured deny. Found ${taskkillCount} taskkill site(s), ${guardedKills.length} guarded:\n${windowsScript}`,
       ).toBe(taskkillCount);
 
       // The catch must swallow ONLY the kill — never the timeout report that
@@ -425,16 +437,14 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         expect(
           block,
           `${guardFile}: a try/catch around a kill must not also swallow the timeout report: ${block}`,
-        ).not.toMatch(/timed out after|exit 2/);
+        ).not.toMatch(/timed out after|hookSpecificOutput|permissionDecision/);
       }
 
       const unconditionalReports =
-        windowsScript.match(
-          /\[Console\]::Error\.WriteLine\("codex wrapper: [^"]*timed out after[^"]*"\)\s*;?\s*exit 2/g,
-        ) ?? [];
+        windowsScript.match(/D\s+"codex wrapper: [^"]*timed out after[^"]*"/g) ?? [];
       expect(
         unconditionalReports.length,
-        `${guardFile}: expected the stderr message and exit 2 to run unconditionally for every stage`,
+        `${guardFile}: expected the stderr message to run unconditionally for every stage before denial`,
       ).toBeGreaterThanOrEqual(2);
     },
   );
@@ -992,24 +1002,30 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           cwd: nested,
         });
 
-        const result = await new Promise<{ code: number; stderr: string }>((resolve, reject) => {
-          const child = execFile(
-            'powershell.exe',
-            ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
-            {
-              cwd: nested,
-              env: {
-                ...withoutGitLocation(process.env),
-                HOME: home,
-                CLAUDE_PROJECT_DIR: '',
+        const result = await new Promise<{ code: number; stdout: string; stderr: string }>(
+          (resolve, reject) => {
+            const child = execFile(
+              'powershell.exe',
+              ['-NoProfile', '-Command', commandWindows!],
+              {
+                cwd: nested,
+                env: {
+                  ...withoutGitLocation(process.env),
+                  HOME: home,
+                  CLAUDE_PROJECT_DIR: '',
+                },
               },
-            },
-            (error, _stdout, stderr) =>
-              resolve({ code: error ? ((error as { code?: number }).code ?? 1) : 0, stderr }),
-          );
-          if (!child.stdin) return reject(new Error('no stdin'));
-          child.stdin.end(payloadText);
-        });
+              (error, stdout, stderr) =>
+                resolve({
+                  code: error ? ((error as { code?: number }).code ?? 1) : 0,
+                  stdout,
+                  stderr,
+                }),
+            );
+            if (!child.stdin) return reject(new Error('no stdin'));
+            child.stdin.end(payloadText);
+          },
+        );
 
         // A bare "expected 0 to be 2" says nothing about WHY the guard allowed
         // the edit, and the only stderr PowerShell returns on the allow path is
@@ -1028,41 +1044,40 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
         // whether the payload reached the child at all. It separates a wrapper
         // that loses stdin from a guard that reads it and decides "allow" — and
         // the exit code says whether the wrapper propagates a child's code.
-        const probe =
-          result.code === 2
-            ? '(not probed: the guard blocked)'
-            : await (async () => {
-                await writeFile(
-                  path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
-                  [
-                    "import { readFileSync } from 'node:fs';",
-                    "let n = -1, err = '';",
-                    'try { n = readFileSync(0).length; } catch (e) { err = String((e && e.code) || e); }',
-                    'process.stderr.write(`PROBE bytes=${n} err=${err}\\n`);',
-                    'process.exit(3);',
-                  ].join('\n'),
+        const probe = preToolUseDeny(result.stdout)
+          ? '(not probed: the guard blocked)'
+          : await (async () => {
+              await writeFile(
+                path.join(scratch, '.claude', 'hooks', 'guard-rulebook.mjs'),
+                [
+                  "import { readFileSync } from 'node:fs';",
+                  "let n = -1, err = '';",
+                  'try { n = readFileSync(0).length; } catch (e) { err = String((e && e.code) || e); }',
+                  'process.stderr.write(`PROBE bytes=${n} err=${err}\\n`);',
+                  'process.exit(3);',
+                ].join('\n'),
+              );
+              return new Promise<string>((resolve, reject) => {
+                const child = execFile(
+                  'powershell.exe',
+                  ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
+                  {
+                    cwd: nested,
+                    env: {
+                      ...withoutGitLocation(process.env),
+                      HOME: home,
+                      CLAUDE_PROJECT_DIR: '',
+                    },
+                  },
+                  (error, _stdout, stderr) => {
+                    const code = error ? ((error as { code?: number }).code ?? 1) : 0;
+                    resolve(`exit=${code} ${stderr.replace(/\s+/g, ' ').trim()}`);
+                  },
                 );
-                return new Promise<string>((resolve, reject) => {
-                  const child = execFile(
-                    'powershell.exe',
-                    ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded!],
-                    {
-                      cwd: nested,
-                      env: {
-                        ...withoutGitLocation(process.env),
-                        HOME: home,
-                        CLAUDE_PROJECT_DIR: '',
-                      },
-                    },
-                    (error, _stdout, stderr) => {
-                      const code = error ? ((error as { code?: number }).code ?? 1) : 0;
-                      resolve(`exit=${code} ${stderr.replace(/\s+/g, ' ').trim()}`);
-                    },
-                  );
-                  if (!child.stdin) return reject(new Error('no stdin'));
-                  child.stdin.end(payloadText);
-                });
-              })();
+                if (!child.stdin) return reject(new Error('no stdin'));
+                child.stdin.end(payloadText);
+              });
+            })();
 
         const seen = [
           `tmpdir            ${tmpdir()}`,
@@ -1075,10 +1090,18 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
           `flag              ${flag}`,
           `flag exists       ${existsSync(flag!)}`,
           `transport probe   ${probe}`,
+          `stdout            ${result.stdout}`,
           `stderr            ${result.stderr}`,
         ].join('\n');
 
-        expect(result.code, seen).toBe(2);
+        expect(result.code, seen).toBe(0);
+        const deny = preToolUseDeny(result.stdout);
+        expect(deny?.hookSpecificOutput?.hookEventName, seen).toBe('PreToolUse');
+        expect(deny?.hookSpecificOutput?.permissionDecision, seen).toBe('deny');
+        expect(deny?.hookSpecificOutput?.permissionDecisionReason, seen).toEqual(
+          expect.any(String),
+        );
+        expect(deny?.hookSpecificOutput?.permissionDecisionReason, seen).not.toBe('');
         expect(result.stderr, seen).toMatch(/rulebook|unattended/i);
       } finally {
         await removeFixture(scratch);

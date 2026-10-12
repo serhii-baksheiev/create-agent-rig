@@ -3,9 +3,11 @@ import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Drive a generated Windows Codex wrapper (`powershell.exe -EncodedCommand`)
- * the way Codex does: the hook payload on stdin, the exit code as the verdict.
- * Shared by the win32 wrapper cases in `test/template/codex-wrapper-*.test.ts`.
+ * Drive the inner generated Windows wrapper (`powershell.exe -EncodedCommand`)
+ * directly. This preserves tests for child exit-code passthrough (for example
+ * a probe's deliberate exit 7); Codex itself starts `commandWindows` through
+ * an outer `powershell.exe -NoProfile -Command`, which has a distinct refusal
+ * contract covered by `runWindowsCodexHost` below.
  */
 export function runWindowsWrapper(
   encodedCommand: string,
@@ -39,6 +41,68 @@ export function runWindowsWrapper(
 }
 
 /**
+ * Drive a PreToolUse `commandWindows` string through the outer PowerShell host
+ * Codex 0.162.1 actually uses. Unlike the direct helper above, this is the
+ * observable harness boundary: refusals must be structured JSON with exit 0,
+ * because outer PowerShell maps an inner exit 2 to its non-blocking exit 1.
+ */
+export function runWindowsCodexHost(
+  commandWindows: string,
+  input: Record<string, unknown>,
+  cwd: string,
+  env: Record<string, string>,
+  timeout?: number,
+): Promise<{ code: number; stderr: string; stdout: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      'powershell.exe',
+      ['-NoProfile', '-Command', commandWindows],
+      { cwd, env: { ...process.env, ...env }, timeout },
+      (error, stdout, stderr) =>
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout,
+          stderr,
+        }),
+    );
+    if (!child.stdin) return reject(new Error('no stdin'));
+    child.stdin.on('error', () => {});
+    child.stdin.end(JSON.stringify(input));
+  });
+}
+
+/** The last JSON record on stdout, if it is a Codex PreToolUse deny envelope. */
+export function preToolUseDeny(stdout: string):
+  | {
+      hookSpecificOutput?: {
+        hookEventName?: unknown;
+        permissionDecision?: unknown;
+        permissionDecisionReason?: unknown;
+      };
+    }
+  | undefined {
+  for (const line of stdout
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .reverse()) {
+    if (!line.startsWith('{')) continue;
+    try {
+      const parsed = JSON.parse(line) as {
+        hookSpecificOutput?: {
+          hookEventName?: unknown;
+          permissionDecision?: unknown;
+          permissionDecisionReason?: unknown;
+        };
+      };
+      if (parsed.hookSpecificOutput?.permissionDecision === 'deny') return parsed;
+    } catch {
+      // A non-JSON stdout line is not a hook decision; keep looking.
+    }
+  }
+  return undefined;
+}
+
+/**
  * The `-EncodedCommand` payload of the generated Windows wrapper for one
  * PreToolUse hook, read from the committed `.codex/hooks.json` under
  * `universal`. `undefined` when no entry names `hookFile`.
@@ -59,4 +123,21 @@ export async function encodedWrapperFor(
     ?.commandWindows?.match(
       /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
     )?.[1];
+}
+
+/** The complete generated PreToolUse command Windows Codex gives to its host. */
+export async function commandWindowsFor(
+  universal: string,
+  hookFile: string,
+): Promise<string | undefined> {
+  const config = JSON.parse(
+    await readFile(path.join(universal, '.codex', 'hooks.json'), 'utf8'),
+  ) as {
+    hooks: {
+      PreToolUse: Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>;
+    };
+  };
+  return config.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
+    hook.command.includes(hookFile),
+  )?.commandWindows;
 }

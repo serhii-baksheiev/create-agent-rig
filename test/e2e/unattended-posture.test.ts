@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
+import { preToolUseDeny } from '../helpers/codex-windows-wrapper.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 /**
@@ -264,14 +265,11 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
       if (process.platform === 'win32') {
         if (entry.commandWindows === undefined)
           throw new Error('no commandWindows on the Codex hook entry');
-        const parts = entry.commandWindows.trim().split(/\s+/);
-        const encoded = parts[parts.length - 1];
         delete guardEnv.NoDefaultCurrentDirectoryInExePath;
-        return withStdin(
-          'powershell.exe',
-          ['-NoProfile', '-NonInteractive', '-EncodedCommand', String(encoded)],
-          { cwd: repo, env: guardEnv },
-        );
+        return withStdin('powershell.exe', ['-NoProfile', '-Command', entry.commandWindows], {
+          cwd: repo,
+          env: guardEnv,
+        });
       }
       delete guardEnv.CLAUDE_PROJECT_DIR;
       return withStdin('/bin/sh', ['-c', entry.command], { cwd: repo, env: guardEnv });
@@ -300,10 +298,20 @@ describe('the unattended posture on a generated workflow rig (RP-283 acceptance)
     // Armed: guard-rulebook.mjs's blocking contract (its final refusal branch,
     // "part of the rulebook … never edits the rulebook outside its item's
     // allow-list") is `process.exit(2)` with a BLOCKED reason on stderr — never a
-    // JSON decision on stdout — so the assertion here is the exit code, for both
-    // invocations.
+    // JSON decision on stdout. The Windows Codex wrapper translates this to a
+    // structured denial with exit 0; direct and POSIX invocations retain exit 2.
     expect((await runClaudeGuard()).code).toBe(2);
-    expect((await runCodexGuard()).code).toBe(2);
+    const codexDenied = await runCodexGuard();
+    if (process.platform === 'win32') {
+      expect(codexDenied.code).toBe(0);
+      const deny = preToolUseDeny(codexDenied.stdout);
+      expect(deny?.hookSpecificOutput?.hookEventName).toBe('PreToolUse');
+      expect(deny?.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(deny?.hookSpecificOutput?.permissionDecisionReason).toEqual(expect.any(String));
+      expect(deny?.hookSpecificOutput?.permissionDecisionReason).not.toBe('');
+    } else {
+      expect(codexDenied.code).toBe(2);
+    }
   }, 120_000);
 
   it('preflight and doctor change nothing in the repository', async () => {
