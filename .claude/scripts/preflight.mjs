@@ -193,6 +193,15 @@ export const checkRunDirNotExported = (env = process.env) => {
     : { ok: true, detail: 'not exported' };
 };
 
+/** Control characters as `\uXXXX`, so a value read from disk cannot drive the terminal. */
+const escapeControl = (value) =>
+  Array.from(String(value), (character) => {
+    const code = character.codePointAt(0);
+    return code < 0x20 || (code >= 0x7f && code <= 0x9f)
+      ? `\\u${code.toString(16).padStart(4, '0')}`
+      : character;
+  }).join('');
+
 /**
  * No unattended flag may already be on disk for this checkout: preflight walks
  * before this run arms its own, so one found here belongs to an earlier run.
@@ -203,13 +212,13 @@ export const checkUnattendedFlag = (projectRoot, env = process.env) => {
   if (flag.unreadable) {
     return {
       ok: false,
-      detail: `an unattended flag is on disk and unreadable (${flag.path}): ${flag.why} — remove it before starting`,
+      detail: `an unattended flag is on disk and unreadable (${escapeControl(flag.path)}): ${escapeControl(flag.why)} — remove it before starting`,
     };
   }
   return {
     ok: false,
     detail:
-      `an unattended flag is already armed for this checkout (item ${flag.item ?? 'unnamed'}) — ` +
+      `an unattended flag is already armed for this checkout (item ${escapeControl(flag.item ?? 'unnamed')}) — ` +
       'an earlier run left it; clear it with `unattended-flag.mjs off --root <checkout>` before starting',
   };
 };
@@ -249,15 +258,9 @@ export const checkQueue = async (projectRoot) => {
     await adapter.listEligible(optionsWithPlanPath(config.options, configPath));
     return { ok: true, detail: `queue readable through ${adapterName}` };
   } catch (error) {
-    const diagnostic = Array.from(String(error?.message ?? error), (character) => {
-      const code = character.codePointAt(0);
-      return code < 0x20 || (code >= 0x7f && code <= 0x9f)
-        ? `\\u${code.toString(16).padStart(4, '0')}`
-        : character;
-    }).join('');
     return {
       ok: false,
-      detail: `could not read queue: ${diagnostic}`,
+      detail: `could not read queue: ${escapeControl(error?.message ?? error)}`,
     };
   }
 };

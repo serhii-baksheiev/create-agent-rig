@@ -210,6 +210,22 @@ describe('preflight refuses an unattended flag already on disk for this checkout
     });
   });
 
+  it('keeps control characters out of the rendered flag detail (RP-422)', async () => {
+    const { checkUnattendedFlag } = await load('preflight.mjs');
+    const ESC = String.fromCharCode(27);
+    const CR = String.fromCharCode(13);
+    await withHome(async (home, root) => {
+      await writeFile(
+        await flagPath(home, root),
+        JSON.stringify({ item: `RP-1${ESC}[31mX${CR}`, allow: [] }),
+      );
+      const check = checkUnattendedFlag(root, { ...process.env, HOME: home }) as Check;
+      expect(check.ok).toBe(false);
+      expect(check.detail).not.toContain(ESC);
+      expect(check.detail).not.toContain(CR);
+    });
+  });
+
   it('stops on a flag that is on disk but unreadable, saying why', async () => {
     const { checkUnattendedFlag } = await load('preflight.mjs');
     await withHome(async (home, root) => {
