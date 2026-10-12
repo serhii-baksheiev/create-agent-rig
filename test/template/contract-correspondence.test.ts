@@ -605,6 +605,24 @@ describe('docs/command-contract.md ↔ code correspondence (RP-184 PR2)', () => 
       ).toBe(true);
     });
 
+    // RP-445: a pinned provider's declared version names one exact release;
+    // bmad-tea alone also takes the installer's leading `v`.
+    it.each([
+      ['probity', 'latest', false],
+      ['spec-kit', '^0.0.83', false],
+      ['bmad-tea', '1.x', false],
+      ['probity', 'v1.10.1', false],
+      ['spec-kit', 'v0.0.83', false],
+      ['bmad-tea', 'v1.27.2', true],
+      ['probity', '1.11.0', true],
+      ['playwright-mcp', 'latest', true],
+    ])('judges %s@%s as parseDeclaration does (accepted: %s)', (id, version, accepted) => {
+      const data = { schemaVersion: 1, integrations: [{ id, version, selected: true }] };
+      const parsed = parseDeclaration(JSON.stringify(data), REGISTRY);
+      expect(parsed.status === 'ok' && parsed.rejected.length === 0).toBe(accepted);
+      expect(validate(data)).toBe(accepted);
+    });
+
     it.each([
       ['an unknown root key', { schemaVersion: 1, integrations: [], bogus: true }],
       ['a schemaVersion other than 1', { schemaVersion: 2, integrations: [] }],

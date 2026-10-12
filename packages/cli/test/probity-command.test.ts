@@ -189,11 +189,37 @@ describe('setup add probity', () => {
     expect(await readFile(tsConfigPath, 'utf8')).toBe(existing);
   });
 
-  it('refuses a requested version other than the pinned 1.10.1, naming the version problem rather than the generic unknown-provider refusal, and writes nothing', async () => {
+  it('declares an exact version other than the Rig-tested 1.10.1 as an override and pins the manual install step to it', async () => {
+    const add = (mode: string) =>
+      runIntegrationsCommand({
+        cwd: repo,
+        verb: 'add',
+        args: [PROBITY, '--harness', 'claude-code', '--version', '1.11.0', mode, '--json'],
+        isTTY: false,
+      });
+
+    const planned = await add('--dry-run');
+    expect(planned.exitCode, planned.stderr).toBe(0);
+    const { plan } = JSON.parse(planned.stdout);
+    expect(plan).toContain('npm install -D @nizos/probity@1.11.0');
+    expect(plan).not.toContain(`@nizos/probity@${VERSION}`);
+
+    const written = await add('--yes');
+    expect(written.exitCode, written.stderr).toBe(0);
+    const declaration = JSON.parse(await readFile(declarationPath(), 'utf8'));
+    expect(declaration.integrations).toEqual([
+      expect.objectContaining({ id: PROBITY, version: '1.11.0', harnesses: ['claude-code'] }),
+    ]);
+    expect(await exists(mjsConfigPath())).toBe(true);
+  });
+
+  // RP-445: a different exact version is a deliberate override; a range or a
+  // tag names no exact release, so it is still refused.
+  it('refuses a requested version that is a range rather than one exact release, naming the version problem rather than a generic refusal, and writes nothing', async () => {
     const result = await runIntegrationsCommand({
       cwd: repo,
       verb: 'add',
-      args: [PROBITY, '--harness', 'claude-code', '--version', '1.0.0', '--yes', '--json'],
+      args: [PROBITY, '--harness', 'claude-code', '--version', '^1.10.1', '--yes', '--json'],
       isTTY: false,
     });
 
@@ -203,9 +229,36 @@ describe('setup add probity', () => {
     // Once probity is a known provider, a bad --version must be refused for
     // its own reason, not fall back to the generic "unknown provider" one.
     expect(body.reason).not.toBe('not-in-matrix');
-    expect(body.reason).toMatch(/version/);
+    expect(body.reason).toBe('probity-exact-version-required');
     expect(await exists(declarationPath())).toBe(false);
     expect(await exists(mjsConfigPath())).toBe(false);
+  });
+
+  it('a re-run of setup add probity without --version keeps the declared override', async () => {
+    const first = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'claude-code', '--version', '1.11.0', '--yes', '--json'],
+      isTTY: false,
+    });
+    expect(first.exitCode, first.stderr).toBe(0);
+
+    const second = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'codex', '--yes', '--json'],
+      isTTY: false,
+    });
+
+    expect(second.exitCode, second.stderr).toBe(0);
+    const declaration = JSON.parse(await readFile(declarationPath(), 'utf8'));
+    expect(declaration.integrations).toEqual([
+      expect.objectContaining({
+        id: PROBITY,
+        version: '1.11.0',
+        harnesses: ['claude-code', 'codex'],
+      }),
+    ]);
   });
 
   // RP-416 round 2, point 1: probity is neither an MCP server nor rendered

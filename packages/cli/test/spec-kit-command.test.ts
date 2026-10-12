@@ -152,6 +152,31 @@ describe('Spec Kit through setup add, apply, and remove', () => {
     expect(await readFile(declarationPath(), 'utf8')).toBe(foreign);
   });
 
+  // RP-445 rejects a range or tag as a malformed declared version; Spec Kit
+  // takes no override in that slice, so a --version tag keeps the
+  // pinned-version refusal it always had.
+  it('refuses --version latest with the pinned-version refusal, before a lifecycle or intent', async () => {
+    let lifecycleCalls = 0;
+    const result = await command({
+      verb: 'add',
+      args: [SPEC_KIT, '--harness', 'claude-code', '--version', 'latest', '--yes', '--json'],
+      cwd: repo,
+      isTTY: false,
+      runSpecKit: async (options) => {
+        lifecycleCalls += 1;
+        return successfulLifecycle(options);
+      },
+    });
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      outcome: 'refused',
+      reason: 'spec-kit-pinned-version-and-upstream-ownership-required',
+    });
+    expect(lifecycleCalls).toBe(0);
+    expect(await exists(declarationPath())).toBe(false);
+  });
+
   it('refuses JSON add without --yes before starting a lifecycle or writing intent', async () => {
     let lifecycleCalls = 0;
     const result = await command({

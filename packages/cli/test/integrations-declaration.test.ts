@@ -174,4 +174,71 @@ describe('integration intent declaration', () => {
       rejected: [{ id: 'probity', reason: 'malformed' }],
     });
   });
+  // RP-445: a repository may declare a different exact version of a pinned
+  // provider, never a range or a tag — the doctor compares installed bytes
+  // against one exact version, and a range names none.
+  it('rejects a range or tag as the declared version of a pinned provider as malformed, accepts an exact one, and leaves unpinned providers alone', () => {
+    const declare = (id: string, version: string) =>
+      parseDeclaration(
+        JSON.stringify({ schemaVersion: 1, integrations: [{ id, version, selected: true }] }),
+        REGISTRY,
+      );
+    for (const id of ['probity', 'spec-kit', 'bmad-tea']) {
+      for (const version of [
+        'latest',
+        '1.x',
+        '^1.2.3',
+        '~1.2.3',
+        ...(id === 'bmad-tea' ? [] : ['v1.2.3']),
+        '1.2',
+        '01.2.3',
+      ])
+        expect(declare(id, version), `${id}@${version}`).toMatchObject({
+          status: 'ok',
+          entries: [],
+          rejected: [{ id, reason: 'malformed' }],
+        });
+      for (const version of ['1.2.3', '0.0.83', '2.0.0-rc.1'])
+        expect(declare(id, version), `${id}@${version}`).toMatchObject({
+          status: 'ok',
+          rejected: [],
+          entries: [{ id, version }],
+        });
+    }
+    // playwright-mcp's override is a later slice; until then an existing
+    // declaration of `latest` stays as valid as it was before RP-445.
+    expect(declare('playwright-mcp', 'latest')).toMatchObject({
+      status: 'ok',
+      rejected: [],
+      entries: [{ id: 'playwright-mcp', version: 'latest' }],
+    });
+    expect(declare('figma-mcp', 'latest')).toMatchObject({
+      status: 'ok',
+      rejected: [],
+      entries: [{ id: 'figma-mcp', version: 'latest' }],
+    });
+  });
+  // BMAD's own installer records TEA's git tag (`v1.27.2`), and master
+  // accepted that form; it stays valid for bmad-tea only.
+  it('accepts v1.27.2 for bmad-tea and still rejects ranges', () => {
+    const declare = (version: string) =>
+      parseDeclaration(
+        JSON.stringify({
+          schemaVersion: 1,
+          integrations: [{ id: 'bmad-tea', version, selected: true }],
+        }),
+        REGISTRY,
+      );
+    expect(declare('v1.27.2')).toMatchObject({
+      status: 'ok',
+      rejected: [],
+      entries: [{ id: 'bmad-tea', version: 'v1.27.2' }],
+    });
+    for (const version of ['v^1.27.2', 'v~1.27.2', 'v1.x', 'v1.27', 'vlatest', 'vv1.27.2'])
+      expect(declare(version), version).toMatchObject({
+        status: 'ok',
+        entries: [],
+        rejected: [{ id: 'bmad-tea', reason: 'malformed' }],
+      });
+  });
 });

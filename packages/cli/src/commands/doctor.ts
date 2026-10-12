@@ -13,8 +13,9 @@ import {
   type SpecKitInspection,
 } from '../integrations/spec-kit.js';
 import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
-import { inspectBmadTea, BMAD_TEA_VERSION } from '../integrations/bmad-tea.js';
+import { inspectBmadTea, BMAD_TEA_VERSION, teaPackageVersion } from '../integrations/bmad-tea.js';
 import type { BmadTeaVersionFound } from '../integrations/bmad-tea.js';
+import { classifyVersion, type VersionClassification } from '../integrations/version-state.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -83,6 +84,8 @@ type Check = {
   teaVersion?: string;
   /** `bmad-tea` only — what a `version-unknown` found instead of a version; stripped like `teaVersion`. */
   teaVersionFound?: BmadTeaVersionFound;
+  /** `probity:<harness>` and `bmad-tea` only — reaches the report as-is (RP-445). */
+  version?: VersionClassification;
 };
 export type DoctorOptions = {
   cwd: string;
@@ -124,15 +127,16 @@ function rigVersionFix(reason: string, versions: { cli: string; repository: stri
   return "Compare the CLI version with the version recorded in this repository's manifest by hand before running setup or upgrade.";
 }
 
-/** `probity:<harness>` fix text, by reason (RP-416). */
-function probityFix(reason: string): string {
+/** `probity:<harness>` fix text, by reason (RP-416); a version is the repository's declaration when it has one (RP-445). */
+function probityFix(reason: string, version: VersionClassification | undefined): string {
   if (reason === 'config-missing')
     return 'Run create-agent-rig setup add probity (or --adopt an existing config) to generate probity.config.mjs.';
   if (reason === 'config-drift')
     return 'probity.config.mjs differs from the bytes Rig generated; keep the edit with create-agent-rig setup add probity --adopt, or restore the generated file.';
-  if (reason === 'launcher-missing') return `Run npm install -D @nizos/probity@${PROBITY_VERSION}.`;
+  if (reason === 'launcher-missing')
+    return `Run npm install -D @nizos/probity@${version?.declared ?? PROBITY_VERSION}.`;
   if (reason === 'version-drift')
-    return `Run npm install -D @nizos/probity@${PROBITY_VERSION} to match the pinned version.`;
+    return `Run npm install -D @nizos/probity@${version?.declared ?? PROBITY_VERSION} to match the ${version?.declared === undefined ? 'pinned' : 'declared'} version (Rig-tested ${PROBITY_VERSION}).`;
   return "Wire the Probity gate hook into this harness's own hook configuration.";
 }
 
@@ -141,6 +145,7 @@ function bmadTeaFix(
   reason: string,
   version: string | undefined,
   found: BmadTeaVersionFound | undefined,
+  declared: string | undefined,
 ): string {
   if (reason === 'not-installed')
     return 'Manual next step, not run by Rig: npx bmad-method install --modules tea.';
@@ -149,7 +154,7 @@ function bmadTeaFix(
   if (reason === 'config-missing')
     return '_bmad/tea/config.yaml is missing; reinstall TEA with npx bmad-method install --modules tea.';
   if (reason === 'version-drift')
-    return `_bmad/_config/manifest.yaml reports tea installed at ${version ?? 'an unknown version'}, while Rig was checked against ${BMAD_TEA_VERSION}; TEA evidence stays advisory regardless.`;
+    return `_bmad/_config/manifest.yaml reports tea installed at ${version ?? 'an unknown version'}, while ${declared === undefined ? `Rig was checked against ${BMAD_TEA_VERSION}` : `this repository declares ${declared} (Rig-tested ${BMAD_TEA_VERSION})`}; TEA evidence stays advisory regardless.`;
   return '_bmad/_config/manifest.yaml could not be read; verify the BMAD installation by hand.';
 }
 
@@ -494,21 +499,30 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     if (entry.id === 'probity') {
       const declared = intent?.entries.find((candidate) => candidate.id === 'probity');
       for (const harness of Object.keys(entry.harnesses) as Harness[]) {
-        const inspection = await inspectProbity(options.cwd, harness, declared?.configHash);
-        checks.push({
-          id: `probity:${harness}`,
-          status: inspection.status,
-          reason: inspection.reason,
-        });
+        const inspection = await inspectProbity(
+          options.cwd,
+          harness,
+          declared?.configHash,
+          declared?.version,
+        );
+        checks.push({ id: `probity:${harness}`, ...inspection });
       }
       continue;
     }
     if (entry.id === 'bmad-tea') {
-      const inspection = await inspectBmadTea(options.cwd);
+      const declaredTag = intent?.entries.find((candidate) => candidate.id === 'bmad-tea')?.version;
+      const declared = declaredTag === undefined ? undefined : teaPackageVersion(declaredTag);
+      const inspection = await inspectBmadTea(options.cwd, declared);
       checks.push({
         id: 'bmad-tea',
         status: inspection.status,
         reason: inspection.reason,
+        version: classifyVersion({
+          tested: BMAD_TEA_VERSION,
+          declared,
+          installed:
+            inspection.version === undefined ? undefined : teaPackageVersion(inspection.version),
+        }),
         ...(inspection.version === undefined ? {} : { teaVersion: inspection.version }),
         ...(inspection.versionFound === undefined
           ? {}
@@ -592,7 +606,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
               ? `${check.reason.replaceAll('-', ' ')} (cli ${rigVersion.cli}, repository ${rigVersion.repository})`
               : check.id === 'rig-owned-files' && check.counts
                 ? `${check.reason.replaceAll('-', ' ')} (absent ${check.counts.absent}, content drift ${check.counts.contentDrift}, line drift ${check.counts.lineDrift}, unreadable ${check.counts.unreadable})`
-                : check.reason.replaceAll('-', ' '),
+                : check.version?.state === 'overridden'
+                  ? `${check.reason.replaceAll('-', ' ')} (version ${check.version.declared} declared by this repository, overriding the Rig-tested ${check.version.tested})`
+                  : check.reason.replaceAll('-', ' '),
         fix:
           check.status === 'pass'
             ? ''
@@ -613,9 +629,14 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                         : check.id === 'spec-kit'
                           ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
                           : check.id.startsWith('probity:')
-                            ? probityFix(check.reason)
+                            ? probityFix(check.reason, check.version)
                             : check.id === 'bmad-tea'
-                              ? bmadTeaFix(check.reason, teaVersion, teaVersionFound)
+                              ? bmadTeaFix(
+                                  check.reason,
+                                  teaVersion,
+                                  teaVersionFound,
+                                  check.version?.declared,
+                                )
                               : 'Review create-agent-rig setup list and the intended provider wiring.',
       }),
     ),

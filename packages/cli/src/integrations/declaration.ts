@@ -5,6 +5,19 @@ export const DECLARATION_REL = '.rig/integrations.json';
 export const DECLARATION_SCHEMA_VERSION = 1;
 export const MAX_DECLARATION_BYTES = 64 * 1024;
 export const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/** `MAJOR.MINOR.PATCH[-prerelease]`: no leading `v`, no range, no tag (RP-445). */
+export const EXACT_VERSION_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
+/**
+ * Providers with a Rig-tested default version whose declared version must name
+ * one exact release. playwright-mcp joins with its own override; until then a
+ * declaration it already accepted stays valid.
+ */
+export const PINNED_PROVIDER_IDS: ReadonlySet<string> = new Set([
+  'probity',
+  'spec-kit',
+  'bmad-tea',
+]);
 export const ROOT_KEYS: readonly string[] = Object.freeze([
   'schemaVersion',
   'integrations',
@@ -130,7 +143,13 @@ export function parseDeclaration(
       value.selected !== true ||
       (Object.hasOwn(value, 'required') && typeof value.required !== 'boolean') ||
       (Object.hasOwn(value, 'version') &&
-        (typeof value.version !== 'string' || !VERSION_PATTERN.test(value.version))) ||
+        (typeof value.version !== 'string' ||
+          !VERSION_PATTERN.test(value.version) ||
+          (PINNED_PROVIDER_IDS.has(value.id) &&
+            !EXACT_VERSION_PATTERN.test(
+              // BMAD's installer records TEA's git tag form, `v1.27.2`.
+              value.id === 'bmad-tea' ? value.version.replace(/^v/, '') : value.version,
+            )))) ||
       (Object.hasOwn(value, 'configHash') &&
         (typeof value.configHash !== 'string' || !hash.test(value.configHash)))
     ) {
