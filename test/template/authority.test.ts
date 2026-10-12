@@ -229,16 +229,16 @@ describe('parseExecutionMode (RP-339)', () => {
 
 describe('mayResolve (RP-339)', () => {
   it('is true only for a delegable id under exactly "delegated"', async () => {
-    const { mayResolve, DELEGABLE_DECISIONS } = await load();
-    for (const { id } of DELEGABLE_DECISIONS) {
+    const { mayResolve } = await load();
+    for (const id of EXPECTED_DELEGABLE_IDS) {
       expect(mayResolve(id, 'delegated'), id).toBe(true);
     }
   });
 
   it('is false for every delegable id under owner, unknown, undefined, or any other string', async () => {
-    const { mayResolve, DELEGABLE_DECISIONS } = await load();
+    const { mayResolve } = await load();
     const notDelegated: unknown[] = ['owner', 'unknown', undefined, 'Delegated', 'yes', ''];
-    for (const { id } of DELEGABLE_DECISIONS) {
+    for (const id of EXPECTED_DELEGABLE_IDS) {
       for (const authority of notDelegated) {
         expect(mayResolve(id, authority), `${id} / ${JSON.stringify(authority)}`).toBe(false);
       }
@@ -246,9 +246,9 @@ describe('mayResolve (RP-339)', () => {
   });
 
   it('is false for every non-delegable id under every authority, including "delegated"', async () => {
-    const { mayResolve, NON_DELEGABLE_BOUNDARIES, DECISION_AUTHORITIES } = await load();
+    const { mayResolve, DECISION_AUTHORITIES } = await load();
     const authorities: unknown[] = [...DECISION_AUTHORITIES, 'unknown', undefined];
-    for (const { id } of NON_DELEGABLE_BOUNDARIES) {
+    for (const id of EXPECTED_NON_DELEGABLE_IDS) {
       for (const authority of authorities) {
         expect(mayResolve(id, authority), `${id} / ${JSON.stringify(authority)}`).toBe(false);
       }
@@ -258,9 +258,7 @@ describe('mayResolve (RP-339)', () => {
   it('throws, naming the id, for a decisionId neither list names — the vocabulary is closed', async () => {
     const { mayResolve } = await load();
     for (const id of ['publish-to-npm', '', 'MERGE']) {
-      expect(() => mayResolve(id, 'delegated'), JSON.stringify(id)).toThrow(
-        new RegExp(id.length > 0 ? id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : '.'),
-      );
+      expect(() => mayResolve(id, 'delegated'), JSON.stringify(id)).toThrow(`"${id}"`);
     }
   });
 });
@@ -395,10 +393,34 @@ describe('the decision-authority decision record (RP-339)', () => {
   // because a restated list is a second copy that drifts the moment an id is
   // added or renamed in the module and not here (`.claude/rules/invariants.md`,
   // "one mechanism, one implementation").
+  //
+  // An id counts as restated when it appears as a code span, or — for a
+  // hyphenated id, which ordinary prose does not produce — bare between
+  // non-word, non-hyphen characters. A one-word id (merge, publication) is
+  // also an ordinary English word, so only its code span is a restatement.
+  const reListedIds = (content: string): string[] =>
+    [...EXPECTED_DELEGABLE_IDS, ...EXPECTED_NON_DELEGABLE_IDS].filter((id) =>
+      (id.includes('-') ? new RegExp(`(?<![\\w-])${id}(?![\\w-])`) : new RegExp(`\`${id}\``)).test(
+        content,
+      ),
+    );
+
+  it('the re-listing matcher catches an id as a code span or a bare hyphenated id, not ordinary words', () => {
+    expect(reListedIds('Delegable: `merge`, `scope-correction`.')).toEqual([
+      'scope-correction',
+      'merge',
+    ]);
+    expect(reListedIds('- kill-switch\n- publication')).toEqual(['kill-switch']);
+    expect(reListedIds('`publication`')).toEqual(['publication']);
+    expect(
+      reListedIds(
+        'A merge, once merged, is not publication; the kill switch and a non-kill-switch-like gate.',
+      ),
+    ).toEqual([]);
+  });
+
   it('does not re-list any decision or boundary id — it points at the module instead of duplicating it', async () => {
     const content = await readFile(decisionRecordPath, 'utf8');
-    const allIds = [...EXPECTED_DELEGABLE_IDS, ...EXPECTED_NON_DELEGABLE_IDS];
-    const reListed = allIds.filter((id) => content.includes(id));
-    expect(reListed, 'ids the decision record restates verbatim').toEqual([]);
+    expect(reListedIds(content), 'ids the decision record restates verbatim').toEqual([]);
   });
 });
