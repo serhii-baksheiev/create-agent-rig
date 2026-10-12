@@ -23,7 +23,12 @@ export type UnattendedCondition = {
 export type UnattendedReport = { status: UnattendedStatus; conditions: UnattendedCondition[] };
 
 type PostureModule = {
-  POSTURE_CONDITIONS: ReadonlyArray<{ id: string; classification: string; surfaces: string[] }>;
+  POSTURE_CONDITIONS: ReadonlyArray<{
+    id: string;
+    classification: string;
+    surfaces: string[];
+    harness: string;
+  }>;
   doctorStatus: (id: string, outcome: Outcome) => UnattendedStatus;
 };
 
@@ -182,17 +187,20 @@ export async function inspectUnattended(options: {
     'workflow-layer-missing':
       manifest === null ? 'unknown' : manifest.layers.includes('workflow') ? 'pass' : 'fail',
   };
-  const conditions = posture.POSTURE_CONDITIONS.filter((c) => c.surfaces.includes('doctor')).map(
-    (c): UnattendedCondition => {
-      const outcome = outcomes[c.id] ?? 'unknown';
-      return {
-        id: c.id,
-        classification: c.classification,
-        outcome,
-        status: posture.doctorStatus(c.id, outcome),
-      };
-    },
-  );
+  // A Codex-only condition says nothing about a rig with no Codex hook wiring.
+  const codexWired =
+    (await readBounded(options.repoDir, '.codex/hooks.json', 1024 * 1024)).status !== 'absent';
+  const conditions = posture.POSTURE_CONDITIONS.filter(
+    (c) => c.surfaces.includes('doctor') && (codexWired || c.harness !== 'codex'),
+  ).map((c): UnattendedCondition => {
+    const outcome = outcomes[c.id] ?? 'unknown';
+    return {
+      id: c.id,
+      classification: c.classification,
+      outcome,
+      status: posture.doctorStatus(c.id, outcome),
+    };
+  });
   const status: UnattendedStatus = conditions.some((c) => c.status === 'fail')
     ? 'fail'
     : conditions.some((c) => c.status === 'warn')

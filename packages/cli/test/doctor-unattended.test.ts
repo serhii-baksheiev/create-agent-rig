@@ -197,6 +197,12 @@ describe('doctor reports unattended readiness against the posture contract (RP-2
     expect(condition(await doctor(), 'tracker-credentials-missing')?.outcome).toBe('unknown');
   });
 
+  it('omits codex-hook-trust on a rig with no Codex hook wiring (RP-423)', async () => {
+    await initProject(repo, { withWorkflow: true });
+    await rm(path.join(repo, '.codex', 'hooks.json'));
+    expect(condition(await doctor(), 'codex-hook-trust')).toBeUndefined();
+  });
+
   it('reports dod-checks-missing fail when an entry is one gate-stop-dod cannot run as a command (RP-423)', async () => {
     await initProject(repo, { withWorkflow: true });
     const dod = path.join(repo, '.claude', 'hooks', 'dod-checks.json');
