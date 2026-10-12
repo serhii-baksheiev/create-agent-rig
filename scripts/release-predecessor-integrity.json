@@ -42,5 +42,9 @@
   "1.6.0": {
     "integrity": "sha512-nC36QFWy7mZstyCCS6ZqaeUF6oK1hCTxv0tmY6Bv5VhOeq9gXczbJtRIzzfAw5B6JsvyeZiXzmixFyIP7fZihw==",
     "shasum": "c3dece5a35f318a66641137042344b3f049cdaa9"
+  },
+  "1.6.1": {
+    "integrity": "sha512-Pczg6DmZw/YfSDYrBC37MHjEww8xibg6mS+8imsjC5vL1kse0iZcjcuhWxIrrt/KxkQG4wYMBXLCb3e5RKpVwA==",
+    "shasum": "08d288403245898c0797847fbf378aefa1c776a9"
   }
 }
