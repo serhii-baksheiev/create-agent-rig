@@ -991,3 +991,25 @@ describe('aggregated doctor (RP-21)', () => {
     });
   });
 });
+
+// RP-445: `integrations freshness` is the one networked command; doctor stays
+// offline. Any fetch doctor made would be recorded here and then refused.
+describe('doctor stays offline (RP-445)', () => {
+  it('doctor makes no network request', async () => {
+    await initProject(repo, { withWorkflow: true });
+    const original = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: string | URL | Request) => {
+      calls.push(String(input));
+      throw new Error('doctor must not reach the network');
+    }) as typeof globalThis.fetch;
+    try {
+      const result = await doctor();
+
+      expect(report(result.stdout).checks.length).toBeGreaterThan(0);
+    } finally {
+      globalThis.fetch = original;
+    }
+    expect(calls).toEqual([]);
+  });
+});

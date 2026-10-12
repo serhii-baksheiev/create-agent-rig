@@ -430,6 +430,47 @@ describe('evidence-query outcomeOf: an item across runs', () => {
   });
 });
 
+// RP-357 fixture acceptance: what the report never does, whatever the journal holds.
+describe('evidence-query outcomeOf: acceptance limits (RP-357)', () => {
+  it('reads interventions from Rig-recorded events only, never from assignee or person fields', async () => {
+    const plain = await newRun(await runsRoot(), 'run-a');
+    const noisy = await newRun(await runsRoot(), 'run-a');
+    for (const r of [plain, noisy]) {
+      r.take('RP-1');
+      r.ev('item-escalated', { schemaVersion: 1, ticket: 'RP-1', stop: 'escalation' });
+      r.closed('RP-1');
+    }
+    // Tracker conventions a team might journal: none of them is an intervention.
+    noisy.ev('assignee-changed', { ticket: 'RP-1', from: 'alice', to: 'bob' });
+    noisy.ev('note', { ticket: 'RP-1', author: 'carol', reassignedTo: 'dave' });
+
+    const strip = (outcome: Outcome) => outcome.signals;
+    const withoutNoise = strip(mod().outcomeOf({ runs: [plain.entry()] }));
+    const withNoise = strip(mod().outcomeOf({ runs: [noisy.entry()] }));
+    expect(withNoise).toEqual(withoutNoise);
+    expect(JSON.stringify(withNoise)).not.toMatch(/alice|bob|carol|dave/);
+  });
+
+  it('reports claim-to-merge as total wall time only, never as active time', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-2');
+    r.ev('revalidation', { ticket: 'RP-2', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-2',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+    const commitTime = () => '2026-10-01T02:00:02.000Z';
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()], commitTime } as never), 'claim-to-merge');
+    expect(Object.keys(s.result as object)).toEqual(['wallTimeMs']);
+    expect(JSON.stringify(s)).not.toMatch(/active/i);
+    // The span from the claim at 00:00:02 to the merge at 02:00:02, nothing subtracted.
+    expect(s.result).toEqual({ wallTimeMs: { min: 7200000, median: 7200000, max: 7200000 } });
+  });
+});
+
 describe('evidence-query outcomeOf: report shape', () => {
   it('every signal carries name, signalVersion, eligible, observed, unknown and result', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
