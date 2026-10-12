@@ -1,4 +1,5 @@
 import { BMAD_TEA_VERSION } from './bmad-tea.js';
+import { PLAYWRIGHT_MCP_VERSION } from './playwright.js';
 import { PROBITY_VERSION } from './probity.js';
 import { SPEC_KIT_VERSION } from './spec-kit.js';
 
@@ -7,11 +8,11 @@ import { SPEC_KIT_VERSION } from './spec-kit.js';
  * was tested against. Read-only and explicitly networked — the one place the
  * CLI asks a registry anything; doctor and release evidence stay offline.
  */
-export type FreshnessState = 'unknown';
+export type FreshnessState = 'current' | 'behind' | 'ahead' | 'unknown';
 export type ProviderFreshness = {
   id: string;
   tested: string;
-  state?: FreshnessState;
+  state: FreshnessState;
   latest?: string;
   highestStable?: string;
   latestRelease?: string;
@@ -70,6 +71,13 @@ function highest(candidates: readonly string[], includePrereleases: boolean): st
     .at(-1);
 }
 
+/** Where the provider's newest upstream version stands relative to the Rig-tested one. */
+function classify(tested: string, newest: string | undefined): FreshnessState {
+  if (newest === undefined) return 'unknown';
+  const order = compare(newest, tested);
+  return order === 0 ? 'current' : order > 0 ? 'behind' : 'ahead';
+}
+
 async function npmFreshness(
   id: string,
   pkg: string,
@@ -87,11 +95,16 @@ async function npmFreshness(
     versions?: Record<string, unknown>;
   };
   const latest = body['dist-tags']?.latest;
+  const highestStable = highest(
+    Object.keys(body.versions ?? {}),
+    options.includePrereleases ?? false,
+  );
   return {
     id,
     tested,
+    state: classify(tested, highestStable),
     ...(typeof latest === 'string' && SEMVER.test(latest) ? { latest } : {}),
-    highestStable: highest(Object.keys(body.versions ?? {}), options.includePrereleases ?? false),
+    highestStable,
   };
 }
 
@@ -110,11 +123,13 @@ async function githubFreshness(
     await get(`https://api.github.com/repos/${repo}/releases/latest`)
   ).json()) as { tag_name?: unknown };
   const tagsResponse = await get(`https://api.github.com/repos/${repo}/tags?per_page=100`);
-  const latestRelease = unv(release.tag_name);
+  const tagName = unv(release.tag_name);
+  const latestRelease = SEMVER.test(tagName) ? tagName : undefined;
   const entry: ProviderFreshness = {
     id,
     tested,
-    ...(SEMVER.test(latestRelease) ? { latestRelease } : {}),
+    state: classify(tested, latestRelease),
+    ...(latestRelease === undefined ? {} : { latestRelease }),
   };
   // One page only: a list with a next page cannot name its highest tag.
   if (/\brel="next"/.test(tagsResponse.headers.get('link') ?? '')) {
@@ -135,6 +150,7 @@ export async function checkFreshness(options: FreshnessOptions): Promise<Freshne
     schemaVersion: 1,
     providers: [
       await npmFreshness('probity', '@nizos/probity', PROBITY_VERSION, options),
+      await npmFreshness('playwright-mcp', '@playwright/mcp', PLAYWRIGHT_MCP_VERSION, options),
       await githubFreshness('spec-kit', 'github/spec-kit', SPEC_KIT_VERSION, options),
       // Rig records no upstream repository for TEA, so there is nothing to ask.
       {

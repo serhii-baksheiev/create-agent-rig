@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { BMAD_TEA_VERSION } from '../src/integrations/bmad-tea.js';
 import { checkFreshness } from '../src/integrations/freshness.js';
+import { PLAYWRIGHT_MCP_VERSION } from '../src/integrations/playwright.js';
 import { PROBITY_VERSION } from '../src/integrations/probity.js';
 import { SPEC_KIT_VERSION } from '../src/integrations/spec-kit.js';
 
 const PROBITY_URL = 'https://registry.npmjs.org/@nizos%2fprobity';
+const PLAYWRIGHT_MCP_URL = 'https://registry.npmjs.org/@playwright%2fmcp';
 const SPEC_KIT_RELEASE_URL = 'https://api.github.com/repos/github/spec-kit/releases/latest';
 const SPEC_KIT_TAGS_URL = 'https://api.github.com/repos/github/spec-kit/tags?per_page=100';
 
@@ -20,6 +22,7 @@ const npmBody = (latest: string, versions: string[]): Route => ({
 /** A valid answer for every upstream; each test overrides only the routes it is about. */
 const BASE_ROUTES: Record<string, Route> = {
   [PROBITY_URL]: npmBody(PROBITY_VERSION, [PROBITY_VERSION]),
+  [PLAYWRIGHT_MCP_URL]: npmBody(PLAYWRIGHT_MCP_VERSION, [PLAYWRIGHT_MCP_VERSION]),
   [SPEC_KIT_RELEASE_URL]: { body: JSON.stringify({ tag_name: `v${SPEC_KIT_VERSION}` }) },
   [SPEC_KIT_TAGS_URL]: { body: JSON.stringify([{ name: `v${SPEC_KIT_VERSION}` }]) },
 };
@@ -140,5 +143,24 @@ describe('integrations freshness (RP-445)', () => {
     });
     // Every request went to another provider's upstream; none was made for bmad-tea.
     expect(requests.filter((request) => !(request.url in BASE_ROUTES))).toEqual([]);
+  });
+
+  it('classifies current, behind and ahead against the Rig-tested version', async () => {
+    const { fetch } = fakeFetch({
+      [PROBITY_URL]: npmBody(PROBITY_VERSION, [PROBITY_VERSION, '999.0.0']),
+      [PLAYWRIGHT_MCP_URL]: npmBody('0.0.0', ['0.0.0']),
+    });
+
+    const result = await checkFreshness({ fetch, userAgent: 'create-agent-rig/test' });
+
+    const states = Object.fromEntries(
+      result.providers.map((provider) => [provider.id, provider.state]),
+    );
+    expect(states).toEqual({
+      probity: 'behind',
+      'playwright-mcp': 'ahead',
+      'spec-kit': 'current',
+      'bmad-tea': 'unknown',
+    });
   });
 });
