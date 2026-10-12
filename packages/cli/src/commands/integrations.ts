@@ -61,7 +61,7 @@ export const INTEGRATIONS_VERBS = ['list', 'add', 'apply', 'remove'] as const;
 class Refusal extends Error {}
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
-function serverFor(id: string) {
+function serverFor({ id, version }: DeclaredIntegration) {
   if (id === 'figma-mcp')
     return { name: 'figma', server: { type: 'http', url: 'https://mcp.figma.com/mcp' } };
   if (id === 'atlassian-mcp')
@@ -71,12 +71,12 @@ function serverFor(id: string) {
   if (id === 'playwright-mcp')
     return {
       name: 'playwright',
-      server: { command: 'npx', args: [`@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}`] },
+      server: { command: 'npx', args: [`@playwright/mcp@${version ?? PLAYWRIGHT_MCP_VERSION}`] },
     };
   throw new Refusal('not-in-matrix');
 }
-function codexSection(id: string): string {
-  const { name, server } = serverFor(id);
+function codexSection(entry: DeclaredIntegration): string {
+  const { name, server } = serverFor(entry);
   if ('type' in server && server.type === 'http')
     return `[mcp_servers.${name}]\nurl = ${JSON.stringify(server.url)}\n`;
   if ('command' in server && Array.isArray(server.args))
@@ -137,7 +137,7 @@ async function hasMachineMemoryManifest(env: NodeJS.ProcessEnv): Promise<boolean
 function renderCodexConfig(base: string, entries: readonly DeclaredIntegration[]): Buffer {
   const sections = entries
     .filter((entry) => !NON_MCP_PROVIDER_IDS.has(entry.id) && entry.harnesses?.includes('codex'))
-    .map((entry) => codexSection(entry.id))
+    .map((entry) => codexSection(entry))
     .sort((a, b) => a.localeCompare(b));
   return Buffer.from(
     `${base.replace(/\n*$/, '\n')}${sections.length ? `\n${sections.join('\n')}` : ''}`,
@@ -534,7 +534,7 @@ export async function runIntegrationsCommand(
         if (verb === 'remove') entries = entries.filter((candidate) => candidate.id !== entry.id);
         continue;
       }
-      const { name, server } = serverFor(entry.id);
+      const { name, server } = serverFor(entry);
       const exists = Object.hasOwn(servers, name);
       const ownership = entry.targets?.['claude-code']?.entryHash;
       if (
@@ -560,7 +560,7 @@ export async function runIntegrationsCommand(
     if (codexSelected) {
       const fragment = selectedMcp
         .filter((entry) => entry.harnesses?.includes('codex'))
-        .map((entry) => codexSection(entry.id))
+        .map((entry) => codexSection(entry))
         .join('\n');
       const manifest =
         manifestFile.bytes === null ? null : parseManifest(decode(manifestFile.bytes));

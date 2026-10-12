@@ -171,6 +171,32 @@ describe('Playwright MCP integration wiring (RP-313)', () => {
   });
 });
 
+// RP-445: an exact declared version is the repository's override of the
+// Rig-tested PLAYWRIGHT_MCP_VERSION; anything else keeps the tested one.
+describe('playwright-mcp declared-version override (RP-445)', () => {
+  it('setup add playwright-mcp --version 0.0.90 wires @playwright/mcp@0.0.90', async () => {
+    const result = await setup('add', [
+      'playwright-mcp',
+      '--version',
+      '0.0.90',
+      '--harness',
+      'claude-code',
+      '--harness',
+      'codex',
+      '--yes',
+      '--json',
+    ]);
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    expect(JSON.parse(await readFile(claudePath(), 'utf8'))).toEqual({
+      mcpServers: { playwright: { command: 'npx', args: ['@playwright/mcp@0.0.90'] } },
+    });
+    expect(await readFile(codexPath(), 'utf8')).toContain(
+      '[mcp_servers.playwright]\ncommand = "npx"\nargs = ["@playwright/mcp@0.0.90"]',
+    );
+  });
+});
+
 // RP-313 design: "no second scheduler/state machine" — adding Playwright MCP
 // writes exactly the three files every other plain MCP provider writes, and
 // creates no new file anywhere else in the installed tree (in particular,
