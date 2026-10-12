@@ -802,6 +802,25 @@ describe('evidence-query compareOutcome', () => {
     expect(String(byName['tokens-per-ship']!.reason)).toMatch(/not computed/);
   });
 
+  it('never compares a side that observed nothing, even at a zero threshold', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown; minCoverage?: number }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const nothing = {
+      schemaVersion: 1,
+      signals: [{ ...rounds(2, 0, {}), eligible: 3, unknown: 3 }],
+    };
+    const some = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 2 })] };
+
+    const s = compare({ baseline: nothing, current: some, minCoverage: 0 }).signals[0];
+    expect(s).toMatchObject({ comparison: 'insufficient' });
+    expect(s).not.toHaveProperty('delta');
+  });
+
   it('reads too little coverage on either side as insufficient', () => {
     const compare = (
       mod() as unknown as {

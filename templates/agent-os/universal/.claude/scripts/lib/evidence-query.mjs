@@ -379,9 +379,13 @@ const MEASURES = {
  */
 const DEFAULT_MIN_COVERAGE = 0.5;
 
-/** Whether a signal observed enough of its eligible population to stand on. */
+/**
+ * Whether a signal observed enough of its eligible population to stand on. A
+ * side that observed nothing never does, whatever the threshold: its value
+ * is unknown, and unknown is never zero.
+ */
 const covered = (signal, minCoverage) =>
-  signal.eligible > 0 && signal.observed / signal.eligible >= minCoverage;
+  signal.observed > 0 && signal.observed / signal.eligible >= minCoverage;
 
 /** The lane mix a report's first-shipping-verdict counted, or undefined when it has none. */
 const lanesOf = (report) =>
