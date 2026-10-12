@@ -7,11 +7,14 @@
  * test/template/release-evidence.test.ts (absent in a generated rig).
  *
  *   node .claude/scripts/release-evidence.mjs --since <ISO> [--runs <dir>] [--json]
- *   node .claude/scripts/release-evidence.mjs --outcome --run <name> [--run <name>…] [--baseline <name>…] [--runs <dir>]
+ *   node .claude/scripts/release-evidence.mjs --outcome --run <name> [--run <name>…] [--baseline <name>…]
+ *     [--min-coverage <share>] [--runs <dir>]
  *
  * `--outcome` prints the Outcome Evidence signals over the named runs
  * (`lib/evidence-query.mjs`, RP-355) instead of the verdict below; with
- * `--baseline` it also compares them against a second named run set.
+ * `--baseline` it also compares them against a second named run set, calling a
+ * side insufficient below `--min-coverage` of its eligible population
+ * (default 0.5).
  *
  * Reads `<runs>/<run-id>/` the same way `revalidation-report.mjs` does — this
  * script reuses that script's `readRuns` (default `--runs` also resolves
@@ -147,13 +150,23 @@ export const evidenceOf = ({ runs, since }) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { since: null, runs: null, json: false, outcome: false, named: [], baseline: [], bad: null };
+  const args = {
+    since: null,
+    runs: null,
+    json: false,
+    outcome: false,
+    named: [],
+    baseline: [],
+    minCoverage: null,
+    bad: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
     else if (arg === '--outcome') args.outcome = true;
     else if (arg === '--run') args.named.push(argv[++i] ?? '');
     else if (arg === '--baseline') args.baseline.push(argv[++i] ?? '');
+    else if (arg === '--min-coverage') args.minCoverage = argv[++i] ?? '';
     else if (arg === '--since') args.since = argv[++i] ?? null;
     else if (arg === '--runs') args.runs = argv[++i] ?? null;
     else if (args.bad === null) args.bad = arg;
@@ -185,6 +198,10 @@ if (invokedDirectly()) {
     // calendar window (`docs/decisions/outcome-signals.md`).
     if (args.since !== null) refuse('--outcome reads named runs; --since is a calendar window, not a run set.');
     if (args.named.length === 0) refuse('--outcome needs at least one named run: --run <name>.');
+    const minCoverage = args.minCoverage === null ? undefined : Number(args.minCoverage);
+    if (minCoverage !== undefined && !(minCoverage > 0 && minCoverage <= 1)) {
+      refuse('--min-coverage takes a share of the eligible population, greater than 0 and at most 1.');
+    }
     const scriptsDir = dirname(fileURLToPath(import.meta.url));
     const runsDir = args.runs ?? join(mainCheckoutRoot(join(scriptsDir, '..', '..')), '.claude', 'runs');
     let all;
@@ -218,7 +235,7 @@ if (invokedDirectly()) {
     // RP-355: a comparison reads a second named run set, never a window.
     if (args.baseline.length > 0) {
       const baseline = outcomeOf({ runs: named(args.baseline), commitTime });
-      report.comparison = { baseline, ...compareOutcome({ baseline, current: report }) };
+      report.comparison = { baseline, ...compareOutcome({ baseline, current: report, minCoverage }) };
     }
     process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     process.exit(0);

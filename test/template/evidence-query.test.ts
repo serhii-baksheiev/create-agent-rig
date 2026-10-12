@@ -1003,6 +1003,29 @@ describe('release-evidence.mjs --outcome', () => {
     expect(signal(outcome, 'gate-rounds').eligible).toBe(1);
   });
 
+  it('the CLI takes the coverage threshold from --min-coverage and refuses one outside (0, 1]', async () => {
+    const runsDir = await runsRoot();
+    for (const name of ['run-base', 'run-now']) {
+      const r = await newRun(runsDir, name);
+      r.take(`RP-${name}`);
+      r.fanOut(`h-${name}`, ['code-reviewer']);
+      r.closed(`RP-${name}`);
+    }
+    const args = ['--outcome', '--runs', runsDir, '--run', 'run-now', '--baseline', 'run-base'];
+
+    const set = await cli([...args, '--min-coverage', '0.9']);
+    expect(set.code, set.stderr).toBe(0);
+    expect(
+      (JSON.parse(set.stdout) as { comparison: { minCoverage: number } }).comparison.minCoverage,
+    ).toBe(0.9);
+    for (const bad of ['0', '1.5', 'half']) {
+      const refused = await cli([...args, '--min-coverage', bad]);
+      expect(refused.code, bad).toBe(1);
+      expect(refused.stdout).toBe('');
+      expect(refused.stderr).toContain('--min-coverage');
+    }
+  });
+
   it('the CLI compares the named runs against named baseline runs', async () => {
     const runsDir = await runsRoot();
     for (const [name, ticket, heads] of [
