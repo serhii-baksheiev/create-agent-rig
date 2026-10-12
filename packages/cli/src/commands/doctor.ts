@@ -568,15 +568,19 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           state.wiring === 'unreadable'
             ? 'fail'
             : state.wiring === 'healthy'
-              ? state.launcher === 'missing'
+              ? state.launcher === 'missing' || version?.state === 'drift'
                 ? 'warn'
                 : 'pass'
               : 'warn',
+        // A wired release other than the intended one outranks a launcher
+        // merely absent from this machine's PATH.
         reason:
           state.wiring === 'healthy'
-            ? state.launcher === 'missing'
-              ? 'launcher-missing'
-              : 'wired'
+            ? version?.state === 'drift'
+              ? 'version-drift'
+              : state.launcher === 'missing'
+                ? 'launcher-missing'
+                : 'wired'
             : state.wiring,
         ...(version === undefined ? {} : { version }),
       });
