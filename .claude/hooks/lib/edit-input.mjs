@@ -600,13 +600,13 @@ function applyHunks(content, hunks, current, budget) {
       lines.splice(Math.max(0, lines.length - 1), 0, ...after);
       continue;
     }
-    let match = findSequence(lines, before, budget);
+    let match = findContext(lines, before, budget);
     if (!match.exhausted && match.index === -1 && before.at(-1) === '') {
       // RP-482: Codex retries a chunk whose context ends in an empty line
       // without that line, dropping a trailing empty line from the replacement too.
       before = before.slice(0, -1);
       if (after.at(-1) === '') after = after.slice(0, -1);
-      match = findSequence(lines, before, budget);
+      match = findContext(lines, before, budget);
     }
     if (match.exhausted) {
       return exhaustBudget(budget, current, 'move context comparison budget was exhausted');
@@ -624,6 +624,41 @@ function applyHunks(content, hunks, current, budget) {
     return exhaustBudget(budget, current, `aggregate move output exceeds the ${MAX_OUTPUT_LINES}-line limit`);
   }
   return { fragment: lines.join('\n') };
+}
+
+// RP-485: Codex's `seek_sequence` retries a context it cannot find exactly
+// with decreasing strictness, so a Move it applies may match only after that
+// fallback. Each relaxed pass draws on the same comparison budget, including
+// the cost of transforming the lines it compares.
+const TYPOGRAPHIC = new Map([
+  ...['‐', '‑', '‒', '–', '—', '―', '−'].map((c) => [c, '-']),
+  ...['‘', '’', '‚', '‛'].map((c) => [c, "'"]),
+  ...['“', '”', '„', '‟'].map((c) => [c, '"']),
+  ...[' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ', ' ',
+    ' ', ' ', ' ', '　'].map((c) => [c, ' ']),
+]);
+const TYPOGRAPHIC_PATTERN = new RegExp(`[${[...TYPOGRAPHIC.keys()].join('')}]`, 'gu');
+const CONTEXT_PASSES = [
+  (line) => line,
+  (line) => line.trimEnd(),
+  (line) => line.trim(),
+  (line) => line.trim().replace(TYPOGRAPHIC_PATTERN, (c) => TYPOGRAPHIC.get(c)),
+];
+
+function findContext(lines, sequence, budget) {
+  for (const [pass, key] of CONTEXT_PASSES.entries()) {
+    let candidates = lines;
+    let pattern = sequence;
+    if (pass > 0) {
+      budget.comparisons -= lines.length + sequence.length;
+      if (budget.comparisons < 0) return { index: -1, exhausted: true };
+      candidates = lines.map(key);
+      pattern = sequence.map(key);
+    }
+    const match = findSequence(candidates, pattern, budget);
+    if (match.exhausted || match.index !== -1) return match;
+  }
+  return { index: -1, exhausted: false };
 }
 
 function findSequence(lines, sequence, budget) {
