@@ -4,6 +4,7 @@ import path from 'node:path';
 import { resolveReadableInside } from '../lib/safe-path.js';
 import { readBounded } from './verify.js';
 import type { Harness } from './registry.js';
+import { classifyVersion, type VersionClassification } from './version-state.js';
 
 /** Pinned upstream version. Rig never installs it and never runs its launcher. */
 export const PROBITY_VERSION = '1.10.1';
@@ -177,6 +178,7 @@ export type ProbityInspectionReason =
 export type ProbityInspection = {
   status: ProbityInspectionStatus;
   reason: ProbityInspectionReason;
+  version: VersionClassification;
 };
 
 /**
@@ -189,22 +191,34 @@ export type ProbityInspection = {
  * Never spawns the Probity launcher and never calls a model.
  * `configHash`, when given, is the declaration entry's own recorded hash —
  * threaded in by the caller rather than read here, since only `doctor.ts`
- * has the parsed declaration.
+ * has the parsed declaration. `declaredVersion`, likewise threaded in, is
+ * the repository's exact override of {@link PROBITY_VERSION} (RP-445): the
+ * installed version is compared against it when present.
  */
 export async function inspectProbity(
   repoDir: string,
   harness: Harness,
   configHash?: string,
+  declaredVersion?: string,
 ): Promise<ProbityInspection> {
-  const config = await findProbityConfig(repoDir);
-  if (config.status !== 'found') return { status: 'fail', reason: 'config-missing' };
   const installedVersion = await readInstalledProbityVersion(repoDir);
-  if (installedVersion === undefined) return { status: 'warn', reason: 'launcher-missing' };
-  if (installedVersion !== PROBITY_VERSION) return { status: 'warn', reason: 'version-drift' };
-  if (!(await hasGateWiring(repoDir, harness))) return { status: 'warn', reason: 'wiring-missing' };
-  if (!(await hasProbityLauncherBin(repoDir)))
-    return { status: 'warn', reason: 'launcher-missing' };
+  const version = classifyVersion({
+    tested: PROBITY_VERSION,
+    declared: declaredVersion,
+    installed: installedVersion,
+  });
+  const outcome = (status: ProbityInspectionStatus, reason: ProbityInspectionReason) => ({
+    status,
+    reason,
+    version,
+  });
+  const config = await findProbityConfig(repoDir);
+  if (config.status !== 'found') return outcome('fail', 'config-missing');
+  if (version.state === 'unknown') return outcome('warn', 'launcher-missing');
+  if (version.state === 'drift') return outcome('warn', 'version-drift');
+  if (!(await hasGateWiring(repoDir, harness))) return outcome('warn', 'wiring-missing');
+  if (!(await hasProbityLauncherBin(repoDir))) return outcome('warn', 'launcher-missing');
   if (configHash !== undefined && (await probityConfigDrifted(repoDir, configHash)))
-    return { status: 'warn', reason: 'config-drift' };
-  return { status: 'pass', reason: 'wired' };
+    return outcome('warn', 'config-drift');
+  return outcome('pass', 'wired');
 }

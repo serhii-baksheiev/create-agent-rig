@@ -15,6 +15,7 @@ import {
 import { inspectProbity, PROBITY_VERSION } from '../integrations/probity.js';
 import { inspectBmadTea, BMAD_TEA_VERSION } from '../integrations/bmad-tea.js';
 import type { BmadTeaVersionFound } from '../integrations/bmad-tea.js';
+import type { VersionClassification } from '../integrations/version-state.js';
 import { inspectMemory } from '../integrations/memory-doctor.js';
 import { inspectGuards, type GuardInspection } from '../integrations/doctor-guards.js';
 import { inspectWorkflow } from '../integrations/doctor-workflow.js';
@@ -83,6 +84,8 @@ type Check = {
   teaVersion?: string;
   /** `bmad-tea` only — what a `version-unknown` found instead of a version; stripped like `teaVersion`. */
   teaVersionFound?: BmadTeaVersionFound;
+  /** `probity:<harness>` and `bmad-tea` only — reaches the report as-is (RP-445). */
+  version?: VersionClassification;
 };
 export type DoctorOptions = {
   cwd: string;
@@ -494,12 +497,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     if (entry.id === 'probity') {
       const declared = intent?.entries.find((candidate) => candidate.id === 'probity');
       for (const harness of Object.keys(entry.harnesses) as Harness[]) {
-        const inspection = await inspectProbity(options.cwd, harness, declared?.configHash);
-        checks.push({
-          id: `probity:${harness}`,
-          status: inspection.status,
-          reason: inspection.reason,
-        });
+        const inspection = await inspectProbity(
+          options.cwd,
+          harness,
+          declared?.configHash,
+          declared?.version,
+        );
+        checks.push({ id: `probity:${harness}`, ...inspection });
       }
       continue;
     }
@@ -592,7 +596,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
               ? `${check.reason.replaceAll('-', ' ')} (cli ${rigVersion.cli}, repository ${rigVersion.repository})`
               : check.id === 'rig-owned-files' && check.counts
                 ? `${check.reason.replaceAll('-', ' ')} (absent ${check.counts.absent}, content drift ${check.counts.contentDrift}, line drift ${check.counts.lineDrift}, unreadable ${check.counts.unreadable})`
-                : check.reason.replaceAll('-', ' '),
+                : check.version?.state === 'overridden'
+                  ? `${check.reason.replaceAll('-', ' ')} (version ${check.version.declared} declared by this repository, overriding the Rig-tested ${check.version.tested})`
+                  : check.reason.replaceAll('-', ' '),
         fix:
           check.status === 'pass'
             ? ''

@@ -222,6 +222,32 @@ describe('doctor: probity (RP-416)', () => {
     await expect(access(marker)).rejects.toThrow();
   });
 
+  // RP-445: a repository may deliberately declare a different exact version;
+  // installed bytes matching that declaration are an override, not drift.
+  it('reports overridden, not version-drift, when the installed version equals a declared non-default version', async () => {
+    await writeDeclaration([
+      { id: PROBITY, version: '1.11.0', harnesses: ['claude-code'], selected: true },
+    ]);
+    await writeProbityConfig();
+    await writeProbityPackageJson('1.11.0');
+    await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+    await writeWiring('claude-code', true);
+
+    const { result, body: report } = await body();
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const check = (report.checks as (CheckRecord & { detail: string })[]).find(
+      (candidate) => candidate.id === 'probity:claude-code',
+    );
+    expect(check).toMatchObject({
+      status: 'ok',
+      reason: 'wired',
+      version: { state: 'overridden', tested: VERSION, declared: '1.11.0', installed: '1.11.0' },
+    });
+    expect(check?.detail).toContain('1.11.0');
+    expect(check?.detail).toContain(VERSION);
+  });
+
   // RP-416 round 2, point 3: `inspectProbity` never compares the on-disk
   // config's bytes against the declaration's own `configHash` at all — it
   // only checks that a recognised config FILENAME exists
