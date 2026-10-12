@@ -447,6 +447,7 @@ describe('evidence-query outcomeOf: report shape', () => {
       'claim-to-merge',
       'interventions',
       'continuation',
+      'tokens-per-ship',
     ]);
     for (const s of outcome.signals) {
       expect(Object.keys(s).sort()).toEqual(
@@ -459,7 +460,12 @@ describe('evidence-query outcomeOf: report shape', () => {
         expect(Number.isInteger(count)).toBe(true);
       // RP-60 posted no continuation and recorded no claim, so those two
       // populations are empty.
-      const expected = ['continuation', 'claim-to-merge'].includes(s.name) ? [0, 0, 0] : [1, 1, 0];
+      // tokens-per-ship is not computed, so its one shipped item is unknown.
+      const expected = ['continuation', 'claim-to-merge'].includes(s.name)
+        ? [0, 0, 0]
+        : s.name === 'tokens-per-ship'
+          ? [1, 0, 1]
+          : [1, 1, 0];
       expect([s.eligible, s.observed, s.unknown]).toEqual(expected);
     }
   });
@@ -599,6 +605,27 @@ describe('evidence-query outcomeOf: claim-to-merge', () => {
     expect([s.eligible, s.observed, s.unknown]).toEqual([3, 1, 2]);
     // The SELECT event is the run's second record: 2026-10-01T00:00:02Z.
     expect(s.result).toEqual({ wallTimeMs: { min: 3601000, median: 3601000, max: 3601000 } });
+  });
+});
+
+describe('evidence-query outcomeOf: tokens-per-ship', () => {
+  it('states tokens-per-ship as not computed, with its shipped items unknown and the reason', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-96');
+    r.fanOut('h96a', ['code-reviewer']);
+    r.verdict('code-reviewer', 'HOLD', 'h96a');
+    r.fanOut('h96b', ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', 'h96b');
+    r.take('RP-97');
+    r.fanOut('h97', ['code-reviewer']);
+    r.verdict('code-reviewer', 'HOLD', 'h97');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'tokens-per-ship');
+    expect(s.signalVersion).toBe(1);
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    const result = s.result as { computed: boolean; reason: string };
+    expect(result.computed).toBe(false);
+    expect(result.reason).toMatch(/dispatch usage/);
   });
 });
 

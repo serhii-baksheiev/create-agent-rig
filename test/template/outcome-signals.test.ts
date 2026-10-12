@@ -71,8 +71,8 @@ describe('outcome-signals.mjs — the six Outcome Evidence signal definitions (R
     }
   });
 
-  // RP-355 refined each signal it computes after 1.6.0 published its v1
-  // definition, so those moved to 2; the rest are still 1.
+  // RP-355 changed the population or unknown of three published v1
+  // definitions, so those moved to 2; the rest keep their v1 meaning.
   const EXPECTED_VERSIONS: Record<string, number> = {
     'first-shipping-verdict': 2,
     'gate-rounds': 2,

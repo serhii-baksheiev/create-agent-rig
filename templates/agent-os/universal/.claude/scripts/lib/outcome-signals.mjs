@@ -70,7 +70,7 @@ export const SIGNALS = Object.freeze(
       limits: [
         'total wall time includes waiting on CI and on reviews',
         'it is not active engineering time, and no subtraction of pauses turns it into one',
-        'the merge end is the commit the close revalidation proved the item merged to (ownMergeAdvance), read from this checkout; an item without that proof is unknown',
+        'the merge end is the committer date of the commit the close revalidation proved the item merged to (ownMergeAdvance), read from this checkout; an item without that proof is unknown',
       ],
       comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: [],
@@ -100,7 +100,7 @@ export const SIGNALS = Object.freeze(
       limits: [
         'open or unresolved work is not counted as a failed recovery',
         'resolution is read within the named runs only: a close in a run outside the set leaves the continuation unresolved',
-        'an escalation in the run that wrote the note is the stop itself, not a resolution',
+        'a close or escalation in the run that wrote the note is not read as its resolution; only a later run resolves it',
       ],
       comparableOn: [...BASE_COMPARABLE_ON],
       groupBy: [],
