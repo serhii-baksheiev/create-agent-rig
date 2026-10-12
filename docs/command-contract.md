@@ -348,20 +348,20 @@ single id may be emitted from more than one branch of
 `packages/cli/src/commands/doctor.ts` — one per outcome of the same check —
 so what identifies a check is the id, never the call site:
 
-| `id`                  | what it checks                                                                                                                                                                                                                                                  |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `rig-manifest`        | Whether `.claude/.rig-manifest.json` exists and parses — absent is a warning, unreadable or corrupt is a failure.                                                                                                                                               |
-| `rig-owned-files`     | Whether every manifest-recorded owned path still matches its recorded bytes, distinguishing absence, content drift, and line-ending-only drift from a pristine install; an owned path that cannot be read at all is the one failing outcome.                    |
-| `rig-managed-regions` | Whether the AGENTS.md managed region (RP-256 slice 2, `manifest.regions`) is still intact and its body's hash still matches — a warning when it is missing, malformed or edited since install; absent from the report entirely when nothing is region-tracked.  |
-| `rig-version`         | Whether the CLI's own version and the version recorded in the manifest can be compared, and if so, which one is ahead — see "`rig-version` (RP-229)" below.                                                                                                     |
-| `guards`              | Whether the installed hook wiring and the installed guard bytes match this package's own, verified by running allowed/denied fixtures against the installed guards in a disposable directory.                                                                   |
-| `workflow`            | For the optional workflow layer, whether the installed workflow scripts — including the frozen revalidation and claim-record mechanisms — still match the installed bytes; `not-selected` when the manifest does not record that layer.                         |
-| `custom-memory`       | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                                                |
-| `integrations`        | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                                           |
-| `spec-kit`            | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                                          |
-| `bmad-tea`            | For a declared BMAD TEA integration, whether `_bmad/_config/manifest.yaml` lists the `tea` module with a version and `_bmad/tea/config.yaml` exists, and whether that version is 1.27.2. A warning at most, never a failure.                                    |
-| `personal-tracker`    | Presence-only report of the tracker credential env var NAMES this repository's `.claude/queue.json` adapter requires (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Absent from the report when there is nothing personal to check. |
-| `codex-hook-trust`    | Diagnostic-only pointer at Codex's own `/hooks` view, emitted only when `.codex/hooks.json` exists (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Never `ok`: trust is not something doctor observes.                               |
+| `id`                  | what it checks                                                                                                                                                                                                                                                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `rig-manifest`        | Whether `.claude/.rig-manifest.json` exists and parses — absent is a warning, unreadable or corrupt is a failure.                                                                                                                                                                                                                                       |
+| `rig-owned-files`     | Whether every manifest-recorded owned path still matches its recorded bytes, distinguishing absence, content drift, and line-ending-only drift from a pristine install; an owned path that cannot be read at all is the one failing outcome.                                                                                                            |
+| `rig-managed-regions` | Whether the AGENTS.md managed region (RP-256 slice 2, `manifest.regions`) is still intact and its body's hash still matches — a warning when it is missing, malformed or edited since install; absent from the report entirely when nothing is region-tracked.                                                                                          |
+| `rig-version`         | Whether the CLI's own version and the version recorded in the manifest can be compared, and if so, which one is ahead — see "`rig-version` (RP-229)" below.                                                                                                                                                                                             |
+| `guards`              | Whether the installed hook wiring and the installed guard bytes match this package's own, verified by running allowed/denied fixtures against the installed guards in a disposable directory.                                                                                                                                                           |
+| `workflow`            | For the optional workflow layer, whether the installed workflow scripts — including the frozen revalidation and claim-record mechanisms — still match the installed bytes; `not-selected` when the manifest does not record that layer.                                                                                                                 |
+| `custom-memory`       | The machine-scoped custom Memory installation's version handshake and, once compatible, its own doctor response.                                                                                                                                                                                                                                        |
+| `integrations`        | The declared integration set as a whole: an invalid declaration, a harness selection still pending, a declared set, or none declared.                                                                                                                                                                                                                   |
+| `spec-kit`            | For a selected Spec Kit integration, whether the requested version is supported and, if so, its pinned offline status.                                                                                                                                                                                                                                  |
+| `bmad-tea`            | For a declared BMAD TEA integration, whether `_bmad/_config/manifest.yaml` lists the `tea` module with a version and `_bmad/tea/config.yaml` exists, and whether that version is the declaration entry's exact `version` or, when it declares none, the Rig-tested 1.27.2 — see "Declared versions (RP-445)" below. A warning at most, never a failure. |
+| `personal-tracker`    | Presence-only report of the tracker credential env var NAMES this repository's `.claude/queue.json` adapter requires (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Absent from the report when there is nothing personal to check.                                                                                         |
+| `codex-hook-trust`    | Diagnostic-only pointer at Codex's own `/hooks` view, emitted only when `.codex/hooks.json` exists (RP-230) — see "`personal-tracker` and `codex-hook-trust` (RP-230)" below. Never `ok`: trust is not something doctor observes.                                                                                                                       |
 
 This is the closed set as of the RP-230 minor bump (RP-229 first closed it at
 eight; RP-256 added `rig-managed-regions` as the ninth; RP-230 added
@@ -394,7 +394,8 @@ model to answer any of these:
   spawns — is absent even though the package's own `package.json` is
   present; `warn`.
 - `version-drift` — the installed package's `package.json` reports a version
-  other than the pinned `1.10.1`; `warn`.
+  other than the declaration entry's exact `version` or, when it declares
+  none, the Rig-tested `1.10.1`; `warn`.
 - `wiring-missing` — this harness's own hook-wiring file
   (`.claude/settings.json` for Claude Code, `.codex/hooks.json` for Codex)
   does not name the Probity gate hook `.claude/hooks/probity-gate.mjs`;
@@ -408,6 +409,40 @@ declared at all (`{ state: 'not-configured' }`), or, once one is,
 connectivity: 'not-observed', trust: 'not-observed' }`) — `version` is the
 pinned version Rig generated against, never a value doctor observed by
 running the launcher.
+
+### Declared versions (RP-445)
+
+A `probity:<harness>` check and the `bmad-tea` check each carry a `version`
+object, `{ state, tested, declared?, installed? }`: `tested` is the Rig-tested
+default, `declared` the declaration entry's exact `version` when it has one,
+`installed` the version doctor read. `state` is one of:
+
+- `tested` — the installed version is the Rig-tested default, and any
+  declared version is that same default.
+- `overridden` — the repository declares a different exact version and the
+  installed version is that one. The check passes, and its `detail` names
+  both the declared and the Rig-tested version —
+  `packages/cli/test/probity-doctor.test.ts` › "reports overridden, not
+  version-drift, when the installed version equals a declared non-default
+  version", and the test of the same name in
+  `packages/cli/test/integrations-bmad-tea.test.ts`.
+- `drift` — the installed version differs from the declared version or,
+  without one, from the Rig-tested default. The reason is `version-drift`,
+  and with a declaration its `fix` names the declared and the Rig-tested
+  version — `packages/cli/test/probity-doctor.test.ts` › "reports
+  version-drift against the declaration and names the Rig-tested default",
+  and the test of the same name in
+  `packages/cli/test/integrations-bmad-tea.test.ts`.
+- `unknown` — doctor classified no installed version: none could be read,
+  or (`bmad-tea`) the check stopped at an earlier finding first.
+
+A declared version for a provider with a Rig-tested default — `probity`,
+`bmad-tea`, `spec-kit`, `playwright-mcp` — is one exact
+`MAJOR.MINOR.PATCH[-prerelease]` release: a range or a tag (`latest`, `1.x`,
+`^1.2.3`) is rejected as `malformed` —
+`packages/cli/test/integrations-declaration.test.ts` › "rejects a range or
+tag as the declared version of a pinned provider as malformed, accepts an
+exact one, and leaves unpinned providers alone".
 
 ### `rig-version` (RP-229)
 
@@ -1754,9 +1789,15 @@ never reaches `.mcp.json` or `.codex/config.toml`, even once a `codex`
 harness is selected for it. `setup add probity --yes` writes a local,
 Rig-generated `probity.config.mjs` (`enforceTdd()`, scoped to `src/**`,
 `lib/**`, `test/**`, `tests/**`) and records its SHA-256 as `configHash` on
-the declaration entry — the version is pinned at `1.10.1` and a different
-`--version` is refused. Rig never runs `npm install` or the Probity launcher
-itself; the plan names `npm install -D @nizos/probity@1.10.1` as a manual
+the declaration entry — the version defaults to the Rig-tested `1.10.1`, and
+`--version` records a different exact release as the repository's override
+(`packages/cli/test/probity-command.test.ts` › "declares an exact version
+other than the Rig-tested 1.10.1 as an override and pins the manual install
+step to it"); a range or tag is refused as `probity-exact-version-required`
+(› "refuses a requested version that is a range rather than one exact
+release, naming the version problem rather than a generic refusal, and writes
+nothing"). Rig never runs `npm install` or the Probity launcher itself; the
+plan names `npm install -D @nizos/probity@<declared version>` as a manual
 next step. On a first `add`, a pre-existing `probity.config.{ts,mts,js,mjs}`
 is refused unless `--adopt` is given. Once the declaration carries a
 `probity` entry, `add` and `apply` keep whatever config exists exactly as it
@@ -2255,9 +2296,9 @@ for nothing else (`## setup integrations (RP-22)`) —
 uvx launchers before invoking one".
 
 **Probity only: Node and `npm` — never `uv`.** `@nizos/probity` is an npm dev
-dependency (`npm install -D @nizos/probity@1.10.1`, a manual step `setup`
-names but never runs itself); nothing about it needs `uv` or `uvx`
-(`## setup integrations (RP-22)`).
+dependency (`npm install -D @nizos/probity@1.10.1`, or the declared exact
+version, a manual step `setup` names but never runs itself); nothing about it
+needs `uv` or `uvx` (`## setup integrations (RP-22)`).
 
 **Playwright MCP only: Node and `npx`.** `setup add playwright-mcp` writes an
 MCP entry launched as `npx @playwright/mcp@0.0.83`; doctor observes `npx` on
@@ -2276,7 +2317,8 @@ removes TEA — `packages/cli/test/integrations-bmad-tea.test.ts` › "the plan
 names TEA's own manual install step and never claims Rig installs it, and
 carries no MCP wiring disclaimer". Doctor reads `_bmad/_config/manifest.yaml`
 and `_bmad/tea/config.yaml` and reports a missing install, or a version other
-than 1.27.2, as a warning with a fix, never a failure —
+than the declared exact version or, without one, 1.27.2, as a warning with a
+fix, never a failure —
 `packages/cli/test/integrations-bmad-tea.test.ts` › "emits a bmad-tea check
 mirroring inspectBmadTea, and exits 0 on a warn-only not-installed".
 
