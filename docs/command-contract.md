@@ -2083,17 +2083,22 @@ reports the Rig-tested version, what upstream offers, and a state:
   highest stable separately when they disagree");
 - `spec-kit` reads GitHub: the latest release and the highest stable tag,
   reported separately (› "reports spec-kit latest release and highest tag
-  separately"), and a tag list longer than one page is `unknown`
-  (› "reports a truncated tag list as unknown");
+  separately"); when the tag list runs past one page the highest tag is left
+  out with reason `tag-list-truncated`, and the state still follows the latest
+  release (› "reports a truncated tag list's highest tag as unknown, keeping
+  the state from the latest release");
 - `bmad-tea` is `unknown` with reason `upstream-not-recorded`, and no request
   is made (› "reports bmad-tea as unknown without a request").
 
-The state is `current`, `behind` or `ahead` against the Rig-tested version
+The state compares the Rig-tested version with the highest stable version for
+an npm provider and with the latest release for `spec-kit`. It is `current`,
+`behind` or `ahead` against the Rig-tested version
 (› "classifies current, behind and ahead against the Rig-tested version"),
 or `unknown` with a reason when the answer cannot be read — a network error, a
 timeout, a 403 or 429, an oversized or invalid response
 (› "reports network error, timeout, 403/429, oversize and invalid JSON as
-unknown with a reason"). Prereleases count only with `--include-prereleases`
+unknown with a reason"). Prereleases count only with `--include-prereleases`,
+and then `highestStable` is the highest version including them
 (› "excludes prereleases by default and includes them with
 includePrereleases"). No credential is read or sent
 (› "never sends a credential header").

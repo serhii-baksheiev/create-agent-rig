@@ -140,7 +140,7 @@ describe('integrations freshness (RP-445)', () => {
     ).toBe(true);
   });
 
-  it('reports a truncated tag list as unknown', async () => {
+  it("reports a truncated tag list's highest tag as unknown, keeping the state from the latest release", async () => {
     const { fetch } = fakeFetch({
       [SPEC_KIT_TAGS_URL]: {
         body: JSON.stringify([{ name: 'v1.0.9' }]),
@@ -156,6 +156,8 @@ describe('integrations freshness (RP-445)', () => {
     expect(specKit?.highestTag).toBeUndefined();
     expect(specKit?.reason).toBe('tag-list-truncated');
     expect(specKit?.latestRelease).toBe(SPEC_KIT_VERSION);
+    // The latest release equals the tested version, so the state stays current.
+    expect(specKit?.state).toBe('current');
   });
 
   it('reports bmad-tea as unknown without a request', async () => {
