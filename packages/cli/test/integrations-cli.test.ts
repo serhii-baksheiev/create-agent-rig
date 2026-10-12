@@ -236,3 +236,15 @@ describe('setup integrations through the built CLI', () => {
     expect(run.stderr).not.toContain('    at ');
   });
 });
+
+describe('integrations through the built CLI (RP-445)', () => {
+  it('an unknown integrations subcommand exits 2', async () => {
+    for (const args of [['integrations', 'update'], ['integrations']]) {
+      const run = await runCli(args);
+
+      expect(run.code, args.join(' ')).toBe(2);
+      expect(run.stdout, args.join(' ')).toBe('');
+      expect(run.stderr, args.join(' ')).toContain('create-agent-rig integrations freshness');
+    }
+  });
+});

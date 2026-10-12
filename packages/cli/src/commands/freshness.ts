@@ -12,6 +12,14 @@ export type FreshnessCommandResult = { exitCode: number; stdout: string; stderr:
 export async function runFreshnessCommand(
   options: FreshnessCommandOptions,
 ): Promise<FreshnessCommandResult> {
+  // Do not echo an untrusted positional value into terminal diagnostics.
+  if (options.args[0] !== 'freshness') {
+    return {
+      exitCode: 2,
+      stdout: '',
+      stderr: 'Unknown integrations subcommand: expected freshness.\n',
+    };
+  }
   const report = await checkFreshness({
     fetch: options.fetch,
     userAgent: `create-agent-rig/${await packageVersion()}`,

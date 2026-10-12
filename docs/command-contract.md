@@ -929,7 +929,9 @@ records a fact, not a fault.
   A fourth namer, or a missing one, makes the row stale. Pinned in
   `test/template/command-contract.test.ts` › "reports that the rig bin answers the version handshake in exactly three modules (RP-19)".
 - **The rig bin's exit codes outside 0 and 1 are `setup`'s 4, `memory`'s 4,
-  3 and 2, and `doctor`'s usage exit 2** — the contract-major refusal the consumer owns, carried as
+  3 and 2, `doctor`'s usage exit 2, and `integrations`' usage exit 2** (an
+  unknown or missing subcommand, `exitCode: 2` in
+  `packages/cli/src/commands/freshness.ts`) — the contract-major refusal the consumer owns, carried as
   `exitCode: 4` in `packages/cli/src/commands/setup.ts` and in
   `packages/cli/src/commands/memory.ts`; `memory`'s unmet-prerequisite 3
   (`prerequisites-unmet` with the unset variable in `missing`, when no

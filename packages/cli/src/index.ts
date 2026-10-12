@@ -42,6 +42,7 @@ import { collectGovernance, renderSummary } from './lib/summary.js';
 import { packageVersion, rigHandshake } from './lib/version.js';
 import { runMemory } from './commands/memory.js';
 import { runDoctor } from './commands/doctor.js';
+import { runFreshnessCommand } from './commands/freshness.js';
 
 /**
  * The shipped preset names for the usage text. Read once; a CLI whose
@@ -117,6 +118,12 @@ Also: create-agent-rig setup list [--json]
 Also: create-agent-rig doctor [--json]
   Diagnose installed Rig files, guards, provider wiring and available runtimes.
   Does not apply setup plans or observe connectivity, authorization or trust.
+
+Also: create-agent-rig integrations freshness [--json] [--include-prereleases]
+  Ask npm and GitHub for each integration's newest stable release and compare
+  it with the version Rig was tested against. Read-only, and the only command
+  that makes network requests; a failed request reports unknown. Never updates
+  a pin. --include-prereleases also counts prereleases.
 
 Also: create-agent-rig setup
   Choose a provider and harness interactively, then approve its exact plan.
@@ -1362,6 +1369,16 @@ async function main(): Promise<number> {
   }
   if (process.argv[2] === 'uninstall') {
     return runUninstall(process.argv.slice(3));
+  }
+  if (process.argv[2] === 'integrations') {
+    const result = await runFreshnessCommand({
+      args: process.argv.slice(3),
+      fetch: globalThis.fetch,
+    });
+    process.stdout.write(result.stdout);
+    process.stderr.write(result.stderr);
+    if (result.exitCode === 2) process.stderr.write(`\n${subcommandUsage('integrations')}`);
+    return result.exitCode;
   }
   if (process.argv[2] === 'memory') {
     // The consumer path of the RP-19 handshake: manifest → `--version --json`
