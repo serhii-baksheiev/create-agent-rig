@@ -1371,8 +1371,13 @@ async function main(): Promise<number> {
     return runUninstall(process.argv.slice(3));
   }
   if (process.argv[2] === 'integrations') {
+    const args = process.argv.slice(3);
+    if (!args.includes('--json') && wantsHelp(args)) {
+      process.stdout.write(subcommandUsage('integrations'));
+      return 0;
+    }
     const result = await runFreshnessCommand({
-      args: process.argv.slice(3),
+      args,
       fetch: globalThis.fetch,
     });
     process.stdout.write(result.stdout);

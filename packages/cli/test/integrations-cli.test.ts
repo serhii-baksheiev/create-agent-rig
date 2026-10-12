@@ -247,4 +247,18 @@ describe('integrations through the built CLI (RP-445)', () => {
       expect(run.stderr, args.join(' ')).toContain('create-agent-rig integrations freshness');
     }
   });
+
+  it('integrations --help prints the usage and exits 0', async () => {
+    for (const args of [
+      ['integrations', '--help'],
+      ['integrations', 'freshness', '-h'],
+    ]) {
+      const run = await runCli(args);
+
+      expect(run.code, args.join(' ')).toBe(0);
+      expect(run.stdout, args.join(' ')).toMatch(
+        /^Usage: create-agent-rig integrations freshness \[--json\] \[--include-prereleases\]\n/,
+      );
+    }
+  });
 });
