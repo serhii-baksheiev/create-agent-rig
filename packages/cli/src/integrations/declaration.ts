@@ -145,7 +145,11 @@ export function parseDeclaration(
       (Object.hasOwn(value, 'version') &&
         (typeof value.version !== 'string' ||
           !VERSION_PATTERN.test(value.version) ||
-          (PINNED_PROVIDER_IDS.has(value.id) && !EXACT_VERSION_PATTERN.test(value.version)))) ||
+          (PINNED_PROVIDER_IDS.has(value.id) &&
+            !EXACT_VERSION_PATTERN.test(
+              // BMAD's installer records TEA's git tag form, `v1.27.2`.
+              value.id === 'bmad-tea' ? value.version.replace(/^v/, '') : value.version,
+            )))) ||
       (Object.hasOwn(value, 'configHash') &&
         (typeof value.configHash !== 'string' || !hash.test(value.configHash)))
     ) {
