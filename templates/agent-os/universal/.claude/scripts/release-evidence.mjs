@@ -7,10 +7,11 @@
  * test/template/release-evidence.test.ts (absent in a generated rig).
  *
  *   node .claude/scripts/release-evidence.mjs --since <ISO> [--runs <dir>] [--json]
- *   node .claude/scripts/release-evidence.mjs --outcome --run <name> [--run <name>…] [--runs <dir>]
+ *   node .claude/scripts/release-evidence.mjs --outcome --run <name> [--run <name>…] [--baseline <name>…] [--runs <dir>]
  *
  * `--outcome` prints the Outcome Evidence signals over the named runs
- * (`lib/evidence-query.mjs`, RP-355) instead of the verdict below.
+ * (`lib/evidence-query.mjs`, RP-355) instead of the verdict below; with
+ * `--baseline` it also compares them against a second named run set.
  *
  * Reads `<runs>/<run-id>/` the same way `revalidation-report.mjs` does — this
  * script reuses that script's `readRuns` (default `--runs` also resolves
@@ -39,7 +40,7 @@ import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRuns } from './revalidation-report.mjs';
-import { outcomeOf } from './lib/evidence-query.mjs';
+import { compareOutcome, outcomeOf } from './lib/evidence-query.mjs';
 
 export const REPEATED_MIN_RUNS = 2;
 
@@ -146,12 +147,13 @@ export const evidenceOf = ({ runs, since }) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { since: null, runs: null, json: false, outcome: false, named: [], bad: null };
+  const args = { since: null, runs: null, json: false, outcome: false, named: [], baseline: [], bad: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
     else if (arg === '--outcome') args.outcome = true;
     else if (arg === '--run') args.named.push(argv[++i] ?? '');
+    else if (arg === '--baseline') args.baseline.push(argv[++i] ?? '');
     else if (arg === '--since') args.since = argv[++i] ?? null;
     else if (arg === '--runs') args.runs = argv[++i] ?? null;
     else if (args.bad === null) args.bad = arg;
@@ -192,9 +194,9 @@ if (invokedDirectly()) {
       refuse(error.message);
     }
     const byName = new Map(all.map((entry) => [entry.run, entry]));
-    const runs = [...new Set(args.named)].map(
-      (name) => byName.get(name) ?? { run: name, error: 'not found' },
-    );
+    const named = (names) =>
+      [...new Set(names)].map((name) => byName.get(name) ?? { run: name, error: 'not found' });
+    const runs = named(args.named);
     // The merge end of claim-to-merge is a commit's committer date, read from
     // this checkout; a commit it does not have is unknown, never a guess.
     const checkout = mainCheckoutRoot(join(scriptsDir, '..', '..'));
@@ -212,7 +214,13 @@ if (invokedDirectly()) {
         return null;
       }
     };
-    process.stdout.write(`${JSON.stringify(outcomeOf({ runs, commitTime }), null, 2)}\n`);
+    const report = outcomeOf({ runs, commitTime });
+    // RP-355: a comparison reads a second named run set, never a window.
+    if (args.baseline.length > 0) {
+      const baseline = outcomeOf({ runs: named(args.baseline), commitTime });
+      report.comparison = { baseline, ...compareOutcome({ baseline, current: report }) };
+    }
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     process.exit(0);
   }
   if (!args.since || Number.isNaN(Date.parse(args.since))) {

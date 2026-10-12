@@ -914,6 +914,45 @@ describe('release-evidence.mjs --outcome', () => {
     expect(signal(outcome, 'gate-rounds').eligible).toBe(1);
   });
 
+  it('the CLI compares the named runs against named baseline runs', async () => {
+    const runsDir = await runsRoot();
+    for (const [name, ticket, heads] of [
+      ['run-base', 'RP-61', ['b1', 'b2', 'b3']],
+      ['run-now', 'RP-62', ['n1']],
+    ] as const) {
+      const r = await newRun(runsDir, name);
+      r.take(ticket);
+      for (const head of heads) r.fanOut(head, ['code-reviewer']);
+      r.closed(ticket);
+    }
+
+    const result = await cli([
+      '--outcome',
+      '--runs',
+      runsDir,
+      '--run',
+      'run-now',
+      '--baseline',
+      'run-base',
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    const out = JSON.parse(result.stdout) as {
+      runs: { read: string[] };
+      comparison: {
+        baseline: { runs: { read: string[] } };
+        signals: Array<Record<string, unknown>>;
+      };
+    };
+    expect(out.runs.read).toEqual(['run-now']);
+    expect(out.comparison.baseline.runs.read).toEqual(['run-base']);
+    expect(out.comparison.signals.find((s) => s.name === 'gate-rounds')).toMatchObject({
+      comparison: 'comparable',
+      baseline: 3,
+      current: 1,
+      delta: -2,
+    });
+  });
+
   it('the CLI refuses --outcome without a named run, and --outcome with --since', async () => {
     const runsDir = await runsRoot();
     const r = await newRun(runsDir, 'run-a');
