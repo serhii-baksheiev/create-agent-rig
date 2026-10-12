@@ -634,6 +634,50 @@ describe('evidence-query outcomeOf: tokens-per-ship', () => {
   });
 });
 
+describe('evidence-query compareOutcome', () => {
+  const rounds = (
+    signalVersion: number,
+    observed: number,
+    distribution: Record<string, number>,
+  ) => ({
+    name: 'gate-rounds',
+    signalVersion,
+    eligible: observed,
+    observed,
+    unknown: 0,
+    result: { distribution },
+  });
+
+  it('gives a numeric delta for a comparable signal and refuses a signalVersion mismatch', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const baseline = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 1, '3': 1 })] };
+    const sameVersion = { schemaVersion: 1, signals: [rounds(2, 2, { '1': 2 })] };
+    const otherVersion = { schemaVersion: 1, signals: [rounds(3, 2, { '1': 2 })] };
+
+    const [comparable] = compare({ baseline, current: sameVersion }).signals;
+    expect(comparable).toEqual({
+      name: 'gate-rounds',
+      signalVersion: 2,
+      comparison: 'comparable',
+      measure: 'mean rounds per observed item',
+      baseline: 2,
+      current: 1,
+      delta: -1,
+    });
+    expect(JSON.stringify(comparable)).not.toMatch(/improv|regress|better|worse/i);
+
+    const [refused] = compare({ baseline, current: otherVersion }).signals;
+    expect(refused).toMatchObject({ name: 'gate-rounds', comparison: 'not comparable' });
+    expect(String(refused!.reason)).toMatch(/signalVersion/);
+  });
+});
+
 describe('release-evidence.mjs --outcome', () => {
   it('the CLI --outcome prints the named runs only and leaves the runs directory unchanged', async () => {
     const runsDir = await runsRoot();

@@ -334,3 +334,54 @@ export const outcomeOf = ({ runs, commitTime = () => null }) => {
     ],
   };
 };
+
+const mean = (distribution) => {
+  let items = 0;
+  let total = 0;
+  for (const [value, count] of Object.entries(distribution)) {
+    items += count;
+    total += Number(value) * count;
+  }
+  return items === 0 ? null : total / items;
+};
+
+/** The one number a comparison reads from each signal, and what it measures. */
+const MEASURES = {
+  'gate-rounds': {
+    measure: 'mean rounds per observed item',
+    of: (signal) => mean(signal.result.distribution),
+  },
+};
+
+/**
+ * Baseline/current comparison over two outcome reports (RP-355). A numeric
+ * delta is descriptive only: no direction is read into it. Two values of
+ * different signal versions are never compared.
+ */
+export const compareOutcome = ({ baseline, current }) => {
+  const signals = [];
+  for (const now of current.signals) {
+    const before = baseline.signals.find((signal) => signal.name === now.name);
+    const entry = { name: now.name, signalVersion: now.signalVersion };
+    if (!before || before.signalVersion !== now.signalVersion) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: `signalVersion differs: baseline ${before?.signalVersion ?? 'absent'}, current ${now.signalVersion}`,
+      });
+      continue;
+    }
+    const measure = MEASURES[now.name];
+    const was = measure.of(before);
+    const is = measure.of(now);
+    signals.push({
+      ...entry,
+      comparison: 'comparable',
+      measure: measure.measure,
+      baseline: was,
+      current: is,
+      delta: is - was,
+    });
+  }
+  return { schemaVersion: 1, signals };
+};
