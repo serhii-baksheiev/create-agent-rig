@@ -248,6 +248,29 @@ describe('doctor: probity (RP-416)', () => {
     expect(check?.detail).toContain(VERSION);
   });
 
+  it('reports version-drift against the declaration and names the Rig-tested default', async () => {
+    await writeDeclaration([
+      { id: PROBITY, version: '1.11.0', harnesses: ['claude-code'], selected: true },
+    ]);
+    await writeProbityConfig();
+    await writeProbityPackageJson(VERSION);
+    await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+    await writeWiring('claude-code', true);
+
+    const { body: report } = await body();
+
+    const check = (report.checks as (CheckRecord & { fix: string })[]).find(
+      (candidate) => candidate.id === 'probity:claude-code',
+    );
+    expect(check).toMatchObject({
+      status: 'warn',
+      reason: 'version-drift',
+      version: { state: 'drift', tested: VERSION, declared: '1.11.0', installed: VERSION },
+    });
+    expect(check?.fix).toContain('@nizos/probity@1.11.0');
+    expect(check?.fix).toContain(`Rig-tested ${VERSION}`);
+  });
+
   // RP-416 round 2, point 3: `inspectProbity` never compares the on-disk
   // config's bytes against the declaration's own `configHash` at all — it
   // only checks that a recognised config FILENAME exists

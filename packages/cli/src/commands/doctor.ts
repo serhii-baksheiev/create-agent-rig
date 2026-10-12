@@ -127,15 +127,15 @@ function rigVersionFix(reason: string, versions: { cli: string; repository: stri
   return "Compare the CLI version with the version recorded in this repository's manifest by hand before running setup or upgrade.";
 }
 
-/** `probity:<harness>` fix text, by reason (RP-416). */
-function probityFix(reason: string): string {
+/** `probity:<harness>` fix text, by reason (RP-416); a version is the repository's declaration when it has one (RP-445). */
+function probityFix(reason: string, version: VersionClassification | undefined): string {
   if (reason === 'config-missing')
     return 'Run create-agent-rig setup add probity (or --adopt an existing config) to generate probity.config.mjs.';
   if (reason === 'config-drift')
     return 'probity.config.mjs differs from the bytes Rig generated; keep the edit with create-agent-rig setup add probity --adopt, or restore the generated file.';
   if (reason === 'launcher-missing') return `Run npm install -D @nizos/probity@${PROBITY_VERSION}.`;
   if (reason === 'version-drift')
-    return `Run npm install -D @nizos/probity@${PROBITY_VERSION} to match the pinned version.`;
+    return `Run npm install -D @nizos/probity@${version?.declared ?? PROBITY_VERSION} to match the ${version?.declared === undefined ? 'pinned' : 'declared'} version (Rig-tested ${PROBITY_VERSION}).`;
   return "Wire the Probity gate hook into this harness's own hook configuration.";
 }
 
@@ -619,7 +619,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                         : check.id === 'spec-kit'
                           ? 'Check the pinned Spec Kit launcher and authoritative integration status.'
                           : check.id.startsWith('probity:')
-                            ? probityFix(check.reason)
+                            ? probityFix(check.reason, check.version)
                             : check.id === 'bmad-tea'
                               ? bmadTeaFix(check.reason, teaVersion, teaVersionFound)
                               : 'Review create-agent-rig setup list and the intended provider wiring.',
