@@ -73,7 +73,7 @@
 // rule) — never by calling the thing being tested and comparing it to
 // itself.
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -180,13 +180,22 @@ const delegatedRunDir = async (): Promise<string> => {
   return runDir;
 };
 
-/** A fresh git project with a bare remote, on `main` — the same shape
- * `gate-round`'s own AR-141 `checkoutIsShippable` requires. */
-const newPushedProject = async (roots?: string[]): Promise<{ dir: string }> => {
-  const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'delegated-rounds-repo-')));
-  roots?.push(dir);
-  const remote = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-remote-'));
-  roots?.push(remote);
+/**
+ * The seven git spawns that build a project with a bare remote are identical
+ * on every call, so RP-476 builds that pair ONCE per file, lazily, the way
+ * RP-426 did for `revalidate.test.ts`. Each case still gets its own fully
+ * independent copy: `newPushedProject` copies the template and repoints
+ * `origin`. Never written to directly — only copied from — and left for the
+ * OS to reclaim, as RP-426's template is.
+ */
+let pushedTemplateRoot: Promise<string> | null = null;
+
+const buildPushedTemplate = async (): Promise<string> => {
+  const root = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-template-'));
+  const dir = path.join(root, 'repo');
+  const remote = path.join(root, 'remote');
+  await mkdir(dir);
+  await mkdir(remote);
   await git(['init', '--bare', '-q'], remote);
   await git(['init', '-q', '-b', 'main'], dir);
   await mkdir(path.join(dir, '.claude'), { recursive: true });
@@ -199,6 +208,21 @@ const newPushedProject = async (roots?: string[]): Promise<{ dir: string }> => {
   await git(['commit', '-q', '-m', 'init'], dir);
   await git(['remote', 'add', 'origin', remote], dir);
   await git(['push', '-q', '-u', 'origin', 'main'], dir);
+  return root;
+};
+
+/** A fresh git project with a bare remote, on `main` — the same shape
+ * `gate-round`'s own AR-141 `checkoutIsShippable` requires. */
+const newPushedProject = async (roots?: string[]): Promise<{ dir: string }> => {
+  if (!pushedTemplateRoot) pushedTemplateRoot = buildPushedTemplate();
+  const template = await pushedTemplateRoot;
+  const dir = await realpath(await mkdtemp(path.join(tmpdir(), 'delegated-rounds-repo-')));
+  roots?.push(dir);
+  const remote = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-remote-'));
+  roots?.push(remote);
+  await cp(path.join(template, 'repo'), dir, { recursive: true });
+  await cp(path.join(template, 'remote'), remote, { recursive: true });
+  await git(['remote', 'set-url', 'origin', remote], dir);
   return { dir };
 };
 
