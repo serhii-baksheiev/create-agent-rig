@@ -704,6 +704,69 @@ describe('record-dispatch.mjs — Codex rollout path is refused before anything 
     }
   });
 
+  // RP-494 (forward-port of the 1.5.x RP-451 check): Windows compares only
+  // the inode against the path, so it re-opens the path and compares both
+  // descriptors' device and inode. The mock gives the first descriptor a
+  // device the path does not have.
+  it('does not read a Windows rollout whose opened descriptor is on another device than a re-open of its path', async () => {
+    const agentId = 'windows-second-open';
+    const file = await writeRollout(`agent-${agentId}.jsonl`, [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 141414, output_tokens: 414141 },
+      }),
+    ]);
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    let firstFd: number | undefined;
+    let changed = false;
+
+    vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        openSync: (...args: Parameters<typeof actual.openSync>) => {
+          const fd = actual.openSync(...args);
+          if (firstFd === undefined && args[0] === file) firstFd = fd;
+          return fd;
+        },
+        fstatSync: (...args: Parameters<typeof actual.fstatSync>) => {
+          const stat = actual.fstatSync(...args);
+          const device = stat?.dev;
+          if (!changed && args[0] === firstFd && stat && typeof device === 'number') {
+            changed = true;
+            return new Proxy(stat, {
+              get(value, property, receiver) {
+                return property === 'dev' ? device + 1 : Reflect.get(value, property, receiver);
+              },
+            });
+          }
+          return stat;
+        },
+      };
+    });
+
+    try {
+      const module = (await import(
+        `${pathToFileURL(hookPath).href}?windows-second-open=${Date.now()}`
+      )) as {
+        readCodexRolloutUsage: (
+          file: string,
+          agentId: string,
+        ) => { usage?: Record<string, unknown>; usageUnavailable?: string };
+      };
+      const result = module.readCodexRolloutUsage(file, agentId);
+      expect(changed).toBe(true);
+      expect(result).toEqual({ usageUnavailable: 'transcript-unreadable' });
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
+  });
+
   it('does not read a rollout replaced with a symlink after lstatSync has accepted its regular file', async () => {
     // The reader calls synchronous filesystem primitives, so a real timing
     // race cannot be scheduled deterministically. This mock leaves every

@@ -41,7 +41,7 @@ import {
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { fifosAvailable, skipUnless, symlinksAvailable } from '../helpers/env.js';
 import { GITHUB_PAT } from './secrets-fixtures.js';
 
@@ -237,6 +237,61 @@ describe('item-records.mjs — appendItemRecordLine', () => {
     appendItemRecordLine(filePath, '{"a":1}\n');
 
     expect(await readFile(filePath, 'utf8')).toBe('{"a":1}\n');
+  });
+
+  // RP-494 (forward-port of the 1.5.x RP-451 check): on Windows the opened
+  // handle is compared with the path by inode only, so the path is opened a
+  // second time and both handles' device and inode must agree.
+  it('refuses on Windows when the opened record is on another device than a re-open of its path', async () => {
+    const dir = await newProjectDir();
+    const real = await loadModule();
+    const filePath = path.join(real.ensureItemRecordDir(dir, 'decisions'), 'RP-1.jsonl');
+    await writeFile(filePath, '{"a":1}\n');
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+    let firstFd: number | undefined;
+    let changed = false;
+
+    vi.resetModules();
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    vi.doMock('node:fs', async () => {
+      const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
+      return {
+        ...actual,
+        openSync: (...args: Parameters<typeof actual.openSync>) => {
+          const fd = actual.openSync(...args);
+          if (firstFd === undefined && args[0] === filePath) firstFd = fd;
+          return fd;
+        },
+        fstatSync: (...args: Parameters<typeof actual.fstatSync>) => {
+          const stat = actual.fstatSync(...args);
+          const device = stat?.dev;
+          if (!changed && args[0] === firstFd && stat && typeof device === 'number') {
+            changed = true;
+            return new Proxy(stat, {
+              get(value, property, receiver) {
+                return property === 'dev' ? device + 1 : Reflect.get(value, property, receiver);
+              },
+            });
+          }
+          return stat;
+        },
+      };
+    });
+
+    try {
+      const mocked = (await import(
+        `${pathToFileURL(modulePath).href}?windows-second-open=${Date.now()}`
+      )) as ItemRecordsModule;
+      expect(() => mocked.appendItemRecordLine(filePath, '{"a":2}\n')).toThrow(
+        /changed under the check/,
+      );
+      expect(changed).toBe(true);
+      expect(await readFile(filePath, 'utf8')).toBe('{"a":1}\n');
+    } finally {
+      vi.doUnmock('node:fs');
+      vi.resetModules();
+      if (platform) Object.defineProperty(process, 'platform', platform);
+    }
   });
 
   it('appends on a later call rather than overwriting', async () => {

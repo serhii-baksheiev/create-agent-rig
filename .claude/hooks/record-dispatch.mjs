@@ -133,9 +133,14 @@
 // time (checked between chunks) — a fixed-size buffer on an
 // `O_RDONLY|O_NONBLOCK` handle whose opened `fstatSync` is a regular file
 // with the same inode, and on POSIX the same device, as the preceding
-// regular-file `lstatSync`.
-// That comparison happens after `openSync`: it rejects a different opened file
-// before reading changed content, but does not prevent the open itself. See
+// regular-file `lstatSync`. The checked path is then opened a second time and
+// both handles must agree on device and inode — the device check Windows
+// cannot make against the path alone (dispatch-usage-codex.test.ts, absent in
+// a generated rig, › "does not
+// read a Windows rollout whose opened descriptor is on another device than a
+// re-open of its path").
+// Those comparisons happen after `openSync`: they reject a different opened
+// file before reading changed content, but do not prevent the open itself. See
 // dispatch-usage-codex.test.ts (absent in a generated rig) › "does not read a
 // rollout replaced with a symlink after lstatSync has accepted its regular
 // file". Crossing ANY bound, an unreadable file, an empty
@@ -865,6 +870,23 @@ function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
       (process.platform !== 'win32' && opened.dev !== lst.dev)
     ) {
       return 'transcript-unreadable';
+    }
+    const current = lstatSync(file);
+    if (!current.isFile()) {
+      return 'transcript-unreadable';
+    }
+    const currentFd = openSync(file, OPEN_FLAGS | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const currentOpened = fstatSync(currentFd);
+      if (
+        !currentOpened.isFile() ||
+        currentOpened.dev !== opened.dev ||
+        currentOpened.ino !== opened.ino
+      ) {
+        return 'transcript-unreadable';
+      }
+    } finally {
+      closeSync(currentFd);
     }
 
     const chunk = Buffer.alloc(TRANSCRIPT_READ_CHUNK_BYTES);
