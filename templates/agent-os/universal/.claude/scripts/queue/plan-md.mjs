@@ -14,7 +14,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { duplicateOf, fingerprintOf, validateProposal, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
-import { recordEscalation } from '../run-state.mjs';
+import { recordEscalation, recordItemClosed } from '../run-state.mjs';
 
 export const name = 'plan-md';
 export const claimedState = 'open';
@@ -234,7 +234,7 @@ export const claim = (ticket) => ({
 export const find = (id, options = {}) =>
   parsePlan(readPlan(options)).find((ticket) => ticket.id === String(id)) ?? null;
 
-export const close = (ticket, { prUrl = null, planPath: p } = {}) => {
+export const close = async (ticket, { prUrl = null, planPath: p, env = process.env } = {}) => {
   const file = p ?? 'PLAN.md';
   const before = readFileSync(file, 'utf8');
   const present = parsePlan(before).some((item) => item.id === String(ticket.id));
@@ -243,7 +243,9 @@ export const close = (ticket, { prUrl = null, planPath: p } = {}) => {
   // never carried closed nothing, and saying otherwise would publish a close
   // that changed no state (AR-135).
   const gone = !parsePlan(readFileSync(file, 'utf8')).some((item) => item.id === String(ticket.id));
-  return { ok: true, prUrl, transitioned: present && gone };
+  const transitioned = present && gone;
+  if (transitioned) await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
+  return { ok: true, prUrl, transitioned };
 };
 
 /** A flat list has no comment thread; the journal is where this lands. */

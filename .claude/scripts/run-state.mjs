@@ -306,26 +306,43 @@ export const recordEscalation = async (runDir, { ticket } = {}) => {
 /**
  * RP-446: the count says how many walls the run hit; this event says which
  * item. Written only after the count landed, so the two never disagree, and
- * tolerated like the count, because the tracker is already mutated. Both
- * modules are imported here, not at the top: the queue CLI loads this module
- * before it checks that the journal module is present, and `continuation.mjs
- * --post` loads the queue adapters, so a static import would never settle.
+ * tolerated like the count, because the tracker is already mutated.
  */
-const journalEscalation = async (runDir, ticket) => {
+const journalEscalation = (runDir, ticket) =>
+  journalItemEvent(runDir, 'item-escalated', ticket, { stop: 'escalation' }, 'the escalation was counted');
+
+/**
+ * One item-tied journal event, its ticket redacted; a refusal goes to stderr,
+ * never thrown. Both modules are imported here, not at the top: the queue CLI
+ * loads this module before it checks that the journal module is present, and
+ * `continuation.mjs --post` loads the queue adapters, so a static import would
+ * never settle.
+ */
+const journalItemEvent = async (runDir, kind, ticket, fields, what) => {
   try {
     const { recordEvent } = await import('./run-journal.mjs');
     const { composeTextField } = await import('./continuation.mjs');
     recordEvent({
       runDir,
-      kind: 'item-escalated',
-      data: { schemaVersion: 1, ticket: composeTextField(ticket), stop: 'escalation' },
+      kind,
+      data: { schemaVersion: 1, ticket: composeTextField(ticket), ...fields },
       now: new Date().toISOString(),
     });
   } catch (error) {
-    process.stderr.write(
-      `run state: the escalation was counted but not journalled in ${runDir} — ${error.message}\n`,
-    );
+    process.stderr.write(`run state: ${what} but not journalled in ${runDir} — ${error.message}\n`);
   }
+};
+
+/**
+ * RP-447: a close that landed, journalled with its item, so a continuation
+ * written for it in an earlier run can be read as resolved. Called by the
+ * adapters only for a close whose read-back says it transitioned. Tolerated
+ * like the escalation record: the tracker is already mutated, so a refused
+ * journal write is reported on stderr and never thrown.
+ */
+export const recordItemClosed = async (runDir, { ticket } = {}) => {
+  if (!runDir) return;
+  await journalItemEvent(runDir, 'item-closed', ticket, {}, 'the close landed');
 };
 
 /**

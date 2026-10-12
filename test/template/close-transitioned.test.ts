@@ -135,7 +135,7 @@ describe('github close proves the transition by asking gh for the state', () => 
   it('runs `issue view <id> --json state` after `issue close` and reports transitioned: true on CLOSED', async () => {
     await installGh('CLOSED');
     const { close } = await load('github-issues.mjs');
-    const result = close({ id: '13' }, { prUrl: 'https://example.invalid/pr/1' });
+    const result = await close({ id: '13' }, { prUrl: 'https://example.invalid/pr/1' });
     expect(result).toMatchObject({ ok: true, transitioned: true });
     const log = await argvLog();
     const closeAt = log.findIndex((line) => line.startsWith('issue close 13'));
@@ -148,14 +148,14 @@ describe('github close proves the transition by asking gh for the state', () => 
   it('reports transitioned: false when gh still sees the issue OPEN', async () => {
     await installGh('OPEN');
     const { close } = await load('github-issues.mjs');
-    const result = close({ id: '13' });
+    const result = await close({ id: '13' });
     expect(result).toMatchObject({ ok: true, transitioned: false });
   });
 
   it('leaves the in-progress label on an issue whose close did not land', async () => {
     await installGh('OPEN');
     const { close } = await load('github-issues.mjs');
-    close({ id: '13' });
+    await close({ id: '13' });
     const log = await argvLog();
     expect(log.some((line) => line.includes('--remove-label'))).toBe(false);
   });
@@ -163,7 +163,7 @@ describe('github close proves the transition by asking gh for the state', () => 
   it('removes the in-progress label only after the read-back says CLOSED', async () => {
     await installGh('CLOSED');
     const { close } = await load('github-issues.mjs');
-    close({ id: '13' });
+    await close({ id: '13' });
     const log = await argvLog();
     const viewAt = log.findIndex((line) => line.startsWith('issue view 13'));
     const labelAt = log.findIndex((line) => line.includes('--remove-label in-progress'));
@@ -321,7 +321,7 @@ describe('plan-md close proves the transition by re-parsing the plan', () => {
   it("reports transitioned: true once the item's line is gone", async () => {
     const planPath = await planFile();
     const { close } = await load('plan-md.mjs');
-    const result = close({ id: '2' }, { planPath });
+    const result = await close({ id: '2' }, { planPath });
     expect(result).toMatchObject({ ok: true, transitioned: true });
     expect(await readFile(planPath, 'utf8')).not.toContain('- remove me');
   });
@@ -329,8 +329,138 @@ describe('plan-md close proves the transition by re-parsing the plan', () => {
   it('reports transitioned: false for an id the plan does not carry', async () => {
     const planPath = await planFile();
     const { close } = await load('plan-md.mjs');
-    const result = close({ id: '9' }, { planPath });
+    const result = await close({ id: '9' }, { planPath });
     expect(result).toMatchObject({ ok: true, transitioned: false });
     expect(await readFile(planPath, 'utf8')).toBe(PLAN);
+  });
+});
+
+// RP-447: the resolution half of a continuation. A close that transitioned
+// leaves one `item-closed` event in the run journal; one that did not leaves none.
+describe('close journals an item-closed event only when it transitioned', () => {
+  const runJournal = path.join(queueDir, '..', 'run-journal.mjs');
+
+  const itemClosedEvents = async (
+    runDir: string,
+  ): Promise<Array<{ kind: string; data: unknown }>> => {
+    const { readRun } = await import(pathToFileURL(runJournal).href);
+    const { events } = readRun({ runDir }) as {
+      events: Array<{ kind: string; data: unknown }>;
+    };
+    return events.filter((event) => event.kind === 'item-closed');
+  };
+
+  const freshRunDir = (): Promise<string> => mkdtemp(path.join(tmpdir(), 'close-run-'));
+
+  it('jira close journals one item-closed event when it transitioned', async () => {
+    const runDir = await freshRunDir();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+      const method = String(init.method ?? 'GET');
+      if (method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () =>
+            Promise.resolve({
+              fields: { status: { name: 'Done', statusCategory: { key: 'done' } } },
+            }),
+        });
+      }
+      const status = new URL(String(input)).pathname.endsWith('/transitions') ? 204 : 201;
+      return Promise.resolve({
+        ok: true,
+        status,
+        statusText: status === 204 ? 'No Content' : 'Created',
+        json: () => Promise.resolve({}),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const { close } = await load('jira.mjs');
+      const result = await close(ticket, {
+        transitionId: '31',
+        env: {
+          JIRA_BASE_URL: 'https://example.invalid',
+          JIRA_EMAIL: 'a@b.c',
+          JIRA_API_TOKEN: 'x',
+          RIG_RUN_DIR: runDir,
+        },
+      });
+      expect(result).toMatchObject({ transitioned: true });
+      const events = await itemClosedEvents(runDir);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: 'ABC-13' });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  /** The same `gh` the github close tests above install: it answers `issue view` with `state`. */
+  let stub: StubHandle | undefined;
+  const installGh = async (state: 'CLOSED' | 'OPEN'): Promise<void> => {
+    stub = await stubCommand(
+      'gh',
+      `if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"state":"${state}"}\\n' };
+       return {};`,
+    );
+  };
+
+  afterEach(() => {
+    stub?.restore();
+    stub = undefined;
+  });
+
+  it('github-issues close journals one item-closed event when it transitioned', async () => {
+    const runDir = await freshRunDir();
+    await installGh('CLOSED');
+    const { close } = await load('github-issues.mjs');
+    const result = await close(
+      { id: '13' },
+      { prUrl: 'https://example.invalid/pr/1', env: { ...process.env, RIG_RUN_DIR: runDir } },
+    );
+    expect(result).toMatchObject({ transitioned: true });
+    const events = await itemClosedEvents(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '13' });
+  });
+
+  it('a close that did not transition journals nothing', async () => {
+    const runDir = await freshRunDir();
+    await installGh('OPEN');
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' }, { env: { ...process.env, RIG_RUN_DIR: runDir } });
+    expect(result).toMatchObject({ transitioned: false });
+    expect(await itemClosedEvents(runDir)).toEqual([]);
+  });
+
+  it('a plan-md close of an id the plan does not carry journals nothing', async () => {
+    const runDir = await freshRunDir();
+    const dir = await mkdtemp(path.join(tmpdir(), 'close-plan-'));
+    const planPath = path.join(dir, 'PLAN.md');
+    await writeFile(planPath, '# P\n\n## Agent queue\n\n- keep me\n\n## Journal\n');
+    const { close } = await load('plan-md.mjs');
+    const result = await close(
+      { id: '9' },
+      { planPath, env: { ...process.env, RIG_RUN_DIR: runDir } },
+    );
+    expect(result).toMatchObject({ transitioned: false });
+    expect(await itemClosedEvents(runDir)).toEqual([]);
+  });
+
+  it('plan-md close journals one item-closed event when the line is gone', async () => {
+    const runDir = await freshRunDir();
+    const dir = await mkdtemp(path.join(tmpdir(), 'close-plan-'));
+    const planPath = path.join(dir, 'PLAN.md');
+    await writeFile(planPath, '# P\n\n## Agent queue\n\n- keep me\n- remove me\n\n## Journal\n');
+    const { close } = await load('plan-md.mjs');
+    const result = await close(
+      { id: '2' },
+      { planPath, env: { ...process.env, RIG_RUN_DIR: runDir } },
+    );
+    expect(result).toMatchObject({ transitioned: true });
+    const events = await itemClosedEvents(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '2' });
   });
 });

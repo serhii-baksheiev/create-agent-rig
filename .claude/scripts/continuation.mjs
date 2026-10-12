@@ -20,7 +20,11 @@
 // The note is always printed to stdout. `--post` is the only thing that
 // touches the network — without it, nothing here ever resolves or calls a
 // queue adapter at all, so a caller that never passes it gets a purely local,
-// read-only preview.
+// read-only preview. With `--post` and `RIG_RUN_DIR`, the note handed over is
+// also journalled as a `continuation` event (RP-447), including on an adapter
+// that cannot post — see `test/template/continuation.test.ts` (absent in a
+// generated rig) › "--post on plan-md, which cannot post, still records the
+// continuation locally".
 //
 // RP-290: when `RIG_RUN_DIR`'s journal carries a `check-result` event
 // (`check-run.mjs`) whose LATEST record for a check name is a failure, the
@@ -406,7 +410,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from './git-env.mjs';
-import { readRun } from './run-journal.mjs';
+import { readRun, recordEvent } from './run-journal.mjs';
 import { findSecretValues } from './lib/secrets.mjs';
 
 /** The only four workflow-level stops this note exists for. */
@@ -1281,6 +1285,29 @@ if (invokedDirectly()) {
 
   process.stdout.write(`${note}\n`);
 
+  // RP-447: a note handed to `--post` leaves a local record, so a later close
+  // or re-escalation can be read as its resolution — also on an adapter with
+  // no comment thread (plan-md), whose answer is that the journal is where the
+  // note lands. A refused journal write is reported, never a failure of its own.
+  const journalContinuation = () => {
+    if (!process.env.RIG_RUN_DIR) return;
+    try {
+      recordEvent({
+        runDir: process.env.RIG_RUN_DIR,
+        kind: 'continuation',
+        data: {
+          schemaVersion: 1,
+          ticket: composeTextField(parsed.ticket),
+          stop: parsed.stop,
+          head: composeTextField(headSha),
+        },
+        now: new Date().toISOString(),
+      });
+    } catch (error) {
+      process.stderr.write(`continuation: the note was not journalled — ${error.message}\n`);
+    }
+  };
+
   // `--post` is the ONLY branch that resolves a queue adapter or touches the
   // network — every other path above is local evidence gathering.
   if (parsed.post) {
@@ -1290,6 +1317,7 @@ if (invokedDirectly()) {
       const config = loadConfig(configPath);
       const adapter = await resolveAdapter(config.adapter ?? 'plan-md');
       const result = await adapter.comment({ id: parsed.ticket }, note, { env: process.env });
+      if (result?.ok || result?.journalInstead) journalContinuation();
       if (!result?.ok) {
         process.stderr.write(
           `continuation: the note above was NOT posted — ${result?.why ?? 'the adapter refused'}\n`,
