@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
 import { GITHUB_PAT, pemHeader } from './secrets-fixtures.js';
 
 // RP-224 — "[RIG 1.1][CONTINUITY] Publish bounded continuation notes for
@@ -2152,6 +2153,125 @@ describe('continuation.mjs CLI', () => {
     expect(result.code).not.toBe(0);
     expect(result.out).toContain('rig-continuation v1');
     expect(result.out).toMatch(/journal/i);
+  });
+});
+
+// --- the continuation event (RP-447) -----------------------------------------
+//
+// A posted note leaves a local record: one `continuation` run-journal event
+// carrying ticket, stop and head. Nothing is recorded for a preview or for a
+// post the adapter refused. A journal that cannot take the record does not
+// undo the post: exit 0, and stderr says the continuation was not journalled.
+
+describe('continuation.mjs CLI — the continuation event in the run journal', () => {
+  const BRANCH = 'feat/rp-447-continuation-event';
+
+  const freshRepo = async (): Promise<{ repoDir: string; headSha: string }> => {
+    const repoDir = await mkdtemp(path.join(tmpdir(), 'continuation-repo-'));
+    await git(['init', '-q'], repoDir);
+    await git(['checkout', '-q', '-b', BRANCH], repoDir);
+    await writeFile(path.join(repoDir, 'a.txt'), 'x\n');
+    await git(['add', '-A'], repoDir);
+    await git(['commit', '-q', '-m', 'init'], repoDir);
+    const headSha = await git(['rev-parse', 'HEAD'], repoDir);
+    return { repoDir, headSha };
+  };
+
+  const useGithubAdapter = async (repoDir: string): Promise<void> => {
+    await mkdir(path.join(repoDir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(repoDir, '.claude', 'queue.json'),
+      JSON.stringify({ adapter: 'github-issues' }),
+    );
+  };
+
+  // A `gh` that accepts every write and answers `issue view` readably.
+  const stubGh = (): Promise<StubHandle> =>
+    stubCommand(
+      'gh',
+      `if (args[0] === 'issue' && args[1] === 'view')
+         return { stdout: '{"state":"OPEN","updatedAt":"2026-07-02T00:00:00Z"}\\n' };
+       return {};`,
+    );
+
+  const continuationEvents = async (
+    runDir: string,
+  ): Promise<Array<{ kind: string; data: unknown }>> => {
+    const { readRun } = await load('run-journal.mjs');
+    const { events } = readRun({ runDir }) as {
+      events: Array<{ kind: string; data: unknown }>;
+    };
+    return events.filter((event) => event.kind === 'continuation');
+  };
+
+  it('preview without --post journals nothing, even with a run directory', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-447-'));
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'pause'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code, result.out).toBe(0);
+    expect(await continuationEvents(runDir)).toEqual([]);
+  });
+
+  it('--post journals one continuation event with ticket, stop and head', async () => {
+    const { repoDir, headSha } = await freshRepo();
+    await useGithubAdapter(repoDir);
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-447-'));
+    const stub = await stubGh();
+    try {
+      const result = await runCli(
+        repoDir,
+        ['--ticket', '13', '--stop', 'blocker', '--post'],
+        hermeticEnv({ RIG_RUN_DIR: runDir, ...stub.env }),
+      );
+      expect(result.code, result.out).toBe(0);
+      const events = await continuationEvents(runDir);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.data).toEqual({
+        schemaVersion: 1,
+        ticket: '13',
+        stop: 'blocker',
+        head: headSha,
+      });
+    } finally {
+      stub.restore();
+    }
+  });
+
+  it('--post refused by plan-md journals nothing', async () => {
+    const { repoDir } = await freshRepo();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-447-'));
+    const result = await runCli(
+      repoDir,
+      ['--ticket', 'RP-1', '--stop', 'pause', '--post'],
+      hermeticEnv({ RIG_RUN_DIR: runDir }),
+    );
+    expect(result.code).not.toBe(0);
+    expect(await continuationEvents(runDir)).toEqual([]);
+  });
+
+  it('--post on an ended run still exits 0 and says the continuation was not journalled', async () => {
+    const { repoDir } = await freshRepo();
+    await useGithubAdapter(repoDir);
+    const runDir = await mkdtemp(path.join(tmpdir(), 'continuation-run-447-'));
+    const { endRun } = await load('run-journal.mjs');
+    endRun({ runDir, stop: 'queue-empty', now: '2026-01-01T00:00:00.000Z' });
+    const stub = await stubGh();
+    try {
+      const result = await runCli(
+        repoDir,
+        ['--ticket', '13', '--stop', 'terminated', '--post'],
+        hermeticEnv({ RIG_RUN_DIR: runDir, ...stub.env }),
+      );
+      expect(result.code, result.out).toBe(0);
+      expect(result.stderr).toContain('not journalled');
+      expect(await continuationEvents(runDir)).toEqual([]);
+    } finally {
+      stub.restore();
+    }
   });
 });
 

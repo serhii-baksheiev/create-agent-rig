@@ -25,7 +25,7 @@
 // owner holds every marked item, since it cannot confirm a match.
 import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
-import { recordEscalation, recordTakeUp } from '../run-state.mjs';
+import { recordEscalation, recordItemClosed, recordTakeUp } from '../run-state.mjs';
 import { recordClaimTransition } from '../lib/claim-records.mjs';
 
 export const name = 'jira';
@@ -1256,9 +1256,11 @@ export const close = async (ticket, { prUrl = null, transitionId = null, env = p
   // that inlined `recordTakeUp` here reintroduced a throw on a stale run
   // directory after the transition had landed.
   if (env?.RIG_RUN_DIR) recordMarker(ticket, toIso(fields.updated), env);
+  const transitioned = statusCategory(fields) === 'done';
+  if (transitioned) await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   return {
     ok: true,
-    transitioned: statusCategory(fields) === 'done',
+    transitioned,
     status: fields.status?.name ?? null,
   };
 };

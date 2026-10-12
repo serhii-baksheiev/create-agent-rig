@@ -334,3 +334,65 @@ describe('plan-md close proves the transition by re-parsing the plan', () => {
     expect(await readFile(planPath, 'utf8')).toBe(PLAN);
   });
 });
+
+// RP-447: the resolution half of a continuation. A close that transitioned
+// leaves one `item-closed` event in the run journal; one that did not leaves none.
+describe('close journals an item-closed event only when it transitioned', () => {
+  const runJournal = path.join(queueDir, '..', 'run-journal.mjs');
+
+  const itemClosedEvents = async (
+    runDir: string,
+  ): Promise<Array<{ kind: string; data: unknown }>> => {
+    const { readRun } = await import(pathToFileURL(runJournal).href);
+    const { events } = readRun({ runDir }) as {
+      events: Array<{ kind: string; data: unknown }>;
+    };
+    return events.filter((event) => event.kind === 'item-closed');
+  };
+
+  const freshRunDir = (): Promise<string> => mkdtemp(path.join(tmpdir(), 'close-run-'));
+
+  it('jira close journals one item-closed event when it transitioned', async () => {
+    const runDir = await freshRunDir();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+      const method = String(init.method ?? 'GET');
+      if (method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () =>
+            Promise.resolve({
+              fields: { status: { name: 'Done', statusCategory: { key: 'done' } } },
+            }),
+        });
+      }
+      const status = new URL(String(input)).pathname.endsWith('/transitions') ? 204 : 201;
+      return Promise.resolve({
+        ok: true,
+        status,
+        statusText: status === 204 ? 'No Content' : 'Created',
+        json: () => Promise.resolve({}),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const { close } = await load('jira.mjs');
+      const result = await close(ticket, {
+        transitionId: '31',
+        env: {
+          JIRA_BASE_URL: 'https://example.invalid',
+          JIRA_EMAIL: 'a@b.c',
+          JIRA_API_TOKEN: 'x',
+          RIG_RUN_DIR: runDir,
+        },
+      });
+      expect(result).toMatchObject({ transitioned: true });
+      const events = await itemClosedEvents(runDir);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: 'ABC-13' });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

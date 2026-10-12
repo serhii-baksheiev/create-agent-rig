@@ -575,6 +575,32 @@ export const stopInputsOf = (state = {}) => {
  * ends every later selection in the run and the operator's only way out is to
  * hand-edit a state file.
  */
+/**
+ * RP-447: a close that landed, journalled with its item, so a continuation
+ * written for it in an earlier run can be read as resolved. Called by the
+ * adapters only for a close whose read-back says it transitioned. Tolerated
+ * like the escalation record: the tracker is already mutated, so a refused
+ * journal write is reported on stderr and never thrown. Both modules are
+ * imported here, not at the top, for the reasons `recordEscalation` gives.
+ */
+export const recordItemClosed = async (runDir, { ticket } = {}) => {
+  if (!runDir) return;
+  try {
+    const { recordEvent } = await import('./run-journal.mjs');
+    const { composeTextField } = await import('./continuation.mjs');
+    recordEvent({
+      runDir,
+      kind: 'item-closed',
+      data: { schemaVersion: 1, ticket: composeTextField(ticket) },
+      now: new Date().toISOString(),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `run state: the close landed but was not journalled in ${runDir} — ${error.message}\n`,
+    );
+  }
+};
+
 export const DEPLOY_VERDICTS = Object.freeze(['REGRESSION', 'HEALTHY']);
 
 /**

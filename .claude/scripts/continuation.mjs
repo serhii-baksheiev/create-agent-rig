@@ -406,7 +406,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { withoutGitLocation } from './git-env.mjs';
-import { readRun } from './run-journal.mjs';
+import { readRun, recordEvent } from './run-journal.mjs';
 import { findSecretValues } from './lib/secrets.mjs';
 
 /** The only four workflow-level stops this note exists for. */
@@ -1299,6 +1299,26 @@ if (invokedDirectly()) {
     } catch (error) {
       process.stderr.write(`continuation: the note above was NOT posted — ${error.message}\n`);
       process.exit(1);
+    }
+    // RP-447: a posted note leaves a local record, so a later close or
+    // re-escalation can be read as its resolution. The post already landed,
+    // so a refused journal write is reported, never turned into a failure.
+    if (process.env.RIG_RUN_DIR) {
+      try {
+        recordEvent({
+          runDir: process.env.RIG_RUN_DIR,
+          kind: 'continuation',
+          data: {
+            schemaVersion: 1,
+            ticket: composeTextField(parsed.ticket),
+            stop: parsed.stop,
+            head: composeTextField(headSha),
+          },
+          now: new Date().toISOString(),
+        });
+      } catch (error) {
+        process.stderr.write(`continuation: the note was posted but not journalled — ${error.message}\n`);
+      }
     }
   }
 
