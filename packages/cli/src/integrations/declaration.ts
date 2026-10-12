@@ -10,8 +10,8 @@ export const EXACT_VERSION_PATTERN =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$/;
 /**
  * Providers with a Rig-tested default version whose declared version must name
- * one exact release. playwright-mcp joins with its own override; until then a
- * declaration it already accepted stays valid.
+ * one exact release. playwright-mcp is not one: only an exact version overrides
+ * its default (`playwrightOverride`), so a declaration it already accepted stays valid.
  */
 export const PINNED_PROVIDER_IDS: ReadonlySet<string> = new Set([
   'probity',

@@ -415,10 +415,13 @@ running the launcher.
 
 ### Declared versions (RP-445)
 
-A `probity:<harness>` check and the `bmad-tea` check each carry a `version`
-object, `{ state, tested, declared?, installed? }`: `tested` is the Rig-tested
+A `probity:<harness>` check, the `bmad-tea` check and the
+`playwright-mcp:claude-code` check each carry a `version` object,
+`{ state, tested, declared?, installed? }`: `tested` is the Rig-tested
 default, `declared` the declaration entry's exact `version` when it has one,
-`installed` the version doctor read. `state` is one of:
+`installed` the version doctor read — for `playwright-mcp`, the
+`@playwright/mcp@<version>` argument of Rig's own `.mcp.json` entry. `state`
+is one of:
 
 - `tested` — the installed version is the Rig-tested default, and any
   declared version is that same default.
@@ -428,14 +431,19 @@ default, `declared` the declaration entry's exact `version` when it has one,
   `packages/cli/test/probity-doctor.test.ts` › "reports overridden, not
   version-drift, when the installed version equals a declared non-default
   version", and the test of the same name in
-  `packages/cli/test/integrations-bmad-tea.test.ts`.
+  `packages/cli/test/integrations-bmad-tea.test.ts`;
+  `packages/cli/test/doctor.test.ts` › "doctor reports playwright-mcp
+  overridden when the wired version equals the declared one".
 - `drift` — the installed version differs from the declared version or,
   without one, from the Rig-tested default. The reason is `version-drift`,
   and with a declaration its `fix` names the declared and the Rig-tested
   version — `packages/cli/test/probity-doctor.test.ts` › "reports
   version-drift against the declaration and names the Rig-tested default",
   and the test of the same name in
-  `packages/cli/test/integrations-bmad-tea.test.ts`.
+  `packages/cli/test/integrations-bmad-tea.test.ts`. For `playwright-mcp`
+  the reason is the same, and it outranks `launcher-missing` —
+  `packages/cli/test/doctor.test.ts` › "doctor reports version drift when the
+  wired version differs from the declaration".
 - `unknown` — doctor classified no installed version: none could be read,
   or (`bmad-tea`) the check stopped at an earlier finding first.
 
@@ -445,7 +453,15 @@ A declared version for `probity`, `bmad-tea` or `spec-kit` is one exact
 the version it accepted before —
 `packages/cli/test/integrations-declaration.test.ts` › "rejects a range or
 tag as the declared version of a pinned provider as malformed, accepts an
-exact one, and leaves unpinned providers alone". `bmad-tea` alone also
+exact one, and leaves unpinned providers alone". For `playwright-mcp` only
+an exact declared version is an override, wired into the MCP entry as
+`@playwright/mcp@<declared>` —
+`packages/cli/test/integrations-playwright.test.ts` › "setup add
+playwright-mcp --version 0.0.90 wires @playwright/mcp@0.0.90"; a declared
+tag keeps the Rig-tested version wired (› "a declaration of latest keeps the
+Rig-tested version wired"), and `setup add playwright-mcp --version` refuses
+one (› "a non-exact --version for playwright-mcp is refused with
+playwright-mcp-exact-version-required"). `bmad-tea` alone also
 accepts the leading `v` BMAD's installer records (`v1.27.2`), still never a
 range or a tag, and doctor compares it without the `v` —
 `packages/cli/test/integrations-declaration.test.ts` › "accepts v1.27.2 for
@@ -2310,7 +2326,8 @@ version, a manual step `setup` names but never runs itself); nothing about it
 needs `uv` or `uvx` (`## setup integrations (RP-22)`).
 
 **Playwright MCP only: Node and `npx`.** `setup add playwright-mcp` writes an
-MCP entry launched as `npx @playwright/mcp@0.0.83`; doctor observes `npx` on
+MCP entry launched as `npx @playwright/mcp@0.0.83`, or at the declared exact
+version ("Declared versions (RP-445)"); doctor observes `npx` on
 `PATH` and reports its absence as a warning, never a failure —
 `packages/cli/test/doctor.test.ts` › "distinguishes owned wiring, missing
 launcher and unobserved runtime for both Playwright MCP targets". On Windows

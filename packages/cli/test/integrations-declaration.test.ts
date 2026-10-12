@@ -205,7 +205,7 @@ describe('integration intent declaration', () => {
           entries: [{ id, version }],
         });
     }
-    // playwright-mcp's override is a later slice; until then an existing
+    // Only an exact playwright-mcp version is an override, so an existing
     // declaration of `latest` stays as valid as it was before RP-445.
     expect(declare('playwright-mcp', 'latest')).toMatchObject({
       status: 'ok',
