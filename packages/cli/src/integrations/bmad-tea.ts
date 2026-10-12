@@ -18,7 +18,7 @@ const TEA_CONFIG_REL = '_bmad/tea/config.yaml';
 const MAX_MANIFEST_BYTES = 64 * 1024;
 /** The shape `evidence-attach.mjs --producer-version` accepts; any other upstream text never reaches diagnostics. */
 const VERSION_TOKEN = /^[0-9A-Za-z][0-9A-Za-z.+_-]{0,63}$/;
-/** YAML 1.2 core-schema null spellings that would otherwise pass VERSION_TOKEN (`~` and empty never do). */
+/** YAML 1.2 core-schema null words; `~` and the empty scalar are null only unquoted. */
 const YAML_NULLS = new Set(['null', 'Null', 'NULL']);
 
 export type BmadTeaInspectionStatus = 'pass' | 'warn';
@@ -29,10 +29,13 @@ export type BmadTeaInspectionReason =
   | 'version-drift'
   | 'manifest-unreadable'
   | 'installed';
+/** What a `version-unknown` entry's `version:` field held instead of a version; absent when there is no field. */
+export type BmadTeaVersionFound = 'null' | 'not-a-token';
 export type BmadTeaInspection = {
   status: BmadTeaInspectionStatus;
   reason: BmadTeaInspectionReason;
   version?: string;
+  versionFound?: BmadTeaVersionFound;
 };
 
 /** Strip one pair of matching surrounding quotes from a YAML scalar. */
@@ -53,7 +56,8 @@ function stripQuotes(value: string): string {
  * `modules:` block, and the block itself ends at the next line that starts
  * at column zero (a sibling top-level key). `found` is false when no `tea`
  * entry exists under `modules:` at all; when it does, `version` is
- * `undefined` exactly when that entry carries no `version:` field.
+ * `undefined` exactly when that entry carries no `version:` field, and is
+ * otherwise the raw scalar, quotes included.
  */
 function findTeaModuleVersion(text: string): { found: boolean; version?: string } {
   let inModules = false;
@@ -81,7 +85,7 @@ function findTeaModuleVersion(text: string): { found: boolean; version?: string 
       continue;
     }
     if (inTeaItem && trimmed.startsWith('version:')) {
-      version = stripQuotes(trimmed.slice('version:'.length).trim());
+      version = trimmed.slice('version:'.length).trim();
     }
   }
   return { found, version };
@@ -108,15 +112,19 @@ export async function inspectBmadTea(repoDir: string): Promise<BmadTeaInspection
 
   const tea = findTeaModuleVersion(text);
   if (!tea.found) return { status: 'warn', reason: 'not-installed' };
+  if (tea.version === undefined) return { status: 'warn', reason: 'version-unknown' };
+  const version = stripQuotes(tea.version);
   // YAML's null scalars are no version at all.
-  if (tea.version === undefined || YAML_NULLS.has(tea.version) || !VERSION_TOKEN.test(tea.version))
-    return { status: 'warn', reason: 'version-unknown' };
+  if (tea.version === '' || tea.version === '~' || YAML_NULLS.has(version))
+    return { status: 'warn', reason: 'version-unknown', versionFound: 'null' };
+  if (!VERSION_TOKEN.test(version))
+    return { status: 'warn', reason: 'version-unknown', versionFound: 'not-a-token' };
 
   const config = await resolveReadableInside(repoDir, TEA_CONFIG_REL, 'file');
   if (config.status !== 'ok') return { status: 'warn', reason: 'config-missing' };
 
   // The installer records an external module's git tag (`v1.27.2`), not its package version.
-  if (tea.version.replace(/^v/, '') !== BMAD_TEA_VERSION)
-    return { status: 'warn', reason: 'version-drift', version: tea.version };
-  return { status: 'pass', reason: 'installed', version: tea.version };
+  if (version.replace(/^v/, '') !== BMAD_TEA_VERSION)
+    return { status: 'warn', reason: 'version-drift', version };
+  return { status: 'pass', reason: 'installed', version };
 }
