@@ -162,9 +162,11 @@ function guardOutcomes(guards: GuardInspection | undefined): Record<string, Outc
   if (guards.reason === 'hook-wiring-invalid') {
     return { 'hook-wiring-missing': 'fail', 'guard-integrity-failed': 'unknown' };
   }
+  // A fixture root left behind says nothing about whether the guards held.
+  const inconclusive = guards.reason === 'guard-fixture-cleanup-failed';
   return {
     'hook-wiring-missing': 'pass',
-    'guard-integrity-failed': guards.status === 'pass' ? 'pass' : 'fail',
+    'guard-integrity-failed': guards.status === 'pass' ? 'pass' : inconclusive ? 'unknown' : 'fail',
   };
 }
 
