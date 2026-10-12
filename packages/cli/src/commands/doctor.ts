@@ -673,7 +673,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
                                   teaVersionFound,
                                   check.version?.declared,
                                 )
-                              : 'Review create-agent-rig setup list and the intended provider wiring.',
+                              : check.id.startsWith('playwright-mcp:') &&
+                                  check.reason === 'version-drift'
+                                ? `Run create-agent-rig setup apply --yes to re-wire @playwright/mcp@${check.version?.declared ?? PLAYWRIGHT_MCP_VERSION}, the ${check.version?.declared === undefined ? 'pinned' : 'declared'} version (Rig-tested ${PLAYWRIGHT_MCP_VERSION}).`
+                                : 'Review create-agent-rig setup list and the intended provider wiring.',
       }),
     ),
     integrations,

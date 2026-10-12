@@ -344,6 +344,33 @@ describe('aggregated doctor (RP-21)', () => {
     expect(check).toMatchObject({ status: 'warn', reason: 'version-drift' });
   });
 
+  it('the playwright-mcp drift fix names the declared and the Rig-tested version', async () => {
+    await initProject(repo, {});
+    await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: ['playwright-mcp', '--version', '0.0.90', '--harness', 'claude-code', '--yes'],
+    });
+    const declarationPath = path.join(repo, '.rig', 'integrations.json');
+    await writeFile(
+      declarationPath,
+      (await readFile(declarationPath, 'utf8')).replace('"0.0.90"', '"0.0.91"'),
+    );
+
+    const result = await runDoctor({
+      cwd: repo,
+      args: ['--json'],
+      env: { HOME: home, APPDATA: home, PATH: '' },
+      guardRunner: passingGuardRunner,
+    });
+
+    const check = (JSON.parse(result.stdout) as Report).checks.find(
+      (candidate) => candidate.id === 'playwright-mcp:claude-code',
+    );
+    expect(check?.fix).toContain('0.0.91');
+    expect(check?.fix).toContain(PLAYWRIGHT_MCP_VERSION);
+  });
+
   it('distinguishes owned wiring, missing launcher and unobserved runtime for both Basic Memory targets', async () => {
     await initProject(repo, {});
     expect(
