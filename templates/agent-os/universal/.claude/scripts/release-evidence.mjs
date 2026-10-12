@@ -190,7 +190,9 @@ if (invokedDirectly()) {
       refuse(error.message);
     }
     const byName = new Map(all.map((entry) => [entry.run, entry]));
-    const runs = args.named.map((name) => byName.get(name) ?? { run: name, error: 'not found' });
+    const runs = [...new Set(args.named)].map(
+      (name) => byName.get(name) ?? { run: name, error: 'not found' },
+    );
     process.stdout.write(`${JSON.stringify(outcomeOf({ runs }), null, 2)}\n`);
     process.exit(0);
   }

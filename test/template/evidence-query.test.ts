@@ -537,6 +537,21 @@ describe('release-evidence.mjs --outcome', () => {
     expect(await snapshot(runsDir)).toEqual(before);
   });
 
+  it('the CLI reads a repeated --run name once', async () => {
+    const runsDir = await runsRoot();
+    const r = await newRun(runsDir, 'run-a');
+    r.take('RP-85');
+    r.fanOut('h85', ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', 'h85');
+    r.closed('RP-85');
+
+    const result = await cli(['--outcome', '--runs', runsDir, '--run', 'run-a', '--run', 'run-a']);
+    expect(result.code, result.stderr).toBe(0);
+    const outcome = JSON.parse(result.stdout) as Outcome;
+    expect(outcome.runs.read).toEqual(['run-a']);
+    expect(signal(outcome, 'gate-rounds').eligible).toBe(1);
+  });
+
   it('the CLI refuses --outcome without a named run, and --outcome with --since', async () => {
     const runsDir = await runsRoot();
     const r = await newRun(runsDir, 'run-a');
