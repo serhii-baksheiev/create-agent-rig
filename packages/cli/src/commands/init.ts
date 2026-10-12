@@ -1,6 +1,6 @@
 import { access, lstat, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { settingsForInstalledHooks } from '../lib/init-settings.js';
+import { settingsForInstalledHooks, unwiresAnInstalledHook } from '../lib/init-settings.js';
 import type { InstalledFile } from '../lib/install-set.js';
 import { mapConcurrent } from '../lib/copy-tree.js';
 import {
@@ -254,22 +254,35 @@ export async function layerOnlyPaths(layer: Layer): Promise<string[]> {
   return manifest[layer];
 }
 
+/** A generous bound for a wiring file read before it may be rewritten. */
+const MAX_WIRING_BYTES = 1024 * 1024;
+
 /**
- * RP-495: the two wiring files are derived from the installed layers, so
- * adding a layer changes them. Bytes this rig wrote and the owner never
- * edited are the rig's to rewrite; anything else is kept.
+ * RP-495: the two wiring files are derived from the installed layers, so a
+ * run whose layers or release differ renders them differently. Each one this
+ * run may rewrite, with the bytes it read: still exactly what the manifest
+ * says this rig wrote, rendered differently now, and the new wiring keeps
+ * calling every hook the current one calls that is still on disk — the same
+ * gate `upgrade` applies to these files. Anything else is kept.
  */
-async function isStaleUneditedWiring(
-  rel: string,
-  dest: string,
+async function rewritableWiring(
+  repoDir: string,
   previous: RigManifest | null,
-  rendered: string | undefined,
-): Promise<boolean> {
-  if (rel !== SETTINGS && rel !== CODEX_HOOKS) return false;
-  const installed = previous?.files[rel];
-  if (installed === undefined || rendered === undefined) return false;
-  const bytes = await readFile(dest).catch(() => null);
-  return bytes !== null && sha256(bytes) === installed && sha256(rendered) !== installed;
+  contents: ReadonlyMap<string, string>,
+): Promise<Map<string, Buffer>> {
+  const rewritable = new Map<string, Buffer>();
+  for (const rel of [SETTINGS, CODEX_HOOKS]) {
+    const installed = previous?.files[rel];
+    const rendered = contents.get(rel);
+    if (installed === undefined || rendered === undefined || sha256(rendered) === installed) {
+      continue;
+    }
+    const bytes = await readBoundedFileInRepo(repoDir, path.join(repoDir, rel), MAX_WIRING_BYTES);
+    if (bytes === null || sha256(bytes) !== installed) continue;
+    if (await unwiresAnInstalledHook(repoDir, bytes.toString('utf8'), rendered)) continue;
+    rewritable.set(rel, bytes);
+  }
+  return rewritable;
 }
 
 async function exists(p: string): Promise<boolean> {
@@ -406,9 +419,14 @@ export async function planInit(repoDir: string, options: PlanInitOptions = {}): 
   const layers = effectiveLayers(previous, wantsWorkflow(options));
   const placement = await claudeMdPlacementForInstall(repoDir, previous);
   const files = (await initManifest(layers, placement)).map((f) => f.rel);
+  const rewritable = await rewritableWiring(
+    repoDir,
+    previous,
+    await initFileContents(repoDir, undefined, layers, placement),
+  );
   const conflicts = (
     await mapConcurrent(files, 16, async (rel) =>
-      (await exists(path.join(repoDir, rel))) ? rel : null,
+      !rewritable.has(rel) && (await exists(path.join(repoDir, rel))) ? rel : null,
     )
   ).filter((rel): rel is string => rel !== null);
   // RP-256 slice 1: root CLAUDE.md is deliberately NOT in `files` once
@@ -627,13 +645,12 @@ export async function initProject(repoDir: string, options: InitOptions): Promis
   // handling) has the rendered body available.
   const filesToWrite =
     existingAgentsBytes !== null ? files.filter((rel) => rel !== AGENTS_MAP) : files;
+  const rewritable = await rewritableWiring(repoDir, previous, contents);
   const actions = await mapConcurrent(filesToWrite, 16, async (rel) => {
     const dest = destinations.get(rel)!;
     if (await exists(dest)) {
       // never overwrite a file init did not write (a user's own copy)
-      if (!(await isStaleUneditedWiring(rel, dest, previous, contents.get(rel)))) {
-        return { rel, verdict: 'skipped' as const };
-      }
+      if (!rewritable.has(rel)) return { rel, verdict: 'skipped' as const };
     }
     // A seed-once path (RP-257) absent from disk but already recorded — in
     // either manifest bucket, `kept` (this release's shape) or `files` (a

@@ -12,6 +12,9 @@
  * and init picks it up.
  */
 
+import { access } from 'node:fs/promises';
+import { resolveInside } from './safe-path.js';
+
 /** Matches the hook file a wired command runs, e.g. `.claude/hooks/guard-bash.mjs`. */
 const HOOK_REFERENCE = /\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/;
 
@@ -26,6 +29,38 @@ const HOOK_REFERENCE = /\.claude\/hooks\/[A-Za-z0-9._-]+\.mjs/;
  */
 export function hookFilesReferencedIn(settingsText: string): Set<string> {
   return new Set(settingsText.match(new RegExp(HOOK_REFERENCE, 'g')) ?? []);
+}
+
+/**
+ * Would writing `next` over `current` stop calling a hook that is still there?
+ *
+ * The one question the hash arms cannot answer. They prove the bytes belong to
+ * the rig; they do not prove the replacement wires the same hooks, and
+ * Wiring files have flavours that differ in exactly that. A hook file
+ * still on disk with nothing wired to it is the quiet failure this module
+ * names: the rules claim it is enforced and nothing ever calls it.
+ *
+ * Only hooks whose FILE is still present count. One the user deleted on purpose
+ * is not being silenced by this write — it was already gone.
+ */
+export async function unwiresAnInstalledHook(
+  repoDir: string,
+  current: string,
+  next: string,
+): Promise<boolean> {
+  const nextHooks = hookFilesReferencedIn(next);
+  for (const hook of hookFilesReferencedIn(current)) {
+    if (nextHooks.has(hook)) continue;
+    const onDisk = resolveInside(repoDir, hook);
+    if (onDisk === null) continue;
+    try {
+      await access(onDisk);
+      return true;
+    } catch {
+      // absent: nothing left to silence
+    }
+  }
+  return false;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
