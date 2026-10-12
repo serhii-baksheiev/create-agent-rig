@@ -475,7 +475,9 @@ async function runInit(rawArgs: string[]): Promise<number> {
   // A kept harness config silently disables that harness's enforcement: the
   // hooks sit on disk and are never called, while the rules claim they are.
   // Say so loudly, and hand over the exact entries for each affected harness.
-  const generated = await initFileContents(cwd);
+  // The entries to merge are those of the layers this install recorded, not
+  // the Core default — or `--layer workflow` hands over Core-only wiring.
+  const generated = await initFileContents(cwd, undefined, (await readManifest(cwd))?.layers);
   for (const wiringPath of ['.claude/settings.json', '.codex/hooks.json']) {
     if (!result.skipped.includes(wiringPath)) continue;
     const installedHash = existing?.files[wiringPath];

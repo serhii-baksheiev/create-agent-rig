@@ -299,6 +299,23 @@ describe('create-agent-rig init --layer (RP-180)', () => {
       expect(dispatch?.timeout).toBeLessThanOrEqual(10);
     }
   });
+
+  it('adding the layer over edited wiring hands over the workflow hook entries to merge (RP-499)', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runInit([])).code).toBe(0);
+    const settingsPath = path.join(repo, '.claude', 'settings.json');
+    await writeFile(settingsPath, `${await readFile(settingsPath, 'utf8')}\n`);
+
+    const result = await runInit(['--layer', 'workflow']);
+
+    expect(result.code, result.stderr).toBe(0);
+    const start = result.stdout.indexOf('!  .claude/settings.json');
+    expect(start).toBeGreaterThanOrEqual(0);
+    const end = result.stdout.indexOf('\n!  ', start);
+    const warning = result.stdout.slice(start, end === -1 ? undefined : end);
+    expect(warning).toContain('NOT wired');
+    expect(warning).toContain('.claude/hooks/record-dispatch.mjs');
+  });
 });
 
 // RP-185: the wired `.codex/hooks.json` SessionStart command is the thing a
