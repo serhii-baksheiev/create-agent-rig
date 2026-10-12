@@ -229,7 +229,7 @@ describe('setup add probity', () => {
     // Once probity is a known provider, a bad --version must be refused for
     // its own reason, not fall back to the generic "unknown provider" one.
     expect(body.reason).not.toBe('not-in-matrix');
-    expect(body.reason).toMatch(/version/);
+    expect(body.reason).toBe('probity-exact-version-required');
     expect(await exists(declarationPath())).toBe(false);
     expect(await exists(mjsConfigPath())).toBe(false);
   });
