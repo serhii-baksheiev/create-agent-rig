@@ -120,10 +120,11 @@
  * record another writer has not finished flushing yet, skipping it rather
  * than refusing the whole run: see the same file ›
  * "returns the complete records and skips a final line with no trailing
- * newline". `append()` keeps its existing strictness on that same case,
- * because a writer must never build the next `seq` on top of a line nobody
- * can vouch for: see the same file ›
- * "still refuses to append on top of that same unterminated tail". One run
+ * newline". `append()` refuses that same case, torn or complete, because a
+ * writer must never build the next `seq` on top of a line nobody can vouch
+ * for: see the same file › "still refuses to append on top of that same
+ * unterminated tail" and › "refuses to append on top of a complete record
+ * that lacks its trailing newline (RP-500)". One run
  * directory per run remains the caller's part of the contract — this
  * serialises writers sharing one, it does not make sharing one across two
  * different runs safe (`docs/decisions/run-directory.md`).
