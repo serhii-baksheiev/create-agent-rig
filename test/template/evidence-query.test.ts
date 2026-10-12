@@ -634,6 +634,381 @@ describe('evidence-query outcomeOf: tokens-per-ship', () => {
   });
 });
 
+describe('evidence-query compareOutcome', () => {
+  const rounds = (
+    signalVersion: number,
+    observed: number,
+    distribution: Record<string, number>,
+  ) => ({
+    name: 'gate-rounds',
+    signalVersion,
+    eligible: observed,
+    observed,
+    unknown: 0,
+    result: { distribution },
+  });
+
+  it('refuses a harness-dependent signal whose two sides name different harnesses, or none', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    // A computed tokens-per-ship as a later release would report it.
+    const report = (harness?: string) => ({
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [
+        {
+          name: 'tokens-per-ship',
+          signalVersion: 2,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { ...(harness === undefined ? {} : { harness }), tokensPerShip: 1000 },
+        },
+      ],
+    });
+    for (const [before, after] of [
+      ['claude', 'codex'],
+      [undefined, 'claude'],
+    ] as const) {
+      const s = compare({ baseline: report(before), current: report(after) }).signals[0];
+      expect(s, `${before} vs ${after}`).toMatchObject({ comparison: 'not comparable' });
+      expect(String(s!.reason)).toMatch(/harness/);
+    }
+  });
+
+  it('names a repository by its origin URL without credentials', () => {
+    const { repositoryIdentity } = mod() as unknown as {
+      repositoryIdentity: (url: string) => string;
+    };
+    const token = 'ghp_' + 'F'.repeat(36);
+    expect(repositoryIdentity(`https://alice:${token}@example.invalid/o/r.git`)).toBe(
+      'https://example.invalid/o/r.git',
+    );
+    expect(repositoryIdentity(`https://${token}@example.invalid/o/r.git`)).toBe(
+      'https://example.invalid/o/r.git',
+    );
+    expect(repositoryIdentity('ssh://git@example.invalid/o/r.git')).toBe(
+      'ssh://example.invalid/o/r.git',
+    );
+    expect(repositoryIdentity('git@example.invalid:o/r.git')).toBe('git@example.invalid:o/r.git');
+    expect(repositoryIdentity('https://example.invalid/o/r.git')).toBe(
+      'https://example.invalid/o/r.git',
+    );
+  });
+
+  it('refuses to compare reports of different repositories, or one that names none', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (repository?: string) => ({
+      schemaVersion: 1,
+      ...(repository === undefined ? {} : { repository }),
+      signals: [rounds(2, 2, { '1': 2 })],
+    });
+
+    expect(compare({ baseline: report('a'), current: report('a') }).signals[0]).toMatchObject({
+      comparison: 'comparable',
+    });
+    for (const [before, after] of [
+      ['a', 'b'],
+      [undefined, 'a'],
+      ['a', undefined],
+    ] as const) {
+      const s = compare({ baseline: report(before), current: report(after) }).signals[0];
+      expect(s, `${before} vs ${after}`).toMatchObject({ comparison: 'not comparable' });
+      expect(String(s!.reason)).toMatch(/repository/);
+    }
+  });
+
+  it('refuses a lane mix whose share of any lane moved by more than a fifth', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (lanes: Record<string, number>) => ({
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [
+        {
+          name: 'first-shipping-verdict',
+          signalVersion: 2,
+          eligible: 10,
+          observed: 10,
+          unknown: 0,
+          result: { SHIP: 5, HOLD: 5, other: 0, lanes, byLane: {} },
+        },
+      ],
+    });
+    // model share 0.9 -> 0.1: same lanes, materially different mix.
+    const shifted = compare({
+      baseline: report({ model: 9, 'fast-path': 1 }),
+      current: report({ model: 1, 'fast-path': 9 }),
+    }).signals[0];
+    expect(shifted).toMatchObject({ comparison: 'not comparable' });
+    expect(String(shifted!.reason)).toMatch(/lane/);
+    // model share 0.6 -> 0.5: within a fifth.
+    const close = compare({
+      baseline: report({ model: 6, 'fast-path': 4 }),
+      current: report({ model: 5, 'fast-path': 5 }),
+    }).signals[0];
+    expect(close).toMatchObject({ comparison: 'comparable' });
+  });
+
+  it('refuses every lane-dependent signal when the run sets reviewed through different lanes', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (lanes: Record<string, number>) => ({
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [
+        {
+          name: 'first-shipping-verdict',
+          signalVersion: 2,
+          eligible: 4,
+          observed: 4,
+          unknown: 0,
+          result: { SHIP: 2, HOLD: 2, other: 0, lanes, byLane: {} },
+        },
+        rounds(2, 4, { '1': 4 }),
+      ],
+    });
+
+    const gate = compare({
+      baseline: report({ model: 4 }),
+      current: report({ deterministic: 4 }),
+    }).signals.find((s) => s.name === 'gate-rounds');
+    expect(gate).toMatchObject({
+      comparison: 'not comparable',
+      lanes: { baseline: { model: 4 }, current: { deterministic: 4 } },
+    });
+    expect(String(gate!.reason)).toMatch(/lane/);
+  });
+
+  it('compares first verdicts only over the same lanes, and prints both lane mixes', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const verdicts = (lanes: Record<string, number>, ship: number, hold: number) => ({
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [
+        {
+          name: 'first-shipping-verdict',
+          signalVersion: 2,
+          eligible: ship + hold,
+          observed: ship + hold,
+          unknown: 0,
+          result: { SHIP: ship, HOLD: hold, other: 0, lanes, byLane: {} },
+        },
+      ],
+    });
+
+    const same = compare({
+      baseline: verdicts({ model: 4 }, 1, 3),
+      current: verdicts({ model: 4 }, 3, 1),
+    }).signals[0];
+    expect(same).toMatchObject({
+      comparison: 'comparable',
+      measure: 'share of observed items whose first verdict was SHIP',
+      baseline: 0.25,
+      current: 0.75,
+      delta: 0.5,
+      lanes: { baseline: { model: 4 }, current: { model: 4 } },
+    });
+
+    const shifted = compare({
+      baseline: verdicts({ model: 4 }, 1, 3),
+      current: verdicts({ model: 2, deterministic: 2 }, 1, 1),
+    }).signals[0];
+    expect(shifted).toMatchObject({
+      comparison: 'not comparable',
+      lanes: { baseline: { model: 4 }, current: { model: 2, deterministic: 2 } },
+    });
+    expect(String(shifted!.reason)).toMatch(/lane/);
+  });
+
+  it('states a measure for every computed signal, and refuses a signal that is not computed', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (k: number) => ({
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [
+        {
+          name: 'claim-to-merge',
+          signalVersion: 1,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { wallTimeMs: { min: 1000, median: 1000 * k, max: 9000 } },
+        },
+        {
+          name: 'interventions',
+          signalVersion: 2,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { escalations: k, delegatedDecisions: 0, distribution: { '0': 2 - k, '1': k } },
+        },
+        {
+          name: 'continuation',
+          signalVersion: 1,
+          eligible: 2,
+          observed: 2,
+          unknown: 0,
+          result: { resolved: { closed: k, reEscalated: 0 }, unresolved: 2 - k },
+        },
+        {
+          name: 'tokens-per-ship',
+          signalVersion: 2,
+          eligible: 2,
+          observed: 0,
+          unknown: 2,
+          result: { computed: false, reason: 'not computed' },
+        },
+      ],
+    });
+
+    const byName = Object.fromEntries(
+      compare({ baseline: report(1), current: report(2) }).signals.map((s) => [s.name, s]),
+    );
+    expect(byName['claim-to-merge']).toMatchObject({
+      comparison: 'comparable',
+      measure: 'median total wall time, milliseconds',
+      baseline: 1000,
+      current: 2000,
+      delta: 1000,
+    });
+    expect(byName.interventions).toMatchObject({
+      comparison: 'comparable',
+      measure: 'mean recorded interventions per observed item',
+      baseline: 0.5,
+      current: 1,
+      delta: 0.5,
+    });
+    expect(byName.continuation).toMatchObject({
+      comparison: 'comparable',
+      measure: 'share of observed continuations resolved',
+      baseline: 0.5,
+      current: 1,
+      delta: 0.5,
+    });
+    expect(byName['tokens-per-ship']).toMatchObject({ comparison: 'not comparable' });
+    expect(String(byName['tokens-per-ship']!.reason)).toMatch(/not computed/);
+  });
+
+  it('never compares a side that observed nothing, even at a zero threshold', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown; minCoverage?: number }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const nothing = {
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [{ ...rounds(2, 0, {}), eligible: 3, unknown: 3 }],
+    };
+    const some = { schemaVersion: 1, repository: 'r', signals: [rounds(2, 2, { '1': 2 })] };
+
+    const s = compare({ baseline: nothing, current: some, minCoverage: 0 }).signals[0];
+    expect(s).toMatchObject({ comparison: 'insufficient' });
+    expect(s).not.toHaveProperty('delta');
+  });
+
+  it('reads too little coverage on either side as insufficient', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown; minCoverage?: number }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const thin = {
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [{ ...rounds(2, 1, { '1': 1 }), eligible: 4, unknown: 3 }],
+    };
+    const full = { schemaVersion: 1, repository: 'r', signals: [rounds(2, 2, { '1': 2 })] };
+    const empty = {
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [{ ...rounds(2, 0, {}), eligible: 0 }],
+    };
+
+    expect(compare({ baseline: thin, current: full }).signals[0]).toMatchObject({
+      comparison: 'insufficient',
+    });
+    expect(compare({ baseline: full, current: empty }).signals[0]).toMatchObject({
+      comparison: 'insufficient',
+    });
+    // At a 25% threshold one observed item in four is enough.
+    expect(compare({ baseline: thin, current: full, minCoverage: 0.25 }).signals[0]).toMatchObject({
+      comparison: 'comparable',
+    });
+  });
+
+  it('gives a numeric delta for a comparable signal and refuses a signalVersion mismatch', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const baseline = {
+      schemaVersion: 1,
+      repository: 'r',
+      signals: [rounds(2, 2, { '1': 1, '3': 1 })],
+    };
+    const sameVersion = { schemaVersion: 1, repository: 'r', signals: [rounds(2, 2, { '1': 2 })] };
+    const otherVersion = { schemaVersion: 1, repository: 'r', signals: [rounds(3, 2, { '1': 2 })] };
+
+    const [comparable] = compare({ baseline, current: sameVersion }).signals;
+    expect(comparable).toEqual({
+      name: 'gate-rounds',
+      signalVersion: 2,
+      comparison: 'comparable',
+      measure: 'mean rounds per observed item',
+      baseline: 2,
+      current: 1,
+      delta: -1,
+    });
+    expect(JSON.stringify(comparable)).not.toMatch(/improv|regress|better|worse/i);
+
+    const [refused] = compare({ baseline, current: otherVersion }).signals;
+    expect(refused).toMatchObject({ name: 'gate-rounds', comparison: 'not comparable' });
+    expect(String(refused!.reason)).toMatch(/signalVersion/);
+  });
+});
+
 describe('release-evidence.mjs --outcome', () => {
   it('the CLI --outcome prints the named runs only and leaves the runs directory unchanged', async () => {
     const runsDir = await runsRoot();
@@ -721,6 +1096,68 @@ describe('release-evidence.mjs --outcome', () => {
     const outcome = JSON.parse(result.stdout) as Outcome;
     expect(outcome.runs.read).toEqual(['run-a']);
     expect(signal(outcome, 'gate-rounds').eligible).toBe(1);
+  });
+
+  it('the CLI takes the coverage threshold from --min-coverage and refuses one outside (0, 1]', async () => {
+    const runsDir = await runsRoot();
+    for (const name of ['run-base', 'run-now']) {
+      const r = await newRun(runsDir, name);
+      r.take(`RP-${name}`);
+      r.fanOut(`h-${name}`, ['code-reviewer']);
+      r.closed(`RP-${name}`);
+    }
+    const args = ['--outcome', '--runs', runsDir, '--run', 'run-now', '--baseline', 'run-base'];
+
+    const set = await cli([...args, '--min-coverage', '0.9']);
+    expect(set.code, set.stderr).toBe(0);
+    expect(
+      (JSON.parse(set.stdout) as { comparison: { minCoverage: number } }).comparison.minCoverage,
+    ).toBe(0.9);
+    for (const bad of ['0', '1.5', 'half']) {
+      const refused = await cli([...args, '--min-coverage', bad]);
+      expect(refused.code, bad).toBe(1);
+      expect(refused.stdout).toBe('');
+      expect(refused.stderr).toContain('--min-coverage');
+    }
+  });
+
+  it('the CLI compares the named runs against named baseline runs', async () => {
+    const runsDir = await runsRoot();
+    for (const [name, ticket, heads] of [
+      ['run-base', 'RP-61', ['b1', 'b2', 'b3']],
+      ['run-now', 'RP-62', ['n1']],
+    ] as const) {
+      const r = await newRun(runsDir, name);
+      r.take(ticket);
+      for (const head of heads) r.fanOut(head, ['code-reviewer']);
+      r.closed(ticket);
+    }
+
+    const result = await cli([
+      '--outcome',
+      '--runs',
+      runsDir,
+      '--run',
+      'run-now',
+      '--baseline',
+      'run-base',
+    ]);
+    expect(result.code, result.stderr).toBe(0);
+    const out = JSON.parse(result.stdout) as {
+      runs: { read: string[] };
+      comparison: {
+        baseline: { runs: { read: string[] } };
+        signals: Array<Record<string, unknown>>;
+      };
+    };
+    expect(out.runs.read).toEqual(['run-now']);
+    expect(out.comparison.baseline.runs.read).toEqual(['run-base']);
+    expect(out.comparison.signals.find((s) => s.name === 'gate-rounds')).toMatchObject({
+      comparison: 'comparable',
+      baseline: 3,
+      current: 1,
+      delta: -2,
+    });
   });
 
   it('the CLI refuses --outcome without a named run, and --outcome with --since', async () => {

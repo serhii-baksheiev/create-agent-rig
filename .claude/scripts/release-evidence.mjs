@@ -7,10 +7,14 @@
  * test/template/release-evidence.test.ts (absent in a generated rig).
  *
  *   node .claude/scripts/release-evidence.mjs --since <ISO> [--runs <dir>] [--json]
- *   node .claude/scripts/release-evidence.mjs --outcome --run <name> [--run <name>…] [--runs <dir>]
+ *   node .claude/scripts/release-evidence.mjs --outcome --run <name> [--run <name>…] [--baseline <name>…]
+ *     [--min-coverage <share>] [--runs <dir>]
  *
  * `--outcome` prints the Outcome Evidence signals over the named runs
- * (`lib/evidence-query.mjs`, RP-355) instead of the verdict below.
+ * (`lib/evidence-query.mjs`, RP-355) instead of the verdict below; with
+ * `--baseline` it also compares them against a second named run set, calling a
+ * side insufficient below `--min-coverage` of its eligible population
+ * (default 0.5).
  *
  * Reads `<runs>/<run-id>/` the same way `revalidation-report.mjs` does — this
  * script reuses that script's `readRuns` (default `--runs` also resolves
@@ -39,7 +43,7 @@ import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRuns } from './revalidation-report.mjs';
-import { outcomeOf } from './lib/evidence-query.mjs';
+import { compareOutcome, outcomeOf, repositoryIdentity } from './lib/evidence-query.mjs';
 
 export const REPEATED_MIN_RUNS = 2;
 
@@ -146,12 +150,23 @@ export const evidenceOf = ({ runs, since }) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { since: null, runs: null, json: false, outcome: false, named: [], bad: null };
+  const args = {
+    since: null,
+    runs: null,
+    json: false,
+    outcome: false,
+    named: [],
+    baseline: [],
+    minCoverage: null,
+    bad: null,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
     else if (arg === '--outcome') args.outcome = true;
     else if (arg === '--run') args.named.push(argv[++i] ?? '');
+    else if (arg === '--baseline') args.baseline.push(argv[++i] ?? '');
+    else if (arg === '--min-coverage') args.minCoverage = argv[++i] ?? '';
     else if (arg === '--since') args.since = argv[++i] ?? null;
     else if (arg === '--runs') args.runs = argv[++i] ?? null;
     else if (args.bad === null) args.bad = arg;
@@ -183,6 +198,10 @@ if (invokedDirectly()) {
     // calendar window (`docs/decisions/outcome-signals.md`).
     if (args.since !== null) refuse('--outcome reads named runs; --since is a calendar window, not a run set.');
     if (args.named.length === 0) refuse('--outcome needs at least one named run: --run <name>.');
+    const minCoverage = args.minCoverage === null ? undefined : Number(args.minCoverage);
+    if (minCoverage !== undefined && !(minCoverage > 0 && minCoverage <= 1)) {
+      refuse('--min-coverage takes a share of the eligible population, greater than 0 and at most 1.');
+    }
     const scriptsDir = dirname(fileURLToPath(import.meta.url));
     const runsDir = args.runs ?? join(mainCheckoutRoot(join(scriptsDir, '..', '..')), '.claude', 'runs');
     let all;
@@ -192,9 +211,9 @@ if (invokedDirectly()) {
       refuse(error.message);
     }
     const byName = new Map(all.map((entry) => [entry.run, entry]));
-    const runs = [...new Set(args.named)].map(
-      (name) => byName.get(name) ?? { run: name, error: 'not found' },
-    );
+    const named = (names) =>
+      [...new Set(names)].map((name) => byName.get(name) ?? { run: name, error: 'not found' });
+    const runs = named(args.named);
     // The merge end of claim-to-merge is a commit's committer date, read from
     // this checkout; a commit it does not have is unknown, never a guess.
     const checkout = mainCheckoutRoot(join(scriptsDir, '..', '..'));
@@ -212,7 +231,31 @@ if (invokedDirectly()) {
         return null;
       }
     };
-    process.stdout.write(`${JSON.stringify(outcomeOf({ runs, commitTime }), null, 2)}\n`);
+    // The repository a report belongs to: this checkout's origin URL without
+    // credentials, or its path when it has no origin. Comparison refuses two
+    // that differ.
+    const repository = (() => {
+      try {
+        const url = execFileSync('git', ['config', '--get', 'remote.origin.url'], {
+          cwd: checkout,
+          encoding: 'utf8',
+          env: withoutGitLocation(),
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 10_000,
+        }).trim();
+        if (url !== '') return repositoryIdentity(url);
+      } catch {
+        // no origin configured
+      }
+      return realpathSync(checkout);
+    })();
+    const report = outcomeOf({ runs, commitTime, repository });
+    // RP-355: a comparison reads a second named run set, never a window.
+    if (args.baseline.length > 0) {
+      const baseline = outcomeOf({ runs: named(args.baseline), commitTime, repository });
+      report.comparison = { baseline, ...compareOutcome({ baseline, current: report, minCoverage }) };
+    }
+    process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
     process.exit(0);
   }
   if (!args.since || Number.isNaN(Date.parse(args.since))) {

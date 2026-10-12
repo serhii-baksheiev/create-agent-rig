@@ -307,7 +307,7 @@ const tokensPerShip = (items) => {
 };
 
 /** The outcome report over already-read runs; a refused run is listed, never dropped. */
-export const outcomeOf = ({ runs, commitTime = () => null }) => {
+export const outcomeOf = ({ runs, commitTime = () => null, repository }) => {
   const read = [];
   const skipped = [];
   const occurrences = [];
@@ -323,6 +323,7 @@ export const outcomeOf = ({ runs, commitTime = () => null }) => {
   const items = itemsOf(occurrences);
   return {
     schemaVersion: 1,
+    ...(repository === undefined ? {} : { repository }),
     runs: { read, skipped },
     signals: [
       firstShippingVerdict(items),
@@ -333,4 +334,173 @@ export const outcomeOf = ({ runs, commitTime = () => null }) => {
       tokensPerShip(items),
     ],
   };
+};
+
+const mean = (distribution) => {
+  let items = 0;
+  let total = 0;
+  for (const [value, count] of Object.entries(distribution)) {
+    items += count;
+    total += Number(value) * count;
+  }
+  return items === 0 ? null : total / items;
+};
+
+/** The one number a comparison reads from each signal, and what it measures. */
+const MEASURES = {
+  'first-shipping-verdict': {
+    measure: 'share of observed items whose first verdict was SHIP',
+    of: (signal) => (signal.observed === 0 ? null : signal.result.SHIP / signal.observed),
+  },
+  'gate-rounds': {
+    measure: 'mean rounds per observed item',
+    of: (signal) => mean(signal.result.distribution),
+  },
+  'claim-to-merge': {
+    measure: 'median total wall time, milliseconds',
+    of: (signal) => signal.result.wallTimeMs?.median ?? null,
+  },
+  interventions: {
+    measure: 'mean recorded interventions per observed item',
+    of: (signal) => mean(signal.result.distribution),
+  },
+  continuation: {
+    measure: 'share of observed continuations resolved',
+    of: (signal) =>
+      signal.observed === 0
+        ? null
+        : (signal.result.resolved.closed + signal.result.resolved.reEscalated) / signal.observed,
+  },
+};
+
+/**
+ * Baseline/current comparison over two outcome reports (RP-355). A numeric
+ * delta is descriptive only: no direction is read into it. Two values of
+ * different signal versions are never compared.
+ */
+const DEFAULT_MIN_COVERAGE = 0.5;
+
+/**
+ * Whether a signal observed enough of its eligible population to stand on. A
+ * side that observed nothing never does, whatever the threshold: its value
+ * is unknown, and unknown is never zero.
+ */
+const covered = (signal, minCoverage) =>
+  signal.observed > 0 && signal.observed / signal.eligible >= minCoverage;
+
+/**
+ * The name a report gives its repository: an origin URL with any user and
+ * password removed, so a credential in the remote never reaches the report.
+ */
+export const repositoryIdentity = (url) => url.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, '$1');
+
+/** The lane mix a report's first-shipping-verdict counted, or undefined when it has none. */
+const lanesOf = (report) =>
+  report.signals.find((signal) => signal.name === 'first-shipping-verdict')?.result?.lanes;
+
+/** How far one lane's share may move between run sets before they stop being comparable. */
+const MAX_LANE_SHARE_SHIFT = 0.2;
+
+/**
+ * Two lane mixes agree when they name the same lanes and no lane's share of
+ * its run set moved by more than MAX_LANE_SHARE_SHIFT.
+ */
+const lanesAgree = (baseline, current) => {
+  const names = Object.keys(baseline).sort();
+  if (names.join(',') !== Object.keys(current).sort().join(',')) return false;
+  const total = (mix) => Object.values(mix).reduce((sum, count) => sum + count, 0);
+  const before = total(baseline);
+  const after = total(current);
+  if (before === 0 || after === 0) return before === after;
+  return names.every(
+    (name) => Math.abs(baseline[name] / before - current[name] / after) <= MAX_LANE_SHARE_SHIFT,
+  );
+};
+
+export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_COVERAGE }) => {
+  const baselineLanes = lanesOf(baseline);
+  const currentLanes = lanesOf(current);
+  // Run sets of two repositories, or of a report that names none, are never
+  // compared: nothing else in a report can tell them apart.
+  const sameRepository =
+    typeof baseline.repository === 'string' &&
+    baseline.repository !== '' &&
+    baseline.repository === current.repository;
+  const signals = [];
+  for (const now of current.signals) {
+    const before = baseline.signals.find((signal) => signal.name === now.name);
+    const entry = { name: now.name, signalVersion: now.signalVersion };
+    if (!sameRepository) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: 'the reports do not name the same repository',
+      });
+      continue;
+    }
+    if (!before || before.signalVersion !== now.signalVersion) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: `signalVersion differs: baseline ${before?.signalVersion ?? 'absent'}, current ${now.signalVersion}`,
+      });
+      continue;
+    }
+    if (before.result?.computed === false || now.result?.computed === false) {
+      signals.push({ ...entry, comparison: 'not comparable', reason: 'the signal is not computed' });
+      continue;
+    }
+    // Every signal that lists lane among the dimensions it is compared on
+    // holds only when both run sets reviewed through compatible lanes; the
+    // run set's lane mix is the one first-shipping-verdict counts, and both
+    // mixes are printed beside the result.
+    const comparableOn = SIGNALS.find((signal) => signal.name === now.name)?.comparableOn ?? [];
+    // A signal compared per harness holds only when both sides name the same one.
+    if (
+      comparableOn.includes('harness') &&
+      (typeof before.result?.harness !== 'string' || before.result.harness !== now.result?.harness)
+    ) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: 'the two sides do not name the same harness',
+      });
+      continue;
+    }
+    const dependsOnLane = comparableOn.includes('lane');
+    const lanes =
+      dependsOnLane && (baselineLanes || currentLanes)
+        ? { lanes: { baseline: baselineLanes ?? {}, current: currentLanes ?? {} } }
+        : {};
+    if (lanes.lanes && !lanesAgree(lanes.lanes.baseline, lanes.lanes.current)) {
+      signals.push({
+        ...entry,
+        comparison: 'not comparable',
+        reason: `the review lanes differ, or a lane's share moved by more than ${MAX_LANE_SHARE_SHIFT}`,
+        ...lanes,
+      });
+      continue;
+    }
+    if (!covered(before, minCoverage) || !covered(now, minCoverage)) {
+      signals.push({
+        ...entry,
+        comparison: 'insufficient',
+        reason: `observed below ${minCoverage} of eligible on at least one side`,
+      });
+      continue;
+    }
+    const measure = MEASURES[now.name];
+    const was = measure.of(before);
+    const is = measure.of(now);
+    signals.push({
+      ...entry,
+      comparison: 'comparable',
+      measure: measure.measure,
+      baseline: was,
+      current: is,
+      delta: is - was,
+      ...lanes,
+    });
+  }
+  return { schemaVersion: 1, minCoverage, signals };
 };
