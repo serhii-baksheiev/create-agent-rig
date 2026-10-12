@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { runFreshnessCommand } from '../src/commands/freshness.js';
 import { BMAD_TEA_VERSION } from '../src/integrations/bmad-tea.js';
 import { checkFreshness } from '../src/integrations/freshness.js';
 import { PLAYWRIGHT_MCP_VERSION } from '../src/integrations/playwright.js';
@@ -274,5 +275,26 @@ describe('integrations freshness (RP-445)', () => {
         else process.env[name] = value;
       }
     }
+  });
+});
+
+describe('create-agent-rig integrations freshness (RP-445)', () => {
+  it('integrations freshness --json prints the report and exits 0', async () => {
+    const { fetch, requests } = fakeFetch({ [PLAYWRIGHT_MCP_URL]: { fail: 'network' } });
+
+    const result = await runFreshnessCommand({ args: ['freshness', '--json'], fetch });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stderr).toBe('');
+    const report = JSON.parse(result.stdout) as Awaited<ReturnType<typeof checkFreshness>>;
+    expect(result.stdout).toBe(`${JSON.stringify(report)}\n`);
+    expect(report.schemaVersion).toBe(1);
+    expect(report.providers.map((provider) => [provider.id, provider.state])).toEqual([
+      ['probity', 'current'],
+      ['playwright-mcp', 'unknown'],
+      ['spec-kit', 'current'],
+      ['bmad-tea', 'unknown'],
+    ]);
+    expect(requests[0]?.headers.get('user-agent')).toMatch(/^create-agent-rig\/\d+\.\d+\.\d+/);
   });
 });
