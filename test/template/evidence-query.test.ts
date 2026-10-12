@@ -648,6 +648,40 @@ describe('evidence-query compareOutcome', () => {
     result: { distribution },
   });
 
+  it('refuses every lane-dependent signal when the run sets reviewed through different lanes', () => {
+    const compare = (
+      mod() as unknown as {
+        compareOutcome: (input: { baseline: unknown; current: unknown }) => {
+          signals: Array<Record<string, unknown>>;
+        };
+      }
+    ).compareOutcome;
+    const report = (lanes: Record<string, number>) => ({
+      schemaVersion: 1,
+      signals: [
+        {
+          name: 'first-shipping-verdict',
+          signalVersion: 2,
+          eligible: 4,
+          observed: 4,
+          unknown: 0,
+          result: { SHIP: 2, HOLD: 2, other: 0, lanes, byLane: {} },
+        },
+        rounds(2, 4, { '1': 4 }),
+      ],
+    });
+
+    const gate = compare({
+      baseline: report({ model: 4 }),
+      current: report({ deterministic: 4 }),
+    }).signals.find((s) => s.name === 'gate-rounds');
+    expect(gate).toMatchObject({
+      comparison: 'not comparable',
+      lanes: { baseline: { model: 4 }, current: { deterministic: 4 } },
+    });
+    expect(String(gate!.reason)).toMatch(/lane/);
+  });
+
   it('compares first verdicts only over the same lanes, and prints both lane mixes', () => {
     const compare = (
       mod() as unknown as {

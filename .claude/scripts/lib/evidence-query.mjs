@@ -383,7 +383,16 @@ const DEFAULT_MIN_COVERAGE = 0.5;
 const covered = (signal, minCoverage) =>
   signal.eligible > 0 && signal.observed / signal.eligible >= minCoverage;
 
+/** The lane mix a report's first-shipping-verdict counted, or undefined when it has none. */
+const lanesOf = (report) =>
+  report.signals.find((signal) => signal.name === 'first-shipping-verdict')?.result?.lanes;
+
+const lanesAgree = (baseline, current) =>
+  Object.keys(baseline).sort().join(',') === Object.keys(current).sort().join(',');
+
 export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_COVERAGE }) => {
+  const baselineLanes = lanesOf(baseline);
+  const currentLanes = lanesOf(current);
   const signals = [];
   for (const now of current.signals) {
     const before = baseline.signals.find((signal) => signal.name === now.name);
@@ -400,14 +409,18 @@ export const compareOutcome = ({ baseline, current, minCoverage = DEFAULT_MIN_CO
       signals.push({ ...entry, comparison: 'not comparable', reason: 'the signal is not computed' });
       continue;
     }
-    // A first verdict depends on the review lane, so the comparison holds
-    // only over the same set of lanes, and both mixes are printed.
+    // Every signal that lists lane among the dimensions it is compared on
+    // holds only when both run sets reviewed through compatible lanes; the
+    // run set's lane mix is the one first-shipping-verdict counts, and both
+    // mixes are printed beside the result.
+    const dependsOnLane = SIGNALS.find((signal) => signal.name === now.name)?.comparableOn.includes(
+      'lane',
+    );
     const lanes =
-      now.name === 'first-shipping-verdict'
-        ? { lanes: { baseline: before.result.lanes, current: now.result.lanes } }
+      dependsOnLane && (baselineLanes || currentLanes)
+        ? { lanes: { baseline: baselineLanes ?? {}, current: currentLanes ?? {} } }
         : {};
-    const laneSet = (signal) => Object.keys(signal.result.lanes).sort().join(',');
-    if (lanes.lanes && laneSet(before) !== laneSet(now)) {
+    if (lanes.lanes && !lanesAgree(lanes.lanes.baseline, lanes.lanes.current)) {
       signals.push({
         ...entry,
         comparison: 'not comparable',
