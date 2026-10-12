@@ -2044,9 +2044,11 @@ describe('the conformance section stays true about this repository', () => {
     // {file, literal} pairs that exist.
     expect(
       [...new Set(wider)].sort(),
-      `the rig bin's exit codes outside {0, 1} are (${wider.join(', ')}) — the conformance row names setup's 4, memory's 2, 3 and 4, and doctor's usage exit 2`,
+      `the rig bin's exit codes outside {0, 1} are (${wider.join(', ')}) — the conformance row names setup's 4, memory's 2, 3 and 4, and doctor's and integrations' usage exit 2`,
     ).toEqual([
       'packages/cli/src/commands/doctor.ts: exitCode: 2',
+      // RP-445: `integrations`' usage exit — an unknown or missing subcommand.
+      'packages/cli/src/commands/freshness.ts: exitCode: 2',
       'packages/cli/src/commands/memory.ts: exitCode: 2',
       'packages/cli/src/commands/memory.ts: exitCode: 3',
       'packages/cli/src/commands/memory.ts: exitCode: 4',
@@ -2054,6 +2056,9 @@ describe('the conformance section stays true about this repository', () => {
     ]);
     const prose = normalizeProse(await conformance());
     expect(prose).toMatch(/doctor[\s\S]{0,100}\b2\b/);
+    expect(prose, "the conformance section must record integrations' usage exit as 2").toMatch(
+      /`integrations`' usage exit 2/,
+    );
     expect(
       prose,
       "the conformance section must record memory's invalid-invocation exit as 2",
@@ -2350,6 +2355,8 @@ describe('the 1.0 contract-freeze sections (RP-184)', () => {
       setup: 1,
       doctor: 2,
       memory: 2,
+      // RP-445: an unknown integrations subcommand, flag or argument is a usage error.
+      'integrations freshness': 2,
     };
     for (const [command, code] of Object.entries(CODES)) {
       it(`states exit ${code} for a wrong invocation of ${command}`, async () => {

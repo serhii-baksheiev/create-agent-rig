@@ -121,6 +121,8 @@ const ELEVATED_PATHS = [
   // edits `.mcp.json` and `.codex/config.toml`, so it is the same surface one
   // directory over (RP-193 triage under RP-202).
   'packages/cli/src/commands/integrations.ts',
+  // RP-445: integrations freshness, the one networked command of the CLI.
+  'packages/cli/src/commands/freshness.ts',
   // The composed copy of the rulebook — what actually RUNS in this checkout.
   // Until AR-51 only the template sources above were declared, on the ground
   // that the drift test catches an edit to the synced copy. It does, at commit
