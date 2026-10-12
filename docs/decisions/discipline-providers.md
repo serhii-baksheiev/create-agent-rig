@@ -52,6 +52,18 @@ generic `evidence-attach.mjs` path (RP-312) still accepts any producer's
 artifact a session chooses to attach; Rig defines no Probity-specific kind
 until upstream documents a bounded observation format.
 
+**Subagent edits are judged against the parent transcript** (RP-429,
+RP-465). For a tool call inside a Claude Code subagent, the `PreToolUse`
+payload's `transcript_path` names the parent session's transcript. This is
+intended upstream: anthropics/claude-code#76333 was closed as not planned.
+Probity reads that transcript, so a subagent's edit can be refused as
+production-first even after the subagent ran its own red test. Rig forwards
+the payload bytes unchanged (the pointer above) and does not work around it:
+choosing what Probity reads would be Rig deciding TDD, which RP-398 retired.
+Evidence class: upstream-confirmed; not reproduced live by a sanitized
+fixture. Workaround: make the edit from the session that observed the red
+run.
+
 ## Superpowers
 
 Superpowers is not part of the default/product profile

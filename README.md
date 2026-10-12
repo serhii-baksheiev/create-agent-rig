@@ -313,7 +313,9 @@ it. `setup add probity` writes a `probity.config.mjs` only when you have none
 calls and Codex's `apply_patch`, `Edit` and `Write` calls to the project's
 Probity launcher; `MultiEdit` and shell commands are not handed over.
 Probity's config decides which of those writes must follow test-first. `doctor` reports the wiring but cannot
-see whether Probity is answering.
+see whether Probity is answering. Inside a Claude Code subagent, Probity judges
+an edit against the parent session's transcript, an upstream behaviour Rig
+does not work around (`docs/decisions/discipline-providers.md`, § Probity).
 
 **Playwright and BMAD TEA provide evidence, not release authority.** Playwright
 MCP is intended for attended browser verification. BMAD TEA is an upstream-owned
