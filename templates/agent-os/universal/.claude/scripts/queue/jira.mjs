@@ -1278,7 +1278,7 @@ export const escalate = async (ticket, diagnosis, { env = process.env } = {}) =>
   await rebaseline(ticket, env);
   // Counted through the one recorder, never a counter of this adapter's own —
   // "twice in a row" has to mean the same thing on every tracker.
-  recordEscalation(env.RIG_RUN_DIR);
+  await recordEscalation(env.RIG_RUN_DIR, { ticket: ticket.id });
   return { ok: true };
 };
 
