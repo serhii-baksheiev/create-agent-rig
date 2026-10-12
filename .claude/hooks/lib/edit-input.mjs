@@ -650,7 +650,9 @@ function findContext(lines, sequence, budget) {
     let candidates = lines;
     let pattern = sequence;
     if (pass > 0) {
-      budget.comparisons -= lines.length + sequence.length;
+      // Charged per character, since transforming a line costs its length.
+      for (const line of lines) budget.comparisons -= line.length + 1;
+      for (const line of sequence) budget.comparisons -= line.length + 1;
       if (budget.comparisons < 0) return { index: -1, exhausted: true };
       candidates = lines.map(key);
       pattern = sequence.map(key);

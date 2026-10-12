@@ -2622,6 +2622,22 @@ describe("guard-secret-file: a Move whose context matches only after Codex's fuz
     expect(result.code, result.stderr).toBe(2);
     expect(result.stderr).toContain('move context comparison budget was exhausted');
   });
+
+  it('charges the fuzzy passes per character, refusing a long-line source before the work grows (RP-485)', async () => {
+    // 500 lines of ~2,000 characters (~1 MB, under the 1 MiB move source cap);
+    // each hunk names one line's id, found only by the trim pass, so every hunk
+    // trims every long line while being charged one unit per line.
+    const pad = ' '.repeat(1000);
+    const ids = Array.from({ length: 500 }, (_, i) => `L${String(i).padStart(4, '0')}`);
+    await source(ids.map((id) => `${pad}${id}${pad}\n`).join(''));
+    const result = await runHook(
+      moveCommand(ids.flatMap((id) => ['@@', ` ${id}`])),
+      {},
+      fixtureRoot,
+    );
+    expect(result.code, result.stderr).toBe(2);
+    expect(result.stderr).toContain('move context comparison budget was exhausted');
+  });
 });
 
 // RP-484. Codex matches Move context fuzzily from a moving cursor, while the
