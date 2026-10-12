@@ -334,8 +334,9 @@ export const SECRET_VALUE_PATTERNS = [
   { id: 'atlassian-token', pattern: /ATATT3x[A-Za-z0-9_\-=]{16,}/ },
   // `gh[pousr]_` rather than `ghp_` alone: the other four are live credentials
   // of the same shape, and an id called `github-pat` reads as though they were
-  // already covered.
-  { id: 'github-pat', pattern: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/ },
+  // already covered. No leading `\b` (RP-436): a token glued to a preceding
+  // word character is still a token.
+  { id: 'github-pat', pattern: /(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/ },
   // The negative lookahead is the issuer's own PUBLISHED example key. It appears
   // in documentation, and this generator ships a target whose README quotes such
   // docs — refusing it at commit time, with --no-verify hook-blocked, leaves an

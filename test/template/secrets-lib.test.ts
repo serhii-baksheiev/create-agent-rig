@@ -1056,3 +1056,9 @@ describe('a prefix arm covers every prefix its id claims', () => {
     },
   );
 });
+
+describe('a credential glued to the text before it is still found (RP-436)', () => {
+  it('finds a github-pat glued to a preceding word character (RP-436)', async () => {
+    expect(idsIn(await scan(`xx${GITHUB_PAT}`))).toContain('github-pat');
+  });
+});
