@@ -81,6 +81,7 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/lib/provider-provenance.mjs',
   // RP-356: the Outcome Evidence signal definitions and their decision record
   '.claude/scripts/lib/outcome-signals.mjs',
+  '.claude/scripts/lib/evidence-query.mjs',
   'docs/decisions/outcome-signals.md',
   // the unattended run's own preflight, and the deploy verdict it reads
   '.claude/scripts/preflight.mjs',

@@ -2167,11 +2167,14 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // RP-423 adds the dod-checks predicate gate-stop-dod and doctor share
   // (`.claude/scripts/lib/dod-checks.mjs`), PROCESS layer: both figures
   // move by one (122→123, 68→69).
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 123 manifest entries to 69', async () => {
+  // RP-355 adds the Outcome Evidence query module
+  // (`.claude/scripts/lib/evidence-query.mjs`), WORKFLOW-only (123→124); the
+  // core-only figure stays 69.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 124 manifest entries to 69', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(123);
+    expect(Object.keys(before!.files).length).toBe(124);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });

@@ -7,6 +7,10 @@
  * test/template/release-evidence.test.ts (absent in a generated rig).
  *
  *   node .claude/scripts/release-evidence.mjs --since <ISO> [--runs <dir>] [--json]
+ *   node .claude/scripts/release-evidence.mjs --outcome --run <name> [--run <name>…] [--runs <dir>]
+ *
+ * `--outcome` prints the Outcome Evidence signals over the named runs
+ * (`lib/evidence-query.mjs`, RP-355) instead of the verdict below.
  *
  * Reads `<runs>/<run-id>/` the same way `revalidation-report.mjs` does — this
  * script reuses that script's `readRuns` (default `--runs` also resolves
@@ -33,6 +37,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRuns } from './revalidation-report.mjs';
+import { outcomeOf } from './lib/evidence-query.mjs';
 
 export const REPEATED_MIN_RUNS = 2;
 
@@ -139,10 +144,12 @@ export const evidenceOf = ({ runs, since }) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { since: null, runs: null, json: false, bad: null };
+  const args = { since: null, runs: null, json: false, outcome: false, named: [], bad: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--json') args.json = true;
+    else if (arg === '--outcome') args.outcome = true;
+    else if (arg === '--run') args.named.push(argv[++i] ?? '');
     else if (arg === '--since') args.since = argv[++i] ?? null;
     else if (arg === '--runs') args.runs = argv[++i] ?? null;
     else if (args.bad === null) args.bad = arg;
@@ -169,6 +176,24 @@ if (invokedDirectly()) {
     process.exit(1);
   };
   if (args.bad !== null) refuse(`unrecognised argument: ${args.bad}`);
+  if (args.outcome) {
+    // RP-355: Outcome Evidence reads an explicit, named run set — never a
+    // calendar window (`docs/decisions/outcome-signals.md`).
+    if (args.since !== null) refuse('--outcome reads named runs; --since is a calendar window, not a run set.');
+    if (args.named.length === 0) refuse('--outcome needs at least one named run: --run <name>.');
+    const scriptsDir = dirname(fileURLToPath(import.meta.url));
+    const runsDir = args.runs ?? join(mainCheckoutRoot(join(scriptsDir, '..', '..')), '.claude', 'runs');
+    let all;
+    try {
+      all = readRuns(runsDir);
+    } catch (error) {
+      refuse(error.message);
+    }
+    const byName = new Map(all.map((entry) => [entry.run, entry]));
+    const runs = args.named.map((name) => byName.get(name) ?? { run: name, error: 'not found' });
+    process.stdout.write(`${JSON.stringify(outcomeOf({ runs }), null, 2)}\n`);
+    process.exit(0);
+  }
   if (!args.since || Number.isNaN(Date.parse(args.since))) {
     refuse(`--since needs an ISO date (got ${args.since ?? '(none)'}); a report with no window reports nothing honest.`);
   }
