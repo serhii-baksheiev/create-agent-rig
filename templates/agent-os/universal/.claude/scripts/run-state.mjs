@@ -71,6 +71,7 @@ import { basename, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { DECISION_AUTHORITIES } from './lib/authority.mjs';
+import { findSecretValues } from './lib/secrets.mjs';
 
 const STATE = 'state.json';
 const MAX_STATE_BYTES = 256 * 1024;
@@ -267,13 +268,12 @@ export const updateState = (runDir, patch) => writeState(runDir, readState(runDi
  * must not be able to make the count `NaN`, which compares false against every
  * threshold and silently disables the stop it feeds.
  */
-export const recordEscalation = (runDir) => {
+export const recordEscalation = async (runDir, { ticket } = {}) => {
   if (!runDir) return 0;
   const onDisk = readState(runDir).escalations;
   const current = Number.isInteger(onDisk) && onDisk >= 0 ? onDisk : 0;
   try {
     updateState(runDir, { escalations: current + 1 });
-    return current + 1;
   } catch (error) {
     // 🔴 **This one call tolerates a failed write, and the reason is the caller,
     // not the value.** Two of the three adapters run this AFTER the tracker is
@@ -298,6 +298,41 @@ export const recordEscalation = (runDir) => {
     // The count actually on disk, not the one intended: a caller journalling
     // this number must not record a streak the state file does not carry.
     return current;
+  }
+  await journalEscalation(runDir, ticket);
+  return current + 1;
+};
+
+const TICKET_FIELD_CAP = 200;
+
+/** A ticket id as the journal may hold it: withheld whole when it carries a credential shape. */
+const ticketField = (ticket) => {
+  if (ticket === undefined || ticket === null) return 'unknown';
+  const raw = String(ticket).slice(0, TICKET_FIELD_CAP + 128);
+  if (findSecretValues(raw).length > 0) return '[redacted]';
+  return raw.slice(0, TICKET_FIELD_CAP).replace(/[\r\n\u2028\u2029\u0085]+/g, ' ');
+};
+
+/**
+ * RP-446: the count says how many walls the run hit; this event says which
+ * item. Written only after the count landed, so the two never disagree, and
+ * tolerated like the count, because the tracker is already mutated. Imported
+ * here, not at the top, like the journal writes below: the queue CLI loads
+ * this module before it checks that the journal module is present.
+ */
+const journalEscalation = async (runDir, ticket) => {
+  try {
+    const { recordEvent } = await import('./run-journal.mjs');
+    recordEvent({
+      runDir,
+      kind: 'item-escalated',
+      data: { schemaVersion: 1, ticket: ticketField(ticket), stop: 'escalation' },
+      now: new Date().toISOString(),
+    });
+  } catch (error) {
+    process.stderr.write(
+      `run state: the escalation was counted but not journalled in ${runDir} — ${error.message}\n`,
+    );
   }
 };
 

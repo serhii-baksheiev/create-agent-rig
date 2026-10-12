@@ -584,13 +584,13 @@ export const comment = (ticket, body) => {
  * selection cannot pick it up again. It stays OPEN and stays claimed — moving it
  * back to a selectable state is how one stuck task gets worked three times.
  */
-export const escalate = (ticket, diagnosis, { env = process.env } = {}) => {
+export const escalate = async (ticket, diagnosis, { env = process.env } = {}) => {
   ghText(['issue', 'comment', ticket.id, '--body', diagnosis]);
   ghText(['issue', 'edit', ticket.id, '--add-label', 'escalated']);
   rebaseline(ticket);
   // Counted through the one recorder, never a counter of this adapter's own —
   // "twice in a row" has to mean the same thing on every tracker.
-  recordEscalation(env.RIG_RUN_DIR);
+  await recordEscalation(env.RIG_RUN_DIR, { ticket: ticket.id });
   return { ok: true };
 };
 

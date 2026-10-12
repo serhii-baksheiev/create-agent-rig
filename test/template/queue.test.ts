@@ -8,6 +8,7 @@ import {
   readdir,
   readFile,
   realpath,
+  rm,
   stat,
   symlink,
   writeFile,
@@ -5455,8 +5456,9 @@ describe('an escalation is recorded rather than remembered', () => {
       // per-item state, so `plan-md.escalate` mutates nothing and there is no
       // later fact for the count to wait on. The day it grows a write, the rule
       // above applies to it too — this assertion is what notices.
+      // Awaiting the count itself (RP-446: it journals the item) is not a write.
       expect(body, 'plan-md.escalate now writes something; it needs the order rule').not.toMatch(
-        /writeFileSync|readFileSync|await /,
+        /writeFileSync|readFileSync|await (?!recordEscalation\()/,
       );
       expect(body).toMatch(/recordEscalation\(/);
     });
@@ -5664,6 +5666,132 @@ describe('the run state never writes through a path it did not create', () => {
 
     expect(await readdir(runDir)).toEqual(['state.json']);
   });
+});
+
+// RP-446: the untagged count says how many walls the run hit, not which items.
+// The escalation is journalled as a run event carrying the ticket and the stop.
+describe('RP-446: an escalation is journalled with its item', () => {
+  type RecordEscalation = (runDir?: string, options?: { ticket?: unknown }) => Promise<number>;
+  interface RunEvent {
+    kind: string;
+    data: unknown;
+  }
+  interface RunJournal {
+    readRun(options: { runDir: string }): { events: RunEvent[] };
+    endRun(options: { runDir: string; stop: string; now: string }): unknown;
+  }
+
+  const loadRecorder = async (): Promise<RecordEscalation> =>
+    ((await loadRunState()) as unknown as { recordEscalation: RecordEscalation }).recordEscalation;
+  const loadJournal = async (): Promise<RunJournal> =>
+    (await import(
+      pathToFileURL(path.join(universal, '.claude', 'scripts', 'run-journal.mjs')).href
+    )) as RunJournal;
+
+  const escalationEventsIn = async (runDir: string): Promise<RunEvent[]> => {
+    const { readRun } = await loadJournal();
+    return readRun({ runDir }).events.filter((event) => event.kind === 'item-escalated');
+  };
+
+  it('journals one item-escalated event naming the ticket and the stop', async () => {
+    const recordEscalation = await loadRecorder();
+    const runDir = await newRunDir();
+
+    const count = await recordEscalation(runDir, { ticket: 'RP-446' });
+
+    expect(count).toBe(1);
+    expect(await escalationEventsIn(runDir)).toEqual([
+      {
+        seq: expect.any(Number) as unknown,
+        at: expect.anything() as unknown,
+        kind: 'item-escalated',
+        data: { schemaVersion: 1, ticket: 'RP-446', stop: 'escalation' },
+      },
+    ]);
+  });
+
+  it('withholds a credential-shaped ticket from the journal', async () => {
+    const recordEscalation = await loadRecorder();
+    const runDir = await newRunDir();
+    const credential = 'ghp_' + 'A'.repeat(36);
+
+    await recordEscalation(runDir, { ticket: credential });
+
+    const events = await escalationEventsIn(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toMatchObject({ ticket: '[redacted]', stop: 'escalation' });
+    expect(await read(runDir, 'events.jsonl')).not.toContain(credential);
+  });
+
+  it('journals nothing when the count itself could not be written', async () => {
+    const recordEscalation = await loadRecorder();
+    const runDir = await newRunDir();
+    const tempPath = path.join(runDir, `state.json.${process.pid}.tmp`);
+    await writeFile(tempPath, 'x\n');
+    await writeRunState(runDir, { escalations: 1 });
+
+    const { result } = await withCapturedOutput(() => recordEscalation(runDir, { ticket: 'RP-1' }));
+    expect(result).toBe(1);
+
+    // Clear the obstruction and escalate again: only the escalation that was
+    // counted is journalled, so state and journal agree.
+    await rm(tempPath);
+    expect(await recordEscalation(runDir, { ticket: 'RP-2' })).toBe(2);
+
+    const events = await escalationEventsIn(runDir);
+    expect(events.map((event) => (event.data as { ticket: unknown }).ticket)).toEqual(['RP-2']);
+  });
+
+  it('on an ended run, still counts, does not throw, and says on stderr that the escalation was not journalled', async () => {
+    const recordEscalation = await loadRecorder();
+    const { endRun } = await loadJournal();
+    const runDir = await newRunDir();
+    endRun({ runDir, stop: 'queue-empty', now: '2026-10-12T00:00:00.000Z' });
+
+    const { result, stderr, stdout } = await withCapturedOutput(() =>
+      recordEscalation(runDir, { ticket: 'RP-446' }),
+    );
+
+    expect(result).toBe(1);
+    expect(await runStateOf(runDir)).toMatchObject({ escalations: 1 });
+    expect(stderr).toMatch(/escalation/i);
+    expect(stderr).toMatch(/not journalled/i);
+    expect(stdout).toBe('');
+    expect(await escalationEventsIn(runDir)).toEqual([]);
+  });
+
+  it('plan-md escalate journals exactly one event for its ticket', async () => {
+    const { escalate } = (await load('plan-md.mjs')) as {
+      escalate: (
+        ticket: { id: string; title: string },
+        diagnosis: string,
+        options: { env: NodeJS.ProcessEnv },
+      ) => unknown;
+    };
+    const runDir = await newRunDir();
+    const ticket = { id: 'add a route', title: 'add a route' };
+
+    await escalate(ticket, 'three strikes, no new hypothesis', {
+      env: { ...process.env, RIG_RUN_DIR: runDir },
+    });
+
+    const events = await escalationEventsIn(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toMatchObject({ ticket: ticket.id, stop: 'escalation' });
+  });
+
+  it.each(['jira.mjs', 'github-issues.mjs', 'plan-md.mjs'])(
+    'every adapter passes its ticket to recordEscalation (%s)',
+    async (file) => {
+      const source = await read(queueDir, file);
+      const start = source.indexOf('export const escalate');
+      expect(start, `${file} has no escalate export`).toBeGreaterThan(-1);
+      const end = source.indexOf('\nexport ', start + 1);
+      const body = source.slice(start, end === -1 ? undefined : end);
+
+      expect(body).toContain('recordEscalation(env.RIG_RUN_DIR, { ticket: ticket.id })');
+    },
+  );
 });
 
 // AR-62: "`post-deploy-verify`'s verdict is recorded by a one-line CLI". The
