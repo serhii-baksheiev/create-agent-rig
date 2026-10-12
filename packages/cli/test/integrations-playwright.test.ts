@@ -196,6 +196,25 @@ describe('playwright-mcp declared-version override (RP-445)', () => {
     );
   });
 
+  it('a non-exact --version for playwright-mcp is refused with playwright-mcp-exact-version-required', async () => {
+    const result = await setup('add', [
+      'playwright-mcp',
+      '--version',
+      'latest',
+      '--harness',
+      'claude-code',
+      '--yes',
+      '--json',
+    ]);
+
+    expect(result.exitCode).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      outcome: 'refused',
+      reason: 'playwright-mcp-exact-version-required',
+    });
+    await expect(readFile(declarationPath(), 'utf8')).rejects.toThrow();
+  });
+
   it('a declaration of latest keeps the Rig-tested version wired', async () => {
     await mkdir(path.dirname(declarationPath()), { recursive: true });
     await writeFile(

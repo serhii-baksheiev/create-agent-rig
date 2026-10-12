@@ -354,6 +354,13 @@ export async function runIntegrationsCommand(
         !EXACT_VERSION_PATTERN.test(values.version)
       )
         throw new Refusal('probity-exact-version-required');
+      // A declaration file may still carry a tag; a new override names one release.
+      if (
+        id === 'playwright-mcp' &&
+        typeof values.version === 'string' &&
+        !EXACT_VERSION_PATTERN.test(values.version)
+      )
+        throw new Refusal('playwright-mcp-exact-version-required');
       const harnesses = [
         ...new Set([
           ...(previous?.harnesses ?? []),
