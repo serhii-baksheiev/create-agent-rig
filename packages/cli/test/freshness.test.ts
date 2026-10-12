@@ -251,4 +251,28 @@ describe('integrations freshness (RP-445)', () => {
       probity: { reason: 'invalid-response' },
     });
   });
+
+  it('never sends a credential header', async () => {
+    // Assembled at runtime so no credential-shaped literal sits in the source.
+    const secret = ['freshness', 'probe', String(process.pid)].join('-');
+    const saved = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, NPM_TOKEN: process.env.NPM_TOKEN };
+    process.env.GITHUB_TOKEN = secret;
+    process.env.NPM_TOKEN = secret;
+    try {
+      const { fetch, requests } = fakeFetch({});
+
+      await checkFreshness({ fetch, userAgent: 'create-agent-rig/test' });
+
+      expect(requests.length).toBeGreaterThan(0);
+      for (const request of requests) {
+        expect(request.headers.has('authorization'), request.url).toBe(false);
+        expect([...request.headers.values()].join('\n'), request.url).not.toContain(secret);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
 });
