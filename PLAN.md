@@ -1,19 +1,18 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 1.6.0. Live work, status, dependencies and acceptance
+> **Current release:** 1.6.1. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Registry reconciliation (12 Oct 2026):** npm contains published `1.5.2`
-> (`gitHead` `dca34da953276996cf007047ed9de11061fee1b2`) and `1.6.0`
-> (`gitHead` `536fe59f980d3ee0bea9d53e51f6589453ffb9bb`); `latest` is `1.6.0`.
-> Downloaded tarball SHA1/SHA512 match npm metadata. Their accepted source
-> candidates remain unchanged at `release/RP-488-152-candidate` and at the
-> SHA-addressed `release/1.6.0-rc-536fe59f980d3ee0bea9d53e51f6589453ffb9bb`;
-> the superseded `40e6eff7` stays at `release/1.6.0-rc`.
-> Earlier releases, `1.5.1` and `1.5.0` included, are recorded in the ledger.
-> `1.6.1` is the corrections patch on 1.6.0 being prepared;
-> `1.7.0` follows on the Jira graph.
+> **Registry reconciliation (13 Oct 2026):** npm contains published `1.6.0`
+> (`gitHead` `536fe59f980d3ee0bea9d53e51f6589453ffb9bb`) and `1.6.1`
+> (`gitHead` `3c520c5757a060ab3b90f56be9a15ea2879f0907`); `latest` is `1.6.1`.
+> npm metadata SHA1/SHA512 are recorded in the predecessor-integrity file.
+> Their accepted source candidates remain unchanged at the SHA-addressed
+> `release/1.6.0-rc-536fe59f980d3ee0bea9d53e51f6589453ffb9bb` and at
+> `release/1.6.1-rc`.
+> Earlier releases, `1.5.2` and `1.5.1` included, are recorded in the ledger.
+> `1.7.0` is the Outcome Evidence minor being prepared, cut from `master`.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,

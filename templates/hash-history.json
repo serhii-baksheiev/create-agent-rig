@@ -29,7 +29,8 @@
     "1.5.0",
     "1.5.1",
     "1.5.2",
-    "1.6.0"
+    "1.6.0",
+    "1.6.1"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -65,7 +66,8 @@
         "9c4be42cee0e79505bf17646c7b644779b22acd7c20a5ef3ae2f8e99ad27cf06",
         "9787fc1ddf832240042c0e0e2cd96966304fecfea27b5fa292fdf98681baa1b8",
         "caa0f1df7c7535d10566475ebb3e75f6c22abd2a7cf1fd29685ea1ac52c8c5c6",
-        "2698f9c0ca7f519e5022d40994b12a8c8d13a38ae342dfffc3dfc904b173c94c"
+        "2698f9c0ca7f519e5022d40994b12a8c8d13a38ae342dfffc3dfc904b173c94c",
+        "2a57f2e6fa499884bcab7896a03076a60758e631ccae1243d617e0d8356d02d3"
       ]
     },
     ".agents/skills/new-invariant/SKILL.md": {
@@ -241,7 +243,8 @@
         "19202a28355dac1d7a95d29411668cf970006b3044d89a772768ce21793931aa",
         "d2af03ed141fadd0b1e69b230b9277e8f03169757a8e2a679767653ab7828d9a",
         "4a367adc0b4d0e940e907624c56bf94456df7fd8438028a1afc7e718ad7bb318",
-        "bd469db21c352d6a97bdd372a47831516aa00c17d1a16d943084400c9b824524"
+        "bd469db21c352d6a97bdd372a47831516aa00c17d1a16d943084400c9b824524",
+        "0a9a2bdcce03e579f27ce45715cc8d0d6d2e5b549aa5cf527b1c3b1a494a1aea"
       ]
     },
     ".claude/hooks/guard-bash.mjs": {
@@ -331,7 +334,8 @@
         "54eade5b700cc2cd14b87899615e84080c2cabfde5c3caafeb4407459fc1179b",
         "1ea233a68fba453b4a2dd3454b9d0ea412a9deafd5c5cd6f8eefa5d5b45b51a4",
         "9366b082ba61a4ffcb9827104706ed70330735dbec0affbbfb3155c80ce78c55",
-        "89c8b73bbeb88e21c852452a75c8c79c3dff7ef6fec21e55b239c6f97b3ddf4c"
+        "89c8b73bbeb88e21c852452a75c8c79c3dff7ef6fec21e55b239c6f97b3ddf4c",
+        "c51da65680443806ce465a26cc7950e995900305b4f0a515510e2b944ebc7558"
       ]
     },
     ".claude/hooks/lib/hook-input.mjs": {
@@ -355,7 +359,8 @@
         "52259c0f031fff68b7f4fe7b84af31bf43cfbf4eed0e6a66165aa0f3465b64a2",
         "2f61b7bdac796275ff68f0479aa4d49739770266e671476745e8287184837cc7",
         "d0dfca9cfb60365ee0b5904f46da7b96660086cc5d8d893f3bfdf2fa19b539b6",
-        "3daf745312d933375d484b934ac30417f1489d1c09d331e96c4388316d4f1c3d"
+        "3daf745312d933375d484b934ac30417f1489d1c09d331e96c4388316d4f1c3d",
+        "c003c10e1b09ad0a946b1771bf3b10d14f1b919579fdb837867a49186ef4d6d9"
       ]
     },
     ".claude/hooks/warn-subagent-routing.mjs": {
@@ -459,7 +464,8 @@
       "hashes": [
         "4132d6598bf572d8f4218aa4d9526ca545f7c87b6e67dbd2e3f107803fe24294",
         "8a48113ce3c5f538503e864c3418d0852b48e123e77ac482fabfdca05f39d374",
-        "6359cd34cad67f9350cb42b85b07fd14d2486d99ae3d220527110ed8ce455489"
+        "6359cd34cad67f9350cb42b85b07fd14d2486d99ae3d220527110ed8ce455489",
+        "89556141102394fc8702f6bc150067bae99251a526ecdc053e6c57e496583b90"
       ]
     },
     ".claude/scripts/detect-missed-gate.mjs": {
@@ -476,7 +482,8 @@
       "hashes": [
         "eb31d2726ab95d6b8fd091b1daf8a21f403a46c801590baf4fecee5c1bec64b9",
         "5154ad9abdcb37fea58b0da78fd71842c705774ffe48fd8050c302da17e73913",
-        "3cc6a663d104d6ee702b3131c2b6a18277e74a0f2b2380389c3e4d87f0c74d53"
+        "3cc6a663d104d6ee702b3131c2b6a18277e74a0f2b2380389c3e4d87f0c74d53",
+        "d34a1f4d41bd6abcf82e51f1b117f1a829ad46c4f7939afbc94ae5d9125e8582"
       ]
     },
     ".claude/scripts/duplicate-work.mjs": {
@@ -489,7 +496,8 @@
     ".claude/scripts/evidence-attach.mjs": {
       "since": "1.6.0",
       "hashes": [
-        "1e33bb90278acb79bd3568b10b4db5929d55cb9bfdf2de391833c6d89032ec43"
+        "1e33bb90278acb79bd3568b10b4db5929d55cb9bfdf2de391833c6d89032ec43",
+        "ad0def3333d11ba0e9391ee85bc89f7b1d4ade406cb331630c4c343708519c1b"
       ]
     },
     ".claude/scripts/git-env.mjs": {
@@ -515,6 +523,12 @@
         "0e5b0461e733790e57aa28be5d1725219d335cb712b535732329547a09f97f99"
       ]
     },
+    ".claude/scripts/lib/dod-checks.mjs": {
+      "since": "1.6.1",
+      "hashes": [
+        "df0875c07fca457776281557217d2367093026b23a1040e836bea46c200767a1"
+      ]
+    },
     ".claude/scripts/lib/gate-coverage.mjs": {
       "since": "0.6.0",
       "hashes": [
@@ -526,7 +540,8 @@
     ".claude/scripts/lib/item-records.mjs": {
       "since": "1.6.0",
       "hashes": [
-        "691c24757bfe9bd99856a3a25a8de302515348c692b1818ff1f4014cd88b3e60"
+        "691c24757bfe9bd99856a3a25a8de302515348c692b1818ff1f4014cd88b3e60",
+        "dcad70544c631379fb657389789f776813ecd820895f53ad396cc3414d47b4dc"
       ]
     },
     ".claude/scripts/lib/outcome-signals.mjs": {
@@ -538,7 +553,8 @@
     ".claude/scripts/lib/posture.mjs": {
       "since": "1.4.0",
       "hashes": [
-        "245ffccef065dd9d3d5e99d8fd0b9adbde675f6aa8b55e306882f4252be91504"
+        "245ffccef065dd9d3d5e99d8fd0b9adbde675f6aa8b55e306882f4252be91504",
+        "1102fbacc42e6418c6b2692301f00244d7d133f946bb01108ebfb5c629bd6810"
       ]
     },
     ".claude/scripts/lib/provider-provenance.mjs": {
@@ -565,7 +581,8 @@
       "hashes": [
         "dc4a300646f12459c0c37e380b325451474e1ec113482381e0fad80aceb88049",
         "60fab2cc9f2028bccf6139e6a744406b4a86a9039d1367f3cef409902e9b327d",
-        "aaa06034702352bf0345faa9903bddb78aeed2e40f0f953872cc47e0766c08a0"
+        "aaa06034702352bf0345faa9903bddb78aeed2e40f0f953872cc47e0766c08a0",
+        "38a702f6e2299411a9eb0ebb31e7aa51eb37acedf95b5584fade08e693e08b9b"
       ]
     },
     ".claude/scripts/lib/shell-tools.mjs": {
@@ -595,7 +612,8 @@
         "0d59154f89d299b4ea900e136ff3478b86391e74337d2b6544cdaba395bf82cf",
         "08aee3e285aa669af3ed260a954db46dea45f1b2145270ab7c1810741195bd93",
         "b7242ad9e9e81f0228c0f26b6857d526bf7853f3f56170c2f86aeac29945124d",
-        "fe8ffbd8a22fe39844d46a30dd0f66316bf667be532575da541066883f139c07"
+        "fe8ffbd8a22fe39844d46a30dd0f66316bf667be532575da541066883f139c07",
+        "7dd6fada2131eeebc61fdf4c6fbee46f5b6e9689ae3e19106067b4b116a27f87"
       ]
     },
     ".claude/scripts/queue/as-of.mjs": {
@@ -769,7 +787,8 @@
       "since": "0.5.0",
       "hashes": [
         "4511ff2c982750e20b576fd9eca8ec6c3b4ab81874a3109392418793b82cd5c4",
-        "0de50c4a842447211af70366e162fcc4802abd5c016b4dc7e4861945ca9c77dd"
+        "0de50c4a842447211af70366e162fcc4802abd5c016b4dc7e4861945ca9c77dd",
+        "d30d0cdfd87ca7e728bef7ca10683cf283a637c3b32852c1cff58e1a4b698327"
       ]
     },
     ".claude/scripts/run-state.mjs": {
@@ -874,7 +893,8 @@
         "9c4be42cee0e79505bf17646c7b644779b22acd7c20a5ef3ae2f8e99ad27cf06",
         "9787fc1ddf832240042c0e0e2cd96966304fecfea27b5fa292fdf98681baa1b8",
         "caa0f1df7c7535d10566475ebb3e75f6c22abd2a7cf1fd29685ea1ac52c8c5c6",
-        "2698f9c0ca7f519e5022d40994b12a8c8d13a38ae342dfffc3dfc904b173c94c"
+        "2698f9c0ca7f519e5022d40994b12a8c8d13a38ae342dfffc3dfc904b173c94c",
+        "2a57f2e6fa499884bcab7896a03076a60758e631ccae1243d617e0d8356d02d3"
       ]
     },
     ".claude/skills/new-invariant/SKILL.md": {
@@ -1120,7 +1140,8 @@
         "3fbb27a095738012d3cef207f57a9716a02badf287d4948faa14816e543f5785",
         "b7abd2070df8d6575846240e8224385ac14064a7264cbdce08d25373ba22c1f5",
         "706b4161d9cea145ec6fcbba379e99b7811430c7150a89b326f2d69c32558491",
-        "23d05f68995239d9bd648cc0d137a6488deac0941117a5482a74d388bd49823e"
+        "23d05f68995239d9bd648cc0d137a6488deac0941117a5482a74d388bd49823e",
+        "ed3d075334a47512c0ae4b556379653770f0ded67e54b335476069845f440bd1"
       ]
     },
     "docs/decisions/fail-open-guards.md": {

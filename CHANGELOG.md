@@ -15,7 +15,72 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.6.1 (release candidate)
+## 1.7.0 (release candidate)
+
+**1.7.0 is additive on the 1.6 line — Outcome Evidence.** It adds a
+descriptive read of how agent work went, built only from records a rig
+already keeps, and lets a repository see and deliberately override the
+versions of the providers Rig pins. Nothing in it scores work or people, and
+nothing updates a provider on its own.
+
+### Added
+
+- **Outcome Evidence** (opt-in workflow layer).
+  `release-evidence.mjs --outcome --run <name> [--run <name>…]` reports
+  versioned signals — first shipping verdict, gate rounds, claim to merge,
+  interventions and continuation — over named run directories, and
+  `--baseline <name>…` compares two named run sets. Each signal is defined
+  once in `lib/outcome-signals.mjs`; missing evidence is `unknown`, never
+  zero; a comparison across a different repository, `signalVersion`, lane
+  mix or harness is `not comparable`, and a side below the coverage
+  threshold (`--min-coverage`, default one half) is `insufficient`.
+  `tokens-per-ship` is defined but not computed.
+  [`docs/decisions/outcome-signals.md`](docs/decisions/outcome-signals.md)
+  (RP-355, RP-356).
+- **Journal events the signals read.** A counted escalation journals
+  `item-escalated` and a close that transitioned journals `item-closed`, each
+  naming its item; `continuation.mjs --post` journals a `continuation`
+  record when the tracker took the note, or when the adapter answers that
+  the journal is where it lands (`plan-md`) (RP-446, RP-447).
+- **`create-agent-rig integrations freshness [--json] [--include-prereleases]`**
+  — read-only and explicitly networked: it reports the newest npm and GitHub
+  releases of Probity, Playwright MCP and Spec Kit next to the Rig-tested
+  versions; BMAD TEA is `unknown`, since Rig records no upstream for it. A
+  network failure is an `unknown` result, not an error; it writes nothing and
+  changes no pin. `doctor` stays offline (RP-445).
+- **Exact repository version overrides.** A declared version of Probity,
+  BMAD TEA or Spec Kit must name one exact release; a range or a tag is
+  rejected as `malformed`. A repository may declare an exact Probity, BMAD
+  TEA or Playwright MCP version that differs from the Rig-tested one, and
+  `doctor` reports each such check's `version` as `tested`, `overridden` or
+  `drift` next to the Rig-tested default. For
+  Playwright MCP the declared exact version is the one wired into `.mcp.json`
+  and `.codex/config.toml`; a declared tag keeps the Rig-tested version
+  wired. The declaration model and the states are in
+  [`docs/command-contract.md`](docs/command-contract.md), "Declared versions
+  (RP-445)".
+
+### Changed
+
+- **`setup add` and `setup apply` re-wire Rig's own unmodified MCP entry**
+  when the entry they would write differs from it, instead of refusing it as
+  `foreign-or-modified-mcp-entry`. An entry is Rig's own while its bytes
+  still match the hash recorded in `.rig/integrations.json`; a foreign or
+  hand-edited entry is still refused (RP-445).
+
+### Known limitations
+
+- `tokens-per-ship` stays `not computed`: dispatch usage evidence is not yet
+  trustworthy enough to divide by (RP-355 token audit of RP-225..228/269).
+- `doctor --json` reports a Playwright MCP `version.installed` read from
+  Rig's own hash-matching entry without a version-shape check; the plain-text
+  output never prints it.
+- The `evidence-attach.mjs` and `doctor` follow-ups recorded for 1.6.1 remain
+  in RP-501. RP-476 made the `delegated-rounds` test fixture build once per
+  file; the same per-case git fixture cost in other test files still times
+  out on the hosted Windows runner at times, recorded on RP-476.
+
+## 1.6.1
 
 **1.6.1 is a corrections patch on the published 1.6.0.** It adds no workflow
 capability: it fixes defects that 1.6.0's gate reviewers and the 1.6.0
