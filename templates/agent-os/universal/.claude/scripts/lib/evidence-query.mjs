@@ -8,6 +8,8 @@
 // Tests: `test/template/evidence-query.test.ts` (absent in a generated rig).
 
 import { SIGNALS } from './outcome-signals.mjs';
+import { sameCommit } from './gate-coverage.mjs';
+import { isCommitId } from './verdict.mjs';
 
 const TAKEN = /^taken (.+)$/;
 const FAN_OUT = 'reviewer-fan-out';
@@ -40,6 +42,17 @@ export const itemOccurrences = (entry) => {
 
 const fanOutsOf = (item) => item.records.filter((record) => record.gate === FAN_OUT);
 
+const lastFanOutFor = (records, head, end = records.length) => {
+  if (!isCommitId(head)) return null;
+  for (let index = end - 1; index >= 0; index -= 1) {
+    const record = records[index];
+    if (record.gate === FAN_OUT && isCommitId(record.headSha) && sameCommit(record.headSha, head)) {
+      return { record, index };
+    }
+  }
+  return null;
+};
+
 const laneOf = (occurrence) => {
   const routed = occurrence.records.find(
     (record) =>
@@ -52,13 +65,15 @@ const laneOf = (occurrence) => {
 const firstVerdictOf = (occurrence) => {
   const fanOuts = fanOutsOf(occurrence);
   const head = fanOuts[0]?.headSha;
-  if (typeof head !== 'string' || head === '') return null;
-  const reviewers = fanOuts.filter((fan) => fan.headSha === head).at(-1).reviewers ?? [];
+  if (!isCommitId(head)) return null;
+  const lastFanOut = lastFanOutFor(occurrence.records, head);
+  const reviewers = lastFanOut?.record.reviewers ?? [];
   if (!Array.isArray(reviewers) || reviewers.length === 0) return null;
   const words = [];
   for (const reviewer of reviewers) {
-    const answer = occurrence.records.find(
-      (record) => record.gate === reviewer && record.headSha === head,
+    const answer = occurrence.records.slice(lastFanOut.index + 1).find(
+      (record) =>
+        record.gate === reviewer && isCommitId(record.headSha) && sameCommit(record.headSha, head),
     );
     if (!answer) return null;
     words.push(answer.verdict);
@@ -113,14 +128,19 @@ const gateRounds = (occurrences) => {
   let observed = 0;
   for (const occurrence of occurrences) {
     const closed = occurrence.records.some((record) => record.kind === 'item-closed');
-    const heads = new Set(
-      fanOutsOf(occurrence)
-        .map((fan) => fan.headSha)
-        .filter((head) => typeof head === 'string' && head !== ''),
-    );
-    if (!closed || heads.size === 0) continue;
+    const heads = [];
+    const fanOutHeads = fanOutsOf(occurrence)
+      .map((fan) => fan.headSha)
+      .filter(isCommitId)
+      .sort((one, other) => other.length - one.length);
+    for (const fanOutHead of fanOutHeads) {
+      if (!heads.some((head) => sameCommit(head, fanOutHead))) {
+        heads.push(fanOutHead);
+      }
+    }
+    if (!closed || heads.length === 0) continue;
     observed += 1;
-    distribution[heads.size] = (distribution[heads.size] ?? 0) + 1;
+    distribution[heads.length] = (distribution[heads.length] ?? 0) + 1;
   }
   return {
     name: 'gate-rounds',
@@ -275,15 +295,11 @@ const claimToMerge = (items, commitTime) => {
 
 /** The SHIP verdicts of reviewers launched at the head they answered for. */
 const shipVerdictsOf = (item) => {
-  const launchedAt = new Map();
-  for (const fan of fanOutsOf(item)) {
-    if (typeof fan.headSha === 'string' && Array.isArray(fan.reviewers))
-      launchedAt.set(fan.headSha, fan.reviewers);
-  }
-  return item.records.filter(
-    (record) =>
-      record.verdict === 'SHIP' && launchedAt.get(record.headSha)?.includes(record.gate) === true,
-  ).length;
+  return item.records.filter((record, index) => {
+    if (record.verdict !== 'SHIP' || !isCommitId(record.headSha)) return false;
+    const fanOut = lastFanOutFor(item.records, record.headSha, index);
+    return Array.isArray(fanOut?.record.reviewers) && fanOut.record.reviewers.includes(record.gate);
+  }).length;
 };
 
 /**

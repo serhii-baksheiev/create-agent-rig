@@ -111,6 +111,18 @@ const mod = () => {
 
 const runsRoot = () => mkdtemp(path.join(tmpdir(), 'evidence-query-runs-'));
 
+// Most fixtures name heads for readability. Those names stand for distinct,
+// valid git ids; malformed ids are written directly in the rejection cases.
+const fixtureHeads = new Map<string, string>();
+const fixtureHead = (headSha: string) => {
+  if (/^[0-9a-f]{7,64}$/i.test(headSha)) return headSha;
+  const present = fixtureHeads.get(headSha);
+  if (present) return present;
+  const next = fixtureHeads.size.toString(16).padStart(40, '0');
+  fixtureHeads.set(headSha, next);
+  return next;
+};
+
 /** A run directory plus writers that stamp strictly increasing times. */
 const newRun = async (runsDir: string, name: string, startMinute = 0) => {
   const runDir = path.join(runsDir, name);
@@ -136,9 +148,10 @@ const newRun = async (runsDir: string, name: string, startMinute = 0) => {
       dec(
         'reviewer-fan-out',
         'launched',
-        headSha === undefined ? { reviewers } : { headSha, reviewers },
+        headSha === undefined ? { reviewers } : { headSha: fixtureHead(headSha), reviewers },
       ),
-    verdict: (reviewer: string, word: string, headSha: string) => dec(reviewer, word, { headSha }),
+    verdict: (reviewer: string, word: string, headSha: string) =>
+      dec(reviewer, word, { headSha: fixtureHead(headSha) }),
     closed: (ticket: string) => ev('item-closed', { id: ticket }),
     entry: (): RunEntry => {
       const { decisions, events } = journal.readRun({ runDir });
@@ -203,6 +216,83 @@ describe('evidence-query itemOccurrences', () => {
 });
 
 describe('evidence-query outcomeOf: first-shipping-verdict', () => {
+  it('accepts an uppercase abbreviation of a 64-character fan-out head after that fan-out', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const head = `abcdef0${'1'.repeat(57)}`;
+    r.take('RP-505-valid');
+    r.route('model', ['code-reviewer']);
+    r.fanOut(head, ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', 'ABCDEF0');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+    expect(s.result).toMatchObject({ SHIP: 1, HOLD: 0, other: 0 });
+  });
+
+  it('treats a reviewer answer before its fan-out as unknown', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const head = '1234567890abcdef1234567890abcdef12345678';
+    r.take('RP-505-before-fan-out');
+    r.route('model', ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', head);
+    r.fanOut(head, ['code-reviewer']);
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toMatchObject({ SHIP: 0, HOLD: 0, other: 0 });
+  });
+
+  it('requires a reviewer answer after the last repeated fan-out for its head', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const head = '234567890abcdef1234567890abcdef123456789';
+    r.take('RP-505-repeated-fan-out');
+    r.route('model', ['code-reviewer']);
+    r.fanOut(head, ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', head);
+    r.fanOut(head, ['code-reviewer']);
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toMatchObject({ SHIP: 0, HOLD: 0, other: 0 });
+  });
+
+  it('keeps a fan-out applicable when its resumed run starts a new sequence', async () => {
+    const runsDir = await runsRoot();
+    const first = await newRun(runsDir, 'run-1');
+    const second = await newRun(runsDir, 'run-2', 10);
+    const head = '34567890abcdef1234567890abcdef1234567890';
+    first.take('RP-505-resumed');
+    first.route('model', ['code-reviewer']);
+    first.fanOut(head, ['code-reviewer']);
+    first.stop();
+    second.take('RP-505-resumed');
+    second.verdict('code-reviewer', 'SHIP', head);
+    second.closed('RP-505-resumed');
+
+    const s = signal(
+      mod().outcomeOf({ runs: [second.entry(), first.entry()] }),
+      'first-shipping-verdict',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+    expect(s.result).toMatchObject({ SHIP: 1, HOLD: 0, other: 0 });
+  });
+
+  it('treats a malformed fan-out head and matching reviewer reply as unknown', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-505-malformed-head');
+    r.route('model', ['code-reviewer']);
+    r.dec('reviewer-fan-out', 'launched', {
+      headSha: 'not-a-git-sha',
+      reviewers: ['code-reviewer'],
+    });
+    r.dec('code-reviewer', 'SHIP', { headSha: 'not-a-git-sha' });
+    r.closed('RP-505-malformed-head');
+
+    const verdict = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    expect([verdict.eligible, verdict.observed, verdict.unknown]).toEqual([1, 0, 1]);
+    expect(verdict.result).toMatchObject({ SHIP: 0, HOLD: 0, other: 0 });
+  });
+
   it('first-shipping-verdict reads the first head, with the reviewer set of its last fan-out', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
     // RP-10: the re-recorded fan-out at head aaa adds security-scanner, which
@@ -363,6 +453,50 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
 });
 
 describe('evidence-query outcomeOf: gate-rounds', () => {
+  it('does not let an abbreviation merge two different complete heads transitively', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const abbreviation = 'abcdef1';
+    r.take('RP-505-ambiguous-abbreviation');
+    r.fanOut(abbreviation, ['code-reviewer']);
+    r.fanOut(`${abbreviation}${'a'.repeat(33)}`, ['code-reviewer']);
+    r.fanOut(`${abbreviation}${'b'.repeat(33)}`, ['code-reviewer']);
+    r.closed('RP-505-ambiguous-abbreviation');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'gate-rounds');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+    expect(s.result).toEqual({ distribution: { '2': 1 } });
+  });
+
+  it('counts case and abbreviations of one head once while retaining a distinct 64-character head', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const sha1 = 'abcdef0123456789abcdef0123456789abcdef01';
+    const sha256 = `1234567${'0'.repeat(57)}`;
+    r.take('RP-505-equivalent-heads');
+    r.fanOut(sha1, ['code-reviewer']);
+    r.fanOut(sha1.toUpperCase(), ['code-reviewer']);
+    r.fanOut(sha1.slice(0, 7), ['code-reviewer']);
+    r.fanOut(sha256, ['code-reviewer']);
+    r.closed('RP-505-equivalent-heads');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'gate-rounds');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+    expect(s.result).toEqual({ distribution: { '2': 1 } });
+  });
+
+  it('treats a closed occurrence with only a malformed fan-out head as unknown', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-505-malformed-round');
+    r.dec('reviewer-fan-out', 'launched', {
+      headSha: 'not-a-git-sha',
+      reviewers: ['code-reviewer'],
+    });
+    r.closed('RP-505-malformed-round');
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'gate-rounds');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toEqual({ distribution: {} });
+  });
+
   it('gate-rounds counts distinct fan-out heads and never reports 0 for an item without fan-out', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
     // RP-40: heads h1, h1 (re-recorded), h2 — two rounds.
@@ -650,6 +784,73 @@ describe('evidence-query outcomeOf: claim-to-merge', () => {
 });
 
 describe('evidence-query outcomeOf: tokens-per-ship', () => {
+  it('ignores malformed string and object reviewer sets', () => {
+    const head = '567890abcdef1234567890abcdef123456789012';
+    const populations = ['code-reviewer', { reviewer: 'code-reviewer' }].map((reviewers) => {
+      const entry = {
+        run: 'raw-run',
+        decisions: [
+          {
+            seq: 1,
+            at: '2026-10-01T00:00:01.000Z',
+            gate: 'item-selection',
+            verdict: 'taken RP-505',
+          },
+          {
+            seq: 2,
+            at: '2026-10-01T00:00:02.000Z',
+            gate: 'reviewer-fan-out',
+            verdict: 'launched',
+            headSha: head,
+            reviewers,
+          },
+          {
+            seq: 3,
+            at: '2026-10-01T00:00:03.000Z',
+            gate: 'code-reviewer',
+            verdict: 'SHIP',
+            headSha: head,
+          },
+        ],
+        events: [],
+      } as unknown as RunEntry;
+
+      try {
+        const s = signal(mod().outcomeOf({ runs: [entry] }), 'tokens-per-ship');
+        return [s.eligible, s.observed, s.unknown];
+      } catch (error) {
+        return error instanceof Error ? error.name : String(error);
+      }
+    });
+
+    expect(populations).toEqual([
+      [0, 0, 0],
+      [0, 0, 0],
+    ]);
+  });
+
+  it('counts only ordered SHIP replies at valid fan-out heads in its unknown population', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const validHead = '4567890abcdef1234567890abcdef12345678901';
+    r.take('RP-505-token-valid');
+    r.fanOut(validHead, ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', validHead);
+
+    r.take('RP-505-token-before-fan-out');
+    r.verdict('code-reviewer', 'SHIP', validHead);
+    r.fanOut(validHead, ['code-reviewer']);
+
+    r.take('RP-505-token-malformed-head');
+    r.dec('reviewer-fan-out', 'launched', {
+      headSha: 'not-a-git-sha',
+      reviewers: ['code-reviewer'],
+    });
+    r.dec('code-reviewer', 'SHIP', { headSha: 'not-a-git-sha' });
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'tokens-per-ship');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+  });
+
   it('states tokens-per-ship as not computed, with every SHIP verdict unknown and the reason', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
     // Three SHIP verdicts: two reviewers at h95, and one at RP-96's second head.

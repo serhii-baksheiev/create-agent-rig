@@ -125,7 +125,7 @@ const COMPLETE_COMMIT_LENGTHS = new Set([40, 64]);
  * here can resolve which — a pure function has no repository to ask. The first
  * reading is the one an honest run produces.
  */
-const sameCommit = (one, other) => {
+export const sameCommit = (one, other) => {
   if (one.length < SHORTEST_COMMIT || other.length < SHORTEST_COMMIT) return false;
   const first = one.toLowerCase();
   const second = other.toLowerCase();
