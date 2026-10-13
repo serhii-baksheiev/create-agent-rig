@@ -73,11 +73,11 @@
 // rule) — never by calling the thing being tested and comparing it to
 // itself.
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -126,6 +126,29 @@ const runDelegated = (args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
 const runGateRound = (args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
   run(process.execPath, [queueIndexScript, 'gate-round', ...args], cwd, env);
 
+let fixtureGitEnv = withoutGitLocation();
+
+const discoverFixtureGitEnv = async (): Promise<NodeJS.ProcessEnv> => {
+  const env = withoutGitLocation();
+  if (process.platform === 'win32') {
+    const execPath = await run('git', ['--exec-path'], repoRoot, env);
+    if (execPath.code === 0) {
+      const directGit = path.resolve(execPath.stdout.trim(), '..', '..', 'bin', 'git.exe');
+      try {
+        if ((await stat(directGit)).isFile()) {
+          const pathKey = Object.keys(env).find((key) => key.toUpperCase() === 'PATH');
+          if (pathKey !== undefined) {
+            env[pathKey] = `${path.dirname(directGit)}${path.delimiter}${env[pathKey]}`;
+          }
+        }
+      } catch {
+        // Keep the original sanitised environment when direct Git is unavailable.
+      }
+    }
+  }
+  return env;
+};
+
 const git = async (args: string[], cwd: string): Promise<string> => {
   const result = await run(
     'git',
@@ -139,7 +162,7 @@ const git = async (args: string[], cwd: string): Promise<string> => {
       ...args,
     ],
     cwd,
-    withoutGitLocation(),
+    fixtureGitEnv,
   );
   if (result.code !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.out}`);
   return result.stdout.trim();
@@ -149,7 +172,7 @@ const head = (cwd: string) => git(['rev-parse', 'HEAD'], cwd);
 
 /** `RIG_RUN_DIR` set ONLY for this one spawn — never on `process.env`. */
 const envFor = (runDir: string | undefined): NodeJS.ProcessEnv => {
-  const env = withoutGitLocation();
+  const env = { ...fixtureGitEnv };
   if (runDir !== undefined) env.RIG_RUN_DIR = runDir;
   else delete env.RIG_RUN_DIR;
   return env;
@@ -190,7 +213,7 @@ const delegatedRunDir = async (): Promise<string> => {
  */
 let pushedTemplateRoot: Promise<string> | null = null;
 
-const buildPushedTemplate = async (): Promise<string> => {
+const buildPushedTemplate = async (initialQueueConfig?: unknown): Promise<string> => {
   const root = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-template-'));
   const dir = path.join(root, 'repo');
   const remote = path.join(root, 'remote');
@@ -204,6 +227,9 @@ const buildPushedTemplate = async (): Promise<string> => {
     '.claude/*.gate-rounds.json\n.claude/queue.state.json\n.claude/runs/\n',
   );
   await writeFile(path.join(dir, 'README.md'), 'x\n');
+  if (initialQueueConfig !== undefined) {
+    await writeFile(path.join(dir, '.claude', 'queue.json'), JSON.stringify(initialQueueConfig));
+  }
   await git(['add', '-A'], dir);
   await git(['commit', '-q', '-m', 'init'], dir);
   await git(['remote', 'add', 'origin', remote], dir);
@@ -243,14 +269,58 @@ const branchAndPush = async (dir: string, branch: string): Promise<void> => {
 /** Push three ordinary gate rounds, exhausting the default cap of 3. */
 const exhaustBaseCap = async (dir: string, branch: string, cfg: string): Promise<void> => {
   for (let i = 0; i < 3; i += 1) {
-    const result = await runGateRound(
-      ['--branch', branch, '--config', cfg],
-      dir,
-      withoutGitLocation(),
-    );
+    const result = await runGateRound(['--branch', branch, '--config', cfg], dir, fixtureGitEnv);
     expect(result.code, result.out).toBe(0);
   }
 };
+
+/**
+ * Several cases need the same fully shippable precondition: a pushed `fix/a`
+ * branch, a committed budget-two config, and the three real ordinary rounds
+ * already spent. Build that state once, then copy it exactly as
+ * `newPushedProject` does. Default-budget cases commit their own real config
+ * over the private copy before their authorization path starts. Every caller
+ * gets its own repo and bare remote; no authorization records, commits,
+ * pushes, or authorized calls under test touch this immutable template.
+ */
+let preparedBudgetTwoTemplateRoot: Promise<string> | null = null;
+
+const buildPreparedBudgetTwoTemplate = async (): Promise<string> => {
+  const root = await buildPushedTemplate({
+    adapter: 'plan-md',
+    options: { maxDelegatedRounds: 2 },
+  });
+  const dir = path.join(root, 'repo');
+  const cfg = path.join(dir, '.claude', 'queue.json');
+  await branchAndPush(dir, 'fix/a');
+  await exhaustBaseCap(dir, 'fix/a', cfg);
+  return root;
+};
+
+const newPreparedBudgetTwoProject = async (
+  roots: string[],
+): Promise<{ dir: string; cfg: string }> => {
+  if (!preparedBudgetTwoTemplateRoot) {
+    preparedBudgetTwoTemplateRoot = buildPreparedBudgetTwoTemplate();
+  }
+  const template = await preparedBudgetTwoTemplateRoot;
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), 'delegated-rounds-budget-two-')));
+  roots.push(root);
+  await cp(template, root, { recursive: true });
+
+  const dir = path.join(root, 'repo');
+  const remote = path.join(root, 'remote');
+  await git(['remote', 'set-url', 'origin', remote], dir);
+  return { dir, cfg: path.join(dir, '.claude', 'queue.json') };
+};
+
+beforeAll(async () => {
+  fixtureGitEnv = await discoverFixtureGitEnv();
+  if (!preparedBudgetTwoTemplateRoot) {
+    preparedBudgetTwoTemplateRoot = buildPreparedBudgetTwoTemplate();
+  }
+  await preparedBudgetTwoTemplateRoot;
+});
 
 const roundsFileFor = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');
 const roundsFor = async (cfg: string, branch: string): Promise<number> => {
@@ -566,13 +636,7 @@ describe('the delegated-round budget is spent by the BRANCH, whatever ticket eac
   it('with maxDelegatedRounds: 2, RP-1 and RP-2 on the same branch each get one authorized round, and RP-3 is refused', async () => {
     const roots: string[] = [];
     try {
-      const { dir } = await newPushedProject(roots);
-      const cfg = await writeAndPushConfig(dir, {
-        adapter: 'plan-md',
-        options: { maxDelegatedRounds: 2 },
-      });
-      await branchAndPush(dir, 'fix/a');
-      await exhaustBaseCap(dir, 'fix/a', cfg);
+      const { dir, cfg } = await newPreparedBudgetTwoProject(roots);
 
       const h1 = await head(dir);
       const runDir = await delegatedRunDir();
@@ -1201,10 +1265,8 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
   it('exits 2 on a second --authorized call at the same head once a reviewer verdict is recorded for it', async () => {
     const roots: string[] = [];
     try {
-      const { dir } = await newPushedProject(roots);
+      const { dir } = await newPreparedBudgetTwoProject(roots);
       const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
-      await branchAndPush(dir, 'fix/a');
-      await exhaustBaseCap(dir, 'fix/a', cfg);
 
       const h = await head(dir);
       const delegated = await delegatedRunDir();
@@ -1414,13 +1476,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
   it('with maxDelegatedRounds: 2, a second authorization at a fix commit (H2) proceeds, and a third record is refused', async () => {
     const roots: string[] = [];
     try {
-      const { dir } = await newPushedProject(roots);
-      const cfg = await writeAndPushConfig(dir, {
-        adapter: 'plan-md',
-        options: { maxDelegatedRounds: 2 },
-      });
-      await branchAndPush(dir, 'fix/a');
-      await exhaustBaseCap(dir, 'fix/a', cfg);
+      const { dir, cfg } = await newPreparedBudgetTwoProject(roots);
 
       const h1 = await head(dir);
       const delegated = await delegatedRunDir();
@@ -1896,13 +1952,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
   it('with maxDelegatedRounds: 2, rounds 4 and 5 authorize legitimately and a rewritten-in-place record still cannot buy round 6', async () => {
     const roots: string[] = [];
     try {
-      const { dir } = await newPushedProject(roots);
-      const cfg = await writeAndPushConfig(dir, {
-        adapter: 'plan-md',
-        options: { maxDelegatedRounds: 2 },
-      });
-      await branchAndPush(dir, 'fix/a');
-      await exhaustBaseCap(dir, 'fix/a', cfg);
+      const { dir, cfg } = await newPreparedBudgetTwoProject(roots);
 
       const h1 = await head(dir);
       const delegated = await delegatedRunDir();
@@ -2780,10 +2830,8 @@ describe('gate-round --authorized refuses a bypass of the committed-record and c
   it('refuses a branch holding more extra-gate-round records than the budget even when ls-tree is fooled into enumerating only one ticket', async () => {
     const roots: string[] = [];
     try {
-      const { dir } = await newPushedProject(roots);
+      const { dir } = await newPreparedBudgetTwoProject(roots);
       const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' }); // default budget 1
-      await branchAndPush(dir, 'fix/a');
-      await exhaustBaseCap(dir, 'fix/a', cfg);
 
       const x = await head(dir);
       const runDir = await delegatedRunDir();
