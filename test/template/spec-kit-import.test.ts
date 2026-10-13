@@ -21,9 +21,10 @@ const runQueue = (
   scriptPath: string,
   args: string[],
   cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ code: number; stdout: string; stderr: string; out: string }> =>
   new Promise((resolve) => {
-    execFile(process.execPath, [scriptPath, ...args], { cwd }, (error, stdout, stderr) => {
+    execFile(process.execPath, [scriptPath, ...args], { cwd, env }, (error, stdout, stderr) => {
       resolve({
         code: error ? ((error as { code?: number }).code ?? 1) : 0,
         stdout,
@@ -560,11 +561,16 @@ describe('queue import spec-kit --to github-issues (RP-275)', () => {
   it('accepts --to jira past the CLI usage gate, refusing only for a missing Jira credential', async () => {
     const { dir, scriptPath } = await scratchProject();
     const github = await installGh();
+    const environmentWithoutJiraCredentials = { ...process.env };
+    delete environmentWithoutJiraCredentials.JIRA_BASE_URL;
+    delete environmentWithoutJiraCredentials.JIRA_EMAIL;
+    delete environmentWithoutJiraCredentials.JIRA_API_TOKEN;
     try {
       const result = await runQueue(
         scriptPath,
         ['import', 'spec-kit', '--to', 'jira', '--dry-run', '--json'],
         dir,
+        environmentWithoutJiraCredentials,
       );
 
       expect(result.code, result.out).toBe(1);
