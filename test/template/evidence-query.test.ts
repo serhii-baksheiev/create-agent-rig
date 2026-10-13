@@ -266,6 +266,30 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
     expect([tokens.eligible, tokens.observed, tokens.unknown]).toEqual([0, 0, 0]);
   });
 
+  it('refuses a short final fan-out shared by two complete heads for verdict and token evidence', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const abbreviation = 'abcdef1';
+    const firstComplete = `${abbreviation}${'a'.repeat(33)}`;
+    const secondComplete = `${abbreviation}${'b'.repeat(33)}`;
+    r.take('RP-505-ambiguous-final-fan-out');
+    r.route('model', ['code-reviewer']);
+    r.fanOut(firstComplete, ['code-reviewer']);
+    r.fanOut(secondComplete, ['code-reviewer']);
+    r.fanOut(abbreviation, ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', firstComplete);
+
+    const outcome = mod().outcomeOf({ runs: [r.entry()] });
+    const first = signal(outcome, 'first-shipping-verdict');
+    const tokens = signal(outcome, 'tokens-per-ship');
+    expect([
+      [first.eligible, first.observed, first.unknown],
+      [tokens.eligible, tokens.observed, tokens.unknown],
+    ]).toEqual([
+      [1, 0, 1],
+      [0, 0, 0],
+    ]);
+  });
+
   it('treats a reviewer answer before its fan-out as unknown', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
     const head = '1234567890abcdef1234567890abcdef12345678';

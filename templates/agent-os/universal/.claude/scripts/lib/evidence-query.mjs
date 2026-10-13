@@ -65,6 +65,7 @@ const lastFanOutFor = (records, head, end = records.length) => {
   for (let index = end - 1; index >= 0; index -= 1) {
     const record = records[index];
     if (record.gate === FAN_OUT && isCommitId(record.headSha) && sameCommit(record.headSha, head)) {
+      if (ambiguousFanOutHead(records, record.headSha)) return null;
       return { record, index };
     }
   }
