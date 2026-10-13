@@ -229,6 +229,43 @@ describe('evidence-query outcomeOf: first-shipping-verdict', () => {
     expect(s.result).toMatchObject({ SHIP: 1, HOLD: 0, other: 0 });
   });
 
+  it('treats an abbreviated first fan-out matching two complete heads as unknown', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const abbreviation = 'abcdef1';
+    const firstComplete = `${abbreviation}${'a'.repeat(33)}`;
+    const secondComplete = `${abbreviation}${'b'.repeat(33)}`;
+    r.take('RP-505-ambiguous-first-abbreviation');
+    r.route('model', ['code-reviewer']);
+    r.fanOut(abbreviation, ['code-reviewer']);
+    r.fanOut(firstComplete, ['code-reviewer']);
+    r.fanOut(secondComplete, ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', secondComplete);
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'first-shipping-verdict');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toMatchObject({ SHIP: 0, HOLD: 0, other: 0 });
+  });
+
+  it('does not bind an abbreviated SHIP reply to one of two complete matching heads', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const abbreviation = 'abcdef1';
+    const firstComplete = `${abbreviation}${'a'.repeat(33)}`;
+    const secondComplete = `${abbreviation}${'b'.repeat(33)}`;
+    r.take('RP-505-ambiguous-reviewer-abbreviation');
+    r.route('model', ['code-reviewer']);
+    r.fanOut(firstComplete, ['code-reviewer']);
+    r.fanOut(secondComplete, ['code-reviewer']);
+    r.fanOut(firstComplete, ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', abbreviation);
+
+    const outcome = mod().outcomeOf({ runs: [r.entry()] });
+    const first = signal(outcome, 'first-shipping-verdict');
+    expect([first.eligible, first.observed, first.unknown]).toEqual([1, 0, 1]);
+    expect(first.result).toMatchObject({ SHIP: 0, HOLD: 0, other: 0 });
+    const tokens = signal(outcome, 'tokens-per-ship');
+    expect([tokens.eligible, tokens.observed, tokens.unknown]).toEqual([0, 0, 0]);
+  });
+
   it('treats a reviewer answer before its fan-out as unknown', async () => {
     const r = await newRun(await runsRoot(), 'run-a');
     const head = '1234567890abcdef1234567890abcdef12345678';
@@ -849,6 +886,21 @@ describe('evidence-query outcomeOf: tokens-per-ship', () => {
 
     const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'tokens-per-ship');
     expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+  });
+
+  it('does not count a short SHIP reply shared by two complete fan-out heads', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    const abbreviation = 'abcdef1';
+    const firstComplete = `${abbreviation}${'a'.repeat(33)}`;
+    const secondComplete = `${abbreviation}${'b'.repeat(33)}`;
+    r.take('RP-505-token-ambiguous-reviewer-abbreviation');
+    r.fanOut(firstComplete, ['code-reviewer']);
+    r.fanOut(secondComplete, ['code-reviewer']);
+    r.fanOut(firstComplete, ['code-reviewer']);
+    r.verdict('code-reviewer', 'SHIP', abbreviation);
+
+    const s = signal(mod().outcomeOf({ runs: [r.entry()] }), 'tokens-per-ship');
+    expect([s.eligible, s.observed, s.unknown]).toEqual([0, 0, 0]);
   });
 
   it('states tokens-per-ship as not computed, with every SHIP verdict unknown and the reason', async () => {

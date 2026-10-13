@@ -14,6 +14,7 @@ import { isCommitId } from './verdict.mjs';
 const TAKEN = /^taken (.+)$/;
 const FAN_OUT = 'reviewer-fan-out';
 const ROUTING = 'review-routing:';
+const COMPLETE_COMMIT_LENGTHS = new Set([40, 64]);
 
 const versionOf = (name) => SIGNALS.find((signal) => signal.name === name).signalVersion;
 
@@ -42,8 +43,25 @@ export const itemOccurrences = (entry) => {
 
 const fanOutsOf = (item) => item.records.filter((record) => record.gate === FAN_OUT);
 
+const canonicalFanOutHeads = (records, completeOnly = false) => {
+  const heads = [];
+  const fanOutHeads = records
+    .filter((record) => record.gate === FAN_OUT)
+    .map((record) => record.headSha)
+    .filter((head) => isCommitId(head) && (!completeOnly || COMPLETE_COMMIT_LENGTHS.has(head.length)))
+    .sort((one, other) => other.length - one.length);
+  for (const fanOutHead of fanOutHeads) {
+    if (!heads.some((head) => sameCommit(head, fanOutHead))) heads.push(fanOutHead);
+  }
+  return heads;
+};
+
+const ambiguousFanOutHead = (records, head) =>
+  isCommitId(head) &&
+  canonicalFanOutHeads(records, true).filter((completeHead) => sameCommit(completeHead, head)).length > 1;
+
 const lastFanOutFor = (records, head, end = records.length) => {
-  if (!isCommitId(head)) return null;
+  if (!isCommitId(head) || ambiguousFanOutHead(records, head)) return null;
   for (let index = end - 1; index >= 0; index -= 1) {
     const record = records[index];
     if (record.gate === FAN_OUT && isCommitId(record.headSha) && sameCommit(record.headSha, head)) {
@@ -73,7 +91,10 @@ const firstVerdictOf = (occurrence) => {
   for (const reviewer of reviewers) {
     const answer = occurrence.records.slice(lastFanOut.index + 1).find(
       (record) =>
-        record.gate === reviewer && isCommitId(record.headSha) && sameCommit(record.headSha, head),
+        record.gate === reviewer &&
+        isCommitId(record.headSha) &&
+        !ambiguousFanOutHead(occurrence.records, record.headSha) &&
+        sameCommit(record.headSha, head),
     );
     if (!answer) return null;
     words.push(answer.verdict);
@@ -128,16 +149,7 @@ const gateRounds = (occurrences) => {
   let observed = 0;
   for (const occurrence of occurrences) {
     const closed = occurrence.records.some((record) => record.kind === 'item-closed');
-    const heads = [];
-    const fanOutHeads = fanOutsOf(occurrence)
-      .map((fan) => fan.headSha)
-      .filter(isCommitId)
-      .sort((one, other) => other.length - one.length);
-    for (const fanOutHead of fanOutHeads) {
-      if (!heads.some((head) => sameCommit(head, fanOutHead))) {
-        heads.push(fanOutHead);
-      }
-    }
+    const heads = canonicalFanOutHeads(occurrence.records);
     if (!closed || heads.length === 0) continue;
     observed += 1;
     distribution[heads.length] = (distribution[heads.length] ?? 0) + 1;
