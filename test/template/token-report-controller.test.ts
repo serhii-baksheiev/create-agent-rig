@@ -85,6 +85,7 @@ interface HarnessTotals {
 
 interface Report {
   schemaVersion: number;
+  dispatchGroups: Array<{ dispatches: Record<string, number> }>;
   tickets: Array<{ ticket: string; occurrences: Array<Record<string, unknown>> }>;
   accountingBasis: Record<string, unknown>;
   controllers: ControllerEntry[];
@@ -264,6 +265,80 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.totals.codex.controllerRuns.withoutSnapshot).toBe(1); // one count, both harnesses
     expect(data.totals.claude.combined).not.toBeNull();
     expect(data.totals.claude.combinedUnavailable).toBeNull();
+  });
+
+  // Pins a stated LIMIT of schema v2 (PR D replaces it with a measured-group
+  // rule): a group with an unended dispatch, or one that ended without usage,
+  // still combines; the group's own counters are where that shows.
+  it('a dispatch group with a dispatch that never ended, or ended without usage, still combines on this schema version', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    const sub = {
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 6,
+      cacheCreationInputTokens: 7,
+      cacheReadInputTokens: 8,
+    };
+    snapshot(dir, 1);
+    dispatchPair(dir, 2, sub);
+    const base = { harness: 'claude', controller: 'ctrl-1', agentType: 'code-reviewer' };
+    // One dispatch that never ended …
+    journal.recordEvent({
+      runDir: dir,
+      kind: 'dispatch-start',
+      data: { schema: 1, ...base, agentRef: 'ref-open' },
+      now: at(4),
+    });
+    // … and one that ended without usage.
+    journal.recordEvent({
+      runDir: dir,
+      kind: 'dispatch-start',
+      data: { schema: 1, ...base, agentRef: 'ref-nousage' },
+      now: at(5),
+    });
+    journal.recordEvent({
+      runDir: dir,
+      kind: 'dispatch-end',
+      data: {
+        schema: 1,
+        ...base,
+        agentRef: 'ref-nousage',
+        usageUnavailable: 'transcript-unreadable',
+      },
+      now: at(6),
+    });
+    const data = report(root, ['run-a']);
+    expect(data.dispatchGroups[0]!.dispatches).toEqual({
+      ended: 2,
+      noEndObserved: 1,
+      withUsage: 1,
+    });
+    expect(data.totals.claude.combined).not.toBeNull();
+    expect(data.totals.claude.combinedUnavailable).toBeNull();
+  });
+
+  it('a usage-less snapshot between two valid ones is counted in snapshots but skipped in snapshotCounters', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    snapshot(dir, 1, {
+      usage: {
+        evidenceSource: 'claude-controller-transcript',
+        ...claudeCounters({ outputTokens: 30 }),
+      },
+    });
+    snapshot(dir, 2, { usage: undefined, usageUnavailable: 'transcript-unreadable' });
+    snapshot(dir, 3, {
+      usage: {
+        evidenceSource: 'claude-controller-transcript',
+        ...claudeCounters({ outputTokens: 5 }),
+      },
+    });
+    const data = report(root, ['run-a']);
+    const entry = data.controllers[0]!;
+    expect(entry.snapshots).toBe(3);
+    expect(entry.usageUnavailable).toBe('non-monotonic-snapshots');
+    expect(entry.snapshotCounters?.map((c) => c.outputTokens)).toEqual([30, 5]);
   });
 
   it('controller plus two subagents: combined is the disjoint sum, checked against an independent addition', async () => {

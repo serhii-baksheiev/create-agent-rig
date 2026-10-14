@@ -447,7 +447,9 @@ const codexUsageOf = (rawList) => {
 // skipped there) —
 // test/template/token-report-controller.test.ts (absent in a generated rig)
 // › "a counter that goes down between snapshots makes the controller
-// unavailable, keeps the raw counters, and blocks combined". Controller
+// unavailable, keeps the raw counters, and blocks combined" and › "a
+// usage-less snapshot between two valid ones is counted in snapshots but
+// skipped in snapshotCounters". Controller
 // usage is attributed to the RUN only — never to a ticket, attempt or review
 // round — because the snapshot interval starts at session start, before any
 // item selection —
@@ -456,9 +458,14 @@ const codexUsageOf = (rawList) => {
 // taken ticket; no ticket is credited". A combined (controller + subagents)
 // total is printed when the harness has controller usage from every one of
 // its entries, every dispatch group of the harness has a usage slot (built
-// from the dispatches of that group that ended with usage — a group where
-// only SOME did still counts here and says so in `dispatches.withUsage`),
-// and the LAST snapshot of every (run, controller) names a harness version in
+// from the dispatches of that group that ended with usage — a group where a
+// dispatch never ended, or ended without usage, still counts here, and the
+// group's `dispatches.noEndObserved` and `dispatches.withUsage` are what
+// say so —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a dispatch group with a dispatch that never ended, or ended without
+// usage, still combines on this schema version"), and the LAST snapshot of
+// every (run, controller) names a harness version in
 // `VERIFIED_EXCLUSIVITY`; a harness with controller entries and no dispatch
 // group prints, once that version check passes, combined equal to the
 // controller; and a run read WITHOUT a snapshot is counted — one count for
@@ -506,12 +513,12 @@ const VERIFIED_EXCLUSIVITY = Object.freeze({
   claude: Object.freeze({
     versions: Object.freeze(['2.1.296']),
     evidence:
-      'measured once, live on 2.1.296, 2026-10-14 (recorded in Jira RP-511, comment 24425, L1): a spawned subagent left no usage in the parent transcript; the parent cost-state carried it.',
+      'measured once, live on 2.1.296, 2026-10-14 (recorded in Jira RP-511, comment 24425): a spawned subagent left no usage in the parent’s ASSISTANT records (L1 — the parent’s tool-result record does carry the subagent’s totals, which is why only assistant records are summed); the parent cost-state carried it (L3).',
   }),
   codex: Object.freeze({
     versions: Object.freeze(['0.161.0', '0.162.0', '0.162.1']),
     evidence:
-      'measured once, on 400 real 0.161.0/0.162.x rollouts (recorded in Jira RP-511, comment 24425, L2): thread_token_usage equals the sum of own per-record deltas in every rollout and no rollout carries another thread’s records. 0.156.1 is NOT listed: RP-227’s live probe (comment 20584) measured codex exec --json turn.completed.usage, not the rollout total this basis reads.',
+      'measured once, on 400 real 0.161.0/0.162.x rollouts (recorded in Jira RP-511, comment 24425, L2): thread_token_usage equals the sum of own per-record deltas in every rollout and no rollout carries another thread’s token_usage_records. 0.156.1 is NOT listed: RP-227’s live probe (comment 20584) measured codex exec --json turn.completed.usage, not the rollout total this basis reads.',
   }),
 });
 
@@ -531,7 +538,7 @@ const ACCOUNTING_BASIS = Object.freeze({
     codex: 'codex-subagent-rollout thread_token_usage per dispatch-end (RP-227), summed per dispatch group.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness has a usage slot (a group where only some dispatches ended with usage still counts, and says so in dispatches.withUsage), and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints, once that version check passes, combined equal to the controller; a run read without a snapshot is counted (controllerRuns.withoutSnapshot, one count for both harnesses) but does not withhold the total on this schema version; otherwise null with a reason.',
+    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness has a usage slot (a group where a dispatch never ended, or ended without usage, still counts; dispatches.noEndObserved and dispatches.withUsage say so), and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints, once that version check passes, combined equal to the controller; a run read without a snapshot is counted (controllerRuns.withoutSnapshot, one count for both harnesses) but does not withhold the total on this schema version; otherwise null with a reason.',
     exclusivityVerified: VERIFIED_EXCLUSIVITY,
     subagentHarnessVersion:
       'not recorded on dispatch-end; a subagent runs under the same harness binary as its controller, which this report assumes and does not verify.',
