@@ -379,6 +379,13 @@ describe('usage-readers.mjs — readClaudeControllerUsage (RP-511)', () => {
     const haiku = (result.sessionAggregate as { models: Record<string, Record<string, number>> })
       .models['claude-haiku-5-5'];
     expect(haiku?.cacheCreationInputTokens).toBe(79_157);
+    // The fixture's cost-state carries costUSD/totalCostUSD/webSearchRequests;
+    // none of them survives the projection.
+    expect(raw).toContain('webSearchRequests');
+    expect(raw).toContain('costUSD');
+    const projected = JSON.stringify(result.sessionAggregate);
+    expect(projected).not.toContain('costUSD');
+    expect(projected).not.toContain('webSearchRequests');
     expect(own).toBeGreaterThan(byKey.size); // several records per request: the dedupe is load-bearing
   });
 });
@@ -579,20 +586,23 @@ describe('record-session-usage.mjs — the Stop/SessionEnd hook (RP-511)', () =>
     // reason code twice — is deduped on purpose, which would hide a case.
     for (const [harness, fields, expected] of cases) {
       const caseRun = await mkdtemp(path.join(tmpdir(), 'session-usage-refusal-'));
-      const result = await runHook(stopPayload(fields), { ...env(), RIG_RUN_DIR: caseRun }, [
-        `--harness=${harness}`,
-      ]);
-      expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
-      const events = await readEvents(caseRun);
-      expect(events, JSON.stringify(fields)).toHaveLength(1);
-      const data = events[0]!.data as Record<string, unknown>;
-      expect(data.usageUnavailable, JSON.stringify(fields)).toBe(expected);
-      expect(data).not.toHaveProperty('usage');
-      await removeFixture(caseRun);
+      try {
+        const result = await runHook(stopPayload(fields), { ...env(), RIG_RUN_DIR: caseRun }, [
+          `--harness=${harness}`,
+        ]);
+        expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
+        const events = await readEvents(caseRun);
+        expect(events, JSON.stringify(fields)).toHaveLength(1);
+        const data = events[0]!.data as Record<string, unknown>;
+        expect(data.usageUnavailable, JSON.stringify(fields)).toBe(expected);
+        expect(data).not.toHaveProperty('usage');
+      } finally {
+        await removeFixture(caseRun);
+      }
     }
   });
 
-  it('names the controller by the same ref() a dispatch-start of the same session carries, never by the raw session id', async () => {
+  it('names the controller by the same ref() a Claude dispatch-start of the same session carries, never by the raw session id', async () => {
     const file = await writeLines(`${SESSION}.jsonl`, [
       claudeAssistant({ requestId: 'r1', usage: { input_tokens: 3, output_tokens: 4 } }),
     ]);
@@ -631,26 +641,73 @@ describe('record-session-usage.mjs — the Stop/SessionEnd hook (RP-511)', () =>
     const file = await writeLines(`${SESSION}.jsonl`, [
       claudeAssistant({ requestId: 'r1', usage: { input_tokens: 3, output_tokens: 4 } }),
     ]);
-    const { recordEvent } = (await import(runJournalUrl)) as {
+    const journal = (await import(runJournalUrl)) as {
       recordEvent(input: {
         runDir: string;
         kind: string;
         data: Record<string, unknown>;
         now: string;
       }): JournalRecord;
+      recordDecision(input: {
+        runDir: string;
+        gate: string;
+        verdict: string;
+        why?: string;
+        now: string;
+      }): JournalRecord;
     };
-    // One event whose data is larger than MAX_SNAPSHOT_CHECK_BYTES (4 MiB)
-    // puts events.jsonl past the bound; nothing in it is a controller-usage.
-    recordEvent({
+    const pad = 'x'.repeat(4 * 1024 * 1024 + 1);
+    // events.jsonl past the bound (one padding event, no controller-usage in it).
+    journal.recordEvent({
       runDir,
       kind: 'padding',
-      data: { pad: 'x'.repeat(4 * 1024 * 1024 + 1) },
+      data: { pad },
       now: '2026-10-14T00:00:00.000Z',
     });
     await runHook(stopPayload({ transcript_path: file }), env(), ['--harness=claude']);
     await runHook(stopPayload({ transcript_path: file }), env(), ['--harness=claude']);
     const events = await readEvents(runDir);
     expect(events.map((e) => e.kind)).toEqual(['padding', 'controller-usage', 'controller-usage']);
+
+    // decisions.jsonl past the bound, with a SMALL events.jsonl that already
+    // holds an identical snapshot: readRun reads both files, so both gate.
+    const other = await mkdtemp(path.join(tmpdir(), 'session-usage-decisions-bound-'));
+    try {
+      const otherEnv = { ...env(), RIG_RUN_DIR: other };
+      await runHook(stopPayload({ transcript_path: file }), otherEnv, ['--harness=claude']);
+      await runHook(stopPayload({ transcript_path: file }), otherEnv, ['--harness=claude']);
+      expect(await readEvents(other)).toHaveLength(1); // deduped while both files are small
+      journal.recordDecision({
+        runDir: other,
+        gate: 'padding',
+        verdict: 'none',
+        why: pad,
+        now: '2026-10-14T00:00:01.000Z',
+      });
+      await runHook(stopPayload({ transcript_path: file }), otherEnv, ['--harness=claude']);
+      expect(await readEvents(other)).toHaveLength(2); // written regardless past the bound
+    } finally {
+      await removeFixture(other);
+    }
+  });
+
+  it('records transcript-malformed-line, never a partial sum, when the last line of a transcript still being written is incomplete', async () => {
+    const complete = claudeAssistant({
+      requestId: 'r1',
+      usage: { input_tokens: 3, output_tokens: 4 },
+    });
+    const partial = claudeAssistant({
+      requestId: 'r2',
+      usage: { input_tokens: 5, output_tokens: 6 },
+    });
+    const file = path.join(dir, `${SESSION}.jsonl`);
+    // A writer mid-record: the second line is cut off and has no newline.
+    await writeFile(file, `${complete}\n${partial.slice(0, partial.length - 10)}`, 'utf8');
+    await runHook(stopPayload({ transcript_path: file }), env(), ['--harness=claude']);
+    const [event] = await readEvents(runDir);
+    const data = event!.data as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('transcript-malformed-line');
+    expect(data).not.toHaveProperty('usage');
   });
 
   it('binds a Codex rollout by its basename and reads the parent thread total with --harness=codex', async () => {

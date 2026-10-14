@@ -1,7 +1,7 @@
 // usage-readers.mjs — the bounded, read-only usage readers the dispatch
-// evidence hook (`../record-dispatch.mjs`, RP-226/RP-227) folds through, and
-// that the controller-session evidence of RP-511 reuses once it ships.
-// Extracted from `record-dispatch.mjs` (RP-511, PR A): the bounds, the
+// evidence hook (`../record-dispatch.mjs`, RP-226/RP-227) and the
+// controller-session hook (`../record-session-usage.mjs`, RP-511) fold
+// through. Extracted from `record-dispatch.mjs` (RP-511, PR A): the bounds, the
 // identity checks, the dedupe rules and every reason code are the ones that
 // hook's header LIMITS document, and that hook's own tests exercise them
 // through its re-exports — test/template/dispatch-usage.test.ts (absent in a
@@ -16,8 +16,18 @@
 // the journal record" and test/template/dispatch-usage-codex.test.ts (absent
 // in a generated rig) › "never carries the rollout path, the padding/canary
 // content, or turn_token_usage/usage (the non-cumulative fields) in the
-// journal record". The readers return only aggregated counters, a model
-// string already present verbatim in a record, and short static reason codes.
+// journal record". A subagent reader returns only aggregated counters, a
+// model string already present verbatim in a record, and short static
+// reason codes. A controller reader (the RP-511 section below) returns, in
+// addition, `coverage` (counts and a fixed `basis` string), `harnessVersion`
+// (the file's own version string, only when it passes `HARNESS_VERSION_RE`
+// and every counted record agrees) and, on Claude, `sessionAggregate` — the
+// `cost-state` record's per-model counters, keyed by model names that pass
+// `MEASURED_MODEL_RE`, never its `costUSD` —
+// test/template/session-usage.test.ts (absent in a generated rig) › "carries
+// cost-state as a labelled diagnostic without costUSD, and omits a harness
+// version the records disagree on" and › "binds a Codex rollout by its
+// basename and reads the parent thread total with --harness=codex".
 //
 // The path checks are the CALLER's — these functions open whatever path
 // they are handed. `record-dispatch.mjs` refuses a UNC-shaped or relative
@@ -393,9 +403,8 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
 //
 // `coverage` states what the counters are built from — assistant records
 // only, deduped per request, with `compactBoundaries` counted — because a
-// request that leaves no assistant record (a compaction's own request is one)
-// is not seen by this reader at all; nothing here claims to see the
-// session's whole consumption. The optional `sessionAggregate` is the
+// request that leaves no assistant record is not seen by this reader at all;
+// nothing here claims to see the session's whole consumption. The optional `sessionAggregate` is the
 // harness's own cumulative `cost-state` record — UNDOCUMENTED, written
 // periodically (so possibly stale: `recordsBehind` is how many records
 // followed it), not authoritative billing, never summed with anything here;

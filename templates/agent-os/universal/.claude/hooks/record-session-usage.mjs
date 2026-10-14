@@ -19,8 +19,16 @@
 //
 // WHAT IT READS. Only the payload's `transcript_path` — the controller's own
 // transcript (Claude) or rollout (Codex), as the harness names it on `Stop`
-// and `SessionEnd` — through the same bounded readers, bounds and reason
-// codes as the subagent capture (`./lib/usage-readers.mjs`). The path is
+// and `SessionEnd` — through the same bounded reader as the subagent capture
+// (`./lib/usage-readers.mjs`): the bounds and the read-failure codes
+// (`transcript-unreadable`, `transcript-too-large`,
+// `transcript-line-too-large`, `transcript-timeout`,
+// `transcript-malformed-line`, `transcript-empty`) are `readBoundedLines`'s
+// and shared; the identity and path codes are this hook's own and differ
+// from `record-dispatch.mjs`'s (`transcript-path-*` on both harnesses where
+// the subagent capture says `rollout-path-*` for Codex;
+// `session-identity-mismatch` where it says `rollout-identity-mismatch`;
+// `transcript-path-mismatch` has no subagent counterpart). The path is
 // refused before anything is opened when it is missing or empty
 // (`transcript-path-missing`), UNC-shaped in any separator mix
 // (`transcript-path-unc`), not absolute (`transcript-path-not-absolute`), or
@@ -43,14 +51,17 @@
 // write: `schema`, `harness`, `controller`, `trigger`, `cumulative`, `usage`,
 // `usageUnavailable`, `coverage`, `harnessVersion`, `sessionAggregate`.
 // `controller` is never the raw `session_id` — it is `record-dispatch.mjs`'s
-// own `ref(runDir, session_id)`, the same hash a `dispatch-start` carries for
-// the same session, so the two kinds of record meet on one identity and
-// neither names an id a reader could correlate outside this run —
+// own `ref(runDir, session_id)`, so it names no id a reader could correlate
+// outside this run. On Claude it is the same hash a `dispatch-start` of the
+// same session carries, so the two kinds of record meet on one identity —
 // test/template/session-usage.test.ts (absent in a generated rig) › "names
-// the controller by the same ref() a dispatch-start of the same session
-// carries, never by the raw session id". `cumulative` is always `true`: the
-// counters are the session's running total as of this snapshot, so a reader
-// keeps the LAST snapshot per controller and never sums snapshots.
+// the controller by the same ref() a Claude dispatch-start of the same
+// session carries, never by the raw session id"; a Codex `dispatch-start`
+// carries no `controller` at all (`record-dispatch.mjs`, its LIMITS), so on
+// Codex this record is the only one that names the session. `cumulative` is
+// always `true`: the counters are the session's running total as of this
+// snapshot, so a reader keeps the LAST snapshot per controller and never
+// sums snapshots.
 //
 // REPEATED SNAPSHOTS. `Stop` fires at every turn end, so an idle turn would
 // re-record the same total. Before writing, the hook reads the run's last
@@ -82,16 +93,23 @@
 //     the `Stop` snapshots stand on their own either way.
 //   - **The readers' bounds apply to the controller's file as to a
 //     subagent's** — `MAX_TRANSCRIPT_TOTAL_BYTES`, `MAX_TRANSCRIPT_LINE_BYTES`
-//     and `MAX_TRANSCRIPT_MS` in `./lib/usage-readers.mjs`; a controller
+//     and `MAX_TRANSCRIPT_MS` in `./lib/usage-readers.mjs`. A controller
 //     transcript past the total bound records `transcript-too-large` at every
-//     Stop, and a file still being written whose last line is incomplete
-//     records `transcript-malformed-line` — both absent evidence with a
-//     reason, never a partial number.
-//   - **Assistant records are not the session's whole consumption.** A
-//     request that leaves no assistant record (a compaction's own request is
-//     one) is not seen; `coverage.basis` says so, and the optional
-//     `sessionAggregate` (the harness's UNDOCUMENTED `cost-state` record) is
-//     carried for comparison only — never added to `usage`.
+//     Stop — the shared reader's bound,
+//     test/template/dispatch-usage-codex.test.ts (absent in a generated rig)
+//     › "reports usageUnavailable with transcript-too-large, with no partial
+//     numbers, when the rollout exceeds 32 MiB total" — and a file still
+//     being written whose last line is incomplete records
+//     `transcript-malformed-line` —
+//     test/template/session-usage.test.ts (absent in a generated rig) ›
+//     "records transcript-malformed-line, never a partial sum, when the last
+//     line of a transcript still being written is incomplete". Both are
+//     absent evidence with a reason, never a partial number.
+//   - **Assistant records are not the session's whole consumption.** Only
+//     assistant records are read, so a request that leaves none is not
+//     seen; `coverage.basis` says so, and the optional `sessionAggregate`
+//     (the harness's UNDOCUMENTED `cost-state` record) is carried for
+//     comparison only — never added to `usage`.
 //   - **A Codex project hook may be skipped until the project is trusted**,
 //     exactly as for dispatches; the trace is then absent, not zero.
 //   - **Codex `Stop`/`SessionEnd` have not been observed delivering a

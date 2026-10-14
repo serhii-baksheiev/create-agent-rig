@@ -854,12 +854,6 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
     },
   );
 
-  // RP-225 slice 2: `record-dispatch.mjs` is wired on Claude's SubagentStart
-  // and SubagentStop with `--harness=claude` in the Claude source
-  // (`.claude/settings.json`) — a call-site argv flag, never guessed from the
-  // hook payload. The Codex projection must carry the SAME hook with its
-  // harness argument rewritten to `--harness=codex`, so the one deterministic
-  // difference between the two projected commands is that one flag.
   // RP-511 PR B: the controller-session hook travels the same way — wired on
   // Claude's Stop/SessionEnd with `--harness=claude`, projected with
   // `--harness=codex` and nothing else different.
@@ -878,10 +872,17 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
       )?.[1];
       expect(encoded, ` commandWindows is not an EncodedCommand`).toBeDefined();
       const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+      expect(windowsScript).toContain('record-session-usage.mjs');
       expect(windowsScript).toContain('--harness=codex');
     }
   });
 
+  // RP-225 slice 2: `record-dispatch.mjs` is wired on Claude's SubagentStart
+  // and SubagentStop with `--harness=claude` in the Claude source
+  // (`.claude/settings.json`) — a call-site argv flag, never guessed from the
+  // hook payload. The Codex projection must carry the SAME hook with its
+  // harness argument rewritten to `--harness=codex`, so the one deterministic
+  // difference between the two projected commands is that one flag.
   it('projects record-dispatch onto Codex SubagentStart/SubagentStop with --harness=codex', async () => {
     const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>>;
