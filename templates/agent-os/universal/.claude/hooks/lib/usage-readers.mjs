@@ -266,8 +266,10 @@ export function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
  * or logs the path or any message content — only aggregated numbers, a model
  * string already present verbatim in the transcript (and only when it passes
  * `MEASURED_MODEL_RE`), the transcript's own `version` string (only when it
- * passes `HARNESS_VERSION_RE` and every counted record agrees), or a short
- * static reason code.
+ * passes `HARNESS_VERSION_RE` and every counted record agrees —
+ * test/template/dispatch-usage.test.ts (absent in a generated rig) › "omits
+ * harnessVersion when counted records disagree on the version, carry none,
+ * or carry one out of shape"), or a short static reason code.
  *
  * `now` defaults to `Date.now` and is the only source of wall-clock reads in
  * this function — the test suite injects a fake one to drive the 3s bound

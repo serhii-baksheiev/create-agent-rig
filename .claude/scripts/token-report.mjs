@@ -504,7 +504,19 @@ const codexUsageOf = (rawList) => {
 // journalled records but no usage evidence for any harness is relevant to
 // every harness — its controller is unaccounted for" and › "mixed-harness
 // run: a codex controller snapshot does not stand in for the claude
-// controller of the same run". A dispatch group is complete only when every
+// controller of the same run". The snapshot a run needs is one per controller
+// ref its dispatch-starts NAME; a start with no `controller` — every Codex
+// one, a Claude one without a session id — needs any snapshot of the harness
+// in its run, is counted under `controllerRuns.unnamedDispatchStarts`, and
+// the combined total then carries the caveat `dispatch-controller-unnamed`
+// (a second controller session of the harness in that run that wrote no
+// snapshot is not detected); a start whose `controller` is present but out
+// of `ref()` shape is malformed, counted under
+// `controllerRuns.malformedDispatchStarts`, and refuses the total —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a codex run whose dispatches name no controller is complete once the run carries a codex snapshot: combined prints with the dispatch-controller-unnamed caveat, and the run is never reported missing",
+// › "a claude dispatch-start without a controller ref follows the same per-(run, harness) rule, with the caveat; a start that names a ref no snapshot carries still leaves the run missing"
+// and › "a dispatch-start whose controller is present but not in ref() shape is a malformed dispatch-start: counted, and it refuses the combined total for the harness". A dispatch group is complete only when every
 // dispatch in it ended with usage (`noEndObserved === 0`, no `withUsage`
 // under-count, no `partialCounters`) —
 // test/template/token-report-controller.test.ts (absent in a generated rig)
@@ -597,7 +609,12 @@ const VERIFIED_EXCLUSIVITY = Object.freeze({
  * comment above, plus › "a codex run whose dispatches name no controller is
  * complete once the run carries a codex snapshot: combined prints with the
  * dispatch-controller-unnamed caveat, and the run is never reported
- * missing", › "controller-only run with the dispatch hook configured: the
+ * missing", › "a claude dispatch-start without a controller ref follows the
+ * same per-(run, harness) rule, with the caveat; a start that names a ref no
+ * snapshot carries still leaves the run missing", › "a dispatch-start whose
+ * controller is present but not in ref() shape is a malformed
+ * dispatch-start: counted, and it refuses the combined total for the
+ * harness", › "controller-only run with the dispatch hook configured: the
  * snapshot is the controller usage, subagents are null, and combined equals
  * the controller on a verified harness version" and › "a codex run with a
  * snapshot and no dispatch event never combines on configuration alone — an
@@ -635,7 +652,7 @@ const ACCOUNTING_BASIS = Object.freeze({
       'a dispatch group counts as measured only when every dispatch in it ended with usage: noEndObserved is 0, no withUsage under-count, no partialCounters.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed only when every run relevant to the harness carries a controller snapshot for every controller ref its dispatches name (a dispatch-start that names none — every codex one — needs any snapshot of the harness in its run, and the total then carries the caveat dispatch-controller-unnamed), no snapshot read is malformed, no dispatch is of an unknown harness or unpaired, every controller and every dispatch group is measured, and the last snapshot of every (run, controller) and every dispatch carry a harnessVersion in exclusivityVerified. A run with a snapshot and no dispatch event is accepted only for claude and only when the checkout’s dispatch hook wiring is configured (caveat subagent-hook-configured-not-witnessed); for codex an untrusted project hook is skipped silently, so such a run leaves combined null. Otherwise null with a reason.',
+    rule: 'controller + subagents, printed only when every run relevant to the harness carries a controller snapshot for every controller ref its dispatches name (a dispatch-start with no controller — every codex one — needs any snapshot of the harness in its run, and the total then carries the caveat dispatch-controller-unnamed: a second controller session of that harness in the run that wrote no snapshot is not detected; a dispatch-start whose controller is present but out of ref() shape is malformed and refuses the total), no snapshot read is malformed, no dispatch is of an unknown harness or unpaired, every controller and every dispatch group is measured, and the last snapshot of every (run, controller) and every dispatch carry a harnessVersion in exclusivityVerified. A run with a snapshot and no dispatch event is accepted only for claude and only when the checkout’s dispatch hook wiring is configured (caveat subagent-hook-configured-not-witnessed); for codex an untrusted project hook is skipped silently, so such a run leaves combined null. Otherwise null with a reason.',
     authoritative: false,
     basis:
       'a disjoint sum of two lower-bound measurements, not billing: it cannot be reconciled against the provider’s invoice and is never promoted beyond "measured".',
@@ -952,7 +969,15 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
   // names no controller (every Codex start; a Claude start without a session
   // id) is complete once the run carries any snapshot of the harness, and
   // the combined total then carries `dispatch-controller-unnamed`: per
-  // (run, controller) completeness is not decidable for such a dispatch.
+  // (run, controller) completeness is not decidable for such a dispatch, so
+  // a second controller session of the harness in that run that wrote no
+  // snapshot is NOT detected — the caveat is what says so, and
+  // `controllerRuns.complete` counts such a run as complete —
+  // test/template/token-report-controller.test.ts (absent in a generated rig)
+  // › "a codex run whose dispatches name no controller is complete once the run carries a codex snapshot: combined prints with the dispatch-controller-unnamed caveat, and the run is never reported missing" and
+  // › "a claude dispatch-start without a controller ref follows the same per-(run, harness) rule, with the caveat; a start that names a ref no snapshot carries still leaves the run missing". A start whose
+  // `controller` is present but out of `ref()` shape is malformed and refuses
+  // the total (`'malformed-dispatch-start'`) — › "a dispatch-start whose controller is present but not in ref() shape is a malformed dispatch-start: counted, and it refuses the combined total for the harness".
   const relevantRuns = runEvidence.filter(
     (run) => run.dispatch[harness] || run.controller[harness] || !run.any,
   );
@@ -963,6 +988,10 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
   );
   const unnamedDispatchStarts = relevantRuns.reduce(
     (acc, run) => acc + run.unnamedDispatchStarts[harness],
+    0,
+  );
+  const malformedDispatchStarts = relevantRuns.reduce(
+    (acc, run) => acc + run.malformedDispatchStarts[harness],
     0,
   );
   const malformedSnapshots = runEvidence.reduce((acc, run) => acc + run.malformed, 0);
@@ -1038,6 +1067,7 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
   const combinedCaveats = [];
   if (entries.length === 0) combinedUnavailable = 'no-controller-snapshot';
   else if (malformedSnapshots > 0) combinedUnavailable = 'malformed-controller-snapshot';
+  else if (malformedDispatchStarts > 0) combinedUnavailable = 'malformed-dispatch-start';
   else if (missingRuns.length > 0) combinedUnavailable = 'controller-snapshot-missing-for-run';
   else if (unknownHarnessDispatchEvents > 0) combinedUnavailable = 'dispatch-harness-unknown';
   else if (unpairedEnds > 0) combinedUnavailable = 'dispatch-end-unpaired';
@@ -1073,6 +1103,7 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
       missingSnapshot: missingRuns.length,
       missingSnapshotRuns: missingRuns.map((run) => run.run),
       unnamedDispatchStarts,
+      malformedDispatchStarts,
       withoutDispatchEvidence: runsWithoutDispatchEvidence.length,
       unavailable,
       partial: partial.length,
@@ -1280,6 +1311,7 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       },
       dispatchControllers: { claude: new Set(), codex: new Set() },
       unnamedDispatchStarts: { claude: 0, codex: 0 },
+      malformedDispatchStarts: { claude: 0, codex: 0 },
       unpairedEnds: { claude: 0, codex: 0 },
       any: false,
       malformed,
@@ -1321,14 +1353,22 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       if (event.kind === 'dispatch-start') {
         // A Codex dispatch-start never names a controller (`record-dispatch.mjs`,
         // its LIMITS), and a Claude one without a session id does not either:
-        // such a start is counted as unnamed, and completeness for it is per
-        // (run, harness) — any snapshot of the harness in the run — with a
-        // caveat on the combined total, never a false "missing snapshot".
+        // a start with NO `controller` is counted as unnamed, and completeness
+        // for it is per (run, harness) — any snapshot of the harness in the run
+        // — with a caveat on the combined total, never a false "missing
+        // snapshot" (`harnessTotalsOf`, its pointers). A `controller` that is
+        // PRESENT but not in `ref()` shape is a damaged or foreign journal:
+        // counted as malformed, and it refuses the harness's combined total —
+        // exactly as a snapshot with such a controller does —
+        // test/template/token-report-controller.test.ts (absent in a generated rig)
+        // › "a dispatch-start whose controller is present but not in ref() shape is a malformed dispatch-start: counted, and it refuses the combined total for the harness".
         const ref = event.data?.controller;
-        if (typeof ref === 'string' && CONTROLLER_REF_RE.test(ref)) {
+        if (ref === undefined) {
+          evidence.unnamedDispatchStarts[harnessRaw] += 1;
+        } else if (typeof ref === 'string' && CONTROLLER_REF_RE.test(ref)) {
           evidence.dispatchControllers[harnessRaw].add(ref);
         } else {
-          evidence.unnamedDispatchStarts[harnessRaw] += 1;
+          evidence.malformedDispatchStarts[harnessRaw] += 1;
         }
       }
       if (event.kind !== 'dispatch-end') continue;
@@ -1701,7 +1741,8 @@ export const render = (report) => {
           : '') +
         ` controllerRuns=${total.controllerRuns.complete}/${total.controllerRuns.relevant}` +
         ` missingSnapshot=${total.controllerRuns.missingSnapshot}` +
-        ` malformedSnapshots=${total.controllerRuns.malformedSnapshots}`,
+        ` malformedSnapshots=${total.controllerRuns.malformedSnapshots}` +
+        ` malformedDispatchStarts=${total.controllerRuns.malformedDispatchStarts}`,
     );
   }
 

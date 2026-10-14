@@ -84,6 +84,7 @@ interface HarnessTotals {
     relevant: number;
     complete: number;
     unnamedDispatchStarts: number;
+    malformedDispatchStarts: number;
     missingSnapshot: number;
     missingSnapshotRuns: string[];
     withoutDispatchEvidence: number;
@@ -547,6 +548,61 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     const data2 = report(root, ['run-b']);
     expect(data2.totals.codex.combinedUnavailable).toBe('no-controller-snapshot');
     expect(data2.totals.codex.controllerRuns.missingSnapshotRuns).toEqual(['run-b']);
+  });
+
+  // Absent is not malformed: a start that NAMES a controller outside ref()
+  // shape is a damaged or foreign journal, and it fails closed — exactly as a
+  // snapshot with such a controller does — never a silent "unnamed".
+  it('a dispatch-start whose controller is present but not in ref() shape is a malformed dispatch-start: counted, and it refuses the combined total for the harness', async () => {
+    const root = await runsRoot();
+    const cases: unknown[] = [
+      'unknown',
+      '0123456789ABCDEF',
+      `${CTRL}\n`,
+      {},
+      123,
+      [CTRL],
+      '__proto__',
+    ];
+    for (const [i, controller] of cases.entries()) {
+      const dir = await mkrun(root, `run-${i}`);
+      journal.recordEvent({
+        runDir: dir,
+        kind: 'dispatch-start',
+        data: {
+          schema: 1,
+          harness: 'claude',
+          controller,
+          agentType: 'code-reviewer',
+          agentRef: 'ref-1',
+        },
+        now: at(1),
+      });
+      journal.recordEvent({
+        runDir: dir,
+        kind: 'dispatch-end',
+        data: {
+          schema: 1,
+          harness: 'claude',
+          controller,
+          agentType: 'code-reviewer',
+          agentRef: 'ref-1',
+          harnessVersion: CLAUDE_VERSION,
+          usage: { evidenceSource: 'claude-subagent-transcript', ...subUsage() },
+        },
+        now: at(2),
+      });
+      snapshot(dir, 3);
+      const data = report(root, [`run-${i}`]);
+      expect(data.totals.claude.combined, JSON.stringify(controller)).toBeNull();
+      expect(data.totals.claude.combinedUnavailable).toBe('malformed-dispatch-start');
+      expect(data.totals.claude.combinedCaveats).toEqual([]);
+      expect(data.totals.claude.controllerRuns).toMatchObject({
+        malformedDispatchStarts: 1,
+        unnamedDispatchStarts: 0,
+        missingSnapshot: 0,
+      });
+    }
   });
 
   it('a claude dispatch-start without a controller ref follows the same per-(run, harness) rule, with the caveat; a start that names a ref no snapshot carries still leaves the run missing', async () => {
