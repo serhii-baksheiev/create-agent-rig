@@ -241,6 +241,13 @@
  * that controller (parent session) usage is unavailable, and why — no
  * controller-usage snapshot was journalled"; the measured cases are in
  * test/template/token-report-controller.test.ts (absent in a generated rig).
+ * `usageEvidence.controller.available` means SOME controller entry carries
+ * usage, never that every run does: completeness is per harness, in
+ * `totals.<harness>.controllerRuns`, and a combined total is refused when
+ * any relevant run lacks a snapshot —
+ * test/template/token-report-controller.test.ts (absent in a generated rig)
+ * › "three runs, one with dispatches and no controller snapshot: no combined
+ * total for the harness, and the run is named".
  *
  * WIRING — the CLI's own `wiring` input to `tokenReportOf` (pure itself, and
  * tested directly above) is computed only by the CLI, from the `--runs`
@@ -366,18 +373,25 @@ import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from './git-env.mjs';
 import { mainCheckoutRoot } from './queue/checkout.mjs';
 import { readRuns } from './revalidation-report.mjs';
+import {
+  HARNESS_VERSION_RE,
+  MAX_MEASURED_MODEL_LENGTH,
+  MEASURED_MODEL_RE,
+} from '../hooks/lib/usage-readers.mjs';
 
 const TAKEN_RE = /^taken (.+)$/;
 
-/** Sums one numeric field across every raw usage object in the list; `null`
- * unless the field is a finite number on every one of them — never a partial
- * sum, and never `0` standing in for "not measured". */
+/** Sums one counter field across every raw usage object in the list; `null`
+ * unless the field is a non-negative safe integer on every one of them AND
+ * the sum stays a safe integer (RP-511 PR D) — never a partial sum, never a
+ * wrapped one, and never `0` standing in for "not measured". */
 const summedField = (rawList, field) => {
   let sum = 0;
   for (const raw of rawList) {
     const value = raw?.[field];
-    if (!Number.isFinite(value)) return null;
+    if (!Number.isSafeInteger(value) || value < 0) return null;
     sum += value;
+    if (!Number.isSafeInteger(sum)) return null;
   }
   return sum;
 };
@@ -435,55 +449,31 @@ const codexUsageOf = (rawList) => {
 // `record-session-usage.mjs` journals one `controller-usage` EVENT per
 // snapshot of the controller session's own cumulative usage (Stop/SessionEnd).
 // A snapshot is a running total, so this report keeps the LAST one per
-// (run, controller) and NEVER sums snapshots —
-// test/template/token-report-controller.test.ts (absent in a generated rig)
-// › "three growing snapshots are never summed: the last one is the
-// controller usage". A sequence whose counters go DOWN between two snapshots
-// is not silently replaced by the later one: that controller's usage is
-// `null` with `usageUnavailable: 'non-monotonic-snapshots'` and
-// `coverage.incomplete: true`, and the counters of every snapshot that
-// carried valid usage are kept beside it for inspection (a snapshot with no
-// `usage`, or with a counter outside the harness's own fields' shape, is
-// skipped there) —
-// test/template/token-report-controller.test.ts (absent in a generated rig)
-// › "a counter that goes down between snapshots makes the controller
-// unavailable, keeps the raw counters, and blocks combined" and › "a
-// usage-less snapshot between two valid ones is counted in snapshots but
-// skipped in snapshotCounters". Controller
-// usage is attributed to the RUN only — never to a ticket, attempt or review
-// round — because the snapshot interval starts at session start, before any
-// item selection —
-// test/template/token-report-controller.test.ts (absent in a generated rig)
-// › "multi-ticket run: controller usage stays run-level and names every
-// taken ticket; no ticket is credited". A combined (controller + subagents)
-// total is printed when the harness has controller usage from every one of
-// its entries, every dispatch group of the harness has a usage slot (built
-// from the dispatches of that group that ended with usage — a group where a
-// dispatch never ended, or ended without usage, still counts here, and the
-// group's `dispatches.noEndObserved` and `dispatches.withUsage` are what
-// say so —
-// test/template/token-report-controller.test.ts (absent in a generated rig)
-// › "a dispatch group with a dispatch that never ended, or ended without
-// usage, still combines on this schema version"), and the LAST snapshot of
-// every (run, controller) names a harness version in
-// `VERIFIED_EXCLUSIVITY`; a harness with controller entries and no dispatch
-// group prints, once that version check passes, combined equal to the
-// controller; and a run read WITHOUT a snapshot is counted — one count for
-// both harnesses, `controllerRuns.withoutSnapshot` — but does not withhold
-// the total on this schema version —
-// test/template/token-report-controller.test.ts (absent in a generated rig)
-// › "a run read without a controller snapshot is counted but does not
-// withhold the combined total on this schema version" — otherwise it is
-// `null` with a reason —
-// test/template/token-report-controller.test.ts (absent in a generated rig)
-// › "subagent-only run: no controller snapshot is absent evidence —
-// runsWithoutSnapshot counts it and combined is null with a reason", › "an
-// absent or unverified harness version leaves combined null — exclusivity
-// is a per-version fact, not an assumption" and › "a counter missing on one
-// side of the combination is null on that total, never a partial sum". The
-// `evidence` strings in `VERIFIED_EXCLUSIVITY` below describe one-off
-// measurements recorded in Jira RP-511 (comment 24425), not mechanisms this
-// script enforces; what it enforces is the version list.
+// (run, controller) and NEVER sums snapshots. A sequence whose counters go
+// DOWN between two snapshots is not silently replaced by the later one: that
+// controller's usage is `null` with `usageUnavailable: 'non-monotonic-snapshots'`
+// and `coverage.incomplete: true`, and the raw counters of every snapshot are
+// kept beside it for inspection. Controller usage is attributed to the RUN
+// only — never to a ticket, attempt or review round — because the snapshot
+// interval starts at session start, before any item selection.
+//
+// COMPLETENESS (RP-511 PR D). `totals.<harness>.combined` is a claim about
+// every run read, so it is printed only when every run RELEVANT to that
+// harness carries a controller snapshot for it: a run is relevant when it
+// journalled a dispatch or a controller snapshot for the harness, or when it
+// journalled records but no usage evidence for ANY harness (the harness that
+// ran it is then unknown, and its controller's consumption is unaccounted
+// for). Each such run without a snapshot is counted under
+// `controllerRuns.missingSnapshot` and leaves `combined` null with
+// `'controller-snapshot-missing-for-run'`. A dispatch group is complete only
+// when every dispatch in it ended with usage (`noEndObserved === 0`, no
+// `withUsage` under-count, no `partialCounters`); every accumulated sum is
+// checked with `Number.isSafeInteger` and an overflow is `null` with
+// `'counter-overflow'`, never a wrapped number. Every controller-side string
+// (`controller`, `harness`, `trigger`, `harnessVersion`, `usageUnavailable`,
+// `evidenceSource`, `coverage.basis`) is journal content and reaches the
+// report only through a narrow shape; `sessionAggregate` is projected
+// through a bounded allowlist, never copied.
 
 /** The report's own schema version; 1 was the RP-228 shape. 2 adds `schemaVersion` itself,
  * `controllers`, `totals` and `accountingBasis`, computes `usageEvidence.controller`
@@ -491,6 +481,10 @@ const codexUsageOf = (rawList) => {
  * of the fixed statement, and renders `controller=measured(snapshots=N)` on the usage
  * evidence line. */
 const REPORT_SCHEMA_VERSION = 2;
+
+/** The harnesses this report knows a controller snapshot or a dispatch for. */
+const KNOWN_HARNESSES = Object.freeze(['claude', 'codex']);
+const isKnownHarness = (value) => value === 'claude' || value === 'codex';
 
 /** The counters a controller snapshot and a subagent dispatch carry, per harness. */
 const CONTROLLER_COUNTER_FIELDS = Object.freeze({
@@ -506,9 +500,9 @@ const CONTROLLER_COUNTER_FIELDS = Object.freeze({
 
 /** The harness versions on which parent/subagent exclusivity was verified —
  * the only versions for which a combined (controller + subagents) total is
- * ever printed. A (run, controller) whose LAST snapshot's `harnessVersion`
+ * ever printed. A controller snapshot or a dispatch whose `harnessVersion`
  * is absent or not listed leaves `totals.<harness>.combined` null with a
- * reason; earlier snapshots' versions are not consulted. */
+ * reason. */
 const VERIFIED_EXCLUSIVITY = Object.freeze({
   claude: Object.freeze({
     versions: Object.freeze(['2.1.296']),
@@ -524,7 +518,7 @@ const VERIFIED_EXCLUSIVITY = Object.freeze({
 
 /** The accounting basis every number in this report rests on — stated, versioned, never implied. */
 const ACCOUNTING_BASIS = Object.freeze({
-  version: 1,
+  version: 2,
   controller: Object.freeze({
     claude:
       'claude-controller-transcript: assistant records of the controller session only (records of a resumed/forked predecessor session are counted, never summed), last record per requestId wins; a request that leaves no assistant record is not seen. output_tokens in a transcript record can be a first-content-block snapshot (measured once, Jira RP-511 comment 24425, L1), so every claude total is a lower bound.',
@@ -532,23 +526,134 @@ const ACCOUNTING_BASIS = Object.freeze({
       'codex-controller-rollout: the last own-thread token_usage_record.thread_token_usage (cumulative) of the parent rollout.',
     snapshots: 'the last controller-usage snapshot per (run, controller); snapshots of one (run, controller) are never summed with each other; totals.<harness>.controller sums the last snapshot of each entry.',
     attribution: 'run',
+    partialCounters:
+      'a counter some counted records omit is summed from the records that carry it and named under coverage.partialCounters (controller) or usage.partialCounters (dispatch); such usage never contributes to a combined total.',
   }),
   subagents: Object.freeze({
     claude: 'claude-subagent-transcript per dispatch-end (RP-226), summed per dispatch group.',
     codex: 'codex-subagent-rollout thread_token_usage per dispatch-end (RP-227), summed per dispatch group.',
+    completeness:
+      'a dispatch group counts as measured only when every dispatch in it ended with usage: noEndObserved is 0, no withUsage under-count, no partialCounters.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness has a usage slot (a group where a dispatch never ended, or ended without usage, still counts; dispatches.noEndObserved and dispatches.withUsage say so), and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints, once that version check passes, combined equal to the controller; a run read without a snapshot is counted (controllerRuns.withoutSnapshot, one count for both harnesses) but does not withhold the total on this schema version; otherwise null with a reason.',
+    rule: 'controller + subagents, printed only when every run relevant to the harness carries a controller snapshot, every controller and every dispatch group is measured, and every controller snapshot and dispatch carries a harnessVersion in exclusivityVerified; a run with no dispatch group needs the harness’s dispatch hook wiring to be configured or witnessed, or the subagent side is unobserved rather than empty. Otherwise null with a reason.',
+    authoritative: false,
+    basis:
+      'a disjoint sum of two lower-bound measurements, not billing: it cannot be reconciled against the provider’s invoice and is never promoted beyond "measured".',
     exclusivityVerified: VERIFIED_EXCLUSIVITY,
     subagentHarnessVersion:
-      'not recorded on dispatch-end; a subagent runs under the same harness binary as its controller, which this report assumes and does not verify.',
+      'a dispatch-end carries the version the subagent’s own transcript (Claude `version`) or rollout (Codex `cli_version`) names; a dispatch without one leaves combined null — the controller’s binary is never assumed for its subagents.',
   }),
   sessionAggregate:
     'claude cost-state: undocumented, written periodically (possibly stale), not authoritative billing, never summed with anything here.',
+  overflow: 'every accumulated sum is checked with Number.isSafeInteger; an overflow is null with counter-overflow, never a wrapped number.',
+  window:
+    '--since filters journal records by their own `at`; a controller snapshot is cumulative from session start, so a window that opens inside a session reads that session’s whole total, not the part inside the window.',
   neverZero: 'a counter absent from the evidence is absent or null, never 0.',
 });
 
 const isCounterValue = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/** `record-dispatch.mjs`'s `ref()` shape — 16 lowercase hex characters. */
+const CONTROLLER_REF_RE = /^[0-9a-f]{16}$/;
+/** The two triggers `record-session-usage.mjs` writes. */
+const SNAPSHOT_TRIGGERS = Object.freeze(['Stop', 'SessionEnd']);
+/** `usage.evidenceSource` / `coverage.basis` are machine-written identifiers. */
+const SAFE_IDENTIFIER_RE = /^[A-Za-z0-9._:-]{1,64}$/;
+/** `coverage` counters copied by name; everything else in `coverage` is dropped. */
+const COVERAGE_COUNT_FIELDS = Object.freeze([
+  'assistantRecords',
+  'dedupedRequests',
+  'foreignSessionRecords',
+  'compactBoundaries',
+  'tokenUsageRecords',
+  'distinctResponseIds',
+  'foreignThreadRecords',
+  'compactedRecords',
+]);
+/** `sessionAggregate.models[<model>]` counters copied by name — never `costUSD`. */
+const SESSION_AGGREGATE_COUNTER_FIELDS = Object.freeze([
+  'inputTokens',
+  'outputTokens',
+  'thinkingTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+]);
+const SESSION_AGGREGATE_MAX_MODELS = 16;
+const PARTIAL_COUNTERS_MAX = 8;
+const HARNESS_VERSIONS_MAX = 8;
+
+const safeIdentifierOrNull = (value) =>
+  typeof value === 'string' && SAFE_IDENTIFIER_RE.test(value) ? value : null;
+
+const harnessVersionOrNull = (value) =>
+  typeof value === 'string' && HARNESS_VERSION_RE.test(value) ? value : null;
+
+/** `partialCounters` as a dispatch or coverage names them — only the harness's own counter names. */
+const partialCountersOf = (value, harness) => {
+  if (!Array.isArray(value) || !isKnownHarness(harness)) return [];
+  const fields = CONTROLLER_COUNTER_FIELDS[harness];
+  const out = [];
+  for (const name of value) {
+    if (out.length >= PARTIAL_COUNTERS_MAX) break;
+    if (fields.includes(name) && !out.includes(name)) out.push(name);
+  }
+  return out;
+};
+
+/** The bounded projection of a snapshot's `coverage` — named counts, a safe
+ * `basis`, a bounded `partialCounters`, `incomplete`; nothing else. */
+const coverageOf = (value, harness) => {
+  if (value === null || typeof value !== 'object') return null;
+  const out = {};
+  const basis = safeIdentifierOrNull(value.basis);
+  if (basis !== null) out.basis = basis;
+  for (const field of COVERAGE_COUNT_FIELDS) {
+    if (isCounterValue(value[field])) out[field] = value[field];
+  }
+  const partial = partialCountersOf(value.partialCounters, harness);
+  if (partial.length > 0) out.partialCounters = partial;
+  if (value.incomplete === true) out.incomplete = true;
+  return out;
+};
+
+/** The bounded projection of a snapshot's `sessionAggregate` — the five
+ * counters per model, at most `SESSION_AGGREGATE_MAX_MODELS` models whose
+ * names pass `MEASURED_MODEL_RE`, the three flags forced to their only honest
+ * values, `recordsBehind` when it is a counter. `costUSD` and every other
+ * field never reach the report. `null` when nothing usable remains. */
+const sessionAggregateOf = (value) => {
+  if (value === null || typeof value !== 'object') return null;
+  const rawModels = value.models;
+  if (rawModels === null || typeof rawModels !== 'object') return null;
+  const models = Object.create(null);
+  let count = 0;
+  for (const [model, raw] of Object.entries(rawModels)) {
+    if (count >= SESSION_AGGREGATE_MAX_MODELS) break;
+    if (model.length > MAX_MEASURED_MODEL_LENGTH || !MEASURED_MODEL_RE.test(model)) continue;
+    if (raw === null || typeof raw !== 'object') continue;
+    const counters = {};
+    let any = false;
+    for (const field of SESSION_AGGREGATE_COUNTER_FIELDS) {
+      if (!isCounterValue(raw[field])) continue;
+      counters[field] = raw[field];
+      any = true;
+    }
+    if (!any) continue;
+    models[model] = counters;
+    count += 1;
+  }
+  if (count === 0) return null;
+  const out = {
+    evidenceSource: 'claude-cost-state',
+    documented: false,
+    authoritative: false,
+    additive: false,
+    models: { ...models },
+  };
+  if (isCounterValue(value.recordsBehind)) out.recordsBehind = value.recordsBehind;
+  return out;
+};
 
 /** `{ counters }` for a snapshot's `usage` — only the harness's own counter
  * fields, each a non-negative safe integer or absent; `null` when `usage` is
@@ -556,11 +661,10 @@ const isCounterValue = (value) => Number.isSafeInteger(value) && value >= 0;
  * shape, or the harness is not one this report knows. */
 const snapshotCountersOf = (usage, harness) => {
   if (usage === null || typeof usage !== 'object') return null;
-  const fields = CONTROLLER_COUNTER_FIELDS[harness];
-  if (!fields) return null;
+  if (!Object.hasOwn(CONTROLLER_COUNTER_FIELDS, harness)) return null;
   const counters = {};
   let any = false;
-  for (const field of fields) {
+  for (const field of CONTROLLER_COUNTER_FIELDS[harness]) {
     const value = usage[field];
     if (value === undefined) continue;
     if (!isCounterValue(value)) return null;
@@ -582,19 +686,41 @@ const isNonMonotonic = (counterList) => {
   return false;
 };
 
-/** One `controllers[]` entry per (run, controller) seen in a `controller-usage` event. */
+/** A snapshot `data` this report can attribute at all: an object with
+ * `schema: 1`, `cumulative: true`, a known harness and a `ref()`-shaped
+ * controller. Anything else is a MALFORMED snapshot — counted, never read. */
+const isWellFormedSnapshot = (data) =>
+  data !== null &&
+  typeof data === 'object' &&
+  data.schema === 1 &&
+  data.cumulative === true &&
+  isKnownHarness(data.harness) &&
+  typeof data.controller === 'string' &&
+  CONTROLLER_REF_RE.test(data.controller);
+
+/**
+ * `{ entries, malformed }` for one run — one `controllers[]` entry per
+ * (run, controller, harness) seen in a well-formed `controller-usage` event,
+ * and `malformed`, the per-harness count of snapshots this report could not
+ * attribute (`unknown` when not even the harness could be read).
+ */
 const controllerEntriesOf = (runName, events, takenTickets) => {
   const byController = new Map();
+  const malformed = { claude: 0, codex: 0, unknown: 0 };
   const snapshots = events
     .filter((event) => event.kind === 'controller-usage')
     .sort((a, b) => a.seq - b.seq);
   for (const event of snapshots) {
     const data = event.data;
-    if (data === null || typeof data !== 'object') continue;
-    const controller = stringOrUnknown(data.controller);
-    const harness = stringOrUnknown(data.harness);
-    const key = `${controller}|${harness}`;
-    if (!byController.has(key)) byController.set(key, { controller, harness, list: [] });
+    if (!isWellFormedSnapshot(data)) {
+      const harness = data !== null && typeof data === 'object' ? data.harness : undefined;
+      malformed[isKnownHarness(harness) ? harness : 'unknown'] += 1;
+      continue;
+    }
+    const key = `${data.controller}|${data.harness}`;
+    if (!byController.has(key)) {
+      byController.set(key, { controller: data.controller, harness: data.harness, list: [] });
+    }
     byController.get(key).list.push(event);
   }
   const entries = [];
@@ -604,7 +730,7 @@ const controllerEntriesOf = (runName, events, takenTickets) => {
     const counterList = [];
     let invalid = false;
     for (const event of list) {
-      const usage = event.data?.usage;
+      const usage = event.data.usage;
       if (usage === undefined) continue;
       const counters = snapshotCountersOf(usage, harness);
       if (counters === null) {
@@ -620,103 +746,184 @@ const controllerEntriesOf = (runName, events, takenTickets) => {
       harness,
       snapshots: list.length,
       lastSeq: last.seq,
-      lastTrigger: stringOrUnknown(lastData?.trigger),
-      harnessVersion: typeof lastData?.harnessVersion === 'string' ? lastData.harnessVersion : null,
+      lastTrigger: SNAPSHOT_TRIGGERS.includes(lastData.trigger) ? lastData.trigger : 'unknown',
+      harnessVersion: harnessVersionOrNull(lastData.harnessVersion),
       usage: null,
-      coverage:
-        lastData?.coverage !== null && typeof lastData?.coverage === 'object'
-          ? { ...lastData.coverage }
-          : null,
-      sessionAggregate:
-        lastData?.sessionAggregate !== null && typeof lastData?.sessionAggregate === 'object'
-          ? lastData.sessionAggregate
-          : null,
+      coverage: coverageOf(lastData.coverage, harness),
+      sessionAggregate: sessionAggregateOf(lastData.sessionAggregate),
       attribution: { mode: 'run', tickets: takenTickets },
     };
     if (nonMonotonic) {
       entry.usageUnavailable = 'non-monotonic-snapshots';
       entry.coverage = { ...(entry.coverage ?? {}), incomplete: true };
       entry.snapshotCounters = counterList;
-    } else if (typeof lastData?.usageUnavailable === 'string') {
-      entry.usageUnavailable = lastData.usageUnavailable;
+    } else if (typeof lastData.usageUnavailable === 'string') {
+      entry.usageUnavailable = sanitizedReasonCode(lastData.usageUnavailable) ?? 'usage-absent';
     } else {
-      const lastCounters = snapshotCountersOf(lastData?.usage, harness);
+      const lastCounters = snapshotCountersOf(lastData.usage, harness);
       if (lastCounters === null || invalid) {
-        entry.usageUnavailable = lastCounters === null ? 'invalid-usage-counter' : 'invalid-usage-counter';
+        entry.usageUnavailable = 'invalid-usage-counter';
       } else {
         entry.usage = {
-          evidenceSource:
-            typeof lastData.usage.evidenceSource === 'string' ? lastData.usage.evidenceSource : null,
+          evidenceSource: safeIdentifierOrNull(lastData.usage.evidenceSource),
           ...lastCounters,
         };
       }
     }
     entries.push(entry);
   }
-  return entries;
+  return { entries, malformed };
 };
 
-/** Sums `fields` across `rawList`; a field absent from every object is absent, a field absent from SOME is null. */
+/**
+ * Sums `fields` across `rawList`: `{ counters, missing, overflow }`. A field
+ * absent from every object is absent from `counters`; a field absent from
+ * SOME, or carrying a value that is not a non-negative safe integer, is
+ * `null` and named in `missing`; a sum that leaves the safe-integer range is
+ * `null` and named in `overflow`. Never a partial sum, never a wrapped one.
+ */
 const summedCounters = (rawList, fields) => {
-  const out = {};
+  const counters = {};
+  const missing = [];
+  const overflow = [];
   for (const field of fields) {
-    const present = rawList.filter((raw) => raw?.[field] !== undefined);
-    if (present.length === 0) continue;
-    out[field] = present.length === rawList.length ? summedField(rawList, field) : null;
+    let present = 0;
+    let valid = true;
+    let sum = 0;
+    for (const raw of rawList) {
+      const value = raw?.[field];
+      if (value === undefined) continue;
+      present += 1;
+      if (!isCounterValue(value)) {
+        valid = false;
+        continue;
+      }
+      sum += value;
+    }
+    if (present === 0) continue;
+    if (!valid || present < rawList.length) {
+      counters[field] = null;
+      missing.push(field);
+    } else if (!Number.isSafeInteger(sum)) {
+      counters[field] = null;
+      overflow.push(field);
+    } else {
+      counters[field] = sum;
+    }
   }
-  return out;
+  return { counters, missing, overflow };
 };
 
-/** `totals.<harness>` — controller, subagents, and a combined figure only when it is justified. */
-const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runsWithoutControllerSnapshot) => {
+/** Whether a dispatch group is MEASURED: every dispatch ended with usage. */
+const isMeasuredGroup = (group, harness) =>
+  group.usage[harness] !== null &&
+  group.dispatches.noEndObserved === 0 &&
+  group.dispatches.withUsage === undefined &&
+  group.partialCounters.length === 0;
+
+/**
+ * `totals.<harness>` — controller, subagents, and a combined figure only when
+ * it is justified. `runEvidence` is one `{ run, dispatch: {claude, codex},
+ * controller: {claude, codex}, any, malformed }` per run read (see
+ * `tokenReportOf`); `subagentWiring` is `usageEvidence.<harness>.state`.
+ */
+const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence, subagentState) => {
   const fields = CONTROLLER_COUNTER_FIELDS[harness];
   const entries = controllerEntries.filter((entry) => entry.harness === harness);
   const withUsage = entries.filter((entry) => entry.usage !== null);
   const unavailable = entries.length - withUsage.length;
-  const controller =
-    entries.length === 0 || unavailable > 0 ? null : summedCounters(withUsage.map((e) => e.usage), fields);
+  const partial = withUsage.filter((entry) => (entry.coverage?.partialCounters?.length ?? 0) > 0);
+
+  const relevantRuns = runEvidence.filter(
+    (run) => run.dispatch[harness] || run.controller[harness] || !run.any,
+  );
+  const missingRuns = relevantRuns.filter((run) => !run.controller[harness]);
+  const malformedSnapshots = runEvidence.reduce(
+    (acc, run) => acc + run.malformed[harness] + run.malformed.unknown,
+    0,
+  );
+
+  let controller = null;
+  let controllerOverflow = [];
+  if (entries.length > 0 && unavailable === 0) {
+    const summed = summedCounters(
+      withUsage.map((e) => e.usage),
+      fields,
+    );
+    controller = summed.counters;
+    controllerOverflow = summed.overflow;
+  }
 
   const groups = dispatchGroups.filter((group) => group.harness === harness);
-  const groupsWithUsage = groups.filter((group) => group.usage[harness] !== null);
-  const subagents =
-    groups.length === 0
-      ? null
-      : groupsWithUsage.length < groups.length
-        ? null
-        : summedCounters(
-            groupsWithUsage.map((group) => group.usage[harness]),
-            fields,
-          );
+  const measuredGroups = groups.filter((group) => isMeasuredGroup(group, harness));
+  let subagents = null;
+  let subagentOverflow = [];
+  if (groups.length > 0 && measuredGroups.length === groups.length) {
+    const summed = summedCounters(
+      measuredGroups.map((group) => group.usage[harness]),
+      fields,
+    );
+    subagents = summed.counters;
+    subagentOverflow = summed.overflow;
+  }
 
   const versions = VERIFIED_EXCLUSIVITY[harness].versions;
-  const unverified = entries.filter(
+  const unverifiedControllers = entries.filter(
     (entry) => entry.harnessVersion === null || !versions.includes(entry.harnessVersion),
   );
+  const unverifiedDispatchVersions = new Set();
+  for (const group of groups) {
+    for (const version of group.harnessVersions) {
+      if (!versions.includes(version)) unverifiedDispatchVersions.add(version);
+    }
+  }
+  const unverifiedHarnessVersions = [
+    ...new Set([
+      ...unverifiedControllers.map((entry) => entry.harnessVersion ?? 'absent'),
+      ...unverifiedDispatchVersions,
+    ]),
+  ];
+
   let combined = null;
   let combinedUnavailable = null;
   if (entries.length === 0) combinedUnavailable = 'no-controller-snapshot';
+  else if (malformedSnapshots > 0) combinedUnavailable = 'malformed-controller-snapshot';
+  else if (missingRuns.length > 0) combinedUnavailable = 'controller-snapshot-missing-for-run';
   else if (controller === null) combinedUnavailable = 'controller-usage-unavailable';
-  else if (groups.length > 0 && subagents === null) combinedUnavailable = 'subagent-usage-incomplete';
-  else if (unverified.length > 0) combinedUnavailable = 'exclusivity-unverified-for-harness-version';
-  else {
+  else if (controllerOverflow.length > 0) combinedUnavailable = 'counter-overflow';
+  else if (partial.length > 0) combinedUnavailable = 'controller-counters-partial';
+  else if (groups.some((group) => group.counterOverflow.length > 0)) {
+    combinedUnavailable = 'counter-overflow';
+  } else if (groups.length > 0 && subagents === null) combinedUnavailable = 'subagent-usage-incomplete';
+  else if (subagentOverflow.length > 0) combinedUnavailable = 'counter-overflow';
+  else if (groups.length === 0 && subagentState !== 'witnessed' && subagentState !== 'configured-no-witness') {
+    combinedUnavailable = 'subagent-evidence-unobserved';
+  } else if (unverifiedHarnessVersions.length > 0) {
+    combinedUnavailable = 'exclusivity-unverified-for-harness-version';
+  } else {
     const parts = groups.length === 0 ? [controller] : [controller, subagents];
-    combined = summedCounters(parts, fields);
-    for (const field of Object.keys(combined)) {
-      if (combined[field] === null) {
-        combined = null;
-        combinedUnavailable = 'counter-missing-on-one-side';
-        break;
-      }
-    }
+    const summed = summedCounters(parts, fields);
+    if (summed.overflow.length > 0) combinedUnavailable = 'counter-overflow';
+    else if (summed.missing.length > 0) combinedUnavailable = 'counter-missing-on-one-side';
+    else combined = summed.counters;
   }
   return {
     controller,
-    controllerRuns: { withSnapshot: entries.length, unavailable, withoutSnapshot: runsWithoutControllerSnapshot },
+    controllerRuns: {
+      relevant: relevantRuns.length,
+      withSnapshot: relevantRuns.length - missingRuns.length,
+      missingSnapshot: missingRuns.length,
+      missingSnapshotRuns: missingRuns.map((run) => run.run),
+      unavailable,
+      partial: partial.length,
+      malformedSnapshots,
+    },
     subagents,
-    subagentGroups: { total: groups.length, withUsage: groupsWithUsage.length },
+    subagentGroups: { total: groups.length, measured: measuredGroups.length },
     combined,
     combinedUnavailable,
-    unverifiedHarnessVersions: [...new Set(unverified.map((entry) => entry.harnessVersion ?? 'absent'))],
+    combinedBasis: combined === null ? null : 'measured-lower-bound-not-billing',
+    unverifiedHarnessVersions,
   };
 };
 
@@ -752,11 +959,16 @@ const UNAVAILABLE_REASON_UNSAFE_CHAR_RE = /[^A-Za-z0-9._:-]/g;
  * Once `bucket` already holds `UNAVAILABLE_REASON_DISTINCT_CODES_MAX`
  * distinct codes, a NEW code is dropped rather than added; a repeat of an
  * already-known code still tallies. */
-const recordUnavailableReason = (bucket, rawCode) => {
+const sanitizedReasonCode = (rawCode) => {
   const sanitized = rawCode
     .replace(UNAVAILABLE_REASON_UNSAFE_CHAR_RE, '?')
     .slice(0, UNAVAILABLE_REASON_CODE_MAX_LENGTH);
-  if (sanitized === '') return;
+  return sanitized === '' ? null : sanitized;
+};
+
+const recordUnavailableReason = (bucket, rawCode) => {
+  const sanitized = sanitizedReasonCode(rawCode);
+  if (sanitized === null) return;
   if (
     !(sanitized in bucket) &&
     Object.keys(bucket).length >= UNAVAILABLE_REASON_DISTINCT_CODES_MAX
@@ -843,7 +1055,10 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
   const unavailableReasonsRaw = { claude: Object.create(null), codex: Object.create(null) };
   let orphanEnds = 0;
   const controllers = [];
-  let runsWithoutControllerSnapshot = 0;
+  /** One `{ run, dispatch, controller, any, malformed }` per run read — what
+   * each run journalled, per harness, so `harnessTotalsOf` can refuse a
+   * combined total when any relevant run lacks a controller snapshot. */
+  const runEvidence = [];
 
   const ensureTicket = (ticket) => {
     let entry = ticketMap.get(ticket);
@@ -881,9 +1096,23 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
     const takenTickets = [
       ...new Set(takenSelections.map((record) => TAKEN_RE.exec(record.verdict)[1])),
     ];
-    const runControllers = controllerEntriesOf(runName, events, takenTickets);
-    if (runControllers.length === 0) runsWithoutControllerSnapshot += 1;
+    const { entries: runControllers, malformed } = controllerEntriesOf(
+      runName,
+      events,
+      takenTickets,
+    );
     controllers.push(...runControllers);
+    const evidence = {
+      run: runName,
+      dispatch: { claude: false, codex: false },
+      controller: {
+        claude: runControllers.some((entry) => entry.harness === 'claude'),
+        codex: runControllers.some((entry) => entry.harness === 'codex'),
+      },
+      any: false,
+      malformed,
+    };
+    if (decisions.length > 0 || events.length > 0) runEvidence.push(evidence);
 
     const attributionAt = (seq) => {
       let best = null;
@@ -910,6 +1139,7 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       if (harnessRaw === 'claude') witnessed.claude = true;
       else if (harnessRaw === 'codex') witnessed.codex = true;
       else continue;
+      evidence.dispatch[harnessRaw] = true;
       if (event.kind !== 'dispatch-end') continue;
       const code = event.data?.usageUnavailable;
       if (typeof code === 'string' && code.trim() !== '') {
@@ -974,9 +1204,12 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
           effortSource,
           dispatches: { ended: 0, noEndObserved: 0 },
           usage: { claude: null, codex: null },
+          partialCounters: [],
+          harnessVersions: [],
+          counterOverflow: [],
         };
         dispatchGroups.set(key, group);
-        groupUsageRaw.set(key, { claude: [], codex: [], withUsage: 0 });
+        groupUsageRaw.set(key, { claude: [], codex: [], withUsage: 0, versions: new Set() });
       }
       if (pair.end) group.dispatches.ended += 1;
       else group.dispatches.noEndObserved += 1;
@@ -988,6 +1221,14 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
           raws.withUsage += 1;
           if (harness === 'claude') raws.claude.push(usageRaw);
           else if (harness === 'codex') raws.codex.push(usageRaw);
+          for (const name of partialCountersOf(usageRaw.partialCounters, harness)) {
+            if (!group.partialCounters.includes(name)) group.partialCounters.push(name);
+          }
+          // RP-511 PR D: the version the subagent's own file named, or
+          // 'absent' — read from the dispatch-end, never from the controller.
+          if (raws.versions.size < HARNESS_VERSIONS_MAX) {
+            raws.versions.add(harnessVersionOrNull(pair.end.data?.harnessVersion) ?? 'absent');
+          }
         }
       }
     }
@@ -1098,11 +1339,29 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
     if (raws.withUsage > 0 && raws.withUsage < group.dispatches.ended) {
       group.dispatches.withUsage = raws.withUsage;
     }
+    group.harnessVersions = [...raws.versions].sort();
+    // A group sum that left the safe-integer range is `null` in `usage` (via
+    // `summedField`) exactly like a missing counter; this names which it was.
+    if (isKnownHarness(group.harness)) {
+      group.counterOverflow = summedCounters(
+        raws[group.harness],
+        CONTROLLER_COUNTER_FIELDS[group.harness],
+      ).overflow;
+    }
+  }
+  for (const run of runEvidence) {
+    run.any =
+      run.dispatch.claude ||
+      run.dispatch.codex ||
+      run.controller.claude ||
+      run.controller.codex ||
+      run.malformed.claude + run.malformed.codex + run.malformed.unknown > 0;
   }
 
-  const usageDisplayed = [...dispatchGroups.values()].some(
-    (group) => group.usage.claude !== null || group.usage.codex !== null,
-  );
+  const usageDisplayed =
+    [...dispatchGroups.values()].some(
+      (group) => group.usage.claude !== null || group.usage.codex !== null,
+    ) || controllers.some((entry) => entry.usage !== null);
   const money = {
     line: usageDisplayed
       ? 'usage measured; monetary cost unavailable'
@@ -1123,27 +1382,38 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       witnessed.codex,
       unavailableReasonsRaw.codex,
     ),
-    controller:
-      controllers.length > 0
-        ? {
-            available: controllers.some((entry) => entry.usage !== null),
-            snapshots: controllers.reduce((acc, entry) => acc + entry.snapshots, 0),
-            runsWithoutSnapshot: runsWithoutControllerSnapshot,
-            reason: CONTROLLER_EVIDENCE_REASON,
-          }
-        : {
-            available: false,
-            snapshots: 0,
-            runsWithoutSnapshot: runsWithoutControllerSnapshot,
-            reason: CONTROLLER_UNAVAILABLE_REASON,
-          },
   };
+  // `available` means SOME controller entry carries usage — never that every
+  // run does; completeness per harness is `totals.<harness>.controllerRuns`.
+  const runsWithoutSnapshot = runEvidence.filter(
+    (run) => !run.controller.claude && !run.controller.codex,
+  ).length;
+  usageEvidence.controller =
+    controllers.length > 0
+      ? {
+          available: controllers.some((entry) => entry.usage !== null),
+          snapshots: controllers.reduce((acc, entry) => acc + entry.snapshots, 0),
+          runsWithoutSnapshot,
+          reason: CONTROLLER_EVIDENCE_REASON,
+        }
+      : {
+          available: false,
+          snapshots: 0,
+          runsWithoutSnapshot,
+          reason: CONTROLLER_UNAVAILABLE_REASON,
+        };
 
   const groupList = [...dispatchGroups.values()];
-  const totals = {
-    claude: harnessTotalsOf('claude', controllers, groupList, runsWithoutControllerSnapshot),
-    codex: harnessTotalsOf('codex', controllers, groupList, runsWithoutControllerSnapshot),
-  };
+  const totals = {};
+  for (const harness of KNOWN_HARNESSES) {
+    totals[harness] = harnessTotalsOf(
+      harness,
+      controllers,
+      groupList,
+      runEvidence,
+      usageEvidence[harness].state,
+    );
+  }
 
   return {
     schemaVersion: REPORT_SCHEMA_VERSION,
@@ -1226,7 +1496,9 @@ export const render = (report) => {
       `totals ${harness}: controller=${JSON.stringify(total.controller)} ` +
         `subagents=${JSON.stringify(total.subagents)} combined=${JSON.stringify(total.combined)}` +
         (total.combinedUnavailable ? ` (${total.combinedUnavailable})` : '') +
-        ` runsWithoutControllerSnapshot=${total.controllerRuns.withoutSnapshot}`,
+        ` controllerRuns=${total.controllerRuns.withSnapshot}/${total.controllerRuns.relevant}` +
+        ` missingSnapshot=${total.controllerRuns.missingSnapshot}` +
+        ` malformedSnapshots=${total.controllerRuns.malformedSnapshots}`,
     );
   }
 

@@ -309,6 +309,35 @@ describe('usage-readers.mjs — readClaudeControllerUsage (RP-511)', () => {
     expect(JSON.stringify(result)).not.toContain('1.25');
   });
 
+  it('names, under coverage.partialCounters, a counter some deduped records omit — and omits the field when every record carries every counter', async () => {
+    const file = await writeLines(`${SESSION}.jsonl`, [
+      claudeAssistant({
+        requestId: 'r1',
+        usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 5 },
+      }),
+      claudeAssistant({ requestId: 'r2', usage: { input_tokens: 1, output_tokens: 1 } }),
+    ]);
+    const result = (await readers()).readClaudeControllerUsage(file, SESSION);
+    expect(result.usage).toMatchObject({ requests: 2, inputTokens: 2, cacheReadInputTokens: 5 });
+    expect(result.coverage).toMatchObject({ partialCounters: ['cacheReadInputTokens'] });
+
+    const complete = await writeLines(`${SESSION}.jsonl`, [
+      claudeAssistant({ requestId: 'r1', usage: { input_tokens: 1, output_tokens: 1 } }),
+      claudeAssistant({ requestId: 'r2', usage: { input_tokens: 1, output_tokens: 1 } }),
+    ]);
+    const completeResult = (await readers()).readClaudeControllerUsage(complete, SESSION);
+    expect(Object.keys(completeResult.coverage ?? {})).not.toContain('partialCounters');
+  });
+
+  it('reports counter-overflow, never a wrapped sum, when the accumulated counters leave the safe-integer range', async () => {
+    const file = await writeLines(`${SESSION}.jsonl`, [
+      claudeAssistant({ requestId: 'r1', usage: { input_tokens: Number.MAX_SAFE_INTEGER } }),
+      claudeAssistant({ requestId: 'r2', usage: { input_tokens: 1 } }),
+    ]);
+    const result = (await readers()).readClaudeControllerUsage(file, SESSION);
+    expect(result).toEqual({ usageUnavailable: 'counter-overflow' });
+  });
+
   it('rejects the whole read on one out-of-range counter, never a partial sum', async () => {
     const file = await writeLines('t.jsonl', [
       claudeAssistant({ requestId: 'r1', usage: { input_tokens: 1, output_tokens: 2 } }),
@@ -525,6 +554,60 @@ describe('record-session-usage.mjs — the Stop/SessionEnd hook (RP-511)', () =>
     const last = events[1]!.data as { trigger: string; usage: { requests: number } };
     expect(last.trigger).toBe('SessionEnd');
     expect(last.usage.requests).toBe(2);
+  });
+
+  // RP-511 PR D — what the repeated-snapshot fingerprint compares. A change in
+  // the harness version, the cost-state counters, or the trigger is a new
+  // snapshot; a cost-state record that merely moved further behind is not.
+  it('writes a new snapshot when the harness version or the cost-state counters change, and a SessionEnd after an identical Stop; a cost-state that only moved further behind is a repeat', async () => {
+    const line = (version: string, haikuOutput: number) => [
+      claudeAssistant({ requestId: 'r1', version, usage: { input_tokens: 3, output_tokens: 4 } }),
+      costState({ 'claude-haiku': { inputTokens: 1, outputTokens: haikuOutput, costUSD: 0.01 } }),
+    ];
+    const file = await writeLines(`${SESSION}.jsonl`, line('2.1.296', 10));
+    const stop = () => runHook(stopPayload({ transcript_path: file }), env(), ['--harness=claude']);
+    await stop();
+    await stop();
+    expect(await readEvents(runDir)).toHaveLength(1);
+
+    // Only recordsBehind changes: a user record was appended after the cost-state.
+    await writeFile(
+      file,
+      `${line('2.1.296', 10).join('\n')}\n${JSON.stringify({ type: 'user', sessionId: SESSION })}\n`,
+    );
+    await stop();
+    expect(await readEvents(runDir)).toHaveLength(1);
+
+    // The cost-state counters move (a helper model ran): a new snapshot.
+    await writeFile(file, `${line('2.1.296', 11).join('\n')}\n`);
+    await stop();
+    expect(await readEvents(runDir)).toHaveLength(2);
+
+    // The harness version changes under the same counters: a new snapshot.
+    await writeFile(file, `${line('2.1.297', 11).join('\n')}\n`);
+    await stop();
+    expect(await readEvents(runDir)).toHaveLength(3);
+
+    // SessionEnd after an otherwise identical Stop: written — it records that the session ended.
+    await runHook(
+      stopPayload({ hook_event_name: 'SessionEnd', transcript_path: file, reason: 'other' }),
+      env(),
+      ['--harness=claude'],
+    );
+    const events = await readEvents(runDir);
+    expect(events).toHaveLength(4);
+    expect(events.map((e) => (e.data as { trigger: string }).trigger)).toEqual([
+      'Stop',
+      'Stop',
+      'Stop',
+      'SessionEnd',
+    ]);
+    expect(events.map((e) => (e.data as { harnessVersion?: string }).harnessVersion)).toEqual([
+      '2.1.296',
+      '2.1.296',
+      '2.1.297',
+      '2.1.297',
+    ]);
   });
 
   it('still writes a lower snapshot after a higher one — the reader, not the hook, judges a non-monotonic sequence', async () => {

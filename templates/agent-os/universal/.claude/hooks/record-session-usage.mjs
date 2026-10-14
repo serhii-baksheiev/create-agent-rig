@@ -70,12 +70,17 @@
 // REPEATED SNAPSHOTS. `Stop` fires at every turn end, so an idle turn would
 // re-record the same total. Before writing, the hook reads the run's last
 // `controller-usage` event for this controller and skips the write when
-// `usage`, `usageUnavailable` and `coverage` are byte-identical —
+// `trigger`, `usage`, `usageUnavailable`, `coverage`, `harnessVersion` and
+// `sessionAggregate` (minus its `recordsBehind`, which changes with every
+// record — see `fingerprintOf`) are byte-identical —
 // test/template/session-usage.test.ts (absent in a generated rig) › "does not
 // write a second event for an identical snapshot, but does for a changed one,
-// and SessionEnd is a trigger too". The check is bounded: a run whose
-// `events.jsonl` or `decisions.jsonl` is past `MAX_SNAPSHOT_CHECK_BYTES` is
-// not read, and the snapshot is then written regardless —
+// and SessionEnd is a trigger too" and › "writes a new snapshot when the
+// harness version or the cost-state counters change, and a SessionEnd after
+// an identical Stop; a cost-state that only moved further behind is a
+// repeat". The check is bounded: a run whose `events.jsonl` or
+// `decisions.jsonl` is past `MAX_SNAPSHOT_CHECK_BYTES` is not read, and the
+// snapshot is then written regardless —
 // test/template/session-usage.test.ts (absent in a generated rig) › "writes a
 // repeated snapshot regardless once the journal is past the repeated-snapshot
 // check bound". A snapshot whose counters are LOWER than the previous one is
@@ -193,13 +198,30 @@ export function controllerUsageOf(input, sessionId, harness) {
     : readCodexControllerUsage(transcriptPath, sessionId);
 }
 
-/** The comparable part of a snapshot — what a repeat must equal to be skipped. */
-const fingerprintOf = (data) =>
-  JSON.stringify({
+/**
+ * The comparable part of a snapshot — what a repeat must equal to be skipped.
+ * Every journalled field takes part except `sessionAggregate.recordsBehind`,
+ * which is intentionally ignored: it grows with every record the transcript
+ * gains, so including it would make no two snapshots equal and defeat the
+ * dedupe entirely; the aggregate's own counters are compared. `trigger` is
+ * compared too, so the `SessionEnd` snapshot that follows an identical `Stop`
+ * is still written — it is the record that the session ended.
+ */
+export const fingerprintOf = (data) => {
+  const aggregate = data.sessionAggregate;
+  const aggregateCompared =
+    aggregate !== null && typeof aggregate === 'object'
+      ? Object.fromEntries(Object.entries(aggregate).filter(([key]) => key !== 'recordsBehind'))
+      : null;
+  return JSON.stringify({
+    trigger: data.trigger ?? null,
     usage: data.usage ?? null,
     usageUnavailable: data.usageUnavailable ?? null,
     coverage: data.coverage ?? null,
+    harnessVersion: data.harnessVersion ?? null,
+    sessionAggregate: aggregateCompared,
   });
+};
 
 /**
  * The fingerprint of this run's last `controller-usage` event for

@@ -69,7 +69,8 @@
 // keeps (`.claude/rules/invariants.md`, the independent-oracle
 // invariant): `schema`, `harness`, `controller`, `agentType`, `agentRef`,
 // `declaredModel`, `declaredEffort`, `declaredSource`, `usage`,
-// `usageUnavailable`, `measuredModel`, `orphan`. `controller` and `agentRef`
+// `usageUnavailable`, `measuredModel`, `harnessVersion`, `orphan`.
+// `controller` and `agentRef`
 // are never the raw `session_id`/`agent_id` — they are
 // `sha256(basename(runDir) + "\0" + value).slice(0, 16)`, so the record names
 // no id a reader could correlate outside this one run.
@@ -483,6 +484,7 @@ export const DISPATCH_FIELDS = Object.freeze([
   'usage',
   'usageUnavailable',
   'measuredModel',
+  'harnessVersion',
   'orphan',
 ]);
 
@@ -1030,6 +1032,12 @@ function main() {
       } else {
         data.usage = usageResult.usage;
         if (usageResult.measuredModel !== undefined) data.measuredModel = usageResult.measuredModel;
+        // RP-511 PR D: the harness version the subagent's own file names
+        // (`version` on every counted Claude record, `cli_version` in a Codex
+        // rollout's session_meta) — recorded so the report's per-version
+        // exclusivity check reads evidence for the subagent side too, instead
+        // of assuming the controller's binary.
+        if (usageResult.harnessVersion !== undefined) data.harnessVersion = usageResult.harnessVersion;
       }
     }
 

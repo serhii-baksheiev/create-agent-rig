@@ -60,7 +60,10 @@ interface JournalRecord {
  * `usage`/`usageUnavailable`/`measuredModel` are RP-226's Claude usage-capture
  * fields — see dispatch-usage.test.ts (absent in a generated rig) › "exports
  * DISPATCH_FIELDS containing usage, usageUnavailable, and measuredModel".
- * `orphan` is RP-294's field: present (`true`) only on a `dispatch-end` whose
+ * `harnessVersion` is RP-511 PR D's field: the version the subagent's own
+ * transcript/rollout names, when every counted record agrees — see
+ * dispatch-usage.test.ts › "records the harness version the subagent transcript
+ * names, beside usage". `orphan` is RP-294's field: present (`true`) only on a `dispatch-end` whose
  * `agentRef` has no earlier `dispatch-start` anywhere in this run AND whose
  * payload carries no `agent_type` (round 2, B4) — see the
  * "record-dispatch.mjs — a dispatch-end whose agent never started in this
@@ -78,6 +81,7 @@ const EXPECTED_DISPATCH_FIELDS = [
   'usage',
   'usageUnavailable',
   'measuredModel',
+  'harnessVersion',
   'orphan',
 ].sort();
 

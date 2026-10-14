@@ -79,6 +79,43 @@ export const USAGE_COUNTER_FIELDS = Object.freeze([
   ['cache_read_input_tokens', 'cacheReadInputTokens'],
 ]);
 
+/** `version` (Claude) / `cli_version` (Codex) as written by the harness — a short, narrow shape. */
+export const HARNESS_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?$/;
+
+/** A non-negative safe integer — the only shape a counter is ever read or summed as. */
+const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * Sums `USAGE_COUNTER_FIELDS` across the deduped Claude usage records in
+ * `usageByKey`. Returns `{ counters, partialCounters }` — `counters` carries a
+ * field only when at least one record has it; `partialCounters` names every
+ * field that SOME records carry and others omit (RP-511 PR D: such a sum is
+ * still written, but never silently, so a reader can refuse to treat it as
+ * complete). Returns `{ usageUnavailable }` instead when any counter is not a
+ * non-negative safe integer or any accumulated sum leaves the safe-integer
+ * range (`'counter-overflow'`) — never a partial or wrapped number.
+ */
+function summedUsageCounters(usageByKey) {
+  const counters = {};
+  const partialCounters = [];
+  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
+    let present = 0;
+    let sum = 0;
+    for (const raw of usageByKey.values()) {
+      const value = raw?.[rawKey];
+      if (value === undefined) continue;
+      if (!isCounter(value)) return { usageUnavailable: 'invalid-usage-counter' };
+      present += 1;
+      sum += value;
+      if (!Number.isSafeInteger(sum)) return { usageUnavailable: 'counter-overflow' };
+    }
+    if (present === 0) continue;
+    counters[outKey] = sum;
+    if (present < usageByKey.size) partialCounters.push(outKey);
+  }
+  return { counters, partialCounters };
+}
+
 /**
  * The one-pass, bounded JSONL line reader both RP-226 (Claude transcript) and
  * RP-227 (Codex rollout) fold their own records through — the lstat/open/fstat
@@ -226,6 +263,7 @@ export function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
   const usageByKey = new Map();
   const models = new Set();
+  const versions = new Set();
 
   /** Parses and folds one complete line (no trailing newline) into the accumulators. */
   const foldLine = (lineBuf) => {
@@ -246,6 +284,7 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     const messageId = typeof message.id === 'string' ? message.id : undefined;
     const key = requestId ?? messageId;
     if (key === undefined) return true;
+    if (typeof record.version === 'string') versions.add(record.version);
     usageByKey.set(key, usage); // last occurrence for this key wins
     return true;
   };
@@ -255,21 +294,14 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
 
   if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
 
-  const usage = { evidenceSource: 'claude-subagent-transcript', requests: usageByKey.size };
-  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
-    let present = false;
-    let sum = 0;
-    for (const raw of usageByKey.values()) {
-      const value = raw?.[rawKey];
-      if (value === undefined) continue;
-      if (!Number.isSafeInteger(value) || value < 0) {
-        return { usageUnavailable: 'invalid-usage-counter' };
-      }
-      present = true;
-      sum += value;
-    }
-    if (present) usage[outKey] = sum;
-  }
+  const summed = summedUsageCounters(usageByKey);
+  if (summed.usageUnavailable) return { usageUnavailable: summed.usageUnavailable };
+  const usage = {
+    evidenceSource: 'claude-subagent-transcript',
+    requests: usageByKey.size,
+    ...summed.counters,
+  };
+  if (summed.partialCounters.length > 0) usage.partialCounters = summed.partialCounters;
 
   const result = { usage };
   if (models.size === 1) {
@@ -277,6 +309,12 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     if (candidate.length <= MAX_MEASURED_MODEL_LENGTH && MEASURED_MODEL_RE.test(candidate)) {
       result.measuredModel = candidate;
     }
+  }
+  // The harness version every counted record agrees on — evidence for the
+  // report's per-version exclusivity check, never a guess from the parent.
+  if (versions.size === 1) {
+    const candidate = [...versions][0];
+    if (HARNESS_VERSION_RE.test(candidate)) result.harnessVersion = candidate;
   }
   return result;
 }
@@ -308,6 +346,7 @@ export const CODEX_USAGE_COUNTER_FIELDS = Object.freeze([
 export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
   let sessionMetaSeen = false;
   let sessionMetaId;
+  let cliVersion;
   let matched = false;
   let lastThreadTokenUsage = {};
 
@@ -328,8 +367,9 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
       if (!sessionMetaSeen) {
         sessionMetaSeen = true;
         const payload = record.payload;
-        if (payload !== null && typeof payload === 'object' && typeof payload.id === 'string') {
-          sessionMetaId = payload.id;
+        if (payload !== null && typeof payload === 'object') {
+          if (typeof payload.id === 'string') sessionMetaId = payload.id;
+          if (typeof payload.cli_version === 'string') cliVersion = payload.cli_version;
         }
       }
       return true;
@@ -373,7 +413,11 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
   // never read as "measured": `'usage' in data` is exactly what a caller
   // checks.
   if (!anyCounter) return { usageUnavailable: 'no-usage-counters' };
-  return { usage };
+  const result = { usage };
+  if (cliVersion !== undefined && HARNESS_VERSION_RE.test(cliVersion)) {
+    result.harnessVersion = cliVersion;
+  }
+  return result;
 }
 
 // ── Controller-session usage (RP-511) ───────────────────────────────────────
@@ -413,9 +457,6 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
 // in a generated rig) › "carries cost-state as a labelled diagnostic without
 // costUSD, and omits a harness version the records disagree on".
 
-/** `version` (Claude) / `cli_version` (Codex) as written by the harness — a short, narrow shape. */
-const HARNESS_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?$/;
-
 /** The counters copied out of a `cost-state` record's `modelUsage[<model>]` — never `costUSD`. */
 const COST_STATE_COUNTER_FIELDS = Object.freeze([
   'inputTokens',
@@ -425,8 +466,6 @@ const COST_STATE_COUNTER_FIELDS = Object.freeze([
   'cacheCreationInputTokens',
 ]);
 const MAX_COST_STATE_MODELS = 16;
-
-const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
 
 /**
  * `{ usage, coverage, harnessVersion?, sessionAggregate? }` or
@@ -488,19 +527,13 @@ export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = 
   if (errorCode) return { usageUnavailable: errorCode };
   if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
 
-  const usage = { evidenceSource: 'claude-controller-transcript', requests: usageByKey.size };
-  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
-    let present = false;
-    let sum = 0;
-    for (const raw of usageByKey.values()) {
-      const value = raw?.[rawKey];
-      if (value === undefined) continue;
-      if (!isCounter(value)) return { usageUnavailable: 'invalid-usage-counter' };
-      present = true;
-      sum += value;
-    }
-    if (present) usage[outKey] = sum;
-  }
+  const summed = summedUsageCounters(usageByKey);
+  if (summed.usageUnavailable) return { usageUnavailable: summed.usageUnavailable };
+  const usage = {
+    evidenceSource: 'claude-controller-transcript',
+    requests: usageByKey.size,
+    ...summed.counters,
+  };
 
   const result = {
     usage,
@@ -512,6 +545,9 @@ export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = 
       compactBoundaries,
     },
   };
+  // A counter some counted records omit is summed from the records that
+  // carry it and NAMED here, so a reader never takes the sum for complete.
+  if (summed.partialCounters.length > 0) result.coverage.partialCounters = summed.partialCounters;
   if (versions.size === 1) {
     const candidate = [...versions][0];
     if (HARNESS_VERSION_RE.test(candidate)) result.harnessVersion = candidate;
