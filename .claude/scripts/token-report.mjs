@@ -497,8 +497,9 @@ const CONTROLLER_COUNTER_FIELDS = Object.freeze({
 
 /** The harness versions on which parent/subagent exclusivity was verified —
  * the only versions for which a combined (controller + subagents) total is
- * ever printed. A controller snapshot whose `harnessVersion` is absent or
- * not listed leaves `totals.<harness>.combined` null with a reason. */
+ * ever printed. A (run, controller) whose LAST snapshot's `harnessVersion`
+ * is absent or not listed leaves `totals.<harness>.combined` null with a
+ * reason; earlier snapshots' versions are not consulted. */
 const VERIFIED_EXCLUSIVITY = Object.freeze({
   claude: Object.freeze({
     versions: Object.freeze(['2.1.296']),
