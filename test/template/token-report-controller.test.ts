@@ -660,7 +660,11 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
     snapshot(dir, 1);
-    dispatchPair(dir, 2, { ...subUsage(), partialCounters: ['cacheReadInputTokens', 'bogus'] });
+    // Eight junk names ahead of the real one do not hide it.
+    dispatchPair(dir, 2, {
+      ...subUsage(),
+      partialCounters: [...Array.from({ length: 8 }, () => 'bogus'), 'cacheReadInputTokens'],
+    });
     const data = report(root, ['run-a']);
     expect(data.dispatchGroups[0]!.partialCounters).toEqual(['cacheReadInputTokens']);
     expect(data.totals.claude.subagentGroups).toEqual({ total: 1, measured: 0 });
@@ -968,7 +972,15 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(text).toContain('controllers: 1');
     expect(text).toContain('attribution=run');
     expect(text).toMatch(/totals claude: controller=\{/);
+    expect(text).toContain('caveats=["subagent-hook-configured-not-witnessed"]');
     expect(text).toContain('controllerRuns=1/1 missingSnapshot=0 malformedSnapshots=0');
+
+    const dir2 = await mkrun(root, 'run-b');
+    snapshot(dir2, 1, {
+      coverage: { basis: 'assistant-records-last-per-request', partialCounters: ['inputTokens'] },
+    });
+    const text2 = reportModule.render(report(root, ['run-b']));
+    expect(text2).toContain('controllerPartialCounters=["inputTokens"]');
     expect(text).toContain('controller=measured(snapshots=1)');
     expect(text.trimEnd().split('\n').at(-1)).toBe(data.money.line);
   });

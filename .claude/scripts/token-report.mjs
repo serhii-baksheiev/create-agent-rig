@@ -584,6 +584,8 @@ const SESSION_AGGREGATE_COUNTER_FIELDS = Object.freeze([
 ]);
 const SESSION_AGGREGATE_MAX_MODELS = 16;
 const PARTIAL_COUNTERS_MAX = 8;
+/** How many entries of a journal-supplied `partialCounters` array are examined. */
+const PARTIAL_COUNTERS_SCAN_MAX = 64;
 const HARNESS_VERSIONS_MAX = 8;
 
 const safeIdentifierOrNull = (value) =>
@@ -597,10 +599,11 @@ const partialCountersOf = (value, harness) => {
   if (!Array.isArray(value) || !isKnownHarness(harness)) return [];
   const fields = CONTROLLER_COUNTER_FIELDS[harness];
   const out = [];
-  // Bounded by INPUT index, not by output size: a long array of names that
-  // never match would otherwise be walked to its end.
-  const limit = Math.min(value.length, PARTIAL_COUNTERS_MAX);
-  for (let i = 0; i < limit; i += 1) {
+  // Bounded by INPUT index (a long array of names that never match is not
+  // walked to its end) AND by output size; the scan bound exceeds the
+  // output bound so a few junk names ahead of a real one do not hide it.
+  const limit = Math.min(value.length, PARTIAL_COUNTERS_SCAN_MAX);
+  for (let i = 0; i < limit && out.length < PARTIAL_COUNTERS_MAX; i += 1) {
     const name = value[i];
     if (fields.includes(name) && !out.includes(name)) out.push(name);
   }
@@ -1569,6 +1572,10 @@ export const render = (report) => {
       `totals ${harness}: controller=${JSON.stringify(total.controller)} ` +
         `subagents=${JSON.stringify(total.subagents)} combined=${JSON.stringify(total.combined)}` +
         (total.combinedUnavailable ? ` (${total.combinedUnavailable})` : '') +
+        (total.combinedCaveats.length > 0 ? ` caveats=${JSON.stringify(total.combinedCaveats)}` : '') +
+        (total.controllerPartialCounters.length > 0
+          ? ` controllerPartialCounters=${JSON.stringify(total.controllerPartialCounters)}`
+          : '') +
         ` controllerRuns=${total.controllerRuns.withSnapshot}/${total.controllerRuns.relevant}` +
         ` missingSnapshot=${total.controllerRuns.missingSnapshot}` +
         ` malformedSnapshots=${total.controllerRuns.malformedSnapshots}`,
