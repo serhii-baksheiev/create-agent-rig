@@ -297,8 +297,8 @@ function patchFragments(command, payloadCwd) {
     const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
       ? path.resolve(payloadCwd)
       : process.cwd();
-    budget.repoRoot = realpathSync(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_ROOT_TIMEOUT_MS, env: withoutGitLocation() }).trim());
-    budget.patchCwd = realpathSync(requestedCwd);
+    budget.repoRoot = realpathSync.native(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_ROOT_TIMEOUT_MS, env: withoutGitLocation() }).trim());
+    budget.patchCwd = realpathSync.native(requestedCwd);
     if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
   } catch { /* moved inspection below refuses without a trusted root and cwd */ }
   let current = null;
