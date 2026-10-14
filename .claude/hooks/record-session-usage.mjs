@@ -3,10 +3,13 @@
 // snapshot of the CONTROLLER session's own token usage into the run journal
 // (`.claude/scripts/run-journal.mjs`, `events.jsonl`) — the controller half
 // of the usage evidence `record-dispatch.mjs` already records per subagent
-// (RP-225/226/227), read back by `token-report.mjs` (RP-511 PR C), which
-// counts a run with no such event under `controllerRuns.withoutSnapshot`
-// and never reads it as zero — what a report does with that count is the
-// report's own rule, not a mechanism here.
+// (RP-225/226/227), read back by `token-report.mjs` (RP-511 PR C/D), which
+// counts a run relevant to a harness with no such event for it under
+// `totals.<harness>.controllerRuns.missingSnapshot` and never reads it as
+// zero — what a report does with that count is the report's own rule, not a
+// mechanism here (test/template/token-report-controller.test.ts, absent in
+// a generated rig, › "three runs, one with dispatches and no controller
+// snapshot: no combined total for the harness, and the run is named").
 //
 // observe-only: refuses nothing and returns no decision. It exits 0 on every
 // path, writes nothing to stdout, and never throws out of `main()` — a `Stop`

@@ -107,7 +107,6 @@ interface DispatchGroup {
 
 interface Report {
   schemaVersion: number;
-  dispatchGroups: Array<{ dispatches: Record<string, number> }>;
   tickets: Array<{ ticket: string; occurrences: Array<Record<string, unknown>> }>;
   money: { line: string; estimate: null };
   accountingBasis: Record<string, unknown>;
@@ -393,6 +392,22 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(entry.snapshots).toBe(3);
     expect(entry.usageUnavailable).toBe('non-monotonic-snapshots');
     expect(entry.snapshotCounters?.map((c) => c.outputTokens)).toEqual([30, 5]);
+  });
+
+  it('a valid snapshot followed by an unavailable last one leaves the controller unavailable with the later reason — earlier counters are never promoted', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    snapshot(dir, 1);
+    snapshot(dir, 2, { usage: undefined, usageUnavailable: 'transcript-too-large' });
+    const data = report(root, ['run-a']);
+    const entry = data.controllers[0]!;
+    expect(entry.snapshots).toBe(2);
+    expect(entry.usage).toBeNull();
+    expect(entry.usageUnavailable).toBe('transcript-too-large');
+    expect(entry.snapshotCounters).toBeUndefined();
+    expect(data.totals.claude.controller).toBeNull();
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).toBe('controller-usage-unavailable');
   });
 
   it('controller plus two subagents: combined is the disjoint sum, checked against an independent addition', async () => {
@@ -983,5 +998,42 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(text2).toContain('controllerPartialCounters=["inputTokens"]');
     expect(text).toContain('controller=measured(snapshots=1)');
     expect(text.trimEnd().split('\n').at(-1)).toBe(data.money.line);
+  });
+  // The number of distinct controllers in a run is journal content, so the
+  // collection step must not hand an input-sized list to a call that takes
+  // it as arguments: `controllers.push(...list)` throws RangeError past the
+  // engine's argument limit (about 1.2e5 on this Node) and the report dies
+  // on exactly the journal it was asked about. Built in memory — the limit
+  // needs more events than a fixture file should carry.
+  it('a run with more distinct controllers than a call can take as arguments is still reported, one entry per controller', () => {
+    const count = 130_000;
+    const events: JournalRecord[] = [];
+    for (let i = 0; i < count; i += 1) {
+      events.push({
+        seq: i + 1,
+        at: at(1),
+        kind: 'controller-usage',
+        data: {
+          schema: 1,
+          harness: 'claude',
+          controller: i.toString(16).padStart(16, '0'),
+          trigger: 'Stop',
+          cumulative: true,
+          harnessVersion: CLAUDE_VERSION,
+          usage: { evidenceSource: 'claude-controller-transcript', ...claudeCounters() },
+        },
+      });
+    }
+    const data = reportModule.tokenReportOf({
+      runs: [{ run: 'run-wide', decisions: [], events }],
+      since: SINCE,
+      wiring: CONFIGURED,
+    });
+    expect(data.controllers).toHaveLength(count);
+    expect(data.totals.claude.controller).toEqual(
+      Object.fromEntries(
+        Object.entries(claudeCounters()).map(([field, value]) => [field, value * count]),
+      ),
+    );
   });
 });

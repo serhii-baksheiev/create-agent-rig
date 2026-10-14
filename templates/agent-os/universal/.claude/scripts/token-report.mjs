@@ -16,10 +16,17 @@
  * (absent in a generated rig) › "exits 0 with a JSON document on --json".
  * Without it, the default is a short human text render — runs read/skipped,
  * one line per dispatch group (run, controller/harness, ticket, agentType,
- * model/effort, dispatch counts, per-harness usage), one line per ticket
+ * model/effort, dispatch counts, per-harness usage), one line per controller
+ * entry (run, controller/harness, snapshot count, last trigger, version,
+ * attribution, usage or the reason it is unavailable), one totals line per
+ * harness (controller, subagents, combined with its reason, caveats and
+ * partial counters when any, the completeness counts), one line per ticket
  * occurrence (attempts, gate rounds, outcome, wall time, dispatches) —
  * ending with the money line — test/template/token-report.test.ts (absent
- * in a generated rig) › "the text render ends with the money line".
+ * in a generated rig) › "the text render ends with the money line" and
+ * test/template/token-report-controller.test.ts (absent in a generated rig)
+ * › "the text render lists controllers and totals, names the completeness
+ * counts, and still ends with the money line".
  *
  * Reads `<runs>/<run-id>/` the same way `revalidation-report.mjs` does —
  * this script reuses that script's `readRuns` (default `--runs` also
@@ -452,13 +459,29 @@ const codexUsageOf = (rawList) => {
 // `record-session-usage.mjs` journals one `controller-usage` EVENT per
 // snapshot of the controller session's own cumulative usage (Stop/SessionEnd).
 // A snapshot is a running total, so this report keeps the LAST one per
-// (run, controller) and NEVER sums snapshots. A sequence whose counters go
-// DOWN between two snapshots is not silently replaced by the later one: that
-// controller's usage is `null` with `usageUnavailable: 'non-monotonic-snapshots'`
-// and `coverage.incomplete: true`, and the raw counters of every snapshot are
-// kept beside it for inspection. Controller usage is attributed to the RUN
+// (run, controller) and NEVER sums snapshots —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "three growing snapshots are never summed: the last one is the
+// controller usage". A sequence whose counters go DOWN between two snapshots
+// is not silently replaced by the later one: that controller's usage is
+// `null` with `usageUnavailable: 'non-monotonic-snapshots'` and
+// `coverage.incomplete: true`, and the counters of every snapshot that
+// carried valid usage are kept beside it for inspection (a snapshot with no
+// `usage`, or with a counter outside the harness's own fields' shape, is
+// skipped there) —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a counter that goes down between snapshots makes the controller
+// unavailable, keeps the raw counters, and blocks combined" and › "a
+// usage-less snapshot between two valid ones is counted in snapshots but
+// skipped in snapshotCounters". Controller usage is attributed to the RUN
 // only — never to a ticket, attempt or review round — because the snapshot
-// interval starts at session start, before any item selection.
+// interval starts at session start, before any item selection —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "multi-ticket run: controller usage stays run-level and names every
+// taken ticket; no ticket is credited". The `evidence` strings in
+// `VERIFIED_EXCLUSIVITY` below describe one-off measurements recorded in
+// Jira RP-511 (comment 24425), not mechanisms this script enforces; what it
+// enforces is the version list.
 //
 // COMPLETENESS (RP-511 PR D). `totals.<harness>.combined` is a claim about
 // every run read, so it is printed only when every run RELEVANT to that
@@ -468,15 +491,42 @@ const codexUsageOf = (rawList) => {
 // ran it is then unknown, and its controller's consumption is unaccounted
 // for). Each such run without a snapshot is counted under
 // `controllerRuns.missingSnapshot` and leaves `combined` null with
-// `'controller-snapshot-missing-for-run'`. A dispatch group is complete only
-// when every dispatch in it ended with usage (`noEndObserved === 0`, no
-// `withUsage` under-count, no `partialCounters`); every accumulated sum is
-// checked with `Number.isSafeInteger` and an overflow is `null` with
-// `'counter-overflow'`, never a wrapped number. Every controller-side string
-// (`controller`, `harness`, `trigger`, `harnessVersion`, `usageUnavailable`,
+// `'controller-snapshot-missing-for-run'` —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "three runs, one with dispatches and no controller snapshot: no
+// combined total for the harness, and the run is named", › "a run that
+// journalled records but no usage evidence for any harness is relevant to
+// every harness — its controller is unaccounted for" and › "mixed-harness
+// run: a codex controller snapshot does not stand in for the claude
+// controller of the same run". A dispatch group is complete only when every
+// dispatch in it ended with usage (`noEndObserved === 0`, no `withUsage`
+// under-count, no `partialCounters`) —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a dispatch group with a start that never ended is not measured, so
+// combined is null", › "a dispatch group where one ended dispatch carried no
+// usage (withUsage under-count) is not measured" and › "a dispatch whose
+// usage names partialCounters is not a complete measurement: the group
+// carries the names and combined is null"; every accumulated sum is checked
+// with `Number.isSafeInteger` and an overflow is `null` with
+// `'counter-overflow'`, never a wrapped number —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a controller sum that leaves the safe-integer range is null with
+// counter-overflow, never a wrapped number", › "a subagent sum that leaves
+// the safe-integer range is counter-overflow on the group and on the total"
+// and › "a combination that leaves the safe-integer range is counter-overflow
+// even when each side fits". Every controller-side string (`controller`,
+// `harness`, `trigger`, `harnessVersion`, `usageUnavailable`,
 // `evidenceSource`, `coverage.basis`) is journal content and reaches the
-// report only through a narrow shape; `sessionAggregate` is projected
-// through a bounded allowlist, never copied.
+// report only through a narrow shape, and `sessionAggregate` is projected
+// through a bounded allowlist, never copied —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a controller-side string that is not in shape never reaches the report
+// raw: trigger, harnessVersion, usageUnavailable, evidenceSource and
+// coverage.basis are narrowed", › "a snapshot with an unknown or
+// prototype-named harness, a non-ref controller, or the wrong schema is
+// malformed: counted, never read, and it blocks combined for every harness"
+// and › "sessionAggregate is projected through an allowlist: counters per
+// model only, costUSD and unknown fields dropped, flags forced to false".
 
 /** The report's own schema version; 1 was the RP-228 shape. 2 adds `schemaVersion` itself,
  * `controllers`, `totals` and `accountingBasis`, computes `usageEvidence.controller`
@@ -503,9 +553,15 @@ const CONTROLLER_COUNTER_FIELDS = Object.freeze({
 
 /** The harness versions on which parent/subagent exclusivity was verified —
  * the only versions for which a combined (controller + subagents) total is
- * ever printed. A controller snapshot or a dispatch whose `harnessVersion`
- * is absent or not listed leaves `totals.<harness>.combined` null with a
- * reason. */
+ * ever printed. A (run, controller) whose LAST snapshot's `harnessVersion`
+ * is absent or not listed — earlier snapshots' versions are not consulted —
+ * or a dispatch whose `harnessVersion` is absent or not listed, leaves
+ * `totals.<harness>.combined` null with a reason —
+ * test/template/token-report-controller.test.ts (absent in a generated rig)
+ * › "an absent or unverified CONTROLLER harness version leaves combined null
+ * — exclusivity is a per-version fact, not an assumption" and › "an absent
+ * or unverified DISPATCH harness version leaves combined null — the
+ * controller binary is never assumed for its subagents". */
 const VERIFIED_EXCLUSIVITY = Object.freeze({
   claude: Object.freeze({
     versions: Object.freeze(['2.1.296']),
@@ -1154,7 +1210,9 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       events,
       takenTickets,
     );
-    controllers.push(...runControllers);
+    // One push per entry: the entry count is journal content, and a call
+    // spread of an input-sized list throws past the engine's argument limit.
+    for (const entry of runControllers) controllers.push(entry);
     const evidence = {
       run: runName,
       dispatch: { claude: false, codex: false, unknown: 0 },
