@@ -860,6 +860,28 @@ describe('Codex adapter is generated from the Claude Code Agent OS', () => {
   // hook payload. The Codex projection must carry the SAME hook with its
   // harness argument rewritten to `--harness=codex`, so the one deterministic
   // difference between the two projected commands is that one flag.
+  // RP-511 PR B: the controller-session hook travels the same way — wired on
+  // Claude's Stop/SessionEnd with `--harness=claude`, projected with
+  // `--harness=codex` and nothing else different.
+  it('projects record-session-usage onto Codex Stop/SessionEnd with --harness=codex', async () => {
+    const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>>;
+    };
+    for (const event of ['Stop', 'SessionEnd']) {
+      const hooks = (config.hooks[event] ?? []).flatMap((group) => group.hooks);
+      const entry = hooks.find((hook) => hook.command.includes('record-session-usage.mjs'));
+      expect(entry, `${event} has no record-session-usage.mjs entry`).toBeDefined();
+      expect(entry?.command).toContain('--harness=codex');
+      expect(entry?.command).not.toContain('--harness=claude');
+      const encoded = entry?.commandWindows?.match(
+        /^powershell\.exe -NoProfile -NonInteractive -EncodedCommand ([A-Za-z0-9+/=]+)$/,
+      )?.[1];
+      expect(encoded, ` commandWindows is not an EncodedCommand`).toBeDefined();
+      const windowsScript = Buffer.from(encoded ?? '', 'base64').toString('utf16le');
+      expect(windowsScript).toContain('--harness=codex');
+    }
+  });
+
   it('projects record-dispatch onto Codex SubagentStart/SubagentStop with --harness=codex', async () => {
     const config = JSON.parse(await text(universal, '.codex', 'hooks.json')) as {
       hooks: Record<string, Array<{ hooks: Array<{ command: string; commandWindows?: string }> }>>;

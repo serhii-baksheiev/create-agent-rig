@@ -3,65 +3,103 @@
 // snapshot of the CONTROLLER session's own token usage into the run journal
 // (`.claude/scripts/run-journal.mjs`, `events.jsonl`) — the controller half
 // of the usage evidence `record-dispatch.mjs` already records per subagent
-// (RP-225/226/227), read back by `token-report.mjs` (RP-511).
+// (RP-225/226/227). Nothing on this head reads these events back; a reader
+// that does must treat a run with no such event as ABSENT evidence, never as
+// zero — that is the contract the event shape carries, not a mechanism here.
 //
 // observe-only: refuses nothing and returns no decision. It exits 0 on every
 // path, writes nothing to stdout, and never throws out of `main()` — a `Stop`
 // hook that wrote a stdout decision could block a real session, and this
-// hook must never carry that power by accident.
+// hook must never carry that power by accident —
+// test/template/session-usage.test.ts (absent in a generated rig) › "journals
+// one controller-usage event on Stop with only allowlisted fields and a
+// hashed controller, exits 0 and prints nothing" and › "writes nothing for
+// another event, for a missing harness flag, for no run directory, or for
+// malformed stdin — and always exits 0 silently".
 //
 // WHAT IT READS. Only the payload's `transcript_path` — the controller's own
 // transcript (Claude) or rollout (Codex), as the harness names it on `Stop`
 // and `SessionEnd` — through the same bounded readers, bounds and reason
 // codes as the subagent capture (`./lib/usage-readers.mjs`). The path is
 // refused before anything is opened when it is missing or empty
-// (`transcript-path-missing`), UNC-shaped (`transcript-path-unc`), not
-// absolute (`transcript-path-not-absolute`), or when its basename does not
-// carry the payload's own `session_id` (`transcript-path-mismatch`): Claude
-// names the file `<session_id>.jsonl`, Codex `rollout-<stamp>-<session_id>.jsonl`.
-// Inside the file the binding is the session id again — a Claude record's
-// `sessionId`, a Codex rollout's first `session_meta.payload.id` and each
-// `token_usage_record.payload.thread_id` — so a resumed or forked session's
-// foreign records are counted, never summed (`coverage`).
+// (`transcript-path-missing`), UNC-shaped in any separator mix
+// (`transcript-path-unc`), not absolute (`transcript-path-not-absolute`), or
+// when its basename does not carry the payload's own `session_id`
+// (`transcript-path-mismatch`): Claude names the file `<session_id>.jsonl`,
+// Codex `rollout-<stamp>-<session_id>.jsonl` —
+// test/template/session-usage.test.ts (absent in a generated rig) › "refuses
+// a missing, UNC-shaped (any separator mix) or relative transcript_path
+// before opening anything, on both harnesses" and › "records usageUnavailable:
+// transcript-path-mismatch when the basename does not carry the session id,
+// without opening the file". Inside the file the binding is the session id
+// again — a Claude record's `sessionId`, a Codex rollout's first
+// `session_meta.payload.id` and each `token_usage_record.payload.thread_id`
+// — so a resumed or forked session's foreign records are counted, never
+// summed (`coverage`): the readers' own section in `./lib/usage-readers.mjs`
+// carries the tests.
 //
 // WHAT IT WRITES. One `controller-usage` event whose `data` is filtered
 // through ONE allowlist, `SESSION_USAGE_FIELDS`, immediately before the
 // write: `schema`, `harness`, `controller`, `trigger`, `cumulative`, `usage`,
 // `usageUnavailable`, `coverage`, `harnessVersion`, `sessionAggregate`.
 // `controller` is never the raw `session_id` — it is `record-dispatch.mjs`'s
-// own `ref(runDir, session_id)`, the same hash a `dispatch-start` carries, so
-// the two kinds of record meet on one identity and neither names an id a
-// reader could correlate outside this run. `cumulative` is always `true`:
-// the counters are the session's running total as of this snapshot, so a
-// reader keeps the LAST snapshot per controller and never sums snapshots.
+// own `ref(runDir, session_id)`, the same hash a `dispatch-start` carries for
+// the same session, so the two kinds of record meet on one identity and
+// neither names an id a reader could correlate outside this run —
+// test/template/session-usage.test.ts (absent in a generated rig) › "names
+// the controller by the same ref() a dispatch-start of the same session
+// carries, never by the raw session id". `cumulative` is always `true`: the
+// counters are the session's running total as of this snapshot, so a reader
+// keeps the LAST snapshot per controller and never sums snapshots.
 //
 // REPEATED SNAPSHOTS. `Stop` fires at every turn end, so an idle turn would
 // re-record the same total. Before writing, the hook reads the run's last
-// `controller-usage` event for this controller (bounded: `events.jsonl` past
-// `MAX_SNAPSHOT_CHECK_BYTES` is not read, and the snapshot is then written
-// regardless) and skips the write when `usage`, `usageUnavailable` and
-// `coverage` are byte-identical. A snapshot whose counters are LOWER than the
-// previous one is still written: the reader, not this hook, decides what a
-// non-monotonic sequence means, and it must see it.
+// `controller-usage` event for this controller and skips the write when
+// `usage`, `usageUnavailable` and `coverage` are byte-identical —
+// test/template/session-usage.test.ts (absent in a generated rig) › "does not
+// write a second event for an identical snapshot, but does for a changed one,
+// and SessionEnd is a trigger too". The check is bounded: a run whose
+// `events.jsonl` or `decisions.jsonl` is past `MAX_SNAPSHOT_CHECK_BYTES` is
+// not read, and the snapshot is then written regardless —
+// test/template/session-usage.test.ts (absent in a generated rig) › "writes a
+// repeated snapshot regardless once the journal is past the repeated-snapshot
+// check bound". A snapshot whose counters are LOWER than the previous one is
+// still written: the reader, not this hook, decides what a non-monotonic
+// sequence means, and it must see it —
+// test/template/session-usage.test.ts (absent in a generated rig) › "still
+// writes a lower snapshot after a higher one — the reader, not the hook,
+// judges a non-monotonic sequence".
 //
 // LIMITS, stated because a hook's own claim about its reach is the first
 // thing to go stale:
 //   - **No run directory declared → nothing recorded, not zero.** As for
 //     dispatches: `RIG_RUN_DIR`, else the armed unattended flag's `runDir`,
-//     else silence.
+//     else silence (the "writes nothing …" test above).
 //   - **A session the harness kills does not fire Stop or SessionEnd.** Such
-//     a run has no `controller-usage` event at all; `token-report.mjs`
-//     reports it as a run without a controller snapshot, never as zero.
+//     a run has no `controller-usage` event at all — absent evidence, never
+//     zero. Whether a harness gives `SessionEnd` the full `timeout` this
+//     hook is wired with is the harness's own behaviour, not observed here;
+//     the `Stop` snapshots stand on their own either way.
+//   - **The readers' bounds apply to the controller's file as to a
+//     subagent's** — `MAX_TRANSCRIPT_TOTAL_BYTES`, `MAX_TRANSCRIPT_LINE_BYTES`
+//     and `MAX_TRANSCRIPT_MS` in `./lib/usage-readers.mjs`; a controller
+//     transcript past the total bound records `transcript-too-large` at every
+//     Stop, and a file still being written whose last line is incomplete
+//     records `transcript-malformed-line` — both absent evidence with a
+//     reason, never a partial number.
 //   - **Assistant records are not the session's whole consumption.** A
-//     compaction's own requests and helper-model requests leave no assistant
-//     record in a Claude transcript; `coverage.basis` says so, and the
-//     optional `sessionAggregate` (the harness's UNDOCUMENTED `cost-state`
-//     record) is carried for comparison only — never added to `usage`.
+//     request that leaves no assistant record (a compaction's own request is
+//     one) is not seen; `coverage.basis` says so, and the optional
+//     `sessionAggregate` (the harness's UNDOCUMENTED `cost-state` record) is
+//     carried for comparison only — never added to `usage`.
 //   - **A Codex project hook may be skipped until the project is trusted**,
 //     exactly as for dispatches; the trace is then absent, not zero.
-//   - **`transcript_path` on Codex is the parent rollout on Stop/SessionEnd**
-//     (RP-227 live probe); on `SubagentStop` it would be too, which is why
-//     this hook never handles that event.
+//   - **Codex `Stop`/`SessionEnd` have not been observed delivering a
+//     `transcript_path`.** RP-227's live probe covered `SubagentStop` only
+//     (`record-dispatch.mjs`, CODEX USAGE CAPTURE); the Codex row for this
+//     hook in `docs/compatibility.md` stays UNVERIFIED until a live `Stop`
+//     payload is recorded. This hook never handles `SubagentStop`: there the
+//     path would be the parent's, which is the wrong file for a subagent.
 import { realpathSync, statSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -96,7 +134,7 @@ const HANDLED_EVENTS = new Set(['Stop', 'SessionEnd']);
 /** A narrow shape for a session id as it may appear in a file name. */
 const SESSION_ID_RE = /^[A-Za-z0-9._-]{1,128}$/;
 
-/** `events.jsonl` larger than this is not read for the repeated-snapshot check. */
+/** A journal file larger than this is not read for the repeated-snapshot check. */
 const MAX_SNAPSHOT_CHECK_BYTES = 4 * 1024 * 1024;
 
 function harnessOf(argv) {
@@ -149,8 +187,16 @@ const fingerprintOf = (data) =>
  */
 export function lastSnapshotFingerprint(runDir, controller) {
   try {
-    const stat = statSync(path.join(runDir, 'events.jsonl'));
-    if (stat.size > MAX_SNAPSHOT_CHECK_BYTES) return undefined;
+    // `readRun` reads BOTH journal files in full, so both are size-gated —
+    // the same parity `record-dispatch.mjs`'s orphan check keeps.
+    const events = statSync(path.join(runDir, 'events.jsonl'));
+    if (events.size > MAX_SNAPSHOT_CHECK_BYTES) return undefined;
+    try {
+      const decisions = statSync(path.join(runDir, 'decisions.jsonl'));
+      if (decisions.size > MAX_SNAPSHOT_CHECK_BYTES) return undefined;
+    } catch (error) {
+      if (!error || error.code !== 'ENOENT') return undefined;
+    }
   } catch (error) {
     if (error && error.code === 'ENOENT') return null;
     return undefined;

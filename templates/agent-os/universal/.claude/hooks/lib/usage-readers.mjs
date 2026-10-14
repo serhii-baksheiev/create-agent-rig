@@ -370,23 +370,38 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
 // The same bounded reader, folded for the CONTROLLER's own transcript (Claude)
 // or rollout (Codex) — the `transcript_path` a `Stop`/`SessionEnd` payload
 // carries — instead of a subagent's. The identity binding is the payload's
-// `session_id`; a file that names another session is `usageUnavailable:
-// 'session-identity-mismatch'`, never a partial number. Every record of a
-// Claude transcript carries its own `sessionId`, and a resumed or forked
-// session's file carries the PREVIOUS session's records too, so only records
-// whose `sessionId` equals the payload's are counted; the rest are counted
-// under `coverage.foreignSessionRecords` and never summed. Measured on a
-// real 2.1.296 transcript: 485 of 1132 records belonged to the session it
-// was continued from.
+// `session_id`, inside the file, and it differs per harness. Claude: every
+// record carries its own `sessionId`, and a resumed or forked session's file
+// carries the PREVIOUS session's records too, so only records whose
+// `sessionId` equals the payload's are summed; the rest are counted under
+// `coverage.foreignSessionRecords`, and a file with no own usage-bearing
+// record at all is `no-usage-records` —
+// test/template/session-usage.test.ts (absent in a generated rig) › "sums only
+// the payload session, dedupes by requestId with the last record winning, and
+// counts foreign records" and › "reports no-usage-records when every
+// usage-bearing record belongs to another session". Codex: the rollout's
+// FIRST `session_meta.payload.id` must be the session id or the whole read
+// is `session-identity-mismatch` —
+// test/template/session-usage.test.ts (absent in a generated rig) › "refuses
+// a rollout whose first session_meta names another thread — a forked child
+// carrying the parent meta second is still the child". The content-stripped
+// copy of a real 2.1.296 transcript that was continued from an earlier
+// session is the fixture the Claude reader is checked against, with an
+// independent dedupe — test/template/session-usage.test.ts (absent in a
+// generated rig) › "agrees with an independent dedupe on the real 2.1.296
+// transcript fixture, and the fixture carries no prompt or response text".
 //
-// `coverage` states what the counters are built from, because a transcript's
-// assistant records are NOT the session's whole consumption: the requests a
-// compaction makes, and helper-model requests (WebFetch summaries, the
-// permission classifier), leave no assistant record. The optional
-// `sessionAggregate` is the harness's own cumulative `cost-state` record —
-// UNDOCUMENTED, written periodically (so possibly stale: `recordsBehind` is
-// how many records followed it), not authoritative billing, never summed
-// with anything here; its `costUSD` is never copied.
+// `coverage` states what the counters are built from — assistant records
+// only, deduped per request, with `compactBoundaries` counted — because a
+// request that leaves no assistant record (a compaction's own request is one)
+// is not seen by this reader at all; nothing here claims to see the
+// session's whole consumption. The optional `sessionAggregate` is the
+// harness's own cumulative `cost-state` record — UNDOCUMENTED, written
+// periodically (so possibly stale: `recordsBehind` is how many records
+// followed it), not authoritative billing, never summed with anything here;
+// its `costUSD` is never copied — test/template/session-usage.test.ts (absent
+// in a generated rig) › "carries cost-state as a labelled diagnostic without
+// costUSD, and omits a harness version the records disagree on".
 
 /** `version` (Claude) / `cli_version` (Codex) as written by the harness — a short, narrow shape. */
 const HARNESS_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?$/;
@@ -545,10 +560,12 @@ function sessionAggregateOf(record) {
  * whose `payload.thread_id` equals it supplies `thread_token_usage` — the
  * thread's cumulative total, replaced never summed. Records of other threads
  * are counted under `coverage.foreignThreadRecords`; `compacted` records
- * under `coverage.compactedRecords`. Measured on 400 real 0.161/0.162
- * rollouts: a thread's cumulative total equals the sum of its own per-record
- * `usage` deltas in every one, and no rollout carried another thread's
- * records.
+ * under `coverage.compactedRecords` —
+ * test/template/session-usage.test.ts (absent in a generated rig) › "reads
+ * the last own-thread cumulative total, counts foreign-thread and compacted
+ * records, and never sums". That the cumulative total is the one to read was
+ * measured once, on real 0.161/0.162 rollouts, and recorded in Jira RP-511
+ * (comment 24424) — a measurement, not a mechanism this file enforces.
  */
 export function readCodexControllerUsage(file, sessionId, { now = Date.now } = {}) {
   let sessionMetaSeen = false;

@@ -28,12 +28,16 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 //   - unknown is never zero: a counter absent from every record stays absent.
 //
 // The real-fixture case reads `test/fixtures/usage/claude-controller-2.1.296.jsonl`,
-// a content-stripped copy of a live Claude Code 2.1.296 transcript (only
-// `type`/`sessionId`/`version`/`requestId`/`apiBlockIndex`/`message.{id,model,usage}`,
-// `compact_boundary` markers and `cost-state` counters survive), with an
-// independent oracle — a second, deliberately duplicated dedupe written here
-// rather than imported (`.claude/rules/invariants.md`, the independent-oracle
-// invariant).
+// a content-stripped copy of a live Claude Code 2.1.296 transcript: every
+// record keeps `type`/`sessionId` (a `user` record keeps nothing else), an
+// assistant record keeps `version`/`requestId`/`apiBlockIndex`/
+// `message.{id,model,usage}`, `compact_boundary` markers keep their `subtype`,
+// and the `cost-state` record keeps `modelUsage` as the harness wrote it —
+// counters AND the `costUSD`/`totalCostUSD`/`webSearchRequests` fields the
+// reader is shown to drop. No prompt, response or path text survives. The
+// oracle is independent — a second, deliberately duplicated dedupe written
+// here rather than imported (`.claude/rules/invariants.md`, the
+// independent-oracle invariant).
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
@@ -542,6 +546,111 @@ describe('record-session-usage.mjs — the Stop/SessionEnd hook (RP-511)', () =>
       'transcript-path-mismatch',
     );
     expect(event!.data).not.toHaveProperty('usage');
+  });
+
+  it('refuses a missing, UNC-shaped (any separator mix) or relative transcript_path before opening anything, on both harnesses', async () => {
+    // None of these paths exists, so a reader that opened them would report
+    // transcript-unreadable — the refusal codes prove nothing was opened.
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ['claude', {}, 'transcript-path-missing'],
+      ['claude', { transcript_path: '' }, 'transcript-path-missing'],
+      ['claude', { transcript_path: 42 }, 'transcript-path-missing'],
+      ['claude', { transcript_path: `//host/share/${SESSION}.jsonl` }, 'transcript-path-unc'],
+      ['claude', { transcript_path: `\\\\host\\share\\${SESSION}.jsonl` }, 'transcript-path-unc'],
+      ['claude', { transcript_path: `/\\host\\share\\${SESSION}.jsonl` }, 'transcript-path-unc'],
+      ['claude', { transcript_path: `\\/host/share/${SESSION}.jsonl` }, 'transcript-path-unc'],
+      ['claude', { transcript_path: `relative/${SESSION}.jsonl` }, 'transcript-path-not-absolute'],
+      ['codex', {}, 'transcript-path-missing'],
+      [
+        'codex',
+        { transcript_path: `//host/share/rollout-2026-10-14T00-00-00-${SESSION}.jsonl` },
+        'transcript-path-unc',
+      ],
+      [
+        'codex',
+        { transcript_path: `rollouts/rollout-2026-10-14T00-00-00-${SESSION}.jsonl` },
+        'transcript-path-not-absolute',
+      ],
+      // A Codex basename that carries the id but is not a rollout file.
+      ['codex', { transcript_path: `${dir}/${SESSION}.jsonl` }, 'transcript-path-mismatch'],
+      ['codex', { transcript_path: `${dir}/other-${SESSION}.jsonl` }, 'transcript-path-mismatch'],
+    ];
+    // One run directory per case: an identical repeated snapshot — the same
+    // reason code twice — is deduped on purpose, which would hide a case.
+    for (const [harness, fields, expected] of cases) {
+      const caseRun = await mkdtemp(path.join(tmpdir(), 'session-usage-refusal-'));
+      const result = await runHook(stopPayload(fields), { ...env(), RIG_RUN_DIR: caseRun }, [
+        `--harness=${harness}`,
+      ]);
+      expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
+      const events = await readEvents(caseRun);
+      expect(events, JSON.stringify(fields)).toHaveLength(1);
+      const data = events[0]!.data as Record<string, unknown>;
+      expect(data.usageUnavailable, JSON.stringify(fields)).toBe(expected);
+      expect(data).not.toHaveProperty('usage');
+      await removeFixture(caseRun);
+    }
+  });
+
+  it('names the controller by the same ref() a dispatch-start of the same session carries, never by the raw session id', async () => {
+    const file = await writeLines(`${SESSION}.jsonl`, [
+      claudeAssistant({ requestId: 'r1', usage: { input_tokens: 3, output_tokens: 4 } }),
+    ]);
+    await runHook(stopPayload({ transcript_path: file }), env(), ['--harness=claude']);
+    // The dispatch hook, fed a SubagentStart of the SAME session into the
+    // same run directory.
+    const dispatchHook = path.join(hooksDir, 'record-dispatch.mjs');
+    await new Promise<void>((resolve) => {
+      const child = execFile(
+        process.execPath,
+        [dispatchHook, '--harness=claude'],
+        { env: env(), timeout: 15_000 },
+        () => resolve(),
+      );
+      child.stdin?.end(
+        JSON.stringify({
+          hook_event_name: 'SubagentStart',
+          session_id: SESSION,
+          agent_id: 'agent-1',
+          agent_type: 'code-reviewer',
+          cwd: '/private/workdir',
+          permission_mode: 'default',
+        }),
+      );
+    });
+    const events = await readEvents(runDir);
+    const kinds = events.map((e) => e.kind);
+    expect(kinds).toEqual(['controller-usage', 'dispatch-start']);
+    const controller = (events[0]!.data as Record<string, unknown>).controller;
+    expect(controller).toMatch(/^[0-9a-f]{16}$/);
+    expect(controller).not.toBe(SESSION);
+    expect((events[1]!.data as Record<string, unknown>).controller).toBe(controller);
+  });
+
+  it('writes a repeated snapshot regardless once the journal is past the repeated-snapshot check bound', async () => {
+    const file = await writeLines(`${SESSION}.jsonl`, [
+      claudeAssistant({ requestId: 'r1', usage: { input_tokens: 3, output_tokens: 4 } }),
+    ]);
+    const { recordEvent } = (await import(runJournalUrl)) as {
+      recordEvent(input: {
+        runDir: string;
+        kind: string;
+        data: Record<string, unknown>;
+        now: string;
+      }): JournalRecord;
+    };
+    // One event whose data is larger than MAX_SNAPSHOT_CHECK_BYTES (4 MiB)
+    // puts events.jsonl past the bound; nothing in it is a controller-usage.
+    recordEvent({
+      runDir,
+      kind: 'padding',
+      data: { pad: 'x'.repeat(4 * 1024 * 1024 + 1) },
+      now: '2026-10-14T00:00:00.000Z',
+    });
+    await runHook(stopPayload({ transcript_path: file }), env(), ['--harness=claude']);
+    await runHook(stopPayload({ transcript_path: file }), env(), ['--harness=claude']);
+    const events = await readEvents(runDir);
+    expect(events.map((e) => e.kind)).toEqual(['padding', 'controller-usage', 'controller-usage']);
   });
 
   it('binds a Codex rollout by its basename and reads the parent thread total with --harness=codex', async () => {
