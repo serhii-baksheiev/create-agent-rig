@@ -19,12 +19,21 @@
 // journal record". The readers return only aggregated counters, a model
 // string already present verbatim in a record, and short static reason codes.
 //
-// The path checks (UNC, absolute, basename binding) are the CALLER's:
-// `record-dispatch.mjs` runs them before any reader here opens a file —
+// The path checks are the CALLER's — these functions open whatever path
+// they are handed. `record-dispatch.mjs` refuses a UNC-shaped or relative
+// path before either reader opens anything, and binds a Claude transcript's
+// basename to the agent id as well —
 // test/template/dispatch-usage.test.ts (absent in a generated rig) › "reports
 // usageUnavailable: transcript-path-unc for a UNC-shaped agent_transcript_path
-// (leading "//") — never opens anything" — and every other caller must do the
-// same: these functions open whatever path they are handed.
+// (leading "//") — never opens anything" and
+// test/template/dispatch-usage-codex.test.ts (absent in a generated rig) ›
+// "reports usageUnavailable with rollout-path-unc for a UNC-shaped
+// agent_transcript_path". A Codex rollout is bound by its content instead,
+// inside `readCodexRolloutUsage` —
+// test/template/dispatch-usage-codex.test.ts (absent in a generated rig) ›
+// "reports usageUnavailable with rollout-identity-mismatch when the FIRST
+// session_meta does not match agent_id, even when a LATER session_meta
+// does". Every other caller owns the same path checks before calling in.
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 
 /** A narrow, allowlisted shape for `measuredModel` — never echoed unless it matches. */
@@ -32,9 +41,10 @@ export const MEASURED_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]*$/;
 export const MAX_MEASURED_MODEL_LENGTH = 128;
 
 /**
- * Any leading pair of path separators, `\` and `/` in any mix — UNC-shaped,
- * refused before any fs call, for BOTH the Claude transcript path and the
- * Codex rollout path. Win32 treats `\` and `/` as the same separator, so
+ * Any leading pair of path separators, `\` and `/` in any mix — UNC-shaped.
+ * A CALLER tests a path against this before handing it to a reader here
+ * (`record-dispatch.mjs` does, for both the Claude transcript path and the
+ * Codex rollout path); no reader in this module applies it. Win32 treats `\` and `/` as the same separator, so
  * `/\host\share\...` and `\/host/share/...` resolve to `\\?\UNC\...` exactly
  * as `\\host\share\...` and `//host/share/...` do; a regex matching only the
  * two same-character pairs let both mixed forms through to

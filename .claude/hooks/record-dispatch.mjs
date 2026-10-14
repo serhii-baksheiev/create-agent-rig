@@ -454,9 +454,11 @@ import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readHookInput } from './lib/hook-input.mjs';
-// RP-511 PR A: the bounded readers moved to `./lib/usage-readers.mjs` without
-// a behaviour change and are re-exported below for the tests and callers
-// that import them from this hook.
+// RP-511 PR A: the bounded readers moved to `./lib/usage-readers.mjs` and
+// are re-exported below, so this hook's own tests keep importing them from
+// here — test/template/dispatch-usage.test.ts (absent in a generated rig) ›
+// "reports transcript-timeout when an injected clock crosses the 3 s bound
+// between two read chunks".
 import {
   OPEN_FLAGS,
   UNC_PATH_RE,
