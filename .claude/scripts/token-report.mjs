@@ -455,8 +455,10 @@ const codexUsageOf = (rawList) => {
 // › "multi-ticket run: controller usage stays run-level and names every
 // taken ticket; no ticket is credited". A combined (controller + subagents)
 // total is printed when the harness has controller usage from every one of
-// its entries, every dispatch group of the harness carries usage, and the
-// LAST snapshot of every (run, controller) names a harness version in
+// its entries, every dispatch group of the harness has a usage slot (built
+// from the dispatches of that group that ended with usage — a group where
+// only SOME did still counts here and says so in `dispatches.withUsage`),
+// and the LAST snapshot of every (run, controller) names a harness version in
 // `VERIFIED_EXCLUSIVITY`; a harness with controller entries and no dispatch
 // group prints, once that version check passes, combined equal to the
 // controller; and a run read WITHOUT a snapshot is counted — one count for
@@ -529,7 +531,7 @@ const ACCOUNTING_BASIS = Object.freeze({
     codex: 'codex-subagent-rollout thread_token_usage per dispatch-end (RP-227), summed per dispatch group.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness carries usage, and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints, once that version check passes, combined equal to the controller; a run read without a snapshot is counted (controllerRuns.withoutSnapshot, one count for both harnesses) but does not withhold the total on this schema version; otherwise null with a reason.',
+    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness has a usage slot (a group where only some dispatches ended with usage still counts, and says so in dispatches.withUsage), and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints, once that version check passes, combined equal to the controller; a run read without a snapshot is counted (controllerRuns.withoutSnapshot, one count for both harnesses) but does not withhold the total on this schema version; otherwise null with a reason.',
     exclusivityVerified: VERIFIED_EXCLUSIVITY,
     subagentHarnessVersion:
       'not recorded on dispatch-end; a subagent runs under the same harness binary as its controller, which this report assumes and does not verify.',
@@ -543,7 +545,8 @@ const isCounterValue = (value) => Number.isSafeInteger(value) && value >= 0;
 
 /** `{ counters }` for a snapshot's `usage` — only the harness's own counter
  * fields, each a non-negative safe integer or absent; `null` when `usage` is
- * not an object or carries a counter outside that shape. */
+ * not an object, names none of those fields, carries one outside that
+ * shape, or the harness is not one this report knows. */
 const snapshotCountersOf = (usage, harness) => {
   if (usage === null || typeof usage !== 'object') return null;
   const fields = CONTROLLER_COUNTER_FIELDS[harness];
