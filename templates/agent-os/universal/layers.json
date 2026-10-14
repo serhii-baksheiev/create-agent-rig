@@ -111,6 +111,7 @@
     ".claude/scripts/queue/gate-rounds.mjs",
     ".claude/queue.json",
     ".claude/hooks/record-dispatch.mjs",
+    ".claude/hooks/lib/usage-readers.mjs",
     ".rig/revalidation.json",
     "journal/README.md",
     "docs/decisions/gate-coverage.md",
