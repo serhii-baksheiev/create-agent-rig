@@ -51,6 +51,11 @@
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/gate-stop-dod.mjs\"",
             "timeout": 900
+          },
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/record-session-usage.mjs\" --harness=claude",
+            "timeout": 10
           }
         ]
       }
@@ -86,6 +91,17 @@
           {
             "type": "command",
             "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/record-dispatch.mjs\" --harness=claude",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"$CLAUDE_PROJECT_DIR/.claude/hooks/record-session-usage.mjs\" --harness=claude",
             "timeout": 10
           }
         ]

@@ -364,3 +364,271 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
   if (!anyCounter) return { usageUnavailable: 'no-usage-counters' };
   return { usage };
 }
+
+// ── Controller-session usage (RP-511) ───────────────────────────────────────
+//
+// The same bounded reader, folded for the CONTROLLER's own transcript (Claude)
+// or rollout (Codex) — the `transcript_path` a `Stop`/`SessionEnd` payload
+// carries — instead of a subagent's. The identity binding is the payload's
+// `session_id`; a file that names another session is `usageUnavailable:
+// 'session-identity-mismatch'`, never a partial number. Every record of a
+// Claude transcript carries its own `sessionId`, and a resumed or forked
+// session's file carries the PREVIOUS session's records too, so only records
+// whose `sessionId` equals the payload's are counted; the rest are counted
+// under `coverage.foreignSessionRecords` and never summed. Measured on a
+// real 2.1.296 transcript: 485 of 1132 records belonged to the session it
+// was continued from.
+//
+// `coverage` states what the counters are built from, because a transcript's
+// assistant records are NOT the session's whole consumption: the requests a
+// compaction makes, and helper-model requests (WebFetch summaries, the
+// permission classifier), leave no assistant record. The optional
+// `sessionAggregate` is the harness's own cumulative `cost-state` record —
+// UNDOCUMENTED, written periodically (so possibly stale: `recordsBehind` is
+// how many records followed it), not authoritative billing, never summed
+// with anything here; its `costUSD` is never copied.
+
+/** `version` (Claude) / `cli_version` (Codex) as written by the harness — a short, narrow shape. */
+const HARNESS_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?$/;
+
+/** The counters copied out of a `cost-state` record's `modelUsage[<model>]` — never `costUSD`. */
+const COST_STATE_COUNTER_FIELDS = Object.freeze([
+  'inputTokens',
+  'outputTokens',
+  'thinkingTokens',
+  'cacheReadInputTokens',
+  'cacheCreationInputTokens',
+]);
+const MAX_COST_STATE_MODELS = 16;
+
+const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * `{ usage, coverage, harnessVersion?, sessionAggregate? }` or
+ * `{ usageUnavailable }` for one Claude controller transcript, bound to
+ * `sessionId`. Dedupe is the subagent reader's (`requestId ?? message.id`,
+ * last occurrence wins); counters absent from every deduped record stay
+ * absent, and one out-of-range counter rejects the whole read.
+ */
+export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = {}) {
+  const usageByKey = new Map();
+  const versions = new Set();
+  let assistantRecords = 0;
+  let foreignSessionRecords = 0;
+  let compactBoundaries = 0;
+  let records = 0;
+  let costState = null;
+  let costStateAt = -1;
+
+  const foldLine = (lineBuf) => {
+    if (lineBuf.length === 0) return true;
+    let record;
+    try {
+      record = JSON.parse(lineBuf.toString('utf8'));
+    } catch {
+      return false;
+    }
+    if (record === null || typeof record !== 'object') return true;
+    records += 1;
+    const own = record.sessionId === sessionId;
+    if (record.type === 'system' && record.subtype === 'compact_boundary' && own) {
+      compactBoundaries += 1;
+      return true;
+    }
+    if (record.type === 'cost-state' && own) {
+      costState = record;
+      costStateAt = records;
+      return true;
+    }
+    if (record.type !== 'assistant') return true;
+    const message = record.message;
+    if (message === null || typeof message !== 'object') return true;
+    const usage = message.usage;
+    if (usage === null || typeof usage !== 'object') return true;
+    if (!own) {
+      foreignSessionRecords += 1;
+      return true;
+    }
+    assistantRecords += 1;
+    if (typeof record.version === 'string') versions.add(record.version);
+    const requestId = typeof record.requestId === 'string' ? record.requestId : undefined;
+    const messageId = typeof message.id === 'string' ? message.id : undefined;
+    const key = requestId ?? messageId;
+    if (key === undefined) return true;
+    usageByKey.set(key, usage);
+    return true;
+  };
+
+  const errorCode = readBoundedLines(file, foldLine, { now });
+  if (errorCode) return { usageUnavailable: errorCode };
+  if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
+
+  const usage = { evidenceSource: 'claude-controller-transcript', requests: usageByKey.size };
+  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
+    let present = false;
+    let sum = 0;
+    for (const raw of usageByKey.values()) {
+      const value = raw?.[rawKey];
+      if (value === undefined) continue;
+      if (!isCounter(value)) return { usageUnavailable: 'invalid-usage-counter' };
+      present = true;
+      sum += value;
+    }
+    if (present) usage[outKey] = sum;
+  }
+
+  const result = {
+    usage,
+    coverage: {
+      basis: 'assistant-records-last-per-request',
+      assistantRecords,
+      dedupedRequests: usageByKey.size,
+      foreignSessionRecords,
+      compactBoundaries,
+    },
+  };
+  if (versions.size === 1) {
+    const candidate = [...versions][0];
+    if (HARNESS_VERSION_RE.test(candidate)) result.harnessVersion = candidate;
+  }
+  if (costState !== null) {
+    const aggregate = sessionAggregateOf(costState);
+    if (aggregate !== null) {
+      aggregate.recordsBehind = records - costStateAt;
+      result.sessionAggregate = aggregate;
+    }
+  }
+  return result;
+}
+
+/**
+ * The bounded, counter-only projection of one `cost-state` record, or `null`
+ * when it carries no usable `modelUsage`. Model names are echoed only when
+ * they pass `MEASURED_MODEL_RE`; `costUSD` and every other field are dropped.
+ */
+function sessionAggregateOf(record) {
+  const modelUsage = record.modelUsage;
+  if (modelUsage === null || typeof modelUsage !== 'object') return null;
+  const models = {};
+  let count = 0;
+  for (const [model, raw] of Object.entries(modelUsage)) {
+    if (count >= MAX_COST_STATE_MODELS) break;
+    if (model.length > MAX_MEASURED_MODEL_LENGTH || !MEASURED_MODEL_RE.test(model)) continue;
+    if (raw === null || typeof raw !== 'object') continue;
+    const counters = {};
+    let any = false;
+    for (const field of COST_STATE_COUNTER_FIELDS) {
+      const value = raw[field];
+      if (value === undefined) continue;
+      if (!isCounter(value)) return null;
+      counters[field] = value;
+      any = true;
+    }
+    if (!any) continue;
+    models[model] = counters;
+    count += 1;
+  }
+  if (count === 0) return null;
+  return {
+    evidenceSource: 'claude-cost-state',
+    documented: false,
+    authoritative: false,
+    additive: false,
+    models,
+  };
+}
+
+/**
+ * `{ usage, coverage, harnessVersion? }` or `{ usageUnavailable }` for one
+ * Codex controller rollout, bound to `sessionId`: the rollout's FIRST
+ * `session_meta.payload.id` must equal it, and the LAST `token_usage_record`
+ * whose `payload.thread_id` equals it supplies `thread_token_usage` — the
+ * thread's cumulative total, replaced never summed. Records of other threads
+ * are counted under `coverage.foreignThreadRecords`; `compacted` records
+ * under `coverage.compactedRecords`. Measured on 400 real 0.161/0.162
+ * rollouts: a thread's cumulative total equals the sum of its own per-record
+ * `usage` deltas in every one, and no rollout carried another thread's
+ * records.
+ */
+export function readCodexControllerUsage(file, sessionId, { now = Date.now } = {}) {
+  let sessionMetaSeen = false;
+  let sessionMetaId;
+  let cliVersion;
+  let ownRecords = 0;
+  let foreignThreadRecords = 0;
+  let compactedRecords = 0;
+  const responseIds = new Set();
+  let lastThreadTokenUsage = null;
+
+  const foldLine = (lineBuf) => {
+    if (lineBuf.length === 0) return true;
+    let record;
+    try {
+      record = JSON.parse(lineBuf.toString('utf8'));
+    } catch {
+      return false;
+    }
+    if (record === null || typeof record !== 'object') return true;
+    if (record.type === 'session_meta') {
+      if (!sessionMetaSeen) {
+        sessionMetaSeen = true;
+        const payload = record.payload;
+        if (payload !== null && typeof payload === 'object') {
+          if (typeof payload.id === 'string') sessionMetaId = payload.id;
+          if (typeof payload.cli_version === 'string') cliVersion = payload.cli_version;
+        }
+      }
+      return true;
+    }
+    if (record.type === 'compacted') {
+      compactedRecords += 1;
+      return true;
+    }
+    if (record.type !== 'token_usage_record') return true;
+    const payload = record.payload;
+    if (payload === null || typeof payload !== 'object') return true;
+    if (payload.thread_id !== sessionId) {
+      foreignThreadRecords += 1;
+      return true;
+    }
+    ownRecords += 1;
+    if (typeof payload.response_id === 'string') responseIds.add(payload.response_id);
+    const threadTokenUsage = payload.thread_token_usage;
+    lastThreadTokenUsage =
+      threadTokenUsage !== null && typeof threadTokenUsage === 'object' ? threadTokenUsage : {};
+    return true;
+  };
+
+  const errorCode = readBoundedLines(file, foldLine, { now });
+  if (errorCode) return { usageUnavailable: errorCode };
+  if (sessionMetaId === undefined || sessionMetaId !== sessionId) {
+    return { usageUnavailable: 'session-identity-mismatch' };
+  }
+  if (lastThreadTokenUsage === null) return { usageUnavailable: 'no-usage-records' };
+
+  const usage = { evidenceSource: 'codex-controller-rollout' };
+  let anyCounter = false;
+  for (const [rawKey, outKey] of CODEX_USAGE_COUNTER_FIELDS) {
+    const value = lastThreadTokenUsage[rawKey];
+    if (value === undefined) continue;
+    if (!isCounter(value)) return { usageUnavailable: 'invalid-usage-counter' };
+    usage[outKey] = value;
+    anyCounter = true;
+  }
+  if (!anyCounter) return { usageUnavailable: 'no-usage-counters' };
+
+  const result = {
+    usage,
+    coverage: {
+      basis: 'thread-cumulative-last-record',
+      tokenUsageRecords: ownRecords,
+      distinctResponseIds: responseIds.size,
+      foreignThreadRecords,
+      compactedRecords,
+    },
+  };
+  if (cliVersion !== undefined && HARNESS_VERSION_RE.test(cliVersion)) {
+    result.harnessVersion = cliVersion;
+  }
+  return result;
+}

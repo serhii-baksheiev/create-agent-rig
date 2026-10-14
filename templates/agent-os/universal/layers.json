@@ -112,6 +112,7 @@
     ".claude/queue.json",
     ".claude/hooks/record-dispatch.mjs",
     ".claude/hooks/lib/usage-readers.mjs",
+    ".claude/hooks/record-session-usage.mjs",
     ".rig/revalidation.json",
     "journal/README.md",
     "docs/decisions/gate-coverage.md",
