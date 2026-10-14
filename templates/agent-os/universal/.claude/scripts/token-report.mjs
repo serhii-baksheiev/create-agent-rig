@@ -435,13 +435,35 @@ const codexUsageOf = (rawList) => {
 // `record-session-usage.mjs` journals one `controller-usage` EVENT per
 // snapshot of the controller session's own cumulative usage (Stop/SessionEnd).
 // A snapshot is a running total, so this report keeps the LAST one per
-// (run, controller) and NEVER sums snapshots. A sequence whose counters go
-// DOWN between two snapshots is not silently replaced by the later one: that
-// controller's usage is `null` with `usageUnavailable: 'non-monotonic-snapshots'`
-// and `coverage.incomplete: true`, and the raw counters of every snapshot are
-// kept beside it for inspection. Controller usage is attributed to the RUN
-// only — never to a ticket, attempt or review round — because the snapshot
-// interval starts at session start, before any item selection.
+// (run, controller) and NEVER sums snapshots —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "three growing snapshots are never summed: the last one is the
+// controller usage". A sequence whose counters go DOWN between two snapshots
+// is not silently replaced by the later one: that controller's usage is
+// `null` with `usageUnavailable: 'non-monotonic-snapshots'` and
+// `coverage.incomplete: true`, and the raw counters of every snapshot are
+// kept beside it for inspection —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a counter that goes down between snapshots makes the controller
+// unavailable, keeps the raw counters, and blocks combined". Controller
+// usage is attributed to the RUN only — never to a ticket, attempt or review
+// round — because the snapshot interval starts at session start, before any
+// item selection —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "multi-ticket run: controller usage stays run-level and names every
+// taken ticket; no ticket is credited". A combined (controller + subagents)
+// total is printed only when both sides are available and every controller
+// snapshot names a harness version in `VERIFIED_EXCLUSIVITY`; otherwise it
+// is `null` with a reason —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "subagent-only run: no controller snapshot is absent evidence —
+// runsWithoutSnapshot counts it and combined is null with a reason", › "an
+// absent or unverified harness version leaves combined null — exclusivity
+// is a per-version fact, not an assumption" and › "a counter missing on one
+// side of the combination is null on that total, never a partial sum". The
+// `evidence` strings in `VERIFIED_EXCLUSIVITY` below describe one-off
+// measurements recorded in Jira RP-511 (comment 24424), not mechanisms this
+// script enforces; what it enforces is the version list.
 
 /** The report's own schema version; 1 was the RP-228 shape, 2 adds `controllers`, `totals` and `accountingBasis`. */
 const REPORT_SCHEMA_VERSION = 2;
@@ -466,12 +488,12 @@ const VERIFIED_EXCLUSIVITY = Object.freeze({
   claude: Object.freeze({
     versions: Object.freeze(['2.1.296']),
     evidence:
-      'RP-511 L1/L3, live 2026-10-14: a spawned subagent left no usage in the parent transcript; the parent cost-state carried it.',
+      'measured once (RP-511, Jira comment 24424), live on 2.1.296, 2026-10-14: a spawned subagent left no usage in the parent transcript; the parent cost-state carried it.',
   }),
   codex: Object.freeze({
     versions: Object.freeze(['0.156.1', '0.161.0', '0.162.0', '0.162.1']),
     evidence:
-      'RP-227 live exec probe (0.156.1, parent turn.completed.usage excludes the child); RP-511 L2/L4 on 400 real 0.161.0/0.162.x rollouts: thread_token_usage equals the sum of own per-record deltas in every rollout and no rollout carries another thread’s records.',
+      'measured once (RP-227 live exec probe on 0.156.1: parent turn.completed.usage excludes the child; RP-511, Jira comment 24424: on real 0.161.0/0.162.x rollouts thread_token_usage equals the sum of own per-record deltas and no rollout carries another thread’s records).',
   }),
 });
 
