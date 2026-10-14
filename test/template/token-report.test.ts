@@ -248,10 +248,15 @@ interface UsageEvidenceHarness {
 interface UsageEvidence {
   claude: UsageEvidenceHarness;
   codex: UsageEvidenceHarness;
-  // Controller (parent session) usage is never measured by this script —
-  // record-dispatch.mjs only journals SubagentStart/SubagentStop, never the
-  // controller's own turn — so this is a fixed statement, not a computation.
-  controller: { available: false; reason: string };
+  // Controller (parent session) usage is read from controller-usage events
+  // since RP-511 PR C: `available` says whether any entry carried usage,
+  // `snapshots`/`runsWithoutSnapshot` count what was read.
+  controller: {
+    available: boolean;
+    snapshots: number;
+    runsWithoutSnapshot: number;
+    reason: string;
+  };
 }
 
 interface Report {
@@ -875,7 +880,11 @@ describe('token-report.mjs usageEvidence: dispatch/hook witness availability mad
     expect(data.usageEvidence.codex.wiring).not.toBe('not-configured');
   });
 
-  it('states that controller (parent session) usage is unavailable, and why — only subagent dispatches are journalled', async () => {
+  // RP-511 PR C: controller usage is no longer a fixed statement — it is read
+  // from `controller-usage` snapshots when a run carries them
+  // (token-report-controller.test.ts). With none journalled it stays
+  // unavailable, and the reason says that absent evidence is not zero.
+  it('states that controller (parent session) usage is unavailable, and why — no controller-usage snapshot was journalled', async () => {
     const runsDir = await runsRoot();
 
     expect(reportModule, 'token-report.mjs does not export tokenReportOf yet').not.toBeNull();
@@ -887,8 +896,9 @@ describe('token-report.mjs usageEvidence: dispatch/hook witness availability mad
 
     expect(data.usageEvidence, JSON.stringify(data)).toBeDefined();
     expect(data.usageEvidence.controller.available).toBe(false);
-    expect(data.usageEvidence.controller.reason).toMatch(/subagent/i);
-    expect(data.usageEvidence.controller.reason).toMatch(/controller|parent session/i);
+    expect(data.usageEvidence.controller.snapshots).toBe(0);
+    expect(data.usageEvidence.controller.reason).toMatch(/controller-usage snapshot/i);
+    expect(data.usageEvidence.controller.reason).toMatch(/never zero/i);
   });
 
   it('a hostile usageUnavailable code carrying a control character reaches neither the text nor the --json output raw', async () => {

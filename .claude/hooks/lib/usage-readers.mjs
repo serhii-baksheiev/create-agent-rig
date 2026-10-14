@@ -575,7 +575,7 @@ function sessionAggregateOf(record) {
  * the last own-thread cumulative total, counts foreign-thread and compacted
  * records, and never sums". That the cumulative total is the one to read was
  * measured once, on real 0.161/0.162 rollouts, and recorded in Jira RP-511
- * (comment 24424) — a measurement, not a mechanism this file enforces.
+ * (comment 24425) — a measurement, not a mechanism this file enforces.
  */
 export function readCodexControllerUsage(file, sessionId, { now = Date.now } = {}) {
   let sessionMetaSeen = false;
