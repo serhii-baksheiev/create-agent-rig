@@ -458,9 +458,14 @@ const codexUsageOf = (rawList) => {
 // its entries, every dispatch group of the harness carries usage, and the
 // LAST snapshot of every (run, controller) names a harness version in
 // `VERIFIED_EXCLUSIVITY`; a harness with controller entries and no dispatch
-// group prints combined equal to the controller, and a run read WITHOUT a
-// snapshot is counted (`controllerRuns.withoutSnapshot`) but does not
-// withhold the total on this schema — otherwise it is `null` with a reason —
+// group prints, once that version check passes, combined equal to the
+// controller; and a run read WITHOUT a snapshot is counted — one count for
+// both harnesses, `controllerRuns.withoutSnapshot` — but does not withhold
+// the total on this schema version —
+// test/template/token-report-controller.test.ts (absent in a generated rig)
+// › "a run read without a controller snapshot is counted but does not
+// withhold the combined total on this schema version" — otherwise it is
+// `null` with a reason —
 // test/template/token-report-controller.test.ts (absent in a generated rig)
 // › "subagent-only run: no controller snapshot is absent evidence —
 // runsWithoutSnapshot counts it and combined is null with a reason", › "an
@@ -523,7 +528,7 @@ const ACCOUNTING_BASIS = Object.freeze({
     codex: 'codex-subagent-rollout thread_token_usage per dispatch-end (RP-227), summed per dispatch group.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness carries usage, and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints combined equal to the controller, and a run read without a snapshot is counted (controllerRuns.withoutSnapshot) but does not withhold the total on this schema version; otherwise null with a reason.',
+    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness carries usage, and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints, once that version check passes, combined equal to the controller; a run read without a snapshot is counted (controllerRuns.withoutSnapshot, one count for both harnesses) but does not withhold the total on this schema version; otherwise null with a reason.',
     exclusivityVerified: VERIFIED_EXCLUSIVITY,
     subagentHarnessVersion:
       'not recorded on dispatch-end; a subagent runs under the same harness binary as its controller, which this report assumes and does not verify.',

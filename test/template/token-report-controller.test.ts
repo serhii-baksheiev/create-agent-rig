@@ -241,6 +241,31 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.usageEvidence.controller.available).toBe(false);
   });
 
+  // Pins a stated LIMIT of schema v2, not a goal: a run read without a
+  // controller snapshot is counted but does not withhold the combined total.
+  // The owner's correction (RP-511 PR D) replaces this with a per-run,
+  // per-harness refusal; until then the report must say what it does.
+  it('a run read without a controller snapshot is counted but does not withhold the combined total on this schema version', async () => {
+    const root = await runsRoot();
+    const a = await mkrun(root, 'run-a');
+    const b = await mkrun(root, 'run-b');
+    const sub = {
+      requests: 1,
+      inputTokens: 5,
+      outputTokens: 6,
+      cacheCreationInputTokens: 7,
+      cacheReadInputTokens: 8,
+    };
+    snapshot(a, 1);
+    dispatchPair(a, 2, sub);
+    dispatchPair(b, 1, sub);
+    const data = report(root, ['run-a', 'run-b']);
+    expect(data.totals.claude.controllerRuns.withoutSnapshot).toBe(1);
+    expect(data.totals.codex.controllerRuns.withoutSnapshot).toBe(1); // one count, both harnesses
+    expect(data.totals.claude.combined).not.toBeNull();
+    expect(data.totals.claude.combinedUnavailable).toBeNull();
+  });
+
   it('controller plus two subagents: combined is the disjoint sum, checked against an independent addition', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');

@@ -4,8 +4,9 @@
 // (`.claude/scripts/run-journal.mjs`, `events.jsonl`) — the controller half
 // of the usage evidence `record-dispatch.mjs` already records per subagent
 // (RP-225/226/227), read back by `token-report.mjs` (RP-511 PR C), which
-// treats a run with no such event as ABSENT evidence, never as zero — that
-// is the contract the event shape carries, not a mechanism here.
+// counts a run with no such event under `controllerRuns.withoutSnapshot`
+// and never reads it as zero — what a report does with that count is the
+// report's own rule, not a mechanism here.
 //
 // observe-only: refuses nothing and returns no decision. It exits 0 on every
 // path, writes nothing to stdout, and never throws out of `main()` — a `Stop`
