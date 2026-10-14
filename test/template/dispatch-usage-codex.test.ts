@@ -328,6 +328,26 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
     expect('usageUnavailable' in data).toBe(false);
   });
 
+  it('records the harness version the rollout session_meta names as harnessVersion (RP-511 PR D)', async () => {
+    const agentId = 'codex-version';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 5, output_tokens: 1 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.harnessVersion).toBe('0.156.1');
+  });
+
   it('uses the LAST token_usage_record for the agent — a later, smaller thread_token_usage is not summed with an earlier one', async () => {
     const agentId = 'last-wins';
     const file = await writeRollout('rollout.jsonl', [

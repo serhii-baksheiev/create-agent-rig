@@ -69,7 +69,8 @@
 // keeps (`.claude/rules/invariants.md`, the independent-oracle
 // invariant): `schema`, `harness`, `controller`, `agentType`, `agentRef`,
 // `declaredModel`, `declaredEffort`, `declaredSource`, `usage`,
-// `usageUnavailable`, `measuredModel`, `orphan`. `controller` and `agentRef`
+// `usageUnavailable`, `measuredModel`, `harnessVersion`, `orphan`.
+// `controller` and `agentRef`
 // are never the raw `session_id`/`agent_id` — they are
 // `sha256(basename(runDir) + "\0" + value).slice(0, 16)`, so the record names
 // no id a reader could correlate outside this one run.
@@ -152,7 +153,11 @@
 // `transcript-path-mismatch`, `transcript-too-large`,
 // `transcript-line-too-large`, `transcript-timeout`,
 // `transcript-malformed-line`, `transcript-empty`, `no-usage-records`,
-// `invalid-usage-counter`) — never a partial number, and the reason codes
+// `invalid-usage-counter`, `counter-overflow` — RP-511 PR D: a sum that
+// leaves the safe-integer range, test/template/dispatch-usage.test.ts
+// (absent in a generated rig) › "reports usageUnavailable with
+// counter-overflow when an accumulated sum leaves the safe-integer range —
+// never a wrapped or partial number") — never a partial number, and the reason codes
 // themselves never carry the path or any transcript content. Assistant
 // records' `message.usage` counters (`input_tokens`, `output_tokens`,
 // `cache_creation_input_tokens`, `cache_read_input_tokens`) are deduped by
@@ -160,6 +165,13 @@
 // optional cache counter can therefore sum only valid deduped records that
 // carry it; that is not a partial transcript result: any malformed line,
 // unreadable path, or read-bound failure rejects every accumulated counter.
+// Such a counter IS named, under `usage.partialCounters` (RP-511 PR D), and
+// `token-report.mjs` then treats the dispatch group as not fully measured —
+// test/template/dispatch-usage.test.ts (absent in a generated rig) › "names,
+// under usage.partialCounters, a counter present on some assistant records
+// and absent on others — the sum is written, never silently as complete"
+// and › "omits usage.partialCounters when every counted record carries
+// every counter it reports".
 // `usage.requests` is the count of distinct keys. A counter absent from
 // every deduped record stays absent (never `0`, never inferred); a counter
 // present anywhere but not a non-negative safe integer makes the whole
@@ -483,6 +495,7 @@ export const DISPATCH_FIELDS = Object.freeze([
   'usage',
   'usageUnavailable',
   'measuredModel',
+  'harnessVersion',
   'orphan',
 ]);
 
@@ -1030,6 +1043,12 @@ function main() {
       } else {
         data.usage = usageResult.usage;
         if (usageResult.measuredModel !== undefined) data.measuredModel = usageResult.measuredModel;
+        // RP-511 PR D: the harness version the subagent's own file names
+        // (`version` on every counted Claude record, `cli_version` in a Codex
+        // rollout's session_meta) — recorded so the report's per-version
+        // exclusivity check reads evidence for the subagent side too, instead
+        // of assuming the controller's binary.
+        if (usageResult.harnessVersion !== undefined) data.harnessVersion = usageResult.harnessVersion;
       }
     }
 

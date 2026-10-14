@@ -18,8 +18,18 @@
 // in a generated rig) › "never carries the rollout path, the padding/canary
 // content, or turn_token_usage/usage (the non-cumulative fields) in the
 // journal record". A subagent reader returns only aggregated counters, a
-// model string already present verbatim in a record, and short static
-// reason codes. A controller reader (the RP-511 section below) returns, in
+// model string already present verbatim in a record, short static reason
+// codes, and — RP-511 PR D — `harnessVersion` (the version string the
+// subagent's own file names, only when it passes `HARNESS_VERSION_RE`) and
+// `usage.partialCounters` (the names of counters some counted records omit)
+// — test/template/dispatch-usage.test.ts (absent in a generated rig) ›
+// "records the harness version the subagent transcript names, beside usage"
+// and › "names, under usage.partialCounters, a counter present on some
+// assistant records and absent on others — the sum is written, never
+// silently as complete"; test/template/dispatch-usage-codex.test.ts (absent
+// in a generated rig) › "records the harness version the rollout
+// session_meta names as harnessVersion (RP-511 PR D)". A controller reader
+// (the RP-511 section below) returns, in
 // addition, `coverage` (counts and a fixed `basis` string), `harnessVersion`
 // (the file's own version string, only when it passes `HARNESS_VERSION_RE`
 // and every counted record agrees) and, on Claude, `sessionAggregate` — the
@@ -78,6 +88,43 @@ export const USAGE_COUNTER_FIELDS = Object.freeze([
   ['cache_creation_input_tokens', 'cacheCreationInputTokens'],
   ['cache_read_input_tokens', 'cacheReadInputTokens'],
 ]);
+
+/** `version` (Claude) / `cli_version` (Codex) as written by the harness — a short, narrow shape. */
+export const HARNESS_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?$/;
+
+/** A non-negative safe integer — the only shape a counter is ever read or summed as. */
+const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
+
+/**
+ * Sums `USAGE_COUNTER_FIELDS` across the deduped Claude usage records in
+ * `usageByKey`. Returns `{ counters, partialCounters }` — `counters` carries a
+ * field only when at least one record has it; `partialCounters` names every
+ * field that SOME records carry and others omit (RP-511 PR D: such a sum is
+ * still written, but never silently, so a reader can refuse to treat it as
+ * complete). Returns `{ usageUnavailable }` instead when any counter is not a
+ * non-negative safe integer or any accumulated sum leaves the safe-integer
+ * range (`'counter-overflow'`) — never a partial or wrapped number.
+ */
+function summedUsageCounters(usageByKey) {
+  const counters = {};
+  const partialCounters = [];
+  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
+    let present = 0;
+    let sum = 0;
+    for (const raw of usageByKey.values()) {
+      const value = raw?.[rawKey];
+      if (value === undefined) continue;
+      if (!isCounter(value)) return { usageUnavailable: 'invalid-usage-counter' };
+      present += 1;
+      sum += value;
+      if (!Number.isSafeInteger(sum)) return { usageUnavailable: 'counter-overflow' };
+    }
+    if (present === 0) continue;
+    counters[outKey] = sum;
+    if (present < usageByKey.size) partialCounters.push(outKey);
+  }
+  return { counters, partialCounters };
+}
 
 /**
  * The one-pass, bounded JSONL line reader both RP-226 (Claude transcript) and
@@ -213,11 +260,16 @@ export function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 /**
  * Reads one Claude subagent transcript, bounded as `../record-dispatch.mjs`'s
  * header LIMITS state, and
- * returns either `{ usage, measuredModel? }` or `{ usageUnavailable: <short
- * reason code> }`. Never returns or logs the path or any message content —
- * only aggregated numbers, a model string already present verbatim in the
- * transcript (and only when it passes `MEASURED_MODEL_RE`), or a short
- * static reason code.
+ * returns either `{ usage, measuredModel?, harnessVersion? }` or
+ * `{ usageUnavailable: <short reason code> }`, where `usage` may name under
+ * `partialCounters` the counters some deduped records omitted. Never returns
+ * or logs the path or any message content — only aggregated numbers, a model
+ * string already present verbatim in the transcript (and only when it passes
+ * `MEASURED_MODEL_RE`), the transcript's own `version` string (only when it
+ * passes `HARNESS_VERSION_RE` and every counted record agrees —
+ * test/template/dispatch-usage.test.ts (absent in a generated rig) › "omits
+ * harnessVersion when counted records disagree on the version, carry none,
+ * or carry one out of shape"), or a short static reason code.
  *
  * `now` defaults to `Date.now` and is the only source of wall-clock reads in
  * this function — the test suite injects a fake one to drive the 3s bound
@@ -226,6 +278,7 @@ export function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
   const usageByKey = new Map();
   const models = new Set();
+  const versions = new Set();
 
   /** Parses and folds one complete line (no trailing newline) into the accumulators. */
   const foldLine = (lineBuf) => {
@@ -246,6 +299,7 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     const messageId = typeof message.id === 'string' ? message.id : undefined;
     const key = requestId ?? messageId;
     if (key === undefined) return true;
+    if (typeof record.version === 'string') versions.add(record.version);
     usageByKey.set(key, usage); // last occurrence for this key wins
     return true;
   };
@@ -255,21 +309,14 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
 
   if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
 
-  const usage = { evidenceSource: 'claude-subagent-transcript', requests: usageByKey.size };
-  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
-    let present = false;
-    let sum = 0;
-    for (const raw of usageByKey.values()) {
-      const value = raw?.[rawKey];
-      if (value === undefined) continue;
-      if (!Number.isSafeInteger(value) || value < 0) {
-        return { usageUnavailable: 'invalid-usage-counter' };
-      }
-      present = true;
-      sum += value;
-    }
-    if (present) usage[outKey] = sum;
-  }
+  const summed = summedUsageCounters(usageByKey);
+  if (summed.usageUnavailable) return { usageUnavailable: summed.usageUnavailable };
+  const usage = {
+    evidenceSource: 'claude-subagent-transcript',
+    requests: usageByKey.size,
+    ...summed.counters,
+  };
+  if (summed.partialCounters.length > 0) usage.partialCounters = summed.partialCounters;
 
   const result = { usage };
   if (models.size === 1) {
@@ -277,6 +324,12 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     if (candidate.length <= MAX_MEASURED_MODEL_LENGTH && MEASURED_MODEL_RE.test(candidate)) {
       result.measuredModel = candidate;
     }
+  }
+  // The harness version every counted record agrees on — evidence for the
+  // report's per-version exclusivity check, never a guess from the parent.
+  if (versions.size === 1) {
+    const candidate = [...versions][0];
+    if (HARNESS_VERSION_RE.test(candidate)) result.harnessVersion = candidate;
   }
   return result;
 }
@@ -293,14 +346,16 @@ export const CODEX_USAGE_COUNTER_FIELDS = Object.freeze([
 
 /**
  * Reads one Codex rollout, bounded exactly as `readClaudeTranscriptUsage` is,
- * and returns either `{ usage }` or `{ usageUnavailable: <short reason
- * code> }`. `agentId` is the dispatch's own `agent_id` — the rollout's
+ * and returns either `{ usage, harnessVersion? }` or `{ usageUnavailable:
+ * <short reason code> }` — `harnessVersion` is `session_meta.payload.cli_version`
+ * when it passes `HARNESS_VERSION_RE`. `agentId` is the dispatch's own `agent_id` — the rollout's
  * `session_meta.payload.id` must equal it (a rollout with no `session_meta`
  * record at all is the same failure: `'rollout-identity-mismatch'`), and only
  * the LAST `token_usage_record` whose `payload.thread_id === agentId` is
  * read; its `thread_token_usage` (the cumulative total) is mapped, never
  * summed across records. Never returns or logs the path or any rollout
- * content — only aggregated numbers or a short static reason code.
+ * content — only aggregated numbers, that version string, or a short static
+ * reason code.
  *
  * `now` defaults to `Date.now`, exactly as `readClaudeTranscriptUsage` — the
  * test suite injects a fake one to drive the shared 3s bound deterministically.
@@ -308,6 +363,7 @@ export const CODEX_USAGE_COUNTER_FIELDS = Object.freeze([
 export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
   let sessionMetaSeen = false;
   let sessionMetaId;
+  let cliVersion;
   let matched = false;
   let lastThreadTokenUsage = {};
 
@@ -328,8 +384,9 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
       if (!sessionMetaSeen) {
         sessionMetaSeen = true;
         const payload = record.payload;
-        if (payload !== null && typeof payload === 'object' && typeof payload.id === 'string') {
-          sessionMetaId = payload.id;
+        if (payload !== null && typeof payload === 'object') {
+          if (typeof payload.id === 'string') sessionMetaId = payload.id;
+          if (typeof payload.cli_version === 'string') cliVersion = payload.cli_version;
         }
       }
       return true;
@@ -373,7 +430,11 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
   // never read as "measured": `'usage' in data` is exactly what a caller
   // checks.
   if (!anyCounter) return { usageUnavailable: 'no-usage-counters' };
-  return { usage };
+  const result = { usage };
+  if (cliVersion !== undefined && HARNESS_VERSION_RE.test(cliVersion)) {
+    result.harnessVersion = cliVersion;
+  }
+  return result;
 }
 
 // ── Controller-session usage (RP-511) ───────────────────────────────────────
@@ -413,9 +474,6 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
 // in a generated rig) › "carries cost-state as a labelled diagnostic without
 // costUSD, and omits a harness version the records disagree on".
 
-/** `version` (Claude) / `cli_version` (Codex) as written by the harness — a short, narrow shape. */
-const HARNESS_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?$/;
-
 /** The counters copied out of a `cost-state` record's `modelUsage[<model>]` — never `costUSD`. */
 const COST_STATE_COUNTER_FIELDS = Object.freeze([
   'inputTokens',
@@ -425,8 +483,6 @@ const COST_STATE_COUNTER_FIELDS = Object.freeze([
   'cacheCreationInputTokens',
 ]);
 const MAX_COST_STATE_MODELS = 16;
-
-const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
 
 /**
  * `{ usage, coverage, harnessVersion?, sessionAggregate? }` or
@@ -488,19 +544,13 @@ export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = 
   if (errorCode) return { usageUnavailable: errorCode };
   if (usageByKey.size === 0) return { usageUnavailable: 'no-usage-records' };
 
-  const usage = { evidenceSource: 'claude-controller-transcript', requests: usageByKey.size };
-  for (const [rawKey, outKey] of USAGE_COUNTER_FIELDS) {
-    let present = false;
-    let sum = 0;
-    for (const raw of usageByKey.values()) {
-      const value = raw?.[rawKey];
-      if (value === undefined) continue;
-      if (!isCounter(value)) return { usageUnavailable: 'invalid-usage-counter' };
-      present = true;
-      sum += value;
-    }
-    if (present) usage[outKey] = sum;
-  }
+  const summed = summedUsageCounters(usageByKey);
+  if (summed.usageUnavailable) return { usageUnavailable: summed.usageUnavailable };
+  const usage = {
+    evidenceSource: 'claude-controller-transcript',
+    requests: usageByKey.size,
+    ...summed.counters,
+  };
 
   const result = {
     usage,
@@ -512,6 +562,9 @@ export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = 
       compactBoundaries,
     },
   };
+  // A counter some counted records omit is summed from the records that
+  // carry it and NAMED here, so a reader never takes the sum for complete.
+  if (summed.partialCounters.length > 0) result.coverage.partialCounters = summed.partialCounters;
   if (versions.size === 1) {
     const candidate = [...versions][0];
     if (HARNESS_VERSION_RE.test(candidate)) result.harnessVersion = candidate;

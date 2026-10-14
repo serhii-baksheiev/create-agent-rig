@@ -120,6 +120,8 @@ interface AssistantRecordInput {
   model?: string;
   usage?: Record<string, number>;
   content?: string;
+  /** The harness version a real transcript record carries at top level (`version`). */
+  version?: string;
 }
 
 /** One JSONL line shaped like a Claude Code transcript's assistant message. */
@@ -129,6 +131,7 @@ function assistantLine({
   model,
   usage,
   content,
+  version,
 }: AssistantRecordInput): string {
   const message: Record<string, unknown> = { id: messageId, role: 'assistant' };
   if (model !== undefined) message.model = model;
@@ -136,6 +139,7 @@ function assistantLine({
   if (content !== undefined) message.content = content;
   const record: Record<string, unknown> = { type: 'assistant', message };
   if (requestId !== undefined) record.requestId = requestId;
+  if (version !== undefined) record.version = version;
   return JSON.stringify(record);
 }
 
@@ -331,6 +335,110 @@ describe('record-dispatch.mjs — Claude usage capture on SubagentStop (RP-226)'
     // absent/null, never inferred, and never 0 standing in for "not measured".
     expect(usage?.cacheCreationInputTokens ?? null).toBeNull();
     expect(usage?.cacheReadInputTokens ?? null).toBeNull();
+  });
+
+  // RP-511 PR D — the three completeness corrections on the subagent reader.
+  it('names, under usage.partialCounters, a counter present on some assistant records and absent on others — the sum is written, never silently as complete', async () => {
+    const agentId = 'cache-partial-named';
+    const file = await writeTranscript(agentId, [
+      assistantLine({
+        requestId: 'req-1',
+        usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 7 },
+      }),
+      assistantLine({
+        requestId: 'req-2',
+        usage: { input_tokens: 20, output_tokens: 6, cache_read_input_tokens: 3 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=claude'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    const usage = data.usage as Record<string, unknown> | undefined;
+    expect(usage?.partialCounters).toEqual(['cacheCreationInputTokens', 'cacheReadInputTokens']);
+    expect(usage?.inputTokens).toBe(30);
+  });
+
+  it('omits usage.partialCounters when every counted record carries every counter it reports', async () => {
+    const agentId = 'counters-complete';
+    const file = await writeTranscript(agentId, [
+      assistantLine({ requestId: 'req-1', usage: { input_tokens: 10, output_tokens: 5 } }),
+      assistantLine({ requestId: 'req-2', usage: { input_tokens: 20, output_tokens: 6 } }),
+    ]);
+    await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=claude'],
+    );
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(Object.keys(data.usage as object)).not.toContain('partialCounters');
+  });
+
+  it('reports usageUnavailable with counter-overflow when an accumulated sum leaves the safe-integer range — never a wrapped or partial number', async () => {
+    const agentId = 'overflow';
+    const file = await writeTranscript(agentId, [
+      assistantLine({
+        requestId: 'req-1',
+        usage: { input_tokens: Number.MAX_SAFE_INTEGER, output_tokens: 5 },
+      }),
+      assistantLine({ requestId: 'req-2', usage: { input_tokens: 1, output_tokens: 6 } }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=claude'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.usageUnavailable).toBe('counter-overflow');
+    expect(data.usage).toBeUndefined();
+  });
+
+  it('records the harness version the subagent transcript names, beside usage', async () => {
+    const agentId = 'version-agree';
+    const file = await writeTranscript(agentId, [
+      assistantLine({ requestId: 'req-1', version: '2.1.296', usage: { input_tokens: 1 } }),
+      assistantLine({ requestId: 'req-2', version: '2.1.296', usage: { input_tokens: 2 } }),
+    ]);
+    await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=claude'],
+    );
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.harnessVersion).toBe('2.1.296');
+  });
+
+  it('omits harnessVersion when counted records disagree on the version, carry none, or carry one out of shape', async () => {
+    for (const [agentId, versions] of [
+      ['version-disagree', ['2.1.296', '2.1.297']],
+      ['version-absent', [undefined, undefined]],
+      ['version-forged', ['2.1.296\nx', '2.1.296\nx']],
+    ] as const) {
+      const file = await writeTranscript(agentId, [
+        assistantLine({ requestId: 'req-1', version: versions[0], usage: { input_tokens: 1 } }),
+        assistantLine({ requestId: 'req-2', version: versions[1], usage: { input_tokens: 2 } }),
+      ]);
+      await runHook(
+        JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+        env(),
+        ['--harness=claude'],
+      );
+    }
+    const events = await readEvents(runDir);
+    expect(events).toHaveLength(3);
+    for (const event of events) {
+      const data = (event.data ?? {}) as Record<string, unknown>;
+      expect(data.harnessVersion).toBeUndefined();
+      expect((data.usage as Record<string, unknown>).inputTokens).toBe(3);
+    }
   });
 
   it('records measuredModel when every assistant record names the same model', async () => {
