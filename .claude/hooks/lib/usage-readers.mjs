@@ -18,8 +18,18 @@
 // in a generated rig) › "never carries the rollout path, the padding/canary
 // content, or turn_token_usage/usage (the non-cumulative fields) in the
 // journal record". A subagent reader returns only aggregated counters, a
-// model string already present verbatim in a record, and short static
-// reason codes. A controller reader (the RP-511 section below) returns, in
+// model string already present verbatim in a record, short static reason
+// codes, and — RP-511 PR D — `harnessVersion` (the version string the
+// subagent's own file names, only when it passes `HARNESS_VERSION_RE`) and
+// `usage.partialCounters` (the names of counters some counted records omit)
+// — test/template/dispatch-usage.test.ts (absent in a generated rig) ›
+// "records the harness version the subagent transcript names, beside usage"
+// and › "names, under usage.partialCounters, a counter present on some
+// assistant records and absent on others — the sum is written, never
+// silently as complete"; test/template/dispatch-usage-codex.test.ts (absent
+// in a generated rig) › "records the harness version the rollout
+// session_meta names as harnessVersion (RP-511 PR D)". A controller reader
+// (the RP-511 section below) returns, in
 // addition, `coverage` (counts and a fixed `basis` string), `harnessVersion`
 // (the file's own version string, only when it passes `HARNESS_VERSION_RE`
 // and every counted record agrees) and, on Claude, `sessionAggregate` — the
@@ -250,10 +260,13 @@ export function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 /**
  * Reads one Claude subagent transcript, bounded as `../record-dispatch.mjs`'s
  * header LIMITS state, and
- * returns either `{ usage, measuredModel? }` or `{ usageUnavailable: <short
- * reason code> }`. Never returns or logs the path or any message content —
- * only aggregated numbers, a model string already present verbatim in the
- * transcript (and only when it passes `MEASURED_MODEL_RE`), or a short
+ * returns either `{ usage, measuredModel?, harnessVersion? }` or
+ * `{ usageUnavailable: <short reason code> }`, where `usage` may name under
+ * `partialCounters` the counters some deduped records omitted. Never returns
+ * or logs the path or any message content — only aggregated numbers, a model
+ * string already present verbatim in the transcript (and only when it passes
+ * `MEASURED_MODEL_RE`), the transcript's own `version` string (only when it
+ * passes `HARNESS_VERSION_RE` and every counted record agrees), or a short
  * static reason code.
  *
  * `now` defaults to `Date.now` and is the only source of wall-clock reads in
@@ -331,14 +344,16 @@ export const CODEX_USAGE_COUNTER_FIELDS = Object.freeze([
 
 /**
  * Reads one Codex rollout, bounded exactly as `readClaudeTranscriptUsage` is,
- * and returns either `{ usage }` or `{ usageUnavailable: <short reason
- * code> }`. `agentId` is the dispatch's own `agent_id` — the rollout's
+ * and returns either `{ usage, harnessVersion? }` or `{ usageUnavailable:
+ * <short reason code> }` — `harnessVersion` is `session_meta.payload.cli_version`
+ * when it passes `HARNESS_VERSION_RE`. `agentId` is the dispatch's own `agent_id` — the rollout's
  * `session_meta.payload.id` must equal it (a rollout with no `session_meta`
  * record at all is the same failure: `'rollout-identity-mismatch'`), and only
  * the LAST `token_usage_record` whose `payload.thread_id === agentId` is
  * read; its `thread_token_usage` (the cumulative total) is mapped, never
  * summed across records. Never returns or logs the path or any rollout
- * content — only aggregated numbers or a short static reason code.
+ * content — only aggregated numbers, that version string, or a short static
+ * reason code.
  *
  * `now` defaults to `Date.now`, exactly as `readClaudeTranscriptUsage` — the
  * test suite injects a fake one to drive the shared 3s bound deterministically.

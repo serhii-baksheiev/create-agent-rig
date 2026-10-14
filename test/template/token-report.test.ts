@@ -1176,6 +1176,17 @@ describe('token-report.mjs CLI wiring resolution: resolver correctness against a
     expect(data.usageEvidence.claude.wiring).toBe('not-configured');
   });
 
+  it('reads --harness= as a whole flag: --harness=claudex is not configured for claude', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    await writeFile(
+      path.join(checkoutDir, '.claude', 'settings.json'),
+      WIRED_CLAUDE_SETTINGS.replace(' --harness=claude', ' --harness=claudex'),
+    );
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('not-configured');
+  });
+
   it('reports claude wiring as not-configured when .claude/settings.json exists but declares no record-dispatch.mjs command', async () => {
     const { checkoutDir, runsDir } = await wiringCheckout();
     await writeFile(path.join(checkoutDir, '.claude', 'settings.json'), UNWIRED_CLAUDE_SETTINGS);

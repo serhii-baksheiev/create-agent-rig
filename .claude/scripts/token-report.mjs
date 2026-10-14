@@ -264,7 +264,13 @@
  * directory's OWN git checkout — never the CLI's `cwd` — reading only that
  * checkout's `.claude/settings.json` and `.codex/hooks.json` for a
  * `record-dispatch.mjs` command declared under
- * `SubagentStart`/`SubagentStop`; this script never reads a personal/global
+ * `SubagentStart`/`SubagentStop` that carries `--harness=<harness>` — a
+ * command without the flag journals dispatches this report cannot
+ * attribute, so it reads as not-configured for the harness —
+ * test/template/token-report.test.ts (absent in a generated rig) › "reports
+ * claude wiring as not-configured when the record-dispatch.mjs command
+ * carries no --harness=claude — such a hook journals dispatches the report
+ * cannot attribute (RP-511 PR D)"; this script never reads a personal/global
  * config (`~/.codex`, `~/.claude`). A `--runs` directory that is not itself
  * inside a git checkout reads as `'unknown'` for both harnesses — there is
  * nothing to read, not "read and found absent" — test/template/token-report.test.ts
@@ -575,7 +581,41 @@ const VERIFIED_EXCLUSIVITY = Object.freeze({
   }),
 });
 
-/** The accounting basis every number in this report rests on — stated, versioned, never implied. */
+/** The accounting basis every number in this report rests on — stated,
+ * versioned, never implied. Each string is a claim about this script, backed
+ * where it says what the script does: `controller.snapshots` and the
+ * last-snapshot rule — test/template/token-report-controller.test.ts (absent in a generated rig)
+ * › "three growing snapshots are never summed: the last one is the
+ * controller usage"; `controller.partialCounters` — › "a dispatch whose
+ * usage names partialCounters is not a complete measurement: the group
+ * carries the names and combined is null" and › "a controller snapshot
+ * whose coverage names partialCounters is reported but never combined";
+ * `subagents.completeness` — › "a dispatch group with a start that never
+ * ended is not measured, so combined is null" and › "a dispatch group where
+ * one ended dispatch carried no usage (withUsage under-count) is not
+ * measured"; `combined.rule` — the COMPLETENESS pointers in the section
+ * comment above, plus › "a codex run whose dispatches name no controller is
+ * complete once the run carries a codex snapshot: combined prints with the
+ * dispatch-controller-unnamed caveat, and the run is never reported
+ * missing", › "controller-only run with the dispatch hook configured: the
+ * snapshot is the controller usage, subagents are null, and combined equals
+ * the controller on a verified harness version" and › "a codex run with a
+ * snapshot and no dispatch event never combines on configuration alone — an
+ * untrusted Codex project hook is skipped silently"; `combined.authoritative`
+ * and `basis` — › "reports schemaVersion 2, an accountingBasis that calls
+ * combined non-authoritative, and keeps money as exactly {line, estimate}";
+ * `subagentHarnessVersion` — › "an absent or unverified DISPATCH harness
+ * version leaves combined null — the controller binary is never assumed for
+ * its subagents"; `sessionAggregate` — › "sessionAggregate is projected
+ * through an allowlist: counters per model only, costUSD and unknown fields
+ * dropped, flags forced to false"; `overflow` — › "a combination that leaves
+ * the safe-integer range is counter-overflow even when each side fits";
+ * `window` — › "a --since window that opens between two snapshots of one
+ * session reads the whole session total, never the part inside the window";
+ * `neverZero` — › "a counter missing on one side of the combination is null
+ * on that total, never a partial sum". `controller.claude`/`codex` and
+ * `subagents.claude`/`codex` name the readers' bases (`usage-readers.mjs`,
+ * their own headers) and the measurements of Jira RP-511 comment 24425. */
 const ACCOUNTING_BASIS = Object.freeze({
   version: 2,
   controller: Object.freeze({
@@ -595,7 +635,7 @@ const ACCOUNTING_BASIS = Object.freeze({
       'a dispatch group counts as measured only when every dispatch in it ended with usage: noEndObserved is 0, no withUsage under-count, no partialCounters.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed only when every run relevant to the harness carries a controller snapshot for every controller ref its dispatches name, no dispatch is of an unknown harness or unpaired, every controller and every dispatch group is measured, and every controller snapshot and dispatch carries a harnessVersion in exclusivityVerified. A run with a snapshot and no dispatch event is accepted only for claude and only when the checkout’s dispatch hook wiring is configured (caveat subagent-hook-configured-not-witnessed); for codex an untrusted project hook is skipped silently, so such a run leaves combined null. Otherwise null with a reason.',
+    rule: 'controller + subagents, printed only when every run relevant to the harness carries a controller snapshot for every controller ref its dispatches name (a dispatch-start that names none — every codex one — needs any snapshot of the harness in its run, and the total then carries the caveat dispatch-controller-unnamed), no snapshot read is malformed, no dispatch is of an unknown harness or unpaired, every controller and every dispatch group is measured, and the last snapshot of every (run, controller) and every dispatch carry a harnessVersion in exclusivityVerified. A run with a snapshot and no dispatch event is accepted only for claude and only when the checkout’s dispatch hook wiring is configured (caveat subagent-hook-configured-not-witnessed); for codex an untrusted project hook is skipped silently, so such a run leaves combined null. Otherwise null with a reason.',
     authoritative: false,
     basis:
       'a disjoint sum of two lower-bound measurements, not billing: it cannot be reconciled against the provider’s invoice and is never promoted beyond "measured".',
@@ -907,8 +947,12 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
   // harness, or records but no usage evidence for ANY harness (the harness
   // that ran it is unknown, so its controller is unaccounted for). It is
   // missing a snapshot when it has none for this harness, or when a
-  // dispatch-start names a controller ref that no snapshot in the run
-  // carries — a resumed/forked session is a second controller.
+  // dispatch-start NAMES a controller ref that no snapshot in the run
+  // carries — a resumed/forked session is a second controller. A start that
+  // names no controller (every Codex start; a Claude start without a session
+  // id) is complete once the run carries any snapshot of the harness, and
+  // the combined total then carries `dispatch-controller-unnamed`: per
+  // (run, controller) completeness is not decidable for such a dispatch.
   const relevantRuns = runEvidence.filter(
     (run) => run.dispatch[harness] || run.controller[harness] || !run.any,
   );
@@ -917,14 +961,22 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
       !run.controller[harness] ||
       [...run.dispatchControllers[harness]].some((ref) => !run.snapshotControllers[harness].has(ref)),
   );
+  const unnamedDispatchStarts = relevantRuns.reduce(
+    (acc, run) => acc + run.unnamedDispatchStarts[harness],
+    0,
+  );
   const malformedSnapshots = runEvidence.reduce((acc, run) => acc + run.malformed, 0);
   const unknownHarnessDispatchEvents = runEvidence.reduce((acc, run) => acc + run.dispatch.unknown, 0);
   const unpairedEnds = relevantRuns.reduce((acc, run) => acc + run.unpairedEnds[harness], 0);
   // A relevant run with a snapshot and no dispatch event for this harness:
   // its subagent side is EMPTY only by configuration. For claude, a
-  // configured hook is accepted with a caveat (its firing is live-verified
-  // on 2.1.296); for codex it is never accepted — an untrusted project hook
-  // is skipped silently, so configuration says nothing about execution.
+  // configured hook is accepted with the caveat
+  // `subagent-hook-configured-not-witnessed` — on configuration alone:
+  // nothing in this repository has observed `record-dispatch.mjs` fire
+  // through Claude's own hook runner (`docs/compatibility.md`, its
+  // `record-dispatch` row), and the caveat is what says so. For codex it is
+  // never accepted — an untrusted project hook is skipped silently, so
+  // configuration says nothing about execution.
   const runsWithoutDispatchEvidence = relevantRuns.filter(
     (run) => !run.dispatch[harness] && run.controller[harness],
   );
@@ -1009,6 +1061,7 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
       if (runsWithoutDispatchEvidence.length > 0) {
         combinedCaveats.push('subagent-hook-configured-not-witnessed');
       }
+      if (unnamedDispatchStarts > 0) combinedCaveats.push('dispatch-controller-unnamed');
     }
   }
   return {
@@ -1016,9 +1069,10 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
     controllerPartialCounters,
     controllerRuns: {
       relevant: relevantRuns.length,
-      withSnapshot: relevantRuns.length - missingRuns.length,
+      complete: relevantRuns.length - missingRuns.length,
       missingSnapshot: missingRuns.length,
       missingSnapshotRuns: missingRuns.map((run) => run.run),
+      unnamedDispatchStarts,
       withoutDispatchEvidence: runsWithoutDispatchEvidence.length,
       unavailable,
       partial: partial.length,
@@ -1225,6 +1279,7 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
         codex: new Set(runControllers.filter((e) => e.harness === 'codex').map((e) => e.controller)),
       },
       dispatchControllers: { claude: new Set(), codex: new Set() },
+      unnamedDispatchStarts: { claude: 0, codex: 0 },
       unpairedEnds: { claude: 0, codex: 0 },
       any: false,
       malformed,
@@ -1264,7 +1319,17 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       }
       evidence.dispatch[harnessRaw] = true;
       if (event.kind === 'dispatch-start') {
-        evidence.dispatchControllers[harnessRaw].add(stringOrUnknown(event.data?.controller));
+        // A Codex dispatch-start never names a controller (`record-dispatch.mjs`,
+        // its LIMITS), and a Claude one without a session id does not either:
+        // such a start is counted as unnamed, and completeness for it is per
+        // (run, harness) — any snapshot of the harness in the run — with a
+        // caveat on the combined total, never a false "missing snapshot".
+        const ref = event.data?.controller;
+        if (typeof ref === 'string' && CONTROLLER_REF_RE.test(ref)) {
+          evidence.dispatchControllers[harnessRaw].add(ref);
+        } else {
+          evidence.unnamedDispatchStarts[harnessRaw] += 1;
+        }
       }
       if (event.kind !== 'dispatch-end') continue;
       const code = event.data?.usageUnavailable;
@@ -1634,7 +1699,7 @@ export const render = (report) => {
         (total.controllerPartialCounters.length > 0
           ? ` controllerPartialCounters=${JSON.stringify(total.controllerPartialCounters)}`
           : '') +
-        ` controllerRuns=${total.controllerRuns.withSnapshot}/${total.controllerRuns.relevant}` +
+        ` controllerRuns=${total.controllerRuns.complete}/${total.controllerRuns.relevant}` +
         ` missingSnapshot=${total.controllerRuns.missingSnapshot}` +
         ` malformedSnapshots=${total.controllerRuns.malformedSnapshots}`,
     );
@@ -1800,11 +1865,14 @@ const recordDispatchConfiguredIn = (filePath, harness) => {
         for (const hook of hooks) {
           // A command without `--harness=<this harness>` journals dispatches
           // this report cannot attribute, so it is not configured FOR the
-          // harness — RP-511 PR D.
+          // harness — RP-511 PR D. The flag is matched whole: `--harness=claudex`
+          // is not `--harness=claude` — test/template/token-report.test.ts
+          // (absent in a generated rig) › "reads --harness= as a whole flag:
+          // --harness=claudex is not configured for claude".
           if (
             typeof hook?.command === 'string' &&
             hook.command.includes('record-dispatch.mjs') &&
-            hook.command.includes(`--harness=${harness}`)
+            hook.command.split(/\s+/).includes(`--harness=${harness}`)
           ) {
             return 'configured';
           }
