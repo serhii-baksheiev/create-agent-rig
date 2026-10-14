@@ -267,22 +267,34 @@ describe("unattended-flag.mjs list — read-only inventory of this project's che
   });
 
   it('SECURITY: a flag whose filename id hashes a different path than its recorded `root` is reported as a mismatch, never `active`, and carries no `off --root` remedy', async () => {
-    const rootA = path.join(home, 'mismatch-root-a');
+    const inventoryRootA = path.join(home, 'inventory-order-a');
+    const inventoryRootB = path.join(home, 'inventory-order-b');
+    const [rootA, activeRoot] =
+      scopedFlagName(inventoryRootA) < scopedFlagName(inventoryRootB)
+        ? [inventoryRootA, inventoryRootB]
+        : [inventoryRootB, inventoryRootA];
     const rootB = path.join(home, 'mismatch-root-b');
     await mkdir(rootB, { recursive: true }); // B exists on disk; A need not
+    await mkdir(activeRoot, { recursive: true });
     const flagPath = await writeScopedFlag(rootB, 'RP-MISMATCH-A', {
       basenameOverride: scopedFlagName(rootA),
     });
+    await writeScopedFlag(activeRoot, 'RP-VALID-ACTIVE');
     const result = await runCli(['list'], home);
     expect(result.code, result.stderr).toBe(0);
     const idx = result.stdout.indexOf('RP-MISMATCH-A');
     expect(idx, result.stdout).toBeGreaterThan(-1);
-    const window = result.stdout.slice(idx, idx + 400);
-    expect(window).toMatch(/does not match|mismatch/i);
-    expect(window).toContain(flagPath);
-    expect(window).not.toContain('off --root');
-    expect(window).not.toMatch(/\bactive\b/i);
-    expect(window).not.toMatch(/\borphaned\b/i);
+    const activeIdx = result.stdout.indexOf('RP-VALID-ACTIVE');
+    expect(activeIdx, result.stdout).toBeGreaterThan(idx);
+    const record = result.stdout.slice(idx).split('\n')[0];
+    expect(record).toMatch(/does not match|mismatch/i);
+    expect(record).toContain(flagPath);
+    expect(record).not.toContain('off --root');
+    expect(record).not.toMatch(/\bactive\b/i);
+    expect(record).not.toMatch(/\borphaned\b/i);
+    const activeLine = result.stdout.slice(activeIdx).split('\n')[0];
+    expect(activeLine).toMatch(/RP-VALID-ACTIVE: active/i);
+    expect(activeLine).toContain(activeRoot);
   });
 
   it('SECURITY: a `root` carrying a control character appended to an otherwise-real directory is reported as a mismatch, never `orphaned`, even though the stripped-for-display root looks like an ordinary leftover', async () => {
@@ -296,12 +308,12 @@ describe("unattended-flag.mjs list — read-only inventory of this project's che
     expect(result.code, result.stderr).toBe(0);
     const idx = result.stdout.indexOf('RP-MISMATCH-B');
     expect(idx, result.stdout).toBeGreaterThan(-1);
-    const window = result.stdout.slice(idx, idx + 400);
-    expect(window).toMatch(/does not match|mismatch/i);
-    expect(window).toContain(flagPath);
-    expect(window).not.toContain('off --root');
-    expect(window).not.toMatch(/\bactive\b/i);
-    expect(window).not.toMatch(/\borphaned\b/i);
+    const record = result.stdout.slice(idx).split('\n')[0];
+    expect(record).toMatch(/does not match|mismatch/i);
+    expect(record).toContain(flagPath);
+    expect(record).not.toContain('off --root');
+    expect(record).not.toMatch(/\bactive\b/i);
+    expect(record).not.toMatch(/\borphaned\b/i);
   });
 
   it('SECURITY: a relative `root` ("."), even when its hash happens to match the filename id, is reported as a mismatch because it is not absolute', async () => {
@@ -312,12 +324,12 @@ describe("unattended-flag.mjs list — read-only inventory of this project's che
     expect(result.code, result.stderr).toBe(0);
     const idx = result.stdout.indexOf('RP-MISMATCH-C');
     expect(idx, result.stdout).toBeGreaterThan(-1);
-    const window = result.stdout.slice(idx, idx + 400);
-    expect(window).toMatch(/does not match|mismatch/i);
-    expect(window).toContain(flagPath);
-    expect(window).not.toContain('off --root');
-    expect(window).not.toMatch(/\bactive\b/i);
-    expect(window).not.toMatch(/\borphaned\b/i);
+    const record = result.stdout.slice(idx).split('\n')[0];
+    expect(record).toMatch(/does not match|mismatch/i);
+    expect(record).toContain(flagPath);
+    expect(record).not.toContain('off --root');
+    expect(record).not.toMatch(/\bactive\b/i);
+    expect(record).not.toMatch(/\borphaned\b/i);
   });
 
   it('marks a flag orphaned when its recorded root no longer exists, and names removing that flag file as the remedy, never a command built from the root', async () => {
