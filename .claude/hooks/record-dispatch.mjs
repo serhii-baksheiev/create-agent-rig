@@ -194,7 +194,7 @@
 // reading its changed content). See dispatch-usage-codex.test.ts (absent in a generated rig) ›
 // "does not read a rollout replaced with a symlink after lstatSync has
 // accepted its regular file". The read itself shares RP-226's
-// bounded JSONL reader verbatim (`readBoundedLines`, extracted below so both
+// bounded JSONL reader verbatim (`readBoundedLines` in `./lib/usage-readers.mjs`, so both
 // sections call the same lstat/open/fstat identity check, chunked-read/carry-across-chunk
 // implementation once) — the same 32 MiB total / 8 MiB per line / 3s
 // wall-time bounds and the same
@@ -306,7 +306,7 @@
 //     pass that gate does the pre-existing `MAX_ORPHAN_CHECK_EVENTS` (4096)
 //     count guard run as a second check. A run that never crosses either
 //     bound but is merely slow to read from disk has no separate timeout
-//     here, unlike the transcript readers above.
+//     here, unlike the transcript readers in `./lib/usage-readers.mjs`.
 //   - **Orphan needs no earlier start AND no `agent_type` on the payload
 //     (RP-294 round 2, B4).** A real dispatch-end whose `SubagentStart` hook
 //     simply has not finished writing yet still carries the payload's own
@@ -845,7 +845,7 @@ function claudeUsageOf(input, agentId) {
 // ── Codex subagent usage capture (RP-227), on SubagentStop only ────────────
 //
 // See the header's CODEX USAGE CAPTURE section. A Codex rollout is JSONL
-// exactly as a Claude transcript is, so this reuses `readBoundedLines` for
+// exactly as a Claude transcript is, so this reuses `./lib/usage-readers.mjs`'s `readBoundedLines` for
 // the read itself and RP-226's own reason codes for every bound it shares;
 // only the identity check and the record shapes it folds are new.
 

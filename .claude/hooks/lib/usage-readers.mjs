@@ -1,14 +1,30 @@
-// usage-readers.mjs — the bounded, read-only usage readers both dispatch
-// evidence (`../record-dispatch.mjs`, RP-226/RP-227) and controller-session
-// evidence (`../record-session-usage.mjs`, RP-511) fold through. Extracted
-// from `record-dispatch.mjs` without a behaviour change (RP-511, PR A): the
-// bounds, the identity checks, the dedupe rules and every reason code are the
-// ones that hook's header documents, and its own tests still exercise them
-// through that hook's re-exports.
+// usage-readers.mjs — the bounded, read-only usage readers the dispatch
+// evidence hook (`../record-dispatch.mjs`, RP-226/RP-227) folds through, and
+// that the controller-session evidence of RP-511 reuses once it ships.
+// Extracted from `record-dispatch.mjs` (RP-511, PR A): the bounds, the
+// identity checks, the dedupe rules and every reason code are the ones that
+// hook's header LIMITS document, and that hook's own tests exercise them
+// through its re-exports — test/template/dispatch-usage.test.ts (absent in a
+// generated rig) › "reports transcript-timeout when an injected clock crosses
+// the 3 s bound between two read chunks" calls `readClaudeTranscriptUsage`
+// through `record-dispatch.mjs`.
 //
-// Nothing here writes, logs a path, or returns any transcript content — only
-// aggregated counters, a model string already present verbatim in a record,
-// and short static reason codes.
+// Nothing here writes or logs; what reaches a journal is decided by the
+// caller, and the hook's tests pin that neither a path nor any transcript
+// content does — test/template/dispatch-usage.test.ts (absent in a generated
+// rig) › "never carries the transcript path or assistant message content in
+// the journal record" and test/template/dispatch-usage-codex.test.ts (absent
+// in a generated rig) › "never carries the rollout path, the padding/canary
+// content, or turn_token_usage/usage (the non-cumulative fields) in the
+// journal record". The readers return only aggregated counters, a model
+// string already present verbatim in a record, and short static reason codes.
+//
+// The path checks (UNC, absolute, basename binding) are the CALLER's:
+// `record-dispatch.mjs` runs them before any reader here opens a file —
+// test/template/dispatch-usage.test.ts (absent in a generated rig) › "reports
+// usageUnavailable: transcript-path-unc for a UNC-shaped agent_transcript_path
+// (leading "//") — never opens anything" — and every other caller must do the
+// same: these functions open whatever path they are handed.
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from 'node:fs';
 
 /** A narrow, allowlisted shape for `measuredModel` — never echoed unless it matches. */
@@ -26,10 +42,10 @@ export const MAX_MEASURED_MODEL_LENGTH = 128;
  */
 export const UNC_PATH_RE = /^[\\/]{2}/;
 
-/** Open without blocking a FIFO, exactly as the sibling routing guard does. */
+/** Open without blocking a FIFO, exactly as `../guard-subagent-model.mjs` does. */
 export const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
-/** Transcript reader bounds — see the header LIMITS. */
+/** Transcript reader bounds — see `../record-dispatch.mjs`, header LIMITS. */
 const MAX_TRANSCRIPT_TOTAL_BYTES = 32 * 1024 * 1024;
 const MAX_TRANSCRIPT_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_TRANSCRIPT_MS = 3000;
@@ -174,7 +190,8 @@ export function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 }
 
 /**
- * Reads one Claude subagent transcript, bounded as the header states, and
+ * Reads one Claude subagent transcript, bounded as `../record-dispatch.mjs`'s
+ * header LIMITS state, and
  * returns either `{ usage, measuredModel? }` or `{ usageUnavailable: <short
  * reason code> }`. Never returns or logs the path or any message content —
  * only aggregated numbers, a model string already present verbatim in the
@@ -244,7 +261,7 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
 }
 
 /** `input_tokens`/`cached_input_tokens`/`output_tokens`/`reasoning_output_tokens`
- * (a Codex rollout's `thread_token_usage`) → this hook's own field names —
+ * (a Codex rollout's `thread_token_usage`) → `record-dispatch.mjs`'s own field names —
  * exactly the four fields `token-report.mjs`'s `codexUsageOf` already sums. */
 export const CODEX_USAGE_COUNTER_FIELDS = Object.freeze([
   ['input_tokens', 'inputTokens'],
