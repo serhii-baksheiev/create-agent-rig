@@ -22,7 +22,9 @@
 //   'usage measured; monetary cost unavailable'      — at least one dispatch
 //                                                       anywhere in the runs
 //                                                       read carries a `usage`
-//                                                       object
+//                                                       object, or (RP-511
+//                                                       PR D) a controller
+//                                                       snapshot does
 //   'usage unavailable; monetary cost unavailable'    — otherwise
 //
 // `money.estimate` is always `null` — the optional API-equivalent estimate
@@ -1161,6 +1163,17 @@ describe('token-report.mjs CLI wiring resolution: resolver correctness against a
 
     const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
     expect(data.usageEvidence.claude.wiring).toBe('configured');
+  });
+
+  it('reports claude wiring as not-configured when the record-dispatch.mjs command carries no --harness=claude — such a hook journals dispatches the report cannot attribute (RP-511 PR D)', async () => {
+    const { checkoutDir, runsDir } = await wiringCheckout();
+    await writeFile(
+      path.join(checkoutDir, '.claude', 'settings.json'),
+      WIRED_CLAUDE_SETTINGS.replace(' --harness=claude', ''),
+    );
+
+    const { data } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+    expect(data.usageEvidence.claude.wiring).toBe('not-configured');
   });
 
   it('reports claude wiring as not-configured when .claude/settings.json exists but declares no record-dispatch.mjs command', async () => {

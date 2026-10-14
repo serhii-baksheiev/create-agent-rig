@@ -160,8 +160,11 @@
  *
  * MONEY — `money.line` is exactly one of two sentences (Jira RP-225 comment
  * 20198): `'usage measured; monetary cost unavailable'` when at least one
- * DISPLAYED `dispatchGroups[].usage.claude`/`.codex` slot is non-null, else
- * `'usage unavailable; monetary cost unavailable'` —
+ * DISPLAYED `dispatchGroups[].usage.claude`/`.codex` slot is non-null or, since
+ * RP-511 PR D, at least one `controllers[]` entry carries `usage` —
+ * test/template/token-report-controller.test.ts (absent in a generated rig)
+ * › "a measured controller alone flips the money line to usage measured" —
+ * else `'usage unavailable; monetary cost unavailable'` —
  * test/template/token-report.test.ts (absent in a generated rig) › "reads
  * "usage measured; monetary cost unavailable" when any displayed dispatch
  * group carries usage", and test/template/token-report.test.ts (absent in a
@@ -536,7 +539,7 @@ const ACCOUNTING_BASIS = Object.freeze({
       'a dispatch group counts as measured only when every dispatch in it ended with usage: noEndObserved is 0, no withUsage under-count, no partialCounters.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed only when every run relevant to the harness carries a controller snapshot, every controller and every dispatch group is measured, and every controller snapshot and dispatch carries a harnessVersion in exclusivityVerified; a run with no dispatch group needs the harness’s dispatch hook wiring to be configured or witnessed, or the subagent side is unobserved rather than empty. Otherwise null with a reason.',
+    rule: 'controller + subagents, printed only when every run relevant to the harness carries a controller snapshot for every controller ref its dispatches name, no dispatch is of an unknown harness or unpaired, every controller and every dispatch group is measured, and every controller snapshot and dispatch carries a harnessVersion in exclusivityVerified. A run with a snapshot and no dispatch event is accepted only for claude and only when the checkout’s dispatch hook wiring is configured (caveat subagent-hook-configured-not-witnessed); for codex an untrusted project hook is skipped silently, so such a run leaves combined null. Otherwise null with a reason.',
     authoritative: false,
     basis:
       'a disjoint sum of two lower-bound measurements, not billing: it cannot be reconciled against the provider’s invoice and is never promoted beyond "measured".',
@@ -594,8 +597,11 @@ const partialCountersOf = (value, harness) => {
   if (!Array.isArray(value) || !isKnownHarness(harness)) return [];
   const fields = CONTROLLER_COUNTER_FIELDS[harness];
   const out = [];
-  for (const name of value) {
-    if (out.length >= PARTIAL_COUNTERS_MAX) break;
+  // Bounded by INPUT index, not by output size: a long array of names that
+  // never match would otherwise be walked to its end.
+  const limit = Math.min(value.length, PARTIAL_COUNTERS_MAX);
+  for (let i = 0; i < limit; i += 1) {
+    const name = value[i];
     if (fields.includes(name) && !out.includes(name)) out.push(name);
   }
   return out;
@@ -701,20 +707,20 @@ const isWellFormedSnapshot = (data) =>
 /**
  * `{ entries, malformed }` for one run — one `controllers[]` entry per
  * (run, controller, harness) seen in a well-formed `controller-usage` event,
- * and `malformed`, the per-harness count of snapshots this report could not
- * attribute (`unknown` when not even the harness could be read).
+ * and `malformed`, the count of snapshots this report could not attribute.
+ * Nothing of a malformed snapshot is read — not even its own `harness`
+ * claim — so one such snapshot counts against every harness.
  */
 const controllerEntriesOf = (runName, events, takenTickets) => {
   const byController = new Map();
-  const malformed = { claude: 0, codex: 0, unknown: 0 };
+  let malformed = 0;
   const snapshots = events
     .filter((event) => event.kind === 'controller-usage')
     .sort((a, b) => a.seq - b.seq);
   for (const event of snapshots) {
     const data = event.data;
     if (!isWellFormedSnapshot(data)) {
-      const harness = data !== null && typeof data === 'object' ? data.harness : undefined;
-      malformed[isKnownHarness(harness) ? harness : 'unknown'] += 1;
+      malformed += 1;
       continue;
     }
     const key = `${data.controller}|${data.harness}`;
@@ -823,28 +829,52 @@ const isMeasuredGroup = (group, harness) =>
 
 /**
  * `totals.<harness>` — controller, subagents, and a combined figure only when
- * it is justified. `runEvidence` is one `{ run, dispatch: {claude, codex},
- * controller: {claude, codex}, any, malformed }` per run read (see
- * `tokenReportOf`); `subagentWiring` is `usageEvidence.<harness>.state`.
+ * it is justified. `runEvidence` is one record per run read (see
+ * `tokenReportOf`): which harnesses the run journalled a dispatch or a
+ * controller snapshot for, the controller refs seen on each side, dispatches
+ * of an unknown harness, unpaired dispatch-ends, and malformed snapshots.
+ * `wiring` is `usageEvidence.<harness>.wiring` — the checkout's hook
+ * configuration, read per run for a run that journalled no dispatch for the
+ * harness.
  */
-const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence, subagentState) => {
+const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence, wiring) => {
   const fields = CONTROLLER_COUNTER_FIELDS[harness];
   const entries = controllerEntries.filter((entry) => entry.harness === harness);
   const withUsage = entries.filter((entry) => entry.usage !== null);
   const unavailable = entries.length - withUsage.length;
   const partial = withUsage.filter((entry) => (entry.coverage?.partialCounters?.length ?? 0) > 0);
 
+  // A run is relevant when it journalled a dispatch or a snapshot for this
+  // harness, or records but no usage evidence for ANY harness (the harness
+  // that ran it is unknown, so its controller is unaccounted for). It is
+  // missing a snapshot when it has none for this harness, or when a
+  // dispatch-start names a controller ref that no snapshot in the run
+  // carries — a resumed/forked session is a second controller.
   const relevantRuns = runEvidence.filter(
     (run) => run.dispatch[harness] || run.controller[harness] || !run.any,
   );
-  const missingRuns = relevantRuns.filter((run) => !run.controller[harness]);
-  const malformedSnapshots = runEvidence.reduce(
-    (acc, run) => acc + run.malformed[harness] + run.malformed.unknown,
-    0,
+  const missingRuns = relevantRuns.filter(
+    (run) =>
+      !run.controller[harness] ||
+      [...run.dispatchControllers[harness]].some((ref) => !run.snapshotControllers[harness].has(ref)),
   );
+  const malformedSnapshots = runEvidence.reduce((acc, run) => acc + run.malformed, 0);
+  const unknownHarnessDispatchEvents = runEvidence.reduce((acc, run) => acc + run.dispatch.unknown, 0);
+  const unpairedEnds = relevantRuns.reduce((acc, run) => acc + run.unpairedEnds[harness], 0);
+  // A relevant run with a snapshot and no dispatch event for this harness:
+  // its subagent side is EMPTY only by configuration. For claude, a
+  // configured hook is accepted with a caveat (its firing is live-verified
+  // on 2.1.296); for codex it is never accepted — an untrusted project hook
+  // is skipped silently, so configuration says nothing about execution.
+  const runsWithoutDispatchEvidence = relevantRuns.filter(
+    (run) => !run.dispatch[harness] && run.controller[harness],
+  );
+  const subagentSideUnobserved =
+    runsWithoutDispatchEvidence.length > 0 && (harness !== 'claude' || wiring !== 'configured');
 
   let controller = null;
   let controllerOverflow = [];
+  const controllerPartialCounters = [];
   if (entries.length > 0 && unavailable === 0) {
     const summed = summedCounters(
       withUsage.map((e) => e.usage),
@@ -852,6 +882,14 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
     );
     controller = summed.counters;
     controllerOverflow = summed.overflow;
+    // A counter some controller's own records only partly covered is null in
+    // the total and named, never summed as if complete.
+    for (const entry of partial) {
+      for (const field of entry.coverage.partialCounters) {
+        if (field in controller) controller[field] = null;
+        if (!controllerPartialCounters.includes(field)) controllerPartialCounters.push(field);
+      }
+    }
   }
 
   const groups = dispatchGroups.filter((group) => group.harness === harness);
@@ -886,9 +924,12 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
 
   let combined = null;
   let combinedUnavailable = null;
+  const combinedCaveats = [];
   if (entries.length === 0) combinedUnavailable = 'no-controller-snapshot';
   else if (malformedSnapshots > 0) combinedUnavailable = 'malformed-controller-snapshot';
   else if (missingRuns.length > 0) combinedUnavailable = 'controller-snapshot-missing-for-run';
+  else if (unknownHarnessDispatchEvents > 0) combinedUnavailable = 'dispatch-harness-unknown';
+  else if (unpairedEnds > 0) combinedUnavailable = 'dispatch-end-unpaired';
   else if (controller === null) combinedUnavailable = 'controller-usage-unavailable';
   else if (controllerOverflow.length > 0) combinedUnavailable = 'counter-overflow';
   else if (partial.length > 0) combinedUnavailable = 'controller-counters-partial';
@@ -896,33 +937,42 @@ const harnessTotalsOf = (harness, controllerEntries, dispatchGroups, runEvidence
     combinedUnavailable = 'counter-overflow';
   } else if (groups.length > 0 && subagents === null) combinedUnavailable = 'subagent-usage-incomplete';
   else if (subagentOverflow.length > 0) combinedUnavailable = 'counter-overflow';
-  else if (groups.length === 0 && subagentState !== 'witnessed' && subagentState !== 'configured-no-witness') {
-    combinedUnavailable = 'subagent-evidence-unobserved';
-  } else if (unverifiedHarnessVersions.length > 0) {
+  else if (subagentSideUnobserved) combinedUnavailable = 'subagent-evidence-unobserved';
+  else if (unverifiedHarnessVersions.length > 0) {
     combinedUnavailable = 'exclusivity-unverified-for-harness-version';
   } else {
     const parts = groups.length === 0 ? [controller] : [controller, subagents];
     const summed = summedCounters(parts, fields);
     if (summed.overflow.length > 0) combinedUnavailable = 'counter-overflow';
     else if (summed.missing.length > 0) combinedUnavailable = 'counter-missing-on-one-side';
-    else combined = summed.counters;
+    else {
+      combined = summed.counters;
+      if (runsWithoutDispatchEvidence.length > 0) {
+        combinedCaveats.push('subagent-hook-configured-not-witnessed');
+      }
+    }
   }
   return {
     controller,
+    controllerPartialCounters,
     controllerRuns: {
       relevant: relevantRuns.length,
       withSnapshot: relevantRuns.length - missingRuns.length,
       missingSnapshot: missingRuns.length,
       missingSnapshotRuns: missingRuns.map((run) => run.run),
+      withoutDispatchEvidence: runsWithoutDispatchEvidence.length,
       unavailable,
       partial: partial.length,
       malformedSnapshots,
+      unknownHarnessDispatchEvents,
+      unpairedEnds,
     },
     subagents,
     subagentGroups: { total: groups.length, measured: measuredGroups.length },
     combined,
     combinedUnavailable,
     combinedBasis: combined === null ? null : 'measured-lower-bound-not-billing',
+    combinedCaveats,
     unverifiedHarnessVersions,
   };
 };
@@ -1104,11 +1154,17 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
     controllers.push(...runControllers);
     const evidence = {
       run: runName,
-      dispatch: { claude: false, codex: false },
+      dispatch: { claude: false, codex: false, unknown: 0 },
       controller: {
         claude: runControllers.some((entry) => entry.harness === 'claude'),
         codex: runControllers.some((entry) => entry.harness === 'codex'),
       },
+      snapshotControllers: {
+        claude: new Set(runControllers.filter((e) => e.harness === 'claude').map((e) => e.controller)),
+        codex: new Set(runControllers.filter((e) => e.harness === 'codex').map((e) => e.controller)),
+      },
+      dispatchControllers: { claude: new Set(), codex: new Set() },
+      unpairedEnds: { claude: 0, codex: 0 },
       any: false,
       malformed,
     };
@@ -1138,8 +1194,17 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       const harnessRaw = event.data?.harness;
       if (harnessRaw === 'claude') witnessed.claude = true;
       else if (harnessRaw === 'codex') witnessed.codex = true;
-      else continue;
+      else {
+        // A dispatch this report cannot attribute to a harness (the hook was
+        // wired without `--harness=`): counted, and it refuses every combined
+        // total, because its usage belongs to SOME harness's subagent side.
+        evidence.dispatch.unknown += 1;
+        continue;
+      }
       evidence.dispatch[harnessRaw] = true;
+      if (event.kind === 'dispatch-start') {
+        evidence.dispatchControllers[harnessRaw].add(stringOrUnknown(event.data?.controller));
+      }
       if (event.kind !== 'dispatch-end') continue;
       const code = event.data?.usageUnavailable;
       if (typeof code === 'string' && code.trim() !== '') {
@@ -1168,6 +1233,12 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       } else {
         const queue = queueByRef.get(ref);
         if (queue && queue.length > 0) queue.shift().end = event;
+        else if (isKnownHarness(event.data?.harness)) {
+          // RP-511 PR D: a non-orphan end with no start in the window — its
+          // start fell before `--since`, or was never journalled. Its usage
+          // is dropped from every group, so the subagent side is incomplete.
+          evidence.unpairedEnds[event.data.harness] += 1;
+        }
       }
     }
 
@@ -1228,6 +1299,10 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
           // 'absent' — read from the dispatch-end, never from the controller.
           if (raws.versions.size < HARNESS_VERSIONS_MAX) {
             raws.versions.add(harnessVersionOrNull(pair.end.data?.harnessVersion) ?? 'absent');
+          } else {
+            // Past the cap the distinct versions are not tracked; the
+            // sentinel is never a verified version, so combined is refused.
+            raws.versions.add('overflow');
           }
         }
       }
@@ -1350,12 +1425,10 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
     }
   }
   for (const run of runEvidence) {
+    // Usage evidence this report could attribute; a malformed snapshot or an
+    // unknown-harness dispatch is not evidence of which harness ran the run.
     run.any =
-      run.dispatch.claude ||
-      run.dispatch.codex ||
-      run.controller.claude ||
-      run.controller.codex ||
-      run.malformed.claude + run.malformed.codex + run.malformed.unknown > 0;
+      run.dispatch.claude || run.dispatch.codex || run.controller.claude || run.controller.codex;
   }
 
   const usageDisplayed =
@@ -1411,7 +1484,7 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       controllers,
       groupList,
       runEvidence,
-      usageEvidence[harness].state,
+      usageEvidence[harness].wiring,
     );
   }
 
@@ -1616,7 +1689,7 @@ const isHomeDirectory = (checkoutRoot) => {
  * can replace the file between checking it and reading it. Any failure other
  * than "the file does not exist" — too large, unparseable, unreadable — reads
  * as `'unknown'` rather than guessed at. */
-const recordDispatchConfiguredIn = (filePath) => {
+const recordDispatchConfiguredIn = (filePath, harness) => {
   let fd;
   try {
     // O_NONBLOCK: opening a FIFO with no writer would otherwise block before
@@ -1660,7 +1733,14 @@ const recordDispatchConfiguredIn = (filePath) => {
         const hooks = matcher?.hooks;
         if (!Array.isArray(hooks)) continue;
         for (const hook of hooks) {
-          if (typeof hook?.command === 'string' && hook.command.includes('record-dispatch.mjs')) {
+          // A command without `--harness=<this harness>` journals dispatches
+          // this report cannot attribute, so it is not configured FOR the
+          // harness — RP-511 PR D.
+          if (
+            typeof hook?.command === 'string' &&
+            hook.command.includes('record-dispatch.mjs') &&
+            hook.command.includes(`--harness=${harness}`)
+          ) {
             return 'configured';
           }
         }
@@ -1684,8 +1764,8 @@ const resolveWiring = (runsDir) => {
   if (checkoutRoot === null) return { claude: 'unknown', codex: 'unknown' };
   if (isHomeDirectory(checkoutRoot)) return { claude: 'unknown', codex: 'unknown' };
   return {
-    claude: recordDispatchConfiguredIn(join(checkoutRoot, '.claude', 'settings.json')),
-    codex: recordDispatchConfiguredIn(join(checkoutRoot, '.codex', 'hooks.json')),
+    claude: recordDispatchConfiguredIn(join(checkoutRoot, '.claude', 'settings.json'), 'claude'),
+    codex: recordDispatchConfiguredIn(join(checkoutRoot, '.codex', 'hooks.json'), 'codex'),
   };
 };
 

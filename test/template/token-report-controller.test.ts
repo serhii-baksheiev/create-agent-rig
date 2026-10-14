@@ -75,20 +75,25 @@ interface ControllerEntry {
 
 interface HarnessTotals {
   controller: Counters | null;
+  controllerPartialCounters: string[];
   controllerRuns: {
     relevant: number;
     withSnapshot: number;
     missingSnapshot: number;
     missingSnapshotRuns: string[];
+    withoutDispatchEvidence: number;
     unavailable: number;
     partial: number;
     malformedSnapshots: number;
+    unknownHarnessDispatchEvents: number;
+    unpairedEnds: number;
   };
   subagents: Counters | null;
   subagentGroups: { total: number; measured: number };
   combined: Counters | null;
   combinedUnavailable: string | null;
   combinedBasis: string | null;
+  combinedCaveats: string[];
   unverifiedHarnessVersions: string[];
 }
 
@@ -104,6 +109,7 @@ interface Report {
   schemaVersion: number;
   dispatchGroups: Array<{ dispatches: Record<string, number> }>;
   tickets: Array<{ ticket: string; occurrences: Array<Record<string, unknown>> }>;
+  money: { line: string; estimate: null };
   accountingBasis: Record<string, unknown>;
   dispatchGroups: DispatchGroup[];
   controllers: ControllerEntry[];
@@ -111,7 +117,6 @@ interface Report {
   usageEvidence: {
     controller: { available: boolean; snapshots: number; runsWithoutSnapshot: number };
   };
-  money: { line: string; estimate: null };
 }
 
 interface ReportModule {
@@ -194,6 +199,21 @@ const dispatchPair = (
   });
 };
 
+const codexCounters = (over: Partial<Record<string, number>> = {}) => ({
+  inputTokens: 1000,
+  cachedInputTokens: 500,
+  outputTokens: 100,
+  reasoningOutputTokens: 20,
+  ...over,
+});
+
+const codexSnapshot = (runDir: string, n: number): JournalRecord =>
+  snapshot(runDir, n, {
+    harness: 'codex',
+    harnessVersion: CODEX_VERSION,
+    usage: { evidenceSource: 'codex-controller-rollout', ...codexCounters() },
+  });
+
 const subUsage = (over: Partial<Record<string, number>> = {}) => ({
   requests: 1,
   inputTokens: 5,
@@ -271,12 +291,17 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.totals.claude.combined).toEqual(claudeCounters());
     expect(data.totals.claude.combinedUnavailable).toBeNull();
     expect(data.totals.claude.combinedBasis).toBe('measured-lower-bound-not-billing');
+    // The subagent side of this run rests on hook configuration, not on a
+    // witnessed dispatch — said on the total, never silently.
+    expect(data.totals.claude.combinedCaveats).toEqual(['subagent-hook-configured-not-witnessed']);
     expect(data.totals.claude.controllerRuns).toMatchObject({
       relevant: 1,
       withSnapshot: 1,
       missingSnapshot: 0,
       missingSnapshotRuns: [],
+      withoutDispatchEvidence: 1,
     });
+    expect(data.money.line).toBe('usage measured; monetary cost unavailable');
     expect(data.usageEvidence.controller).toMatchObject({
       available: true,
       snapshots: 1,
@@ -293,6 +318,39 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.totals.claude.combined).toBeNull();
     expect(data.totals.claude.combinedUnavailable).toBe('subagent-evidence-unobserved');
     expect(data.totals.claude.combinedBasis).toBeNull();
+    expect(data.totals.claude.combinedCaveats).toEqual([]);
+  });
+
+  it('the per-run subagent rule does not transfer: a witnessed dispatch in run-a does not make run-b’s unobserved subagent side empty', async () => {
+    const root = await runsRoot();
+    const a = await mkrun(root, 'run-a');
+    const b = await mkrun(root, 'run-b');
+    snapshot(a, 1);
+    dispatchPair(a, 2, subUsage());
+    snapshot(b, 1);
+    const data = report(root, ['run-a', 'run-b'], {});
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).toBe('subagent-evidence-unobserved');
+    expect(data.totals.claude.controllerRuns.withoutDispatchEvidence).toBe(1);
+  });
+
+  it('a codex run with a snapshot and no dispatch event never combines on configuration alone — an untrusted Codex project hook is skipped silently', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    codexSnapshot(dir, 1);
+    const data = report(root, ['run-a']);
+    expect(data.totals.codex.controller).toEqual(codexCounters());
+    expect(data.totals.codex.combined).toBeNull();
+    expect(data.totals.codex.combinedUnavailable).toBe('subagent-evidence-unobserved');
+  });
+
+  it('a measured controller alone flips the money line to usage measured', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    snapshot(dir, 1, { harnessVersion: '2.1.1' });
+    const data = report(root, ['run-a'], {});
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.money.line).toBe('usage measured; monetary cost unavailable');
   });
 
   it('subagent-only run: no controller snapshot is absent evidence — runsWithoutSnapshot counts it and combined is null with a reason', async () => {
@@ -406,27 +464,108 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
     dispatchPair(dir, 1, subUsage());
-    snapshot(dir, 3, {
-      harness: 'codex',
-      harnessVersion: CODEX_VERSION,
-      usage: {
-        evidenceSource: 'codex-controller-rollout',
-        inputTokens: 1000,
-        cachedInputTokens: 500,
-        outputTokens: 100,
-        reasoningOutputTokens: 20,
-      },
-    });
+    const codexSub = {
+      inputTokens: 10,
+      cachedInputTokens: 5,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+    };
+    dispatchPair(dir, 3, codexSub, { harness: 'codex' });
+    codexSnapshot(dir, 5);
     const data = report(root, ['run-a']);
     expect(data.totals.claude.combinedUnavailable).toBe('no-controller-snapshot');
     expect(data.totals.claude.controllerRuns.missingSnapshotRuns).toEqual(['run-a']);
-    expect(data.totals.codex.combined).toEqual({
-      inputTokens: 1000,
-      cachedInputTokens: 500,
-      outputTokens: 100,
-      reasoningOutputTokens: 20,
-    });
+    expect(data.totals.codex.combined).toEqual(add(codexCounters(), codexSub));
+    expect(data.totals.codex.combinedCaveats).toEqual([]);
     expect(data.totals.codex.controllerRuns.missingSnapshot).toBe(0);
+  });
+
+  it('a dispatch of an unknown harness (hook wired without --harness=) refuses every combined total — its usage belongs to some harness’s subagent side', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    snapshot(dir, 1);
+    const base = { controller: CTRL, agentType: 'code-reviewer', agentRef: 'ref-u' };
+    journal.recordEvent({
+      runDir: dir,
+      kind: 'dispatch-start',
+      data: { schema: 1, ...base },
+      now: at(2),
+    });
+    journal.recordEvent({
+      runDir: dir,
+      kind: 'dispatch-end',
+      data: {
+        schema: 1,
+        ...base,
+        usage: { evidenceSource: 'claude-subagent-transcript', ...subUsage() },
+      },
+      now: at(3),
+    });
+    const data = report(root, ['run-a']);
+    expect(data.dispatchGroups).toHaveLength(1);
+    expect(data.dispatchGroups[0]!.harness).toBe('unknown');
+    expect(data.totals.claude.controllerRuns.unknownHarnessDispatchEvents).toBe(2);
+    expect(data.totals.claude.combinedUnavailable).toBe('dispatch-harness-unknown');
+    expect(data.totals.codex.combinedUnavailable).toBe('no-controller-snapshot');
+  });
+
+  it('a non-orphan dispatch-end whose start fell before --since is unpaired: its usage is dropped, so combined is refused rather than printed with a hole', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    dispatchPair(dir, 1, subUsage());
+    dispatchPair(dir, 10, subUsage({ inputTokens: 50 }));
+    snapshot(dir, 20);
+    const complete = report(root, ['run-a']);
+    expect(complete.totals.claude.combined).toEqual(
+      add(claudeCounters(), subUsage(), subUsage({ inputTokens: 50 })),
+    );
+    const windowed = reportModule.tokenReportOf({
+      runs: readRuns(root, ['run-a']),
+      since: at(2),
+      wiring: CONFIGURED,
+    });
+    expect(windowed.totals.claude.controllerRuns.unpairedEnds).toBe(1);
+    expect(windowed.totals.claude.combined).toBeNull();
+    expect(windowed.totals.claude.combinedUnavailable).toBe('dispatch-end-unpaired');
+  });
+
+  it('a dispatch-start naming a second controller ref with no snapshot of its own leaves the run missing a snapshot — completeness is per (run, controller)', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    snapshot(dir, 1);
+    const other = 'fedcba9876543210';
+    const base = {
+      harness: 'claude',
+      controller: other,
+      agentType: 'code-reviewer',
+      agentRef: 'ref-o',
+    };
+    journal.recordEvent({
+      runDir: dir,
+      kind: 'dispatch-start',
+      data: { schema: 1, ...base },
+      now: at(2),
+    });
+    journal.recordEvent({
+      runDir: dir,
+      kind: 'dispatch-end',
+      data: {
+        schema: 1,
+        ...base,
+        harnessVersion: CLAUDE_VERSION,
+        usage: { evidenceSource: 'claude-subagent-transcript', ...subUsage() },
+      },
+      now: at(3),
+    });
+    const data = report(root, ['run-a']);
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).toBe('controller-snapshot-missing-for-run');
+    expect(data.totals.claude.controllerRuns.missingSnapshotRuns).toEqual(['run-a']);
+    snapshot(dir, 4, { controller: other });
+    const complete = report(root, ['run-a']);
+    expect(complete.totals.claude.combined).toEqual(
+      add(claudeCounters(), claudeCounters(), subUsage()),
+    );
   });
 
   it('an absent or unverified CONTROLLER harness version leaves combined null — exclusivity is a per-version fact, not an assumption', async () => {
@@ -542,7 +681,11 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
       basis: 'assistant-records-last-per-request',
       partialCounters: ['cacheCreationInputTokens'],
     });
-    expect(data.totals.claude.controller).toEqual(claudeCounters());
+    // The partly covered counter is null in the total and named; the others sum.
+    expect(data.totals.claude.controller).toEqual(
+      claudeCounters({ cacheCreationInputTokens: null as unknown as number }),
+    );
+    expect(data.totals.claude.controllerPartialCounters).toEqual(['cacheCreationInputTokens']);
     expect(data.totals.claude.controllerRuns.partial).toBe(1);
     expect(data.totals.claude.combined).toBeNull();
     expect(data.totals.claude.combinedUnavailable).toBe('controller-counters-partial');
@@ -672,25 +815,27 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
   it('a codex controller snapshot is reported with its own counters and verified against the codex version list', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
-    snapshot(dir, 1, {
-      harness: 'codex',
-      harnessVersion: CODEX_VERSION,
-      usage: {
-        evidenceSource: 'codex-controller-rollout',
-        inputTokens: 1000,
-        cachedInputTokens: 500,
-        outputTokens: 100,
-        reasoningOutputTokens: 20,
-      },
-    });
+    const codexSub = {
+      inputTokens: 10,
+      cachedInputTokens: 5,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+    };
+    dispatchPair(dir, 1, codexSub, { harness: 'codex' });
+    codexSnapshot(dir, 3);
     const data = report(root, ['run-a']);
-    expect(data.totals.codex.combined).toEqual({
-      inputTokens: 1000,
-      cachedInputTokens: 500,
-      outputTokens: 100,
-      reasoningOutputTokens: 20,
-    });
+    expect(data.totals.codex.controller).toEqual(codexCounters());
+    expect(data.totals.codex.combined).toEqual(add(codexCounters(), codexSub));
     expect(data.totals.claude.combinedUnavailable).toBe('no-controller-snapshot');
+
+    const dir2 = await mkrun(root, 'run-b');
+    dispatchPair(dir2, 1, codexSub, { harness: 'codex', harnessVersion: '0.1.0' });
+    codexSnapshot(dir2, 3);
+    const data2 = report(root, ['run-b']);
+    expect(data2.totals.codex.combinedUnavailable).toBe(
+      'exclusivity-unverified-for-harness-version',
+    );
+    expect(data2.totals.codex.unverifiedHarnessVersions).toEqual(['0.1.0']);
   });
 
   it('a snapshot whose counters are not non-negative safe integers is unavailable rather than summed', async () => {
@@ -732,11 +877,26 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
       evidenceSource: 'claude-controller-transcript',
       ...claudeCounters(),
     });
-    // 3 claude-shaped snapshots were malformed; 4 could not even be attributed
-    // to a harness, and those count against every harness.
+    // Nothing of a malformed snapshot is read — not even its own harness
+    // claim — so all 7 count against every harness.
     expect(data.totals.claude.controllerRuns.malformedSnapshots).toBe(7);
     expect(data.totals.claude.combinedUnavailable).toBe('malformed-controller-snapshot');
-    expect(data.totals.codex.controllerRuns.malformedSnapshots).toBe(4);
+    expect(data.totals.codex.controllerRuns.malformedSnapshots).toBe(7);
+
+    // A run holding only a malformed snapshot that claims the other harness
+    // has journalled records and no usable usage evidence: relevant to every
+    // harness, and missing a snapshot for each.
+    const a = await mkrun(root, 'run-b');
+    const b = await mkrun(root, 'run-c');
+    snapshot(a, 1);
+    snapshot(b, 1, { harness: 'codex', schema: 2 });
+    const data2 = report(root, ['run-b', 'run-c']);
+    expect(data2.totals.claude.controllerRuns).toMatchObject({
+      relevant: 2,
+      missingSnapshotRuns: ['run-c'],
+      malformedSnapshots: 1,
+    });
+    expect(data2.totals.claude.combined).toBeNull();
   });
 
   it('a controller-side string that is not in shape never reaches the report raw: trigger, harnessVersion, usageUnavailable, evidenceSource and coverage.basis are narrowed', async () => {
