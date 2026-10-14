@@ -1,13 +1,14 @@
 // usage-readers.mjs — the bounded, read-only usage readers the dispatch
 // evidence hook (`../record-dispatch.mjs`, RP-226/RP-227) and the
 // controller-session hook (`../record-session-usage.mjs`, RP-511) fold
-// through. Extracted from `record-dispatch.mjs` (RP-511, PR A): the bounds, the
-// identity checks, the dedupe rules and every reason code are the ones that
-// hook's header LIMITS document, and that hook's own tests exercise them
-// through its re-exports — test/template/dispatch-usage.test.ts (absent in a
+// through. The subagent readers were extracted from `record-dispatch.mjs`
+// (RP-511, PR A): their bounds, identity checks, dedupe rules and reason codes
+// are the ones that hook's header LIMITS document, and that hook's own tests
+// exercise them through its re-exports — test/template/dispatch-usage.test.ts (absent in a
 // generated rig) › "reports transcript-timeout when an injected clock crosses
 // the 3 s bound between two read chunks" calls `readClaudeTranscriptUsage`
-// through `record-dispatch.mjs`.
+// through `record-dispatch.mjs`. The controller readers (the RP-511 section
+// below) document their own identity checks and codes there.
 //
 // Nothing here writes or logs; what reaches a journal is decided by the
 // caller, and the hook's tests pin that neither a path nor any transcript

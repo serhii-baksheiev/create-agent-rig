@@ -24,12 +24,15 @@
 // (`transcript-unreadable`, `transcript-too-large`,
 // `transcript-line-too-large`, `transcript-timeout`,
 // `transcript-malformed-line`, `transcript-empty`) are `readBoundedLines`'s
-// and shared; the identity and path codes are this hook's own and differ
-// from `record-dispatch.mjs`'s (`transcript-path-*` on both harnesses where
-// the subagent capture says `rollout-path-*` for Codex;
-// `session-identity-mismatch` where it says `rollout-identity-mismatch`;
-// `transcript-path-mismatch` has no subagent counterpart). The path is
-// refused before anything is opened when it is missing or empty
+// and shared. The path codes keep the subagent capture's Claude names on
+// BOTH harnesses — `transcript-path-missing`, `transcript-path-unc`,
+// `transcript-path-not-absolute`, `transcript-path-mismatch`, exactly
+// `record-dispatch.mjs`'s `claudeUsageOf` codes — so this hook never says
+// `rollout-path-unc`/`rollout-path-not-absolute` for a Codex path as that
+// hook's `codexUsageOf` does; and the Codex identity code is
+// `session-identity-mismatch` where the subagent capture says
+// `rollout-identity-mismatch`. The path is refused before anything is
+// opened when it is missing or empty
 // (`transcript-path-missing`), UNC-shaped in any separator mix
 // (`transcript-path-unc`), not absolute (`transcript-path-not-absolute`), or
 // when its basename does not carry the payload's own `session_id`
