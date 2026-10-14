@@ -2170,11 +2170,14 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // RP-355 adds the Outcome Evidence query module
   // (`.claude/scripts/lib/evidence-query.mjs`), WORKFLOW-only (123→124); the
   // core-only figure stays 69.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 124 manifest entries to 69', async () => {
+  // RP-511 PR A moves the bounded usage readers into their own module
+  // (`.claude/hooks/lib/usage-readers.mjs`), WORKFLOW-only like the hook they
+  // came from (124→125); the core-only figure stays 69.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 125 manifest entries to 69', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(124);
+    expect(Object.keys(before!.files).length).toBe(125);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });

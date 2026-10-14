@@ -120,6 +120,10 @@ const EXPECTED_WORKFLOW = new Set([
   // itself only meaningful once `pr-ship`/`loop` are installed, and a
   // Core-only install has no run directory for it to write into at all.
   '.claude/hooks/record-dispatch.mjs',
+  // RP-511 PR A: the bounded usage readers that hook (and, from PR B, the
+  // controller-session usage hook) fold through — workflow-layer content for
+  // the same reason record-dispatch.mjs is.
+  '.claude/hooks/lib/usage-readers.mjs',
   // journal and the decision records that document workflow-only mechanisms
   'journal/README.md',
   'docs/decisions/gate-coverage.md',
