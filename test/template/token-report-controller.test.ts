@@ -16,10 +16,12 @@ import { beforeAll, describe, expect, it } from 'vitest';
 //     `coverage.incomplete: true`; the raw counters stay beside it;
 //   - controller usage is attributed to the run only (`attribution.mode:
 //     'run'`), with the run's taken tickets listed, never credited to one;
-//   - `totals.<harness>.combined` (controller + subagents) is printed only when
-//     both sides are available and every controller snapshot's
-//     `harnessVersion` is one on which parent/subagent exclusivity was
-//     verified; otherwise it is `null` with a reason;
+//   - `totals.<harness>.combined` (controller + subagents) is printed when
+//     every controller entry and every dispatch group of the harness carries
+//     usage and the last snapshot of every (run, controller) names a
+//     `harnessVersion` on which parent/subagent exclusivity was verified;
+//     a harness with controller entries and no dispatch group prints the
+//     controller alone; otherwise it is `null` with a reason;
 //   - `schemaVersion` is 2 and `accountingBasis` states what every number
 //     rests on; `money` keeps its exact `{ line, estimate }` shape.
 //
@@ -83,6 +85,7 @@ interface HarnessTotals {
 
 interface Report {
   schemaVersion: number;
+  tickets: Array<{ ticket: string; occurrences: Array<Record<string, unknown>> }>;
   accountingBasis: Record<string, unknown>;
   controllers: ControllerEntry[];
   totals: { claude: HarnessTotals; codex: HarnessTotals };
@@ -364,7 +367,14 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     snapshot(dir, 3);
     const data = report(root, ['run-a']);
     expect(data.controllers[0]!.attribution).toEqual({ mode: 'run', tickets: ['RP-1', 'RP-2'] });
-    expect(JSON.stringify(data)).not.toContain('controllerUsage');
+    // No ticket occurrence carries controller usage: the only controller
+    // figures in the report are the run-level entries and totals.
+    for (const ticket of data.tickets) {
+      for (const occurrence of ticket.occurrences) {
+        expect(Object.keys(occurrence)).not.toContain('controller');
+        expect(Object.keys(occurrence)).not.toContain('usage');
+      }
+    }
   });
 
   it('a counter missing on one side of the combination is null on that total, never a partial sum', async () => {

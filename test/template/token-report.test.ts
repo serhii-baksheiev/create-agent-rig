@@ -248,9 +248,9 @@ interface UsageEvidenceHarness {
 interface UsageEvidence {
   claude: UsageEvidenceHarness;
   codex: UsageEvidenceHarness;
-  // Controller (parent session) usage is never measured by this script —
-  // record-dispatch.mjs only journals SubagentStart/SubagentStop, never the
-  // controller's own turn — so this is a fixed statement, not a computation.
+  // Controller (parent session) usage is read from controller-usage events
+  // since RP-511 PR C: `available` says whether any entry carried usage,
+  // `snapshots`/`runsWithoutSnapshot` count what was read.
   controller: {
     available: boolean;
     snapshots: number;

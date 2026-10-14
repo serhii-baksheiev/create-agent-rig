@@ -3,9 +3,9 @@
 // snapshot of the CONTROLLER session's own token usage into the run journal
 // (`.claude/scripts/run-journal.mjs`, `events.jsonl`) — the controller half
 // of the usage evidence `record-dispatch.mjs` already records per subagent
-// (RP-225/226/227). Nothing on this head reads these events back; a reader
-// that does must treat a run with no such event as ABSENT evidence, never as
-// zero — that is the contract the event shape carries, not a mechanism here.
+// (RP-225/226/227), read back by `token-report.mjs` (RP-511 PR C), which
+// treats a run with no such event as ABSENT evidence, never as zero — that
+// is the contract the event shape carries, not a mechanism here.
 //
 // observe-only: refuses nothing and returns no decision. It exits 0 on every
 // path, writes nothing to stdout, and never throws out of `main()` — a `Stop`

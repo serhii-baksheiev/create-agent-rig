@@ -233,9 +233,9 @@
  * output raw".
  *
  * `controller` is computed from `controller-usage` events (RP-511 —
- * `record-session-usage.mjs`, the header section CONTROLLER-SESSION USAGE
- * below): the last snapshot per run and controller, attributed to the run
- * only. With no such event in the runs read it stays unavailable, and the
+ * `record-session-usage.mjs`; the code comment "controller-session usage
+ * (RP-511)" below the imports carries the rules): the last snapshot per run
+ * and controller, attributed to the run only. With no such event in the runs read it stays unavailable, and the
  * reason says that absent evidence is never zero —
  * test/template/token-report.test.ts (absent in a generated rig) › "states
  * that controller (parent session) usage is unavailable, and why — no
@@ -441,8 +441,10 @@ const codexUsageOf = (rawList) => {
 // controller usage". A sequence whose counters go DOWN between two snapshots
 // is not silently replaced by the later one: that controller's usage is
 // `null` with `usageUnavailable: 'non-monotonic-snapshots'` and
-// `coverage.incomplete: true`, and the raw counters of every snapshot are
-// kept beside it for inspection —
+// `coverage.incomplete: true`, and the counters of every snapshot that
+// carried valid usage are kept beside it for inspection (a snapshot with no
+// `usage`, or with a counter outside the harness's own fields' shape, is
+// skipped there) —
 // test/template/token-report-controller.test.ts (absent in a generated rig)
 // › "a counter that goes down between snapshots makes the controller
 // unavailable, keeps the raw counters, and blocks combined". Controller
@@ -452,9 +454,13 @@ const codexUsageOf = (rawList) => {
 // test/template/token-report-controller.test.ts (absent in a generated rig)
 // › "multi-ticket run: controller usage stays run-level and names every
 // taken ticket; no ticket is credited". A combined (controller + subagents)
-// total is printed only when both sides are available and every controller
-// snapshot names a harness version in `VERIFIED_EXCLUSIVITY`; otherwise it
-// is `null` with a reason —
+// total is printed when the harness has controller usage from every one of
+// its entries, every dispatch group of the harness carries usage, and the
+// LAST snapshot of every (run, controller) names a harness version in
+// `VERIFIED_EXCLUSIVITY`; a harness with controller entries and no dispatch
+// group prints combined equal to the controller, and a run read WITHOUT a
+// snapshot is counted (`controllerRuns.withoutSnapshot`) but does not
+// withhold the total on this schema — otherwise it is `null` with a reason —
 // test/template/token-report-controller.test.ts (absent in a generated rig)
 // › "subagent-only run: no controller snapshot is absent evidence —
 // runsWithoutSnapshot counts it and combined is null with a reason", › "an
@@ -462,10 +468,14 @@ const codexUsageOf = (rawList) => {
 // is a per-version fact, not an assumption" and › "a counter missing on one
 // side of the combination is null on that total, never a partial sum". The
 // `evidence` strings in `VERIFIED_EXCLUSIVITY` below describe one-off
-// measurements recorded in Jira RP-511 (comment 24424), not mechanisms this
+// measurements recorded in Jira RP-511 (comment 24425), not mechanisms this
 // script enforces; what it enforces is the version list.
 
-/** The report's own schema version; 1 was the RP-228 shape, 2 adds `controllers`, `totals` and `accountingBasis`. */
+/** The report's own schema version; 1 was the RP-228 shape. 2 adds `schemaVersion` itself,
+ * `controllers`, `totals` and `accountingBasis`, computes `usageEvidence.controller`
+ * (`available` from the entries read, plus `snapshots` and `runsWithoutSnapshot`) instead
+ * of the fixed statement, and renders `controller=measured(snapshots=N)` on the usage
+ * evidence line. */
 const REPORT_SCHEMA_VERSION = 2;
 
 /** The counters a controller snapshot and a subagent dispatch carry, per harness. */
@@ -488,12 +498,12 @@ const VERIFIED_EXCLUSIVITY = Object.freeze({
   claude: Object.freeze({
     versions: Object.freeze(['2.1.296']),
     evidence:
-      'measured once (RP-511, Jira comment 24424), live on 2.1.296, 2026-10-14: a spawned subagent left no usage in the parent transcript; the parent cost-state carried it.',
+      'measured once, live on 2.1.296, 2026-10-14 (recorded in Jira RP-511, comment 24425, L1): a spawned subagent left no usage in the parent transcript; the parent cost-state carried it.',
   }),
   codex: Object.freeze({
-    versions: Object.freeze(['0.156.1', '0.161.0', '0.162.0', '0.162.1']),
+    versions: Object.freeze(['0.161.0', '0.162.0', '0.162.1']),
     evidence:
-      'measured once (RP-227 live exec probe on 0.156.1: parent turn.completed.usage excludes the child; RP-511, Jira comment 24424: on real 0.161.0/0.162.x rollouts thread_token_usage equals the sum of own per-record deltas and no rollout carries another thread’s records).',
+      'measured once, on 400 real 0.161.0/0.162.x rollouts (recorded in Jira RP-511, comment 24425, L2): thread_token_usage equals the sum of own per-record deltas in every rollout and no rollout carries another thread’s records. 0.156.1 is NOT listed: RP-227’s live probe (comment 20584) measured codex exec --json turn.completed.usage, not the rollout total this basis reads.',
   }),
 });
 
@@ -502,10 +512,10 @@ const ACCOUNTING_BASIS = Object.freeze({
   version: 1,
   controller: Object.freeze({
     claude:
-      'claude-controller-transcript: assistant records of the controller session only (records of a resumed/forked predecessor session are counted, never summed), last record per requestId wins; excludes compaction requests and helper-model requests, which leave no assistant record.',
+      'claude-controller-transcript: assistant records of the controller session only (records of a resumed/forked predecessor session are counted, never summed), last record per requestId wins; a request that leaves no assistant record is not seen. output_tokens in a transcript record can be a first-content-block snapshot (measured once, Jira RP-511 comment 24425, L1), so every claude total is a lower bound.',
     codex:
       'codex-controller-rollout: the last own-thread token_usage_record.thread_token_usage (cumulative) of the parent rollout.',
-    snapshots: 'the last controller-usage snapshot per (run, controller); snapshots are never summed.',
+    snapshots: 'the last controller-usage snapshot per (run, controller); snapshots of one (run, controller) are never summed with each other; totals.<harness>.controller sums the last snapshot of each entry.',
     attribution: 'run',
   }),
   subagents: Object.freeze({
@@ -513,7 +523,7 @@ const ACCOUNTING_BASIS = Object.freeze({
     codex: 'codex-subagent-rollout thread_token_usage per dispatch-end (RP-227), summed per dispatch group.',
   }),
   combined: Object.freeze({
-    rule: 'controller + subagents, printed only when both are available for the harness and every controller snapshot carries a harnessVersion in exclusivityVerified; otherwise null with a reason.',
+    rule: 'controller + subagents, printed when every controller entry of the harness carries usage, every dispatch group of the harness carries usage, and the last snapshot of every (run, controller) carries a harnessVersion in exclusivityVerified; a harness with controller entries and no dispatch group prints combined equal to the controller, and a run read without a snapshot is counted (controllerRuns.withoutSnapshot) but does not withhold the total on this schema version; otherwise null with a reason.',
     exclusivityVerified: VERIFIED_EXCLUSIVITY,
     subagentHarnessVersion:
       'not recorded on dispatch-end; a subagent runs under the same harness binary as its controller, which this report assumes and does not verify.',
@@ -740,9 +750,8 @@ const recordUnavailableReason = (bucket, rawCode) => {
   bucket[sanitized] = (bucket[sanitized] ?? 0) + 1;
 };
 
-/** Fixed, never computed: `record-dispatch.mjs` only journals
- * `SubagentStart`/`SubagentStop`, never the controller's (parent session's)
- * own turn, so there is no journalled evidence for it to report. */
+/** The reason text when no `controller-usage` snapshot was read in the runs
+ * read — chosen by `tokenReportOf` from the events, never fixed. */
 const CONTROLLER_UNAVAILABLE_REASON =
   'controller (parent session) usage is unavailable: no controller-usage snapshot was journalled in the runs read. record-session-usage.mjs writes one on Stop/SessionEnd when a run directory is declared and the hook is wired; a session the harness killed, a Core-only rig, or an untrusted Codex project leaves none — that is absent evidence, never zero.';
 
