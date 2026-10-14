@@ -300,6 +300,50 @@ describe('create-agent-rig init --layer (RP-180)', () => {
     }
   });
 
+  // RP-511 PR B: `record-session-usage.mjs` is the controller half of the same
+  // usage evidence — workflow layer, wired on `Stop` (beside the Core
+  // `gate-stop-dod` entry) and on its own `SessionEnd` group. A Core-only
+  // install must neither install it nor keep either wiring entry.
+  it('a Core-only init installs neither record-session-usage.mjs nor its Stop/SessionEnd wiring', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    expect((await runInit([])).code).toBe(0);
+
+    await expect(
+      readFile(path.join(repo, '.claude', 'hooks', 'record-session-usage.mjs')),
+    ).rejects.toThrow();
+
+    const settings = JSON.parse(
+      await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8'),
+    ) as { hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>> };
+    expect(settings.hooks['SessionEnd']).toBeUndefined();
+    const stopHooks = (settings.hooks['Stop'] ?? []).flatMap((group) => group.hooks);
+    expect(stopHooks.some((hook) => hook.command.includes('record-session-usage.mjs'))).toBe(false);
+  });
+
+  it('--layer workflow installs record-session-usage.mjs and wires it on Stop/SessionEnd with --harness=claude', async () => {
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
+    const result = await runInit(['--layer', 'workflow']);
+    expect(result.code, result.stderr).toBe(0);
+
+    await expect(
+      readFile(path.join(repo, '.claude', 'hooks', 'record-session-usage.mjs'), 'utf8'),
+    ).resolves.toContain('controller-usage');
+
+    const settings = JSON.parse(
+      await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8'),
+    ) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number }> }>>;
+    };
+    for (const event of ['Stop', 'SessionEnd']) {
+      const hooks = (settings.hooks[event] ?? []).flatMap((group) => group.hooks);
+      const entry = hooks.find((hook) => hook.command.includes('record-session-usage.mjs'));
+      expect(entry, `${event} has no record-session-usage.mjs entry`).toBeDefined();
+      expect(entry?.command).toContain('--harness=claude');
+      expect(entry?.timeout).toBeDefined();
+      expect(entry?.timeout).toBeLessThanOrEqual(10);
+    }
+  });
+
   it('adding the layer over edited wiring hands over the workflow hook entries to merge (RP-499)', async () => {
     await writeFile(path.join(repo, 'package.json'), '{"name":"host"}');
     expect((await runInit([])).code).toBe(0);

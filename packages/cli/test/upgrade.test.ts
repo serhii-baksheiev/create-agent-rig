@@ -2173,11 +2173,14 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // RP-511 PR A moves the bounded usage readers into their own module
   // (`.claude/hooks/lib/usage-readers.mjs`), WORKFLOW-only like the hook they
   // came from (124→125); the core-only figure stays 69.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 125 manifest entries to 69', async () => {
+  // RP-511 PR B adds the controller-session usage hook
+  // (`.claude/hooks/record-session-usage.mjs`), WORKFLOW-only (125→126); the
+  // core-only figure stays 69.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 126 manifest entries to 69', async () => {
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(125);
+    expect(Object.keys(before!.files).length).toBe(126);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });

@@ -124,6 +124,8 @@ const EXPECTED_WORKFLOW = new Set([
   // controller-session usage hook) fold through — workflow-layer content for
   // the same reason record-dispatch.mjs is.
   '.claude/hooks/lib/usage-readers.mjs',
+  // RP-511 PR B: the observe-only controller-session usage hook (Stop/SessionEnd).
+  '.claude/hooks/record-session-usage.mjs',
   // journal and the decision records that document workflow-only mechanisms
   'journal/README.md',
   'docs/decisions/gate-coverage.md',

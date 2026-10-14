@@ -500,14 +500,14 @@ const MAX_DEFINITION_BYTES = 8 * 1024;
  * one hash both `controller` and `agentRef` go through, so neither carries the
  * raw id it stands in for.
  */
-const ref = (runDir, value) =>
+export const ref = (runDir, value) =>
   createHash('sha256')
     .update(`${path.basename(runDir)}\0${value}`)
     .digest('hex')
     .slice(0, 16);
 
 /** `RIG_RUN_DIR` when declared, else the armed unattended flag's own `runDir`; else `null`. */
-function resolveRunDir(env) {
+export function resolveRunDir(env) {
   const declared = env.RIG_RUN_DIR;
   if (typeof declared === 'string' && declared.trim() !== '') return declared;
   const flag = readUnattended(env);
