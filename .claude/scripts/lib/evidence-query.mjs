@@ -275,10 +275,12 @@ const claimToMerge = (items, commitTime) => {
   const claimed = items.filter((item) => item.records.some(isClaim));
   const durations = [];
   for (const item of claimed) {
-    const claim = item.records.find(
+    const claimIndex = item.records.findIndex(
       (record) => isClaim(record) && record.data?.action === 'continue',
     );
-    const merged = item.records.find(
+    if (claimIndex === -1) continue;
+    const claim = item.records[claimIndex];
+    const merged = item.records.slice(claimIndex + 1).find(
       (record) =>
         record.kind === 'revalidation' &&
         record.data?.point === 'BEFORE_CLOSE' &&
@@ -288,7 +290,9 @@ const claimToMerge = (items, commitTime) => {
     const end = Date.parse(commitTime(merged.data.evidence.ownMergeAdvance.to) ?? '');
     const start = Date.parse(claim.at);
     if (!Number.isFinite(end) || !Number.isFinite(start)) continue;
-    durations.push(end - start);
+    const elapsed = end - start;
+    if (!Number.isFinite(elapsed) || elapsed < 0) continue;
+    durations.push(elapsed);
   }
   durations.sort((a, b) => a - b);
   return {

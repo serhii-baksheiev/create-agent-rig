@@ -67,8 +67,17 @@ How `release-evidence.mjs --outcome --baseline` decides each of those
 
 **Claim-to-merge is total wall time.** It includes waiting on CI and on
 reviews. It is not active engineering time, and subtracting presumed pauses
-does not make it so. A workflow without an authoritative merge endpoint is
-excluded from the signal rather than forced into it.
+does not make it so. The authoritative merge endpoint must follow the claim
+in that item's journal records, and both timestamps must yield a finite,
+nonnegative elapsed time. Missing endpoints, invalid timestamps, reversed
+clocks and close records preceding the claim are unknown and excluded rather
+than forced into the signal. A measured zero duration remains valid. See the
+generator's `test/template/evidence-query.test.ts` (absent in a generated rig)
+› "reports an unknown duration when the merge commit predates its continuing claim",
+› "reports an unknown duration when merge evidence precedes its continuing claim",
+› "reports an unknown duration when the merge timestamp is invalid",
+› "reports an unknown duration when the claim timestamp is invalid", and
+› "retains a zero claim-to-merge duration".
 
 **Signal-specific limits.** The first shipping verdict depends on the review
 lane, and a successor or re-filed item starts its own "first". Gate rounds

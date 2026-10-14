@@ -66,7 +66,7 @@ export const SIGNALS = Object.freeze(
       definition: 'The total wall time from an item’s claim to its merge.',
       source: 'the claim event in the run journal and the merge commit of the item’s change',
       population: 'items with a recorded claim in the named runs',
-      unknown: 'an item without an authoritative merge endpoint, which is excluded rather than forced in',
+      unknown: 'an item without an authoritative merge endpoint after its claim in the journal, or without a finite, nonnegative elapsed time; excluded rather than forced in',
       limits: [
         'total wall time includes waiting on CI and on reviews',
         'it is not active engineering time, and no subtraction of pauses turns it into one',

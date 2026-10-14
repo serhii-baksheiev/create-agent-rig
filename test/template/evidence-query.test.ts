@@ -842,6 +842,149 @@ describe('evidence-query outcomeOf: claim-to-merge', () => {
     // The SELECT event is the run's second record: 2026-10-01T00:00:02Z.
     expect(s.result).toEqual({ wallTimeMs: { min: 3601000, median: 3601000, max: 3601000 } });
   });
+
+  it('reports an unknown duration when the merge commit predates its continuing claim', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-506-reversed-clock');
+    r.ev('revalidation', { ticket: 'RP-506-reversed-clock', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-506-reversed-clock',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+
+    const s = signal(
+      mod().outcomeOf({ runs: [r.entry()], commitTime: () => '2026-10-01T00:00:01.000Z' } as never),
+      'claim-to-merge',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toEqual({ wallTimeMs: null });
+  });
+
+  it('reports an unknown duration when merge evidence precedes its continuing claim', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-506-merge-before-claim');
+    r.ev('revalidation', {
+      ticket: 'RP-506-merge-before-claim',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+    r.ev('revalidation', {
+      ticket: 'RP-506-merge-before-claim',
+      point: 'SELECT',
+      action: 'continue',
+    });
+
+    const s = signal(
+      mod().outcomeOf({ runs: [r.entry()], commitTime: () => '2026-10-01T00:01:03.000Z' } as never),
+      'claim-to-merge',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toEqual({ wallTimeMs: null });
+  });
+
+  it('retains a zero claim-to-merge duration', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-506-zero');
+    r.ev('revalidation', { ticket: 'RP-506-zero', point: 'SELECT', action: 'continue' });
+    r.ev('revalidation', {
+      ticket: 'RP-506-zero',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+
+    const s = signal(
+      mod().outcomeOf({ runs: [r.entry()], commitTime: () => '2026-10-01T00:00:02.000Z' } as never),
+      'claim-to-merge',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+    expect(s.result).toEqual({ wallTimeMs: { min: 0, median: 0, max: 0 } });
+  });
+
+  it('reports an unknown duration when the merge timestamp is invalid', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-506-invalid-commit-time');
+    r.ev('revalidation', {
+      ticket: 'RP-506-invalid-commit-time',
+      point: 'SELECT',
+      action: 'continue',
+    });
+    r.ev('revalidation', {
+      ticket: 'RP-506-invalid-commit-time',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+
+    const s = signal(
+      mod().outcomeOf({ runs: [r.entry()], commitTime: () => 'not-a-timestamp' } as never),
+      'claim-to-merge',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toEqual({ wallTimeMs: null });
+  });
+
+  it('reports an unknown duration when the claim timestamp is invalid', async () => {
+    const r = await newRun(await runsRoot(), 'run-a');
+    r.take('RP-506-invalid-claim-time');
+    r.ev('revalidation', {
+      ticket: 'RP-506-invalid-claim-time',
+      point: 'SELECT',
+      action: 'continue',
+    });
+    r.ev('revalidation', {
+      ticket: 'RP-506-invalid-claim-time',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+    const entry = r.entry();
+    // API-negative fixture: replace this otherwise-valid fixture's SELECT timestamp.
+    const claim = entry.events!.find(
+      (record) =>
+        record.kind === 'revalidation' &&
+        (record.data as { ticket?: string; point?: string })?.ticket ===
+          'RP-506-invalid-claim-time' &&
+        (record.data as { point?: string })?.point === 'SELECT',
+    );
+    expect(claim).toBeDefined();
+    claim!.at = 'not-a-timestamp';
+
+    const s = signal(
+      mod().outcomeOf({ runs: [entry], commitTime: () => '2026-10-01T00:01:02.000Z' } as never),
+      'claim-to-merge',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 0, 1]);
+    expect(s.result).toEqual({ wallTimeMs: null });
+  });
+
+  it('keeps a later merge valid when a resumed journal restarts its local sequence', async () => {
+    const runsDir = await runsRoot();
+    const first = await newRun(runsDir, 'run-1');
+    const resumed = await newRun(runsDir, 'run-2', 10);
+    first.take('RP-506-resumed');
+    first.ev('revalidation', { ticket: 'RP-506-resumed', point: 'SELECT', action: 'continue' });
+    resumed.take('RP-506-resumed');
+    resumed.ev('revalidation', {
+      ticket: 'RP-506-resumed',
+      point: 'BEFORE_CLOSE',
+      action: 'continue',
+      evidence: { ownMergeAdvance: { from: 'a'.repeat(40), to: 'b'.repeat(40) } },
+    });
+
+    const s = signal(
+      mod().outcomeOf({
+        runs: [resumed.entry(), first.entry()],
+        commitTime: () => '2026-10-01T00:10:02.000Z',
+      } as never),
+      'claim-to-merge',
+    );
+    expect([s.eligible, s.observed, s.unknown]).toEqual([1, 1, 0]);
+    expect(s.result).toEqual({ wallTimeMs: { min: 600000, median: 600000, max: 600000 } });
+  });
 });
 
 describe('evidence-query outcomeOf: tokens-per-ship', () => {
