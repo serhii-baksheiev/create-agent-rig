@@ -106,12 +106,16 @@ const strictlyWithin = (root, candidate) =>
  * not match the credential vocabulary. Resolve only existing local targets:
  * UNC/device and reparse-point inputs are refused before native resolution.
  */
-function canonicalWindowsAlias(filePath, projectDir) {
+function canonicalWindowsAlias(filePath, projectDir, directEditCwd) {
   if (process.platform !== 'win32' || projectDir === '') {
     return { kind: 'not-applicable' };
   }
   if (!DOS_SHORT_COMPONENT.test(filePath)) return { kind: 'not-applicable' };
-  if (WINDOWS_UNSAFE_PREFIX.test(filePath) || WINDOWS_UNSAFE_PREFIX.test(projectDir)) {
+  if (
+    WINDOWS_UNSAFE_PREFIX.test(filePath) ||
+    WINDOWS_UNSAFE_PREFIX.test(projectDir) ||
+    (!path.isAbsolute(filePath) && WINDOWS_UNSAFE_PREFIX.test(directEditCwd))
+  ) {
     return { kind: 'unsafe' };
   }
 
@@ -122,8 +126,15 @@ function canonicalWindowsAlias(filePath, projectDir) {
   const streamSeparator = filePath.indexOf(':', finalSeparator + 1);
   const basePath = streamSeparator < 0 ? filePath : filePath.slice(0, streamSeparator);
   const root = path.resolve(projectDir);
-  const candidate = path.resolve(root, basePath);
-  if (!path.isAbsolute(root) || !path.isAbsolute(candidate)) return { kind: 'unsafe' };
+  const resolutionDir = path.isAbsolute(basePath) ? root : directEditCwd;
+  const candidate = path.resolve(resolutionDir, basePath);
+  if (
+    !path.isAbsolute(root) ||
+    !path.isAbsolute(resolutionDir) ||
+    !path.isAbsolute(candidate)
+  ) {
+    return { kind: 'unsafe' };
+  }
 
   const inspectExistingLocalPath = (value) => {
     const parsed = path.parse(value);
@@ -144,12 +155,17 @@ function canonicalWindowsAlias(filePath, projectDir) {
   };
 
   const rootState = inspectExistingLocalPath(root);
-  const candidateState = inspectExistingLocalPath(candidate);
-  if (rootState === 'missing' || candidateState === 'missing') return { kind: 'not-applicable' };
-  if (rootState !== 'existing' || candidateState !== 'existing') return { kind: 'unsafe' };
+  const resolutionDirState = inspectExistingLocalPath(resolutionDir);
+  if (rootState === 'missing') return { kind: 'not-applicable' };
+  if (rootState !== 'existing' || resolutionDirState !== 'existing') return { kind: 'unsafe' };
 
   try {
     const canonicalRoot = realpathSync.native(root);
+    const canonicalResolutionDir = realpathSync.native(resolutionDir);
+    if (!strictlyWithin(canonicalRoot, canonicalResolutionDir)) return { kind: 'unsafe' };
+    const candidateState = inspectExistingLocalPath(candidate);
+    if (candidateState === 'missing') return { kind: 'not-applicable' };
+    if (candidateState !== 'existing') return { kind: 'unsafe' };
     const canonicalCandidate = realpathSync.native(candidate);
     if (!strictlyWithin(canonicalRoot, canonicalCandidate)) return { kind: 'unsafe' };
     return {
@@ -207,9 +223,10 @@ function main() {
     return 0; // nothing to judge; fail open
   }
 
-  // The tool sends an absolute path. Judge the repo-relative tail so a checkout
-  // living under a directory literally called `secrets` does not make every edit
-  // in the project a credential.
+  // apply_patch fragments are repository-relative; direct edit tools can carry
+  // absolute or effective-cwd-relative paths. Judge the repo-relative tail so a
+  // checkout living under a directory literally called `secrets` does not make
+  // every edit in the project a credential.
   // Trailing slashes stripped: with `CLAUDE_PROJECT_DIR=/repo/` the prefix test
   // below never matches, every path stays absolute, and a checkout that happens
   // to live under a directory called `secrets` has EVERY edit refused. That is
@@ -220,6 +237,12 @@ function main() {
     .replaceAll('\\', '/')
     .replace(/\/+$/, '');
   const literalPath = directLiteralPath(input);
+  const directEditCwd =
+    input.tool_name === 'apply_patch'
+      ? projectDir
+      : typeof input.cwd === 'string' && input.cwd.trim() !== ''
+        ? input.cwd
+        : process.cwd();
   let refused = false;
   for (const { filePath, rawFilePath, fragment, inspectionRefusal, possibleContent } of fragments) {
     const relativePath =
@@ -236,7 +259,11 @@ function main() {
       );
       continue;
     }
-    const canonicalAlias = canonicalWindowsAlias(rawFilePath ?? literalPath ?? filePath, projectDir);
+    const canonicalAlias = canonicalWindowsAlias(
+      rawFilePath ?? literalPath ?? filePath,
+      projectDir,
+      directEditCwd,
+    );
     if (canonicalAlias.kind === 'unsafe') {
       refused = true;
       process.stderr.write(
