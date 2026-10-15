@@ -243,6 +243,7 @@ export async function captureWindowsProcessEvidence<T>(
   let probeController: AbortController | undefined;
   let probeTimer: NodeJS.Timeout | undefined;
   let probeFailed = false;
+  let probePending = false;
   let targetSeen = false;
   const addSnapshot = (snapshot: WindowsProcessEvidence['snapshots'][number]) => {
     if (snapshots.length >= MAX_SNAPSHOTS || processCount >= MAX_PROCESSES) return;
@@ -286,9 +287,11 @@ export async function captureWindowsProcessEvidence<T>(
         };
         const startProbe = () => {
           if (controller.signal.aborted) return;
+          probePending = true;
           try {
             void Promise.resolve(probe(supervisor, controller.signal))
               .then((raw) => {
+                probePending = false;
                 if (controller.signal.aborted) return;
                 const processes = ownedProcesses(
                   raw,
@@ -306,8 +309,12 @@ export async function captureWindowsProcessEvidence<T>(
                   processes,
                 });
               })
-              .catch(recordProbeFailure);
+              .catch(() => {
+                probePending = false;
+                recordProbeFailure();
+              });
           } catch {
+            probePending = false;
             recordProbeFailure();
           }
         };
@@ -330,6 +337,10 @@ export async function captureWindowsProcessEvidence<T>(
       ((result as { status?: unknown }).status === 'timeout' ||
         (result as { status?: unknown }).status === 'output-limit' ||
         (result as { status?: unknown }).status === 'cleanup-unconfirmed');
+    if (evidence && abnormal && probePending) {
+      probeFailed = true;
+      addSnapshot({ source: 'cim', status: 'unknown', processes: [] });
+    }
     return {
       result,
       evidence:

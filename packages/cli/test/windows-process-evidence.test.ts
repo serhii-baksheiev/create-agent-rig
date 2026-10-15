@@ -3,9 +3,10 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { setTimeout as delay } from 'node:timers/promises';
 import { promisify } from 'node:util';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runProviderProcess, type ProviderProcessResult } from '../src/integrations/spawn.js';
 import { captureWindowsProcessEvidence } from './helpers/windows-process-evidence.js';
 import { onlyOnWindows, skipUnless } from '../../../test/helpers/env.js';
@@ -13,6 +14,9 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 
 const require = createRequire(import.meta.url);
 const exec = promisify(execFile);
+const WINDOWS_CONSUMER_CHILD_TIMEOUT_MS = process.platform === 'win32' ? 45_000 : 8_000;
+const WINDOWS_CONSUMER_CASE_TIMEOUT_MS = process.platform === 'win32' ? 60_000 : 15_000;
+const DEFAULT_PROBE_DELAY_MS = 8_000;
 
 let repo: string;
 
@@ -90,6 +94,14 @@ type SpawnCall = {
 type ExecFileCall = {
   executable: string;
   args: readonly string[];
+  options:
+    | {
+        env?: NodeJS.ProcessEnv;
+        windowsHide?: boolean;
+        timeout?: number;
+        maxBuffer?: number;
+      }
+    | undefined;
 };
 
 async function withObservedProductionSpawn<T>(
@@ -130,10 +142,12 @@ async function withObservedExecFile<T>(operation: () => Promise<T>): Promise<{
   const originalExecFile = childProcess.execFile;
   const calls: ExecFileCall[] = [];
   childProcess.execFile = ((...args: Parameters<typeof originalExecFile>) => {
-    const [executable, fileArgs] = args;
+    const [executable, fileArgs, options] = args;
     calls.push({
       executable: String(executable),
       args: Array.isArray(fileArgs) ? [...fileArgs] : [],
+      options:
+        options && typeof options === 'object' ? (options as ExecFileCall['options']) : undefined,
     });
     return originalExecFile(...args);
   }) as typeof originalExecFile;
@@ -141,6 +155,46 @@ async function withObservedExecFile<T>(operation: () => Promise<T>): Promise<{
   try {
     return { result: await operation(), calls };
   } finally {
+    childProcess.execFile = originalExecFile;
+    syncBuiltinESMExports();
+  }
+}
+
+async function withMockedWindowsJobBindings<T>(
+  operation: (
+    spawn: typeof import('node:child_process').spawn,
+    spawnCalls: readonly SpawnCall[],
+    execFileCalls: readonly ExecFileCall[],
+  ) => Promise<T>,
+): Promise<T> {
+  const childProcess = require('node:child_process') as typeof import('node:child_process');
+  const originalSpawn = childProcess.spawn;
+  const originalExecFile = childProcess.execFile;
+  const spawnCalls: SpawnCall[] = [];
+  const execFileCalls: ExecFileCall[] = [];
+  childProcess.spawn = ((
+    executable: string,
+    args: readonly string[],
+    options: SpawnCall['options'],
+  ) => {
+    spawnCalls.push({ executable, args, options, pid: 4_242, createdAtMs: Date.now() });
+    return { pid: 4_242 } as ReturnType<typeof originalSpawn>;
+  }) as typeof originalSpawn;
+  childProcess.execFile = ((...args: Parameters<typeof originalExecFile>) => {
+    const [executable, fileArgs, options] = args;
+    execFileCalls.push({
+      executable: String(executable),
+      args: Array.isArray(fileArgs) ? [...fileArgs] : [],
+      options:
+        options && typeof options === 'object' ? (options as ExecFileCall['options']) : undefined,
+    });
+    return { kill: () => true } as ReturnType<typeof originalExecFile>;
+  }) as typeof originalExecFile;
+  syncBuiltinESMExports();
+  try {
+    return await operation(childProcess.spawn, spawnCalls, execFileCalls);
+  } finally {
+    childProcess.spawn = originalSpawn;
     childProcess.execFile = originalExecFile;
     syncBuiltinESMExports();
   }
@@ -158,6 +212,57 @@ async function stopObservedSupervisors(calls: readonly SpawnCall[]): Promise<voi
   await delay(100);
 }
 
+describe('Windows default CIM probe delay', () => {
+  it('does not start default CIM before its delay for a mocked completed root query', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    vi.useFakeTimers();
+    try {
+      const captured = await withMockedWindowsJobBindings(
+        async (spawn, spawnCalls, execFileCalls) => {
+          let releaseOperation: (() => void) | undefined;
+          const payload = Buffer.from(
+            JSON.stringify({
+              executable: 'C:\\fixture\\git.exe',
+              args: ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel'],
+            }),
+            'utf8',
+          ).toString('base64');
+          const pending = captureWindowsProcessEvidence(
+            () =>
+              new Promise<ProviderProcessResult>((resolve) => {
+                spawn(
+                  'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+                  ['-NoProfile', '-NonInteractive', '-Command'],
+                  {
+                    env: { RIG_WINDOWS_JOB_PAYLOAD: payload },
+                    shell: false,
+                    windowsHide: true,
+                  },
+                );
+                releaseOperation = () =>
+                  resolve({ status: 'ok', stdout: '', stderr: '', exitCode: 0 });
+              }),
+          );
+
+          try {
+            await vi.advanceTimersByTimeAsync(1);
+            await Promise.resolve();
+            expect(spawnCalls).toHaveLength(1);
+            expect(execFileCalls).toEqual([]);
+          } finally {
+            releaseOperation?.();
+          }
+          return pending;
+        },
+      );
+
+      expect(captured).toMatchObject({ result: { status: 'ok' }, evidence: undefined });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
   beforeEach(async () => {
     repo = await mkdtemp(path.join(tmpdir(), 'rig-windows-process-evidence-'));
@@ -174,37 +279,65 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
     await removeFixture(repo);
   });
 
-  it('leaves a successful non-root provider run silent and unchanged', async (ctx) => {
-    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
-    const git = await executableOnPath('git');
+  it(
+    'leaves a successful non-root provider run silent and unchanged',
+    { timeout: WINDOWS_CONSUMER_CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const git = await executableOnPath('git');
 
-    const observed = await captureWindowsProcessEvidence(() =>
-      runProviderProcess({
-        executable: git,
-        args: ['--version'],
-        repoDir: repo,
-        timeoutMs: 6_000,
-      }),
-    );
+      const observed = await captureWindowsProcessEvidence(() =>
+        runProviderProcess({
+          executable: git,
+          args: ['--version'],
+          repoDir: repo,
+          timeoutMs: WINDOWS_CONSUMER_CHILD_TIMEOUT_MS,
+        }),
+      );
 
-    expect(observed.result).toMatchObject({ status: 'ok', exitCode: 0 });
-    expect(observed.evidence).toBeUndefined();
-  });
+      expect(observed.result).toMatchObject({ status: 'ok', exitCode: 0 });
+      expect(observed.evidence).toBeUndefined();
+    },
+  );
 
-  it('does not launch a diagnostic CIM process for a normally completed root query', async (ctx) => {
-    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
-    const git = await executableOnPath('git');
-    const expectedRoot = await realpath(repo);
+  it(
+    'bounds diagnostics while preserving a successful root query',
+    { timeout: WINDOWS_CONSUMER_CASE_TIMEOUT_MS },
+    async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const git = await executableOnPath('git');
+      const expectedRoot = await realpath(repo);
 
-    const observed = await withObservedExecFile(() =>
-      captureWindowsProcessEvidence(() => rootQuery(git, 6_000)),
-    );
+      const startedAtMs = performance.now();
+      const observed = await withObservedExecFile(() =>
+        captureWindowsProcessEvidence(() => rootQuery(git, WINDOWS_CONSUMER_CHILD_TIMEOUT_MS)),
+      );
+      const elapsedMs = performance.now() - startedAtMs;
 
-    expect(observed.result.result).toMatchObject({ status: 'ok', stderr: '', exitCode: 0 });
-    expect(path.resolve(observed.result.result.stdout.trim())).toBe(expectedRoot);
-    expect(observed.calls).toEqual([]);
-    expect(observed.result.evidence).toBeUndefined();
-  });
+      expect(observed.result.result).toMatchObject({ status: 'ok', stderr: '', exitCode: 0 });
+      expect(path.resolve(observed.result.result.stdout.trim())).toBe(expectedRoot);
+      expect(observed.result.evidence).toBeUndefined();
+      expect(observed.calls.length).toBeLessThanOrEqual(1);
+      if (elapsedMs < DEFAULT_PROBE_DELAY_MS) {
+        expect(observed.calls).toEqual([]);
+      } else if (observed.calls.length === 1) {
+        const expectedProbe = await currentDefaultProbeInputs();
+        const [call] = observed.calls;
+        expect(call).toMatchObject({
+          executable: expectedProbe.powershell,
+          args: ['-NoProfile', '-NonInteractive', '-Command', expectedProbe.command],
+          options: {
+            windowsHide: true,
+            timeout: 3_000,
+            maxBuffer: 4 * 1024,
+          },
+        });
+        expect(path.isAbsolute(call!.executable)).toBe(true);
+        expect(expectedProbe.timeoutMs).toBe(3_000);
+        expect(expectedProbe.maxBuffer).toBe(4 * 1024);
+      }
+    },
+  );
 
   it('observes the already-imported production spawn binding for the actual Git root query', async (ctx) => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
@@ -621,6 +754,10 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
     expect(outcome.result.kind).toBe('result');
     if (outcome.result.kind === 'result') {
       expect(['timeout', 'cleanup-unconfirmed']).toContain(outcome.result.captured.result.status);
+      expect(outcome.result.captured.evidence).toMatchObject({ status: 'unknown' });
+      expect(outcome.result.captured.evidence?.snapshots).toEqual(
+        expect.arrayContaining([expect.objectContaining({ source: 'cim', status: 'unknown' })]),
+      );
     }
     expect(probes).toBe(1);
     expect(aborted).toBe(true);
@@ -682,30 +819,36 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
   });
 });
 
-describe('Windows default CIM probe failure semantics', () => {
-  it('makes an invalid CIM class a terminating default-probe failure', async (ctx) => {
-    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
-    const { command, powershell, timeoutMs, maxBuffer } = await currentDefaultProbeInputs();
-    const invalidCommand = command.replace(
-      'Get-CimInstance -ClassName Win32_Process',
-      'Get-CimInstance -ClassName Win32_RP518_InvalidClass',
-    );
-    if (invalidCommand === command) throw new Error('could not replace the default CIM class');
-    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-    if (!systemRoot) throw new Error('SystemRoot is unavailable');
+describe(
+  'Windows default CIM probe failure semantics',
+  { timeout: WINDOWS_CONSUMER_CASE_TIMEOUT_MS },
+  () => {
+    it('makes an invalid CIM class a terminating default-probe failure', async (ctx) => {
+      skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+      const { command, powershell, timeoutMs, maxBuffer } = await currentDefaultProbeInputs();
+      const invalidCommand = command.replace(
+        'Get-CimInstance -ClassName Win32_Process',
+        'Get-CimInstance -ClassName Win32_RP518_InvalidClass',
+      );
+      if (invalidCommand === command) throw new Error('could not replace the default CIM class');
+      const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+      if (!systemRoot) throw new Error('SystemRoot is unavailable');
+      expect(timeoutMs).toBe(3_000);
+      expect(maxBuffer).toBe(4 * 1024);
 
-    await expect(
-      exec(powershell, ['-NoProfile', '-NonInteractive', '-Command', invalidCommand], {
-        env: { SystemRoot: systemRoot, RIG_WINDOWS_EVIDENCE_PID: String(process.pid) },
-        windowsHide: true,
-        timeout: timeoutMs,
-        maxBuffer,
-      }),
-    ).rejects.toMatchObject({
-      code: 1,
-      killed: false,
-      signal: null,
-      stderr: expect.stringContaining('Win32_RP518_InvalidClass'),
+      await expect(
+        exec(powershell, ['-NoProfile', '-NonInteractive', '-Command', invalidCommand], {
+          env: { SystemRoot: systemRoot, RIG_WINDOWS_EVIDENCE_PID: String(process.pid) },
+          windowsHide: true,
+          timeout: WINDOWS_CONSUMER_CHILD_TIMEOUT_MS,
+          maxBuffer,
+        }),
+      ).rejects.toMatchObject({
+        code: 1,
+        killed: false,
+        signal: null,
+        stderr: expect.stringContaining('Win32_RP518_InvalidClass'),
+      });
     });
-  });
-});
+  },
+);
