@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 
 // RP-94. `pr-ship` names owner-directed / hotfix work with no queue item as a
 // legitimate path — step 4 tells the fan-out to say "no item" and have the
@@ -27,6 +28,9 @@ const skillPath = path.join(universal, '.claude', 'skills', 'pr-ship', 'SKILL.md
 const { withoutGitLocation } = (await import(
   pathToFileURL(path.join(scriptsDir, 'preflight.mjs')).href
 )) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
+const { createStageDiagnostics } = await import(
+  pathToFileURL(path.join(repoRoot, 'test/template/lib/stage-diagnostics.mjs')).href
+);
 
 const journal = (await import(pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href)) as {
   recordDecision: (input: {
@@ -85,26 +89,44 @@ interface Fixture {
   runDir: string;
   env: NodeJS.ProcessEnv;
   moveMain: (files: string[]) => Promise<void>;
+  cleanup: () => Promise<void>;
 }
 
+let fixtureTemplate: Promise<string> | null = null;
+
+const buildFixtureTemplate = async (): Promise<string> => {
+  const root = await mkdtemp(path.join(tmpdir(), 'owner-directed-template-'));
+  const origin = path.join(root, 'origin.git');
+  const clone = path.join(root, 'clone');
+  await mkdir(origin);
+  await git(['init', '--bare', '-b', 'master'], origin);
+  await git(['clone', '-q', origin, clone], root);
+  for (const name of ['a.txt', 'b.txt', 'c.txt']) {
+    await writeFile(path.join(clone, name), `${name} v1\n`);
+  }
+  await git(['add', '-A'], clone);
+  await git(['commit', '-q', '-m', 'seed'], clone);
+  await git(['push', '-q', '-u', 'origin', 'master'], clone);
+  return root;
+};
+
 const fixture = async (): Promise<Fixture> => {
+  if (!fixtureTemplate) fixtureTemplate = buildFixtureTemplate();
+  const template = await fixtureTemplate;
   const root = await mkdtemp(path.join(tmpdir(), 'owner-directed-'));
   const origin = path.join(root, 'origin.git');
   const clone = path.join(root, 'clone');
   const other = path.join(root, 'other');
-  await mkdir(origin);
-  await git(['init', '--bare', '-b', 'master'], origin);
-  await git(['clone', '-q', origin, clone], root);
-  // 🔴 The seed carries the temp root, so two fixtures are two DIFFERENT
-  // repositories. Without it the content, the author and the message were all
-  // fixed, so two fixtures built inside the same second produced byte-identical
-  // commits — identical shas, identical merge-bases — and the detection-id test
-  // below compared a repository with itself while claiming to compare two.
-  for (const name of ['a.txt', 'b.txt', 'c.txt']) {
-    await writeFile(path.join(clone, name), `${name} v1 in ${root}\n`);
-  }
-  await git(['add', '-A'], clone);
-  await git(['commit', '-q', '-m', 'seed'], clone);
+  await cp(path.join(template, 'origin.git'), origin, { recursive: true });
+  await cp(path.join(template, 'clone'), clone, { recursive: true });
+  await git(['remote', 'set-url', 'origin', origin], clone);
+  // The unique master anchor keeps independent fixture histories distinct.
+  // Without it two fixtures can produce byte-identical commits, and the
+  // detection-id test below would compare a repository with itself.
+  await git(
+    ['commit', '--allow-empty', '-q', '-m', `fixture anchor ${path.basename(root)}`],
+    clone,
+  );
   await git(['push', '-q', '-u', 'origin', 'master'], clone);
   await git(['checkout', '-q', '-b', 'hotfix/owner-directed'], clone);
   await writeFile(path.join(clone, 'a.txt'), 'a.txt on the branch\n');
@@ -125,7 +147,16 @@ const fixture = async (): Promise<Fixture> => {
   };
 
   const runDir = await mkdtemp(path.join(tmpdir(), 'run-'));
-  return { clone, runDir, env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir }, moveMain };
+  return {
+    clone,
+    runDir,
+    env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir },
+    moveMain,
+    cleanup: async () => {
+      await removeFixture(root);
+      await removeFixture(runDir);
+    },
+  };
 };
 
 const revalidate = (f: Fixture, args: string[]) =>
@@ -154,16 +185,30 @@ const revalidationEvents = (runDir: string) =>
   journal.readRun({ runDir }).events.filter((e) => e.kind === 'revalidation');
 
 describe('revalidate.mjs — the owner-directed BEFORE_PR mode (RP-94)', () => {
+  beforeAll(async () => {
+    if (!fixtureTemplate) fixtureTemplate = buildFixtureTemplate();
+    await fixtureTemplate;
+  });
+
   it('runs BEFORE_PR with no item and no claim when the default branch did not move under the branch', async () => {
-    const f = await fixture();
-    const r = await ownerDirected(f, ['--json']);
-    expect(r.code, r.out).toBe(0);
-    const result = await jsonOf(r);
-    expect(result.action).toBe('continue');
-    expect(result.source).toEqual([]);
-    // No fictitious item id is invented for the record.
-    expect(result.ticket).toBeNull();
-    expect(result.mode).toBe('owner-directed');
+    const stages = createStageDiagnostics();
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      const fixtureValue = await stages.run('owner-directed-fixture-setup', fixture);
+      cleanup = fixtureValue.cleanup;
+      const r = await stages.run('owner-directed-cli', () =>
+        ownerDirected(fixtureValue, ['--json']),
+      );
+      expect(r.code, r.out).toBe(0);
+      const result = await jsonOf(r);
+      expect(result.action).toBe('continue');
+      expect(result.source).toEqual([]);
+      // No fictitious item id is invented for the record.
+      expect(result.ticket).toBeNull();
+      expect(result.mode).toBe('owner-directed');
+    } finally {
+      if (cleanup) await stages.run('owner-directed-fixture-teardown', cleanup);
+    }
   });
 
   it('journals one explicit revalidation event naming the mode, with no ticket', async () => {
