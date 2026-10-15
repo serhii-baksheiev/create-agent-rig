@@ -181,6 +181,41 @@ describe('guard-secret-file: accepts an ordinary relative Add from a real Window
         shortCwd,
       );
       expect(shortCwdOrdinary.code, shortCwdOrdinary.stderr).toBe(0);
+
+      const shortCwdCredential = await runHook(
+        { ...applyPatch('.env', 'harmless'), cwd: shortCwd },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdCredential.code, shortCwdCredential.stderr).toBe(2);
+      expect(shortCwdCredential.stderr).toMatch(/credential file/i);
+
+      const shortCwdTraversal = await runHook(
+        { ...applyPatch('../outside.ts', 'export const unsafe = true;'), cwd: shortCwd },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdTraversal.code, shortCwdTraversal.stderr).toBe(2);
+
+      const shortCwdAbsoluteOutside = await runHook(
+        {
+          ...applyPatch(path.join(outside, 'outside.ts'), 'export const unsafe = true;'),
+          cwd: shortCwd,
+        },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdAbsoluteOutside.code, shortCwdAbsoluteOutside.stderr).toBe(2);
+
+      const shortCwdJunction = await runHook(
+        {
+          ...applyPatch('junction-escape/outside.ts', 'export const unsafe = true;'),
+          cwd: shortCwd,
+        },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdJunction.code, shortCwdJunction.stderr).toBe(2);
     } finally {
       await removeFixture(canonicalRoot);
       await removeFixture(outside);
