@@ -20,6 +20,7 @@ import {
   type ProviderProcessOptions,
   type ProviderProcessResult,
 } from '../src/integrations/spawn.js';
+import { captureWindowsProcessEvidence } from './helpers/windows-process-evidence.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
 
@@ -38,6 +39,8 @@ let stateFile: string;
 let calls: ProviderProcessOptions[];
 let originalPATH: string | undefined;
 let originalPath: string | undefined;
+let captureInitialRootEvidence = false;
+let initialRootEvidenceCaptured = false;
 
 beforeEach(async () => {
   repo = await mkdtemp(path.join(tmpdir(), 'rig-spec-kit-'));
@@ -45,6 +48,8 @@ beforeEach(async () => {
   fake = path.join(toolsDir, 'fake-spec-kit.mjs');
   stateFile = path.join(toolsDir, 'state.json');
   calls = [];
+  captureInitialRootEvidence = false;
+  initialRootEvidenceCaptured = false;
 
   await writeFile(stateFile, JSON.stringify({ installed: [], status: 'ok', findings: [] }));
   await writeFile(fake, FAKE_SPEC_KIT);
@@ -119,13 +124,28 @@ async function executableOnPath(name: string): Promise<string> {
 }
 
 async function initGitRepository(): Promise<void> {
-  await exec(await executableOnPath('git'), ['init', '--quiet'], {
-    cwd: repo,
-    shell: false,
-    timeout: 5_000,
-    maxBuffer: 64 * 1024,
-    windowsHide: true,
-  });
+  const startedAt = Date.now();
+  try {
+    await exec(await executableOnPath('git'), ['init', '--quiet'], {
+      cwd: repo,
+      shell: false,
+      timeout: 5_000,
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+    });
+  } catch (error) {
+    const failure = error as NodeJS.ErrnoException & { killed?: unknown; signal?: unknown };
+    console.error(
+      JSON.stringify({
+        type: 'spec-kit-fixture-git-init-failure',
+        code: failure.code,
+        signal: failure.signal,
+        killed: failure.killed,
+        elapsedMs: Date.now() - startedAt,
+      }),
+    );
+    throw error;
+  }
 }
 
 function providerBasename(executable: string): string {
@@ -134,6 +154,17 @@ function providerBasename(executable: string): string {
 
 function isUv(executable: string): boolean {
   return providerBasename(executable) === (process.platform === 'win32' ? 'uvx.exe' : 'uvx');
+}
+
+function isGitRootQuery(request: ProviderProcessOptions): boolean {
+  return (
+    providerBasename(request.executable) === 'git.exe' &&
+    request.args.length === 4 &&
+    request.args.every(
+      (argument, index) =>
+        argument === ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel'][index],
+    )
+  );
 }
 
 function isInside(directory: string, candidate: string): boolean {
@@ -235,27 +266,54 @@ const trustedRunner: typeof runProviderProcess = async (
   request: ProviderProcessOptions,
 ): Promise<ProviderProcessResult> => {
   calls.push({ ...request, args: [...request.args] });
-  const result = isUv(request.executable)
-    ? await runProviderProcess({
-        executable: process.execPath,
-        args: [fake, stateFile, ...request.args],
-        repoDir: request.repoDir,
-        timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS,
-        maxOutputBytes: request.maxOutputBytes,
-      })
-    : await runProviderProcess({ ...request, timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS });
+  const invoke = () =>
+    isUv(request.executable)
+      ? runProviderProcess({
+          executable: process.execPath,
+          args: [fake, stateFile, ...request.args],
+          repoDir: request.repoDir,
+          timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS,
+          maxOutputBytes: request.maxOutputBytes,
+        })
+      : runProviderProcess({ ...request, timeoutMs: SPEC_KIT_CHILD_TIMEOUT_MS });
+  const captureEvidence =
+    process.platform === 'win32' &&
+    captureInitialRootEvidence &&
+    !initialRootEvidenceCaptured &&
+    isGitRootQuery(request);
+  if (captureEvidence) initialRootEvidenceCaptured = true;
+  const observed = captureEvidence ? await captureWindowsProcessEvidence(invoke) : undefined;
+  const result = observed?.result ?? (await invoke());
+  if (
+    observed &&
+    (result.status === 'timeout' ||
+      result.status === 'output-limit' ||
+      result.status === 'cleanup-unconfirmed')
+  )
+    console.error(
+      JSON.stringify({ type: 'windows-supervised-git-evidence', evidence: observed.evidence }),
+    );
   throwIfBoundFired(request, result);
   return result;
 };
 
-async function run(options: {
-  operation: 'add' | 'apply' | 'remove';
-  harnesses: ('claude-code' | 'codex')[];
-  managed: boolean;
-  adopt?: boolean;
-  consent: boolean;
-}) {
-  return runSpecKitLifecycle({ repoDir: repo, ...options, runner: trustedRunner });
+async function run(
+  options: {
+    operation: 'add' | 'apply' | 'remove';
+    harnesses: ('claude-code' | 'codex')[];
+    managed: boolean;
+    adopt?: boolean;
+    consent: boolean;
+  },
+  optionsForEvidence: { captureInitialRootEvidence?: boolean } = {},
+) {
+  captureInitialRootEvidence = optionsForEvidence.captureInitialRootEvidence ?? false;
+  initialRootEvidenceCaptured = false;
+  try {
+    return await runSpecKitLifecycle({ repoDir: repo, ...options, runner: trustedRunner });
+  } finally {
+    captureInitialRootEvidence = false;
+  }
 }
 
 function upstreamCalls(): ProviderProcessOptions[] {
@@ -305,12 +363,15 @@ describe('runSpecKitLifecycle', { timeout: process.platform === 'win32' ? 60_000
   });
 
   it('initializes a clean repository once, then adds only a missing harness on a later add', async () => {
-    const first = await run({
-      operation: 'add',
-      harnesses: ['claude-code', 'codex'],
-      managed: true,
-      consent: true,
-    });
+    const first = await run(
+      {
+        operation: 'add',
+        harnesses: ['claude-code', 'codex'],
+        managed: true,
+        consent: true,
+      },
+      { captureInitialRootEvidence: true },
+    );
 
     expect(first).toMatchObject({
       ok: true,
