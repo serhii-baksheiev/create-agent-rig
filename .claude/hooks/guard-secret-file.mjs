@@ -83,6 +83,9 @@
 // unbounded work in a fail-open guard is a total bypass of every rule at once,
 // not just of this one.
 
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+
 import { findSecretValues, isCredentialPath } from '../scripts/lib/secrets.mjs';
 import { editFragments } from './lib/edit-input.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
@@ -91,6 +94,80 @@ import { readHookInput } from './lib/hook-input.mjs';
 const WHERE_CREDENTIALS_BELONG =
   'Credentials live outside the repo (an env file in your home config, a secret manager) ' +
   'and reach the process through the environment — see .claude/rules/autonomy.md, "Never".';
+
+const DOS_SHORT_COMPONENT = /(?:^|[\\/:])[^\\/:]{1,6}~\d+(?:\.[^\\/:]*)?(?=$|[\\/])/i;
+const WINDOWS_UNSAFE_PREFIX = /^(?:[\\/]{2}|[\\/](?![\\/])|[A-Za-z]:(?![\\/]))/;
+
+const strictlyWithin = (root, candidate) =>
+  candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+
+/**
+ * A literal 8.3 name can refer to a credential file whose short spelling does
+ * not match the credential vocabulary. Resolve only existing local targets:
+ * UNC/device and reparse-point inputs are refused before native resolution.
+ */
+function canonicalWindowsAlias(filePath, projectDir) {
+  if (process.platform !== 'win32' || projectDir === '') {
+    return { kind: 'not-applicable' };
+  }
+  if (!DOS_SHORT_COMPONENT.test(filePath)) return { kind: 'not-applicable' };
+  if (WINDOWS_UNSAFE_PREFIX.test(filePath) || WINDOWS_UNSAFE_PREFIX.test(projectDir)) {
+    return { kind: 'unsafe' };
+  }
+
+  const root = path.resolve(projectDir);
+  const candidate = path.resolve(root, filePath);
+  if (!path.isAbsolute(root) || !path.isAbsolute(candidate)) return { kind: 'unsafe' };
+
+  const inspectExistingLocalPath = (value) => {
+    const parsed = path.parse(value);
+    let cursor = parsed.root;
+    for (const component of path.relative(parsed.root, value).split(path.sep)) {
+      if (component === '') continue;
+      cursor = path.join(cursor, component);
+      try {
+        const entry = lstatSync(cursor);
+        if (!entry.isSymbolicLink()) continue;
+        readlinkSync(cursor);
+        return 'unsafe';
+      } catch (error) {
+        return error?.code === 'ENOENT' ? 'missing' : 'unsafe';
+      }
+    }
+    return 'existing';
+  };
+
+  const rootState = inspectExistingLocalPath(root);
+  const candidateState = inspectExistingLocalPath(candidate);
+  if (rootState === 'missing' || candidateState === 'missing') return { kind: 'not-applicable' };
+  if (rootState !== 'existing' || candidateState !== 'existing') return { kind: 'unsafe' };
+
+  try {
+    const canonicalRoot = realpathSync.native(root);
+    const canonicalCandidate = realpathSync.native(candidate);
+    if (!strictlyWithin(canonicalRoot, canonicalCandidate)) return { kind: 'unsafe' };
+    return {
+      kind: 'resolved',
+      relativePath: path.relative(canonicalRoot, canonicalCandidate).split(path.sep).join('/'),
+    };
+  } catch {
+    return { kind: 'unsafe' };
+  }
+}
+
+function directLiteralPath(input) {
+  const toolInput = input.tool_input;
+  if (toolInput === null || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
+    return undefined;
+  }
+  if (input.tool_name === 'Write' || input.tool_name === 'Edit' || input.tool_name === 'MultiEdit') {
+    return typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined;
+  }
+  if (input.tool_name === 'NotebookEdit') {
+    return typeof toolInput.notebook_path === 'string' ? toolInput.notebook_path : undefined;
+  }
+  return undefined;
+}
 
 function main() {
   const input = readHookInput();
@@ -136,8 +213,9 @@ function main() {
   const projectDir = String(process.env.CLAUDE_PROJECT_DIR ?? '')
     .replaceAll('\\', '/')
     .replace(/\/+$/, '');
+  const literalPath = directLiteralPath(input);
   let refused = false;
-  for (const { filePath, fragment, inspectionRefusal, possibleContent } of fragments) {
+  for (const { filePath, rawFilePath, fragment, inspectionRefusal, possibleContent } of fragments) {
     const relativePath =
       projectDir !== '' && filePath.startsWith(`${projectDir}/`)
         ? filePath.slice(projectDir.length + 1)
@@ -152,7 +230,19 @@ function main() {
       );
       continue;
     }
-    if (isCredentialPath(relativePath)) {
+    const canonicalAlias = canonicalWindowsAlias(rawFilePath ?? literalPath ?? filePath, projectDir);
+    if (canonicalAlias.kind === 'unsafe') {
+      refused = true;
+      process.stderr.write(
+        `BLOCKED - cannot safely inspect the Windows 8.3 path "${relativePath}". ` +
+          'Use a contained local repository path without a reparse point.\n',
+      );
+      continue;
+    }
+    if (
+      isCredentialPath(relativePath) ||
+      (canonicalAlias.kind === 'resolved' && isCredentialPath(canonicalAlias.relativePath))
+    ) {
       refused = true;
       process.stderr.write(
         `BLOCKED — "${relativePath}" is a credential file, and this repository never carries one.\n` +
