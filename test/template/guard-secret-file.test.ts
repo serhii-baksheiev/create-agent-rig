@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs';
 import { access, mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -323,17 +323,13 @@ describe('guard-secret-file: canonicalizing an 8.3 alias preserves its literal c
       ]);
       const alias = stdout.trim();
       const aliasBase = path.basename(alias);
-      const { isCredentialPath } = (await import(
-        pathToFileURL(path.join(universal, '.claude', 'scripts', 'lib', 'secrets.mjs')).href
-      )) as { isCredentialPath: (filePath: string) => boolean };
-      if (aliasBase === path.basename(ordinary) || !isCredentialPath(aliasBase)) {
-        ctx.skip(
-          'the Windows fixture did not provide an 8.3 alias with a credential-named extension',
-        );
+      if (aliasBase === path.basename(ordinary)) {
+        ctx.skip('the Windows fixture did not provide a distinct 8.3 alias for the ordinary file');
         return;
       }
 
-      expect(isCredentialPath(relativeOrdinary)).toBe(false);
+      expect(path.extname(relativeOrdinary)).toBe('.jwtcatalog');
+      expect(path.extname(aliasBase).toLowerCase()).toBe('.jwt');
       expect(realpathSync.native(alias)).toBe(realpathSync.native(ordinary));
       await expect(readFile(alias, 'utf8')).resolves.toBe(marker);
 
@@ -570,6 +566,86 @@ describe('guard-secret-file: direct edit tools retain credential policy through 
         { tool: 'NotebookEdit', code: 2 },
       ]);
     });
+  });
+});
+
+describe('guard-secret-file: a Windows 8.3 alias keeps credential policy for NTFS alternate data streams (RP-517)', () => {
+  it('refuses existing and new credential streams while allowing ordinary alias streams', async (ctx) => {
+    const fixture = await existingCredentialAliasFixture(ctx);
+    if (!fixture) return;
+    const { root, marker, aliasBase, ordinaryAliasBase } = fixture;
+    const credentialExistingStream = path.join(root, '.env.local:rp517audit');
+    const ordinaryExistingStream = path.join(root, 'ordinary-long-note.txt:rp517audit');
+    try {
+      await writeFile(credentialExistingStream, marker);
+      await writeFile(ordinaryExistingStream, marker);
+      const credentialStreamText = await readNamedStreamOrSkip(
+        ctx,
+        credentialExistingStream,
+        'a readable credential-file named stream',
+      );
+      const ordinaryStreamText = await readNamedStreamOrSkip(
+        ctx,
+        ordinaryExistingStream,
+        'a readable ordinary-file named stream',
+      );
+      if (credentialStreamText === undefined || ordinaryStreamText === undefined) return;
+
+      const credentialAliasExistingStream = path.join(root, `${aliasBase}:rp517audit`);
+      const ordinaryAliasExistingStream = path.join(root, `${ordinaryAliasBase}:rp517audit`);
+      expect(credentialStreamText).toBe(marker);
+      expect(ordinaryStreamText).toBe(marker);
+      await expect(readFile(credentialAliasExistingStream, 'utf8')).resolves.toBe(marker);
+      await expect(readFile(ordinaryAliasExistingStream, 'utf8')).resolves.toBe(marker);
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: root };
+      const cases: Array<[string, Record<string, unknown>, number]> = [
+        [
+          'canonical credential existing stream',
+          write('.env.local:rp517audit', 'harmless replacement'),
+          2,
+        ],
+        [
+          'credential alias existing stream Write',
+          write(`${aliasBase}:rp517audit`, 'harmless replacement'),
+          2,
+        ],
+        [
+          'credential alias existing stream Edit',
+          edit(`${aliasBase}:rp517audit`, 'harmless replacement'),
+          2,
+        ],
+        [
+          'credential alias new stream Write',
+          write(`${aliasBase}:rp517new`, 'harmless replacement'),
+          2,
+        ],
+        [
+          'ordinary alias existing stream',
+          write(`${ordinaryAliasBase}:rp517audit`, 'harmless replacement'),
+          0,
+        ],
+        [
+          'ordinary alias new stream',
+          write(`${ordinaryAliasBase}:rp517new`, 'harmless replacement'),
+          0,
+        ],
+      ];
+      const results = [] as Array<{ label: string; expectedCode: number; result: HookResult }>;
+      for (const [label, payload, expectedCode] of cases) {
+        results.push({
+          label,
+          expectedCode,
+          result: await runHook({ ...payload, cwd: root }, hookEnv, root),
+        });
+      }
+      expect(
+        results.map(({ label, result }) => ({ label, code: result.code })),
+        results.map(({ label, result }) => `${label}: ${result.stderr}`).join(', '),
+      ).toEqual(results.map(({ label, expectedCode }) => ({ label, code: expectedCode })));
+    } finally {
+      await removeFixture(root);
+    }
   });
 });
 

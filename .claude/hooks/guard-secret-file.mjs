@@ -95,7 +95,7 @@ const WHERE_CREDENTIALS_BELONG =
   'Credentials live outside the repo (an env file in your home config, a secret manager) ' +
   'and reach the process through the environment — see .claude/rules/autonomy.md, "Never".';
 
-const DOS_SHORT_COMPONENT = /(?:^|[\\/:])[^\\/:]{1,6}~\d+(?:\.[^\\/:]*)?(?=$|[\\/])/i;
+const DOS_SHORT_COMPONENT = /(?:^|[\\/:])[^\\/:]{1,6}~\d+(?:\.[^\\/:]*)?(?=$|[\\/:])/i;
 const WINDOWS_UNSAFE_PREFIX = /^(?:[\\/]{2}|[\\/](?![\\/])|[A-Za-z]:(?![\\/]))/;
 
 const strictlyWithin = (root, candidate) =>
@@ -115,8 +115,14 @@ function canonicalWindowsAlias(filePath, projectDir) {
     return { kind: 'unsafe' };
   }
 
+  // `name:stream` resolves through the existing base file even when the named
+  // stream has not been created yet. Credential classification remains in
+  // `isCredentialPath`; this only finds the local filesystem identity to inspect.
+  const finalSeparator = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+  const streamSeparator = filePath.indexOf(':', finalSeparator + 1);
+  const basePath = streamSeparator < 0 ? filePath : filePath.slice(0, streamSeparator);
   const root = path.resolve(projectDir);
-  const candidate = path.resolve(root, filePath);
+  const candidate = path.resolve(root, basePath);
   if (!path.isAbsolute(root) || !path.isAbsolute(candidate)) return { kind: 'unsafe' };
 
   const inspectExistingLocalPath = (value) => {
