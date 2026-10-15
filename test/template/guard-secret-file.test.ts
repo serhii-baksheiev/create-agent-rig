@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { gitEnv } from '../../packages/cli/src/lib/git-env.js';
 import {
   ANTHROPIC_KEY,
   ATLASSIAN_TOKEN,
@@ -104,6 +105,122 @@ const applyPatch = (filePath: string, addition: string) => ({
       '\n',
     ),
   },
+});
+
+// RP-507: Node's Windows `realpathSync.native` expands a valid DOS 8.3 cwd
+// alias, while ordinary `realpathSync` can preserve it. The containment guard
+// must compare one canonical identity, without making traversal or junction
+// escapes admissible as a side effect.
+describe('guard-secret-file: accepts an ordinary relative Add from a real Windows 8.3 cwd alias (RP-507)', () => {
+  it('keeps ordinary edits writable while preserving credential, traversal, outside, and junction refusals', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const shortCwd = await mkdtemp(path.join(tmpdir(), 'rp507-short-cwd-'));
+    const canonicalRoot = realpathSync.native(shortCwd);
+    const hasReal83Alias = shortCwd
+      .split(/[\\/]/)
+      .some((component) => /^[^\\/:]{1,6}~\d+$/i.test(component));
+    if (!hasReal83Alias || shortCwd.toLocaleLowerCase() === canonicalRoot.toLocaleLowerCase()) {
+      await removeFixture(canonicalRoot);
+      ctx.skip(
+        'the Windows temporary-directory fixture has no real 8.3 cwd alias that realpathSync.native expands',
+      );
+      return;
+    }
+
+    const outside = await mkdtemp(path.join(tmpdir(), 'rp507-outside-'));
+    try {
+      await run('git', ['init', '-q', canonicalRoot], { env: gitEnv() });
+      await symlink(outside, path.join(canonicalRoot, 'junction-escape'), 'junction');
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: canonicalRoot };
+      const longCwdOrdinary = await runHook(
+        { ...applyPatch('ordinary-long-cwd.ts', 'export const safe = true;'), cwd: canonicalRoot },
+        hookEnv,
+        canonicalRoot,
+      );
+      expect(longCwdOrdinary.code, longCwdOrdinary.stderr).toBe(0);
+
+      const credential = await runHook(
+        { ...applyPatch('.env', 'harmless'), cwd: canonicalRoot },
+        hookEnv,
+        canonicalRoot,
+      );
+      expect(credential.code, credential.stderr).toBe(2);
+      expect(credential.stderr).toMatch(/credential file/i);
+
+      const traversal = await runHook(
+        { ...applyPatch('../outside.ts', 'export const unsafe = true;'), cwd: canonicalRoot },
+        hookEnv,
+        canonicalRoot,
+      );
+      expect(traversal.code, traversal.stderr).toBe(2);
+
+      const absoluteOutside = await runHook(
+        {
+          ...applyPatch(path.join(outside, 'outside.ts'), 'export const unsafe = true;'),
+          cwd: canonicalRoot,
+        },
+        hookEnv,
+        canonicalRoot,
+      );
+      expect(absoluteOutside.code, absoluteOutside.stderr).toBe(2);
+
+      const junction = await runHook(
+        {
+          ...applyPatch('junction-escape/outside.ts', 'export const unsafe = true;'),
+          cwd: canonicalRoot,
+        },
+        hookEnv,
+        canonicalRoot,
+      );
+      expect(junction.code, junction.stderr).toBe(2);
+
+      const shortCwdOrdinary = await runHook(
+        { ...applyPatch('ordinary-short-cwd.ts', 'export const safe = true;'), cwd: shortCwd },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdOrdinary.code, shortCwdOrdinary.stderr).toBe(0);
+
+      const shortCwdCredential = await runHook(
+        { ...applyPatch('.env', 'harmless'), cwd: shortCwd },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdCredential.code, shortCwdCredential.stderr).toBe(2);
+      expect(shortCwdCredential.stderr).toMatch(/credential file/i);
+
+      const shortCwdTraversal = await runHook(
+        { ...applyPatch('../outside.ts', 'export const unsafe = true;'), cwd: shortCwd },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdTraversal.code, shortCwdTraversal.stderr).toBe(2);
+
+      const shortCwdAbsoluteOutside = await runHook(
+        {
+          ...applyPatch(path.join(outside, 'outside.ts'), 'export const unsafe = true;'),
+          cwd: shortCwd,
+        },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdAbsoluteOutside.code, shortCwdAbsoluteOutside.stderr).toBe(2);
+
+      const shortCwdJunction = await runHook(
+        {
+          ...applyPatch('junction-escape/outside.ts', 'export const unsafe = true;'),
+          cwd: shortCwd,
+        },
+        hookEnv,
+        shortCwd,
+      );
+      expect(shortCwdJunction.code, shortCwdJunction.stderr).toBe(2);
+    } finally {
+      await removeFixture(canonicalRoot);
+      await removeFixture(outside);
+    }
+  });
 });
 
 const deny = async (payload: unknown, why: string): Promise<HookResult> => {
