@@ -820,35 +820,60 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
 });
 
 describe(
-  'Windows default CIM probe failure semantics',
+  'Windows default CIM probe ErrorAction semantics',
   { timeout: WINDOWS_CONSUMER_CASE_TIMEOUT_MS },
   () => {
-    it('makes an invalid CIM class a terminating default-probe failure', async (ctx) => {
+    // Real PowerShell error semantics with a controlled cmdlet stub; this does
+    // not measure CIM availability or explain the hosted timeout.
+    const controlledCimFunction = [
+      'function Get-CimInstance {',
+      '  [CmdletBinding()]',
+      '  param([string]$ClassName)',
+      "  Write-Error -ErrorId 'RP518.ControlledCimFailure' -Message 'RP518 controlled CIM failure'",
+      '}',
+    ].join('\n');
+
+    beforeEach((ctx) => {
       skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    });
+
+    it.each([
+      ['turns a controlled cmdlet error into a terminating failure', false],
+      ['would falsely succeed without ErrorAction Stop', true],
+    ])('%s', async (_name, removeStop) => {
       const { command, powershell, timeoutMs, maxBuffer } = await currentDefaultProbeInputs();
-      const invalidCommand = command.replace(
-        'Get-CimInstance -ClassName Win32_Process',
-        'Get-CimInstance -ClassName Win32_RP518_InvalidClass',
-      );
-      if (invalidCommand === command) throw new Error('could not replace the default CIM class');
+      const commandForCase = removeStop ? command.replace(' -ErrorAction Stop', '') : command;
+      if (removeStop && commandForCase === command)
+        throw new Error('could not remove ErrorAction Stop from the default CIM command');
       const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
       if (!systemRoot) throw new Error('SystemRoot is unavailable');
       expect(timeoutMs).toBe(3_000);
       expect(maxBuffer).toBe(4 * 1024);
-
-      await expect(
-        exec(powershell, ['-NoProfile', '-NonInteractive', '-Command', invalidCommand], {
+      const controlledCommand = `${controlledCimFunction}\n${commandForCase}`;
+      const execution = exec(
+        powershell,
+        ['-NoProfile', '-NonInteractive', '-Command', controlledCommand],
+        {
           env: { SystemRoot: systemRoot, RIG_WINDOWS_EVIDENCE_PID: String(process.pid) },
           windowsHide: true,
           timeout: WINDOWS_CONSUMER_CHILD_TIMEOUT_MS,
           maxBuffer,
-        }),
-      ).rejects.toMatchObject({
-        code: 1,
-        killed: false,
-        signal: null,
-        stderr: expect.stringContaining('Win32_RP518_InvalidClass'),
-      });
+        },
+      );
+
+      if (!removeStop) {
+        await expect(execution).rejects.toMatchObject({
+          code: 1,
+          killed: false,
+          signal: null,
+          stderr: expect.stringContaining('RP518.ControlledCimFailure'),
+        });
+      } else {
+        await expect(execution).resolves.toMatchObject({
+          stdout: '',
+          stderr: expect.stringContaining('RP518.ControlledCimFailure'),
+        });
+      }
     });
   },
 );
