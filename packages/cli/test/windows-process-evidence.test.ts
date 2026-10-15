@@ -1,6 +1,6 @@
 import { createRequire, syncBuiltinESMExports } from 'node:module';
 import { execFile } from 'node:child_process';
-import { mkdtemp, realpath } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,21 +15,6 @@ const require = createRequire(import.meta.url);
 const exec = promisify(execFile);
 
 let repo: string;
-
-beforeEach(async () => {
-  repo = await mkdtemp(path.join(tmpdir(), 'rig-windows-process-evidence-'));
-  await exec(await executableOnPath('git'), ['init', '--quiet'], {
-    cwd: repo,
-    shell: false,
-    timeout: 5_000,
-    maxBuffer: 64 * 1024,
-    windowsHide: true,
-  });
-});
-
-afterEach(async () => {
-  await removeFixture(repo);
-});
 
 async function executableOnPath(name: string): Promise<string> {
   const extensions = ['.exe', '.cmd', '.bat', ''];
@@ -58,11 +43,48 @@ function rootQuery(git: string, timeoutMs: number): Promise<ProviderProcessResul
   });
 }
 
+function boundedProbeNumber(expression: string): number {
+  const compact = expression.replaceAll('_', '').replaceAll(' ', '');
+  if (/^[1-9]\d*$/.test(compact)) return Number(compact);
+  const product = compact.match(/^([1-9]\d*)\*([1-9]\d*)$/);
+  if (!product) throw new Error('default probe bound is not a safe numeric expression');
+  return Number(product[1]) * Number(product[2]);
+}
+
+async function currentDefaultProbeInputs(): Promise<{
+  command: string;
+  powershell: string;
+  timeoutMs: number;
+  maxBuffer: number;
+}> {
+  const source = await readFile(
+    path.resolve(process.cwd(), 'packages/cli/test/helpers/windows-process-evidence.ts'),
+    'utf8',
+  );
+  const start = source.indexOf('function defaultProbe(');
+  const end = source.indexOf('\n}\n\n/**', start);
+  if (start < 0 || end < 0) throw new Error('could not isolate defaultProbe');
+  const body = source.slice(start, end);
+  const command = body.match(/const command\s*=\s*\n\s*(['"])(.*)\1;/)?.[2];
+  const timeout = body.match(/\btimeout:\s*([^,\r\n]+),/)?.[1];
+  const maxBuffer = body.match(/\bmaxBuffer:\s*([^,\r\n]+),/)?.[1];
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  if (!command || !timeout || !maxBuffer || !systemRoot || !path.isAbsolute(systemRoot))
+    throw new Error('current defaultProbe inputs are unavailable');
+  return {
+    command,
+    powershell: path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    timeoutMs: boundedProbeNumber(timeout),
+    maxBuffer: boundedProbeNumber(maxBuffer),
+  };
+}
+
 type SpawnCall = {
   executable: string;
   args: readonly string[];
   options: { cwd?: string; env?: NodeJS.ProcessEnv; shell?: boolean; windowsHide?: boolean };
   pid: number | undefined;
+  createdAtMs: number;
 };
 
 type ExecFileCall = {
@@ -71,7 +93,10 @@ type ExecFileCall = {
 };
 
 async function withObservedProductionSpawn<T>(
-  operation: (outerSpawn: typeof import('node:child_process').spawn) => Promise<T>,
+  operation: (
+    outerSpawn: typeof import('node:child_process').spawn,
+    calls: readonly SpawnCall[],
+  ) => Promise<T>,
 ): Promise<{
   result: T;
   calls: SpawnCall[];
@@ -85,12 +110,12 @@ async function withObservedProductionSpawn<T>(
     options: SpawnCall['options'],
   ) => {
     const child = originalSpawn(executable, args, options);
-    calls.push({ executable, args, options, pid: child.pid });
+    calls.push({ executable, args, options, pid: child.pid, createdAtMs: Date.now() });
     return child;
   }) as typeof originalSpawn;
   syncBuiltinESMExports();
   try {
-    return { result: await operation(childProcess.spawn), calls };
+    return { result: await operation(childProcess.spawn, calls), calls };
   } finally {
     childProcess.spawn = originalSpawn;
     syncBuiltinESMExports();
@@ -134,6 +159,21 @@ async function stopObservedSupervisors(calls: readonly SpawnCall[]): Promise<voi
 }
 
 describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
+  beforeEach(async () => {
+    repo = await mkdtemp(path.join(tmpdir(), 'rig-windows-process-evidence-'));
+    await exec(await executableOnPath('git'), ['init', '--quiet'], {
+      cwd: repo,
+      shell: false,
+      timeout: 5_000,
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+    });
+  });
+
+  afterEach(async () => {
+    await removeFixture(repo);
+  });
+
   it('leaves a successful non-root provider run silent and unchanged', async (ctx) => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
     const git = await executableOnPath('git');
@@ -225,17 +265,20 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
     const git = await executableOnPath('git');
     let probes = 0;
-    const observed = await withObservedProductionSpawn(() =>
+    const observed = await withObservedProductionSpawn((_outerSpawn, calls) =>
       captureWindowsProcessEvidence(() => rootQuery(git, 50), {
         probe: async (supervisor) => {
           probes += 1;
+          const launchedAtMs = calls[0]?.createdAtMs;
+          if (launchedAtMs === undefined)
+            throw new Error('missing observed supervisor launch time');
           return [
-            { pid: supervisor.pid, parentPid: null, createdAtMs: 1, cpuTimeMs: 1 },
+            { pid: supervisor.pid, parentPid: null, createdAtMs: launchedAtMs, cpuTimeMs: 1 },
             {
               pid: supervisor.pid + 10_000,
               parentPid: supervisor.pid,
               executableName: 'C:\\Program Files\\Git\\cmd\\git.exe',
-              createdAtMs: 2,
+              createdAtMs: launchedAtMs + 1,
               cpuTimeMs: 2,
               commandLine: 'must-not-be-retained',
             },
@@ -280,17 +323,20 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
   it('retains owned metadata from a single raw CIM process object', async (ctx) => {
     skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
     const git = await executableOnPath('git');
-    const createdAt = '2026-10-15T00:00:00.000Z';
-    const observed = await withObservedProductionSpawn(() =>
+    const observed = await withObservedProductionSpawn((_outerSpawn, calls) =>
       captureWindowsProcessEvidence(() => rootQuery(git, 50), {
-        probe: async (supervisor) => ({
-          ProcessId: supervisor.pid,
-          ParentProcessId: 0,
-          Name: supervisor.executable,
-          CreationDate: createdAt,
-          KernelModeTime: 20_000,
-          UserModeTime: 30_000,
-        }),
+        probe: async (supervisor) => {
+          const createdAtMs = calls[0]?.createdAtMs;
+          if (createdAtMs === undefined) throw new Error('missing observed supervisor launch time');
+          return {
+            ProcessId: supervisor.pid,
+            ParentProcessId: 0,
+            Name: supervisor.executable,
+            createdAtMs,
+            KernelModeTime: 20_000,
+            UserModeTime: 30_000,
+          };
+        },
       }),
     );
 
@@ -307,12 +353,184 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
               pid: supervisorPid,
               parentPid: 0,
               executableName: path.basename(observed.result.evidence?.supervisor.executable ?? ''),
-              createdAtMs: Date.parse(createdAt),
+              createdAtMs: observed.calls[0]?.createdAtMs,
               cpuTimeMs: 5,
             },
           ],
         }),
       ]),
+    );
+  });
+
+  it('does not retain a direct child when CIM omits the observed supervisor root', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const git = await executableOnPath('git');
+    const observed = await withObservedProductionSpawn((_outerSpawn, calls) =>
+      captureWindowsProcessEvidence(() => rootQuery(git, 50), {
+        probe: async (supervisor) => {
+          const createdAtMs = calls[0]?.createdAtMs;
+          if (createdAtMs === undefined) throw new Error('missing observed supervisor launch time');
+          return [
+            {
+              ProcessId: supervisor.pid + 10_000,
+              ParentProcessId: supervisor.pid,
+              Name: 'foreign-child.exe',
+              createdAtMs,
+            },
+          ];
+        },
+      }),
+    );
+
+    const childPid = (observed.calls[0]?.pid ?? 0) + 10_000;
+    expect(['timeout', 'cleanup-unconfirmed']).toContain(observed.result.result.status);
+    expect(observed.result.evidence).toMatchObject({ status: 'unknown' });
+    const retained =
+      observed.result.evidence?.snapshots.flatMap((snapshot) => snapshot.processes) ?? [];
+    expect(retained.map((process) => process.pid)).not.toContain(childPid);
+  });
+
+  it('treats an observed supervisor with an unparseable creation time as unknown', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const git = await executableOnPath('git');
+    const observed = await withObservedProductionSpawn((_outerSpawn, calls) =>
+      captureWindowsProcessEvidence(() => rootQuery(git, 50), {
+        probe: async (supervisor) => {
+          const childCreatedAtMs = calls[0]?.createdAtMs;
+          if (childCreatedAtMs === undefined)
+            throw new Error('missing observed supervisor launch time');
+          return [
+            {
+              ProcessId: supervisor.pid,
+              ParentProcessId: 0,
+              Name: supervisor.executable,
+              createdAtMs: 'not-a-timestamp',
+            },
+            {
+              ProcessId: supervisor.pid + 10_000,
+              ParentProcessId: supervisor.pid,
+              Name: 'git.exe',
+              createdAtMs: childCreatedAtMs,
+            },
+          ];
+        },
+      }),
+    );
+
+    expect(['timeout', 'cleanup-unconfirmed']).toContain(observed.result.result.status);
+    expect(observed.result.evidence).toMatchObject({ status: 'unknown' });
+    const retained =
+      observed.result.evidence?.snapshots.flatMap((snapshot) => snapshot.processes) ?? [];
+    expect(retained.map((process) => process.pid)).not.toContain(
+      (observed.calls[0]?.pid ?? 0) + 10_000,
+    );
+  });
+
+  it('treats a supervisor created before its observed launch as unknown', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const git = await executableOnPath('git');
+    const observed = await withObservedProductionSpawn((_outerSpawn, calls) =>
+      captureWindowsProcessEvidence(() => rootQuery(git, 50), {
+        probe: async (supervisor) => {
+          const launchedAtMs = calls[0]?.createdAtMs;
+          if (launchedAtMs === undefined)
+            throw new Error('missing observed supervisor launch time');
+          return [
+            {
+              ProcessId: supervisor.pid,
+              ParentProcessId: 0,
+              Name: supervisor.executable,
+              createdAtMs: launchedAtMs - 10_000,
+            },
+            {
+              ProcessId: supervisor.pid + 10_000,
+              ParentProcessId: supervisor.pid,
+              Name: 'git.exe',
+              createdAtMs: launchedAtMs,
+            },
+          ];
+        },
+      }),
+    );
+
+    expect(['timeout', 'cleanup-unconfirmed']).toContain(observed.result.result.status);
+    expect(observed.result.evidence).toMatchObject({ status: 'unknown' });
+    const retained =
+      observed.result.evidence?.snapshots.flatMap((snapshot) => snapshot.processes) ?? [];
+    expect(retained.map((process) => process.pid)).not.toContain(
+      (observed.calls[0]?.pid ?? 0) + 10_000,
+    );
+  });
+
+  it('treats a supervisor created after its observed launch as unknown', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const git = await executableOnPath('git');
+    const observed = await withObservedProductionSpawn((_outerSpawn, calls) =>
+      captureWindowsProcessEvidence(() => rootQuery(git, 50), {
+        probe: async (supervisor) => {
+          const launchedAtMs = calls[0]?.createdAtMs;
+          if (launchedAtMs === undefined)
+            throw new Error('missing observed supervisor launch time');
+          return [
+            {
+              ProcessId: supervisor.pid,
+              ParentProcessId: 0,
+              Name: supervisor.executable,
+              createdAtMs: launchedAtMs + 10_000,
+            },
+            {
+              ProcessId: supervisor.pid + 10_000,
+              ParentProcessId: supervisor.pid,
+              Name: 'git.exe',
+              createdAtMs: launchedAtMs + 10_000,
+            },
+          ];
+        },
+      }),
+    );
+
+    expect(['timeout', 'cleanup-unconfirmed']).toContain(observed.result.result.status);
+    expect(observed.result.evidence).toMatchObject({ status: 'unknown' });
+    const retained =
+      observed.result.evidence?.snapshots.flatMap((snapshot) => snapshot.processes) ?? [];
+    expect(retained.map((process) => process.pid)).not.toContain(
+      (observed.calls[0]?.pid ?? 0) + 10_000,
+    );
+  });
+
+  it('does not retain a child that predates its validated supervisor', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const git = await executableOnPath('git');
+    const observed = await withObservedProductionSpawn((_outerSpawn, calls) =>
+      captureWindowsProcessEvidence(() => rootQuery(git, 50), {
+        probe: async (supervisor) => {
+          const launchedAtMs = calls[0]?.createdAtMs;
+          if (launchedAtMs === undefined)
+            throw new Error('missing observed supervisor launch time');
+          return [
+            {
+              ProcessId: supervisor.pid,
+              ParentProcessId: 0,
+              Name: supervisor.executable,
+              createdAtMs: launchedAtMs,
+            },
+            {
+              ProcessId: supervisor.pid + 10_000,
+              ParentProcessId: supervisor.pid,
+              Name: 'git.exe',
+              createdAtMs: launchedAtMs - 10_000,
+            },
+          ];
+        },
+      }),
+    );
+
+    expect(['timeout', 'cleanup-unconfirmed']).toContain(observed.result.result.status);
+    expect(observed.result.evidence).toMatchObject({ status: 'unknown' });
+    const retained =
+      observed.result.evidence?.snapshots.flatMap((snapshot) => snapshot.processes) ?? [];
+    expect(retained.map((process) => process.pid)).not.toContain(
+      (observed.calls[0]?.pid ?? 0) + 10_000,
     );
   });
 
@@ -332,6 +550,26 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
     expect(['timeout', 'cleanup-unconfirmed']).toContain(observed.result.status);
     expect(probes).toBe(1);
     expect(observed.evidence).toMatchObject({ status: 'unknown' });
+  });
+
+  it('treats an empty CIM process result as unknown evidence', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const git = await executableOnPath('git');
+
+    const observed = await captureWindowsProcessEvidence(() => rootQuery(git, 50), {
+      probe: async () => [],
+    });
+
+    expect(['timeout', 'cleanup-unconfirmed']).toContain(observed.result.status);
+    expect(observed.evidence).toMatchObject({ status: 'unknown' });
+    expect(observed.evidence?.snapshots).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source: 'cim', status: 'unknown' })]),
+    );
+    expect(
+      observed.evidence?.snapshots.some(
+        (snapshot) => snapshot.source === 'cim' && snapshot.status === 'captured',
+      ),
+    ).toBe(false);
   });
 
   it('preserves the supervised root-query result when an injected probe throws synchronously', async (ctx) => {
@@ -441,5 +679,33 @@ describe('Windows supervised process evidence', { timeout: 15_000 }, () => {
         (snapshot) => snapshot.source === 'cim' && snapshot.status === 'captured',
       ),
     ).toBe(false);
+  });
+});
+
+describe('Windows default CIM probe failure semantics', () => {
+  it('makes an invalid CIM class a terminating default-probe failure', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const { command, powershell, timeoutMs, maxBuffer } = await currentDefaultProbeInputs();
+    const invalidCommand = command.replace(
+      'Get-CimInstance -ClassName Win32_Process',
+      'Get-CimInstance -ClassName Win32_RP518_InvalidClass',
+    );
+    if (invalidCommand === command) throw new Error('could not replace the default CIM class');
+    const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+    if (!systemRoot) throw new Error('SystemRoot is unavailable');
+
+    await expect(
+      exec(powershell, ['-NoProfile', '-NonInteractive', '-Command', invalidCommand], {
+        env: { SystemRoot: systemRoot, RIG_WINDOWS_EVIDENCE_PID: String(process.pid) },
+        windowsHide: true,
+        timeout: timeoutMs,
+        maxBuffer,
+      }),
+    ).rejects.toMatchObject({
+      code: 1,
+      killed: false,
+      signal: null,
+      stderr: expect.stringContaining('Win32_RP518_InvalidClass'),
+    });
   });
 });

@@ -115,8 +115,9 @@ function isRootQuery(
 function ownedProcesses(
   raw: unknown,
   rootPid: number,
+  launchWindow: { startedAtMs: number; observedAtMs: number },
   remaining: number,
-): WindowsProcessEvidence['snapshots'][number]['processes'] {
+): WindowsProcessEvidence['snapshots'][number]['processes'] | undefined {
   if (remaining < 1) return [];
   const records = Array.isArray(raw) ? raw : [raw];
   const rows = records
@@ -130,18 +131,33 @@ function ownedProcesses(
       (row): row is { row: ProcessRecord; pid: number; parentPid: number | undefined } =>
         row.pid !== undefined,
     );
-  const selected = new Set<number>([rootPid]);
-  let parents = new Set<number>([rootPid]);
-  for (let depth = 0; depth < MAX_TREE_DEPTH && parents.size; depth += 1) {
-    const children = rows.filter(
-      (row) => row.parentPid !== undefined && parents.has(row.parentPid),
-    );
-    parents = new Set(children.map((row) => row.pid));
-    for (const child of children) selected.add(child.pid);
+  const root = rows.find((row) => row.pid === rootPid);
+  const rootCreatedAtMs = timestampValue(root?.row.createdAtMs ?? root?.row.CreationDate);
+  if (
+    !root ||
+    rootCreatedAtMs === undefined ||
+    rootCreatedAtMs < launchWindow.startedAtMs ||
+    rootCreatedAtMs > launchWindow.observedAtMs
+  )
+    return undefined;
+  const selected = [root];
+  let parents = [{ pid: root.pid, createdAtMs: rootCreatedAtMs }];
+  for (let depth = 0; depth < MAX_TREE_DEPTH && parents.length; depth += 1) {
+    const children = rows.filter((row) => parents.some((parent) => parent.pid === row.parentPid));
+    const nextParents: { pid: number; createdAtMs: number }[] = [];
+    for (const child of children) {
+      const parent = parents.find((candidate) => candidate.pid === child.parentPid);
+      const childCreatedAtMs = timestampValue(child.row.createdAtMs ?? child.row.CreationDate);
+      if (!parent || childCreatedAtMs === undefined || childCreatedAtMs < parent.createdAtMs)
+        return undefined;
+      selected.push(child);
+      nextParents.push({ pid: child.pid, createdAtMs: childCreatedAtMs });
+    }
+    parents = nextParents;
   }
   const result: WindowsProcessEvidence['snapshots'][number]['processes'][number][] = [];
-  for (const row of rows) {
-    if (!selected.has(row.pid) || result.length >= remaining) continue;
+  for (const row of selected) {
+    if (result.length >= remaining) break;
     const item: WindowsProcessEvidence['snapshots'][number]['processes'][number] = {
       pid: row.pid,
       parentPid: row.parentPid ?? null,
@@ -178,7 +194,7 @@ function defaultProbe(
     'powershell.exe',
   );
   const command =
-    '$target=[int]$env:RIG_WINDOWS_EVIDENCE_PID;$all=@(Get-CimInstance -ClassName Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CreationDate,KernelModeTime,UserModeTime);$owned=@($target);for($depth=0;$depth -lt 2;$depth++){$owned+=@($all|Where-Object{$owned -contains [int]$_.ParentProcessId}|ForEach-Object{[int]$_.ProcessId})};$all|Where-Object{$owned -contains [int]$_.ProcessId}|ConvertTo-Json -Compress';
+    '$target=[int]$env:RIG_WINDOWS_EVIDENCE_PID;$all=@(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop | Select-Object ProcessId,ParentProcessId,Name,@{Name="createdAtMs";Expression={([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}},KernelModeTime,UserModeTime);$owned=@($target);for($depth=0;$depth -lt 2;$depth++){$owned+=@($all|Where-Object{$owned -contains [int]$_.ParentProcessId}|ForEach-Object{[int]$_.ProcessId})};$all|Where-Object{$owned -contains [int]$_.ProcessId}|ConvertTo-Json -Compress';
   return new Promise((resolve, reject) => {
     let abort = () => {};
     const child = execFile(
@@ -195,7 +211,8 @@ function defaultProbe(
         if (error) reject(error);
         else {
           try {
-            resolve(stdout.trim() ? JSON.parse(stdout) : []);
+            if (!stdout.trim()) throw new Error('empty bounded CIM process snapshot');
+            resolve(JSON.parse(stdout));
           } catch {
             reject(new Error('malformed bounded CIM process snapshot'));
           }
@@ -236,7 +253,9 @@ export async function captureWindowsProcessEvidence<T>(
     processCount += processes.length;
   };
   childProcess.spawn = ((...spawnArgs: Parameters<typeof originalSpawn>) => {
+    const launchStartedAtMs = Date.now();
     const child = originalSpawn(...spawnArgs);
+    const launchObservedAtMs = Date.now();
     const [executable, args, spawnOptions] = spawnArgs;
     if (!targetSeen && isRootQuery(executable, args, spawnOptions)) {
       targetSeen = true;
@@ -271,10 +290,20 @@ export async function captureWindowsProcessEvidence<T>(
             void Promise.resolve(probe(supervisor, controller.signal))
               .then((raw) => {
                 if (controller.signal.aborted) return;
+                const processes = ownedProcesses(
+                  raw,
+                  pid,
+                  { startedAtMs: launchStartedAtMs, observedAtMs: launchObservedAtMs },
+                  MAX_PROCESSES - processCount,
+                );
+                if (!processes) {
+                  recordProbeFailure();
+                  return;
+                }
                 addSnapshot({
                   source: 'cim',
                   status: 'captured',
-                  processes: ownedProcesses(raw, pid, MAX_PROCESSES - processCount),
+                  processes,
                 });
               })
               .catch(recordProbeFailure);
