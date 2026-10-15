@@ -1,11 +1,11 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -241,10 +241,53 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     return dir;
   };
 
+  const defaultQueueConfig = { adapter: 'plan-md' };
+  let defaultConfigTemplate: Promise<string> | null = null;
+
+  const buildDefaultConfigTemplate = async (): Promise<string> => {
+    const root = await mkdtemp(path.join(tmpdir(), 'gate-default-config-template-'));
+    const dir = path.join(root, 'repo');
+    const remote = path.join(root, 'remote');
+    await mkdir(dir);
+    await mkdir(remote);
+    gitIn(remote, ['init', '--bare', '-q']);
+    gitIn(dir, ['init', '-q', '-b', 'main']);
+    await mkdir(path.join(dir, '.claude'), { recursive: true });
+    await writeFile(
+      path.join(dir, '.gitignore'),
+      '.claude/*.gate-rounds.json\n.claude/queue.state.json\n',
+    );
+    await writeFile(path.join(dir, 'README.md'), 'x\n');
+    await writeFile(path.join(dir, '.claude', 'queue.json'), JSON.stringify(defaultQueueConfig));
+    gitIn(dir, ['add', '-A']);
+    gitIn(dir, ['commit', '-q', '-m', 'config']);
+    gitIn(dir, ['remote', 'add', 'origin', remote]);
+    gitIn(dir, ['push', '-q', '-u', 'origin', 'main']);
+    return root;
+  };
+
+  const defaultConfig = async (roots?: string[]): Promise<string> => {
+    if (!defaultConfigTemplate) defaultConfigTemplate = buildDefaultConfigTemplate();
+    const template = await defaultConfigTemplate;
+    const dir = await mkdtemp(path.join(tmpdir(), 'gate-cli-'));
+    const remote = await mkdtemp(path.join(tmpdir(), 'gate-remote-'));
+    roots?.push(dir, remote);
+    await cp(path.join(template, 'repo'), dir, { recursive: true });
+    await cp(path.join(template, 'remote'), remote, { recursive: true });
+    gitIn(dir, ['remote', 'set-url', 'origin', remote]);
+    return path.join(dir, '.claude', 'queue.json');
+  };
+
+  beforeAll(async () => {
+    if (!defaultConfigTemplate) defaultConfigTemplate = buildDefaultConfigTemplate();
+    await defaultConfigTemplate;
+  });
+
   const config = async (
-    contents: unknown = { adapter: 'plan-md' },
+    contents: unknown = defaultQueueConfig,
     roots?: string[],
   ): Promise<string> => {
+    if (contents === defaultQueueConfig) return defaultConfig(roots);
     const dir = await repo(roots);
     const file = path.join(dir, '.claude', 'queue.json');
     await writeFile(file, typeof contents === 'string' ? contents : JSON.stringify(contents));
@@ -364,13 +407,23 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       // directory at all. Everything else about this file matches a real
       // entry, so only the missing directory makes it refuse.
       it('still refuses on a valid-looking entry with no journal/ directory at all (root-level 2026-10.md alone)', async () => {
-        const cfg = await config();
-        const dir = path.join(path.dirname(cfg), '..');
-        await writeFile(path.join(dir, '2026-10.md'), 'not the journal\n');
-        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-        expect(result.code).toBe(1);
-        expect(result.stderr).toMatch(/working tree is dirty/);
-        expect(existsSync(countsFile(cfg))).toBe(false);
+        const stages: Stages = createStageDiagnostics();
+        const roots: string[] = [];
+        try {
+          const cfg = await stages.run('rp450-config-setup', () => config(undefined, roots));
+          const dir = path.join(path.dirname(cfg), '..');
+          await stages.run('rp450-root-entry', () =>
+            writeFile(path.join(dir, '2026-10.md'), 'not the journal\n'),
+          );
+          const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg], stages);
+          expect(result.code).toBe(1);
+          expect(result.stderr).toMatch(/working tree is dirty/);
+          expect(existsSync(countsFile(cfg))).toBe(false);
+        } finally {
+          await stages.run('rp450-fixture-teardown', async () => {
+            for (const root of roots) await removeFixture(root);
+          });
+        }
       });
 
       // Rule under test: the exemption is for an UNTRACKED stop entry only. A
