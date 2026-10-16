@@ -31,8 +31,8 @@ interface ResolvedVitestConfiguration {
 
 interface WorkerInterval {
   identity: string;
-  startedAt: number;
-  finishedAt: number;
+  startedAt: string | number;
+  finishedAt: string | number;
   availableParallelism: string | undefined;
 }
 
@@ -106,6 +106,29 @@ function projectsByName(projects: ResolvedProject[]): Map<string, ResolvedProjec
 function workerProbeSource(resultPath: string): string {
   return `
 import { writeFile } from 'node:fs/promises';
+import { hrtime } from 'node:process';
+import { threadId } from 'node:worker_threads';
+import { it } from 'vitest';
+
+it('records an overlapping native Vitest worker interval', async () => {
+  const startedAt = hrtime.bigint();
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  await writeFile(
+    ${JSON.stringify(resultPath)},
+    JSON.stringify({
+      identity: [process.pid, threadId].join(':'),
+      startedAt: startedAt.toString(),
+      finishedAt: hrtime.bigint().toString(),
+      availableParallelism: process.env.RP371_VITEST_WORKER_PROBE_CPU,
+    }),
+  );
+});
+`;
+}
+
+function legacyWallClockWorkerProbeSource(resultPath: string): string {
+  return `
+import { writeFile } from 'node:fs/promises';
 import { threadId } from 'node:worker_threads';
 import { it } from 'vitest';
 
@@ -127,12 +150,32 @@ it('records an overlapping native Vitest worker interval', async () => {
 
 const WORKER_PROBE_TIMEOUT_MS = 12_000;
 
-function runNativeVitest(args: string[], cwd: string, env: NodeJS.ProcessEnv): Promise<string> {
+function runNativeVitest(
+  args: string[],
+  cwd: string,
+  env: NodeJS.ProcessEnv,
+  extraPreloads: string[] = [],
+): Promise<string> {
   return new Promise((resolve, reject) => {
+    const nodeOptions = [env.NODE_OPTIONS, ...extraPreloads.map((preload) => `--import=${preload}`)]
+      .filter(Boolean)
+      .join(' ');
     execFile(
       process.execPath,
-      ['--import', sixCpuPreload, vitestCli, 'run', ...args],
-      { cwd, env, maxBuffer: 1024 * 1024, timeout: WORKER_PROBE_TIMEOUT_MS },
+      [
+        '--import',
+        sixCpuPreload,
+        ...extraPreloads.flatMap((preload) => ['--import', preload]),
+        vitestCli,
+        'run',
+        ...args,
+      ],
+      {
+        cwd,
+        env: { ...env, NODE_OPTIONS: nodeOptions },
+        maxBuffer: 1024 * 1024,
+        timeout: WORKER_PROBE_TIMEOUT_MS,
+      },
       (error, stdout, stderr) => {
         if (error) {
           reject(new Error(describeProbeFailure(error, stdout, stderr, WORKER_PROBE_TIMEOUT_MS)));
@@ -149,10 +192,12 @@ function maximumOverlap(intervals: WorkerInterval[]): number {
   let maximum = 0;
   const events = intervals
     .flatMap((interval) => [
-      { at: interval.startedAt, change: 1 },
-      { at: interval.finishedAt, change: -1 },
+      { at: BigInt(interval.startedAt), change: 1 },
+      { at: BigInt(interval.finishedAt), change: -1 },
     ])
-    .sort((left, right) => left.at - right.at || left.change - right.change);
+    .sort((left, right) =>
+      left.at === right.at ? left.change - right.change : left.at < right.at ? -1 : 1,
+    );
 
   for (const event of events) {
     active += event.change;
@@ -204,6 +249,74 @@ async function observeEffectiveWorkers(maxWorkers?: number): Promise<number> {
     await removeFixture(fixtureDir);
   }
 }
+
+const backwardsWallClockPreload = `data:text/javascript,${encodeURIComponent(String.raw`
+let nextWallClockReading = Date.now();
+Date.now = () => --nextWallClockReading;
+`)}`;
+
+async function observeWorkersUnderBackwardsWallClock(
+  probeSource: (resultPath: string) => string,
+): Promise<WorkerInterval[]> {
+  const fixtureDir = await mkdtemp(
+    path.join(repoRoot, 'test', 'template', 'rp371-vitest-worker-probe-'),
+  );
+  const env = probeEnv(process.env);
+
+  try {
+    const resultPaths = await Promise.all(
+      Array.from({ length: 4 }, async (_, index) => {
+        const resultPath = path.join(fixtureDir, `result-${index}.json`);
+        const fixturePath = path.join(fixtureDir, `worker-${index}.test.ts`);
+        await writeFile(fixturePath, probeSource(resultPath));
+        return { fixturePath, resultPath };
+      }),
+    );
+    await runNativeVitest(
+      [
+        ...resultPaths.map(({ fixturePath }) => fixturePath),
+        '--config',
+        configPath,
+        '--project',
+        'template',
+        '--reporter',
+        'dot',
+        '--maxWorkers=4',
+      ],
+      repoRoot,
+      env,
+      [backwardsWallClockPreload],
+    );
+
+    const intervals = await Promise.all(
+      resultPaths.map(async ({ resultPath }) => JSON.parse(await readFile(resultPath, 'utf8'))),
+    );
+    expect(intervals).toHaveLength(4);
+    expect(new Set(intervals.map((interval) => interval.identity)).size).toBe(4);
+    expect(intervals.map((interval) => interval.availableParallelism)).toEqual([
+      '6',
+      '6',
+      '6',
+      '6',
+    ]);
+    return intervals;
+  } finally {
+    await removeFixture(fixtureDir);
+  }
+}
+
+it('retains native worker overlap when the wall clock jumps backwards', async () => {
+  const wallClockIntervals = await observeWorkersUnderBackwardsWallClock(
+    legacyWallClockWorkerProbeSource,
+  );
+  expect(maximumOverlap(wallClockIntervals)).toBe(0);
+
+  const monotonicIntervals = await observeWorkersUnderBackwardsWallClock(workerProbeSource);
+  for (const interval of monotonicIntervals) {
+    expect(BigInt(interval.finishedAt)).toBeGreaterThan(BigInt(interval.startedAt));
+  }
+  expect(maximumOverlap(monotonicIntervals)).toBe(4);
+});
 
 it('bounds default native Vitest workers across configured projects without changing test deadlines', async () => {
   const configurations = await resolveNativeVitestProjects();
