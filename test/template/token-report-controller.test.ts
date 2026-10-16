@@ -111,6 +111,7 @@ interface DispatchGroup {
   dispatches: { ended: number; noEndObserved: number; withUsage?: number };
   usage: { claude: Counters | null; codex: Counters | null };
   partialCounters: string[];
+  partialCountersIncomplete: boolean;
   harnessVersions: string[];
   counterOverflow: string[];
 }
@@ -657,10 +658,16 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(separateGroups.dispatchGroups.map((group) => group.dispatches.ended).sort()).toEqual([
       1, 1,
     ]);
-    expect(separateGroups.dispatchGroups.every((group) => group.usage.claude === null)).toBe(true);
+    expect(separateGroups.dispatchGroups.map((group) => group.usage.claude)).toEqual([
+      { evidenceSource: 'claude-subagent-transcript', ...child },
+      { evidenceSource: 'claude-subagent-transcript', ...child },
+    ]);
+    expect(separateGroups.totals.claude.subagentGroups).toEqual({ total: 2, measured: 2 });
     expect(separateGroups.totals.claude.subagents).toBeNull();
     expect(separateGroups.totals.claude.combined).toBeNull();
-    expect(separateGroups.totals.claude.combinedUnavailable).not.toBeNull();
+    expect(separateGroups.totals.claude.combinedUnavailable).toBe(
+      'subagent-cumulative-identity-repeated',
+    );
   });
 
   it('requires a non-empty Claude child identity before aggregating multiple child observations', async () => {
@@ -857,9 +864,15 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(separateGroups.dispatchGroups.map((group) => group.dispatches.ended).sort()).toEqual([
       1, 1,
     ]);
-    expect(separateGroups.dispatchGroups.every((group) => group.usage.codex === null)).toBe(true);
+    expect(separateGroups.dispatchGroups.map((group) => group.usage.codex)).toEqual([child, child]);
+    expect(separateGroups.totals.codex.subagentGroups).toEqual({ total: 2, measured: 2 });
+    expect(separateGroups.dispatchGroups.map((group) => group.controller)).toEqual([
+      'unknown',
+      'unknown',
+    ]);
     expect(separateGroups.totals.codex.subagents).toBeNull();
     expect(separateGroups.totals.codex.combined).toBeNull();
+    expect(separateGroups.totals.codex.combinedUnavailable).toBe('dispatch-controller-unnamed');
   });
 
   // The regression fixture the owner correction asked for: several runs, one
@@ -1280,6 +1293,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     });
     const data = report(root, ['run-a']);
     expect(data.dispatchGroups[0]!.partialCounters).toEqual(['cacheReadInputTokens']);
+    expect(data.dispatchGroups[0]!.partialCountersIncomplete).toBe(true);
     expect(data.totals.claude.subagentGroups).toEqual({ total: 1, measured: 0 });
     expect(data.totals.claude.combinedUnavailable).toBe('subagent-usage-incomplete');
   });
@@ -1566,7 +1580,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(entry.lastTrigger).toBe('unknown');
     expect(entry.harnessVersion).toBeNull();
     expect(entry.usageUnavailable).not.toContain('\n');
-    expect(entry.coverage).toEqual({ dedupedRequests: 1 });
+    expect(entry.coverage).toEqual({ dedupedRequests: 1, incomplete: true });
     const text = reportModule.render(data);
     expect(text.split('\n').filter((line) => line.startsWith('totals claude:'))).toHaveLength(1);
     expect(JSON.stringify(data)).not.toContain(forged);
@@ -1728,18 +1742,20 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
           evidenceSource: 'claude-subagent-transcript',
           ...subUsage(),
         });
+        expect(data.dispatchGroups[0]!.partialCountersIncomplete, name).toBe(true);
       } else {
         expect(data.controllers[0]!.usage).toEqual({
           evidenceSource: 'claude-controller-transcript',
           ...claudeCounters(),
         });
+        expect(data.controllers[0]!.coverage, name).toMatchObject({ incomplete: true });
       }
       expect(data.totals.claude.combined, name).toBeNull();
       expect(data.totals.claude.combinedUnavailable, name).not.toBeNull();
     }
   });
 
-  it('an empty partial list preserves a complete total while non-string partial entries fail closed without hiding observations', async () => {
+  it('an empty partial list stays complete while unknown or malformed partial names fail closed without leaking metadata', async () => {
     const child = subUsage({ inputTokens: 10, outputTokens: 1 });
     const validRoot = await runsRoot();
     const validDir = await mkrun(validRoot, 'valid-empty');
@@ -1751,29 +1767,66 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(valid.totals.claude.combined?.inputTokens).toBe(110);
     expect(valid.totals.claude.combined?.outputTokens).toBe(201);
 
-    const cases: Array<{ name: string; side: 'controller' | 'dispatch'; entry: unknown }> = [
-      { name: 'controller null', side: 'controller', entry: null },
-      { name: 'controller number', side: 'controller', entry: 123 },
-      { name: 'controller object', side: 'controller', entry: {} },
-      { name: 'dispatch null', side: 'dispatch', entry: null },
-      { name: 'dispatch number', side: 'dispatch', entry: 123 },
-      { name: 'dispatch object', side: 'dispatch', entry: {} },
+    const cases: Array<{
+      name: string;
+      side: 'controller' | 'dispatch';
+      entries: unknown[];
+      allowed: string[];
+    }> = [
+      {
+        name: 'controller unknown only',
+        side: 'controller',
+        entries: ['unknown-counter'],
+        allowed: [],
+      },
+      {
+        name: 'controller unknown and known',
+        side: 'controller',
+        entries: ['unknown-counter', 'inputTokens'],
+        allowed: ['inputTokens'],
+      },
+      {
+        name: 'dispatch unknown only',
+        side: 'dispatch',
+        entries: ['unknown-counter'],
+        allowed: [],
+      },
+      {
+        name: 'dispatch unknown and known',
+        side: 'dispatch',
+        entries: ['unknown-counter', 'inputTokens'],
+        allowed: ['inputTokens'],
+      },
+      { name: 'controller null', side: 'controller', entries: [null], allowed: [] },
+      { name: 'controller number', side: 'controller', entries: [123], allowed: [] },
+      { name: 'controller object', side: 'controller', entries: [{}], allowed: [] },
+      { name: 'dispatch null', side: 'dispatch', entries: [null], allowed: [] },
+      { name: 'dispatch number', side: 'dispatch', entries: [123], allowed: [] },
+      { name: 'dispatch object', side: 'dispatch', entries: [{}], allowed: [] },
     ];
-    for (const { name, side, entry } of cases) {
+    for (const { name, side, entries, allowed } of cases) {
       const root = await runsRoot();
       const dir = await mkrun(root, name);
       snapshot(dir, 1, {
         ...(side === 'controller'
-          ? { coverage: { basis: 'assistant-records-last-per-request', partialCounters: [entry] } }
+          ? { coverage: { basis: 'assistant-records-last-per-request', partialCounters: entries } }
           : {}),
       });
       dispatchPair(dir, 2, {
         ...child,
-        ...(side === 'dispatch' ? { partialCounters: [entry] } : {}),
+        ...(side === 'dispatch' ? { partialCounters: entries } : {}),
       });
       const data = report(root, [name]);
       expect(data.controllers[0]!.usage?.inputTokens, name).toBe(100);
       expect(data.dispatchGroups[0]!.usage.claude?.inputTokens, name).toBe(10);
+      if (side === 'controller') {
+        expect(data.controllers[0]!.coverage).toMatchObject({ incomplete: true });
+        expect(data.controllers[0]!.coverage?.partialCounters ?? []).toEqual(allowed);
+      } else {
+        expect(data.dispatchGroups[0]!.partialCounters).toEqual(allowed);
+        expect(data.dispatchGroups[0]!.partialCountersIncomplete).toBe(true);
+      }
+      expect(JSON.stringify(data), name).not.toContain('unknown-counter');
       expect(data.totals.claude.combined, name).toBeNull();
       expect(data.totals.claude.combinedUnavailable, name).not.toBeNull();
     }

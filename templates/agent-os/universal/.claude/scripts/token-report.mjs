@@ -672,8 +672,10 @@ const VERIFIED_EXCLUSIVITY = Object.freeze({
  * `subagents.completeness` — › "a dispatch group with a start that never
  * ended is not measured, so combined is null" and › "a dispatch group where
  * one ended dispatch carried no usage (withUsage under-count) is not
- * measured", and › "requires a non-empty Claude child identity before
- * aggregating multiple child observations"; `combined.rule` — the COMPLETENESS pointers in the section
+ * measured", › "requires a non-empty Claude child identity before
+ * aggregating multiple child observations", and › "an empty partial list
+ * stays complete while unknown or malformed partial names fail closed without
+ * leaking metadata"; `combined.rule` — the COMPLETENESS pointers in the section
  * comment above, plus › "a claude dispatch-start without a controller ref
  * preserves observed values but withholds combined; a named ref with no
  * snapshot remains missing", › "a codex controller snapshot preserves its
@@ -773,7 +775,7 @@ const harnessVersionOrNull = (value) =>
   typeof value === 'string' && HARNESS_VERSION_RE.test(value) ? value : null;
 
 /** `partialCounters` as a dispatch or coverage names them — only the harness's
- * own counter names are projected; a non-string entry makes completeness
+ * own counter names are projected; a non-allowlisted entry makes completeness
  * unavailable without copying that entry into the report. */
 const partialCountersInfoOf = (value, harness) => {
   if (value === undefined) return { names: [], incomplete: false };
@@ -789,11 +791,11 @@ const partialCountersInfoOf = (value, harness) => {
   let incomplete = value.length > PARTIAL_COUNTERS_SCAN_MAX;
   for (let i = 0; i < limit && out.length < PARTIAL_COUNTERS_MAX; i += 1) {
     const name = value[i];
-    if (typeof name !== 'string') {
+    if (typeof name !== 'string' || !fields.includes(name)) {
       incomplete = true;
       continue;
     }
-    if (fields.includes(name) && !out.includes(name)) out.push(name);
+    if (!out.includes(name)) out.push(name);
   }
   return { names: out, incomplete };
 };
@@ -1119,6 +1121,7 @@ const harnessTotalsOf = (
     subagents = summed.counters;
     subagentOverflow = summed.overflow;
   }
+  if (repeatedCumulativeChild) subagents = null;
   if (cumulativeChildIdentityUnproven) subagents = null;
   const subagentCrossRunAmbiguous = new Set(groups.map((group) => group.run)).size > 1;
   if (subagentCrossRunAmbiguous) subagents = null;
@@ -1537,6 +1540,7 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       }
     }
     for (const harness of KNOWN_HARNESSES) {
+      if (repeatedChildRefs[harness].size > 0) repeatedCumulativeChild[harness] = true;
       if (
         cumulativeChildObservations[harness] > 1 &&
         unidentifiedCumulativeChildObservations[harness] > 0
@@ -1590,6 +1594,7 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
           withUsage: 0,
           versions: new Set(),
           repeatedCumulativeChild: false,
+          cumulativeChildRefs: new Set(),
           cumulativeChildObservations: 0,
           unidentifiedCumulativeChildObservations: 0,
         });
@@ -1608,10 +1613,11 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
             raws.cumulativeChildObservations += 1;
             if (typeof start.data?.agentRef !== 'string' || start.data.agentRef.trim() === '') {
               raws.unidentifiedCumulativeChildObservations += 1;
+            } else if (raws.cumulativeChildRefs.has(start.data.agentRef)) {
+              raws.repeatedCumulativeChild = true;
+            } else {
+              raws.cumulativeChildRefs.add(start.data.agentRef);
             }
-          }
-          if (isKnownHarness(harness) && repeatedChildRefs[harness].has(start.data?.agentRef)) {
-            raws.repeatedCumulativeChild = true;
           }
           const partial = partialCountersInfoOf(usageRaw.partialCounters, harness);
           if (partial.incomplete) group.partialCountersIncomplete = true;
@@ -1741,7 +1747,6 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
       isKnownHarness(group.harness)
     ) {
       group.usage[group.harness] = null;
-      if (raws.repeatedCumulativeChild) repeatedCumulativeChild[group.harness] = true;
     }
     if (raws.withUsage > 0 && raws.withUsage < group.dispatches.ended) {
       group.dispatches.withUsage = raws.withUsage;
