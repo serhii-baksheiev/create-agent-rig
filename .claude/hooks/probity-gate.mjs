@@ -114,11 +114,11 @@
 //     stay verbatim; see "preserves a completed optional launcher deny response
 //     even when that launcher exits nonzero".
 //
-// Bounded work, per `.claude/rules/invariants.md`'s fail-open rule: one
-// synchronous stdin read, one JSON parse of it, one file read and one JSON
-// parse of the declaration, bounded edit-fragment inspection, one spawn, one
-// timer, and capped launcher output. Filesystem/configuration operations are
-// synchronous; the launcher deadline does not bound those operations.
+// Work includes input/declaration parsing, bounded edit-fragment inspection,
+// path metadata and checkout-scoped flag reads, plus capped launcher output.
+// Windows process-tree cleanup may also launch taskkill. Filesystem and
+// configuration operations are synchronous; the launcher deadline does not
+// bound those operations. Cleanup remains best effort, as stated above.
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
@@ -226,9 +226,12 @@ const missingLauncherAnswer = (harnessArg) => unavailableAnswer(harnessArg);
 const isUnattended = (root) => readUnattended({ ...process.env, CLAUDE_PROJECT_DIR: root }).on;
 
 const selectedProbity = (declaration, harnessId) => {
-  const integrations = Array.isArray(declaration?.integrations) ? declaration.integrations : [];
+  if (!Array.isArray(declaration.integrations)) return { invalid: true };
+  const integrations = declaration.integrations;
   const selected = integrations.filter((candidate) => candidate && candidate.id === 'probity' && candidate.selected === true);
-  const malformedRequired = selected.some((candidate) => candidate.required === true && !Array.isArray(candidate.harnesses));
+  const malformedRequired = selected.some(
+    (candidate) => candidate.required === true && (!Array.isArray(candidate.harnesses) || candidate.harnesses.length === 0),
+  );
   const applicable = integrations.filter(
     (candidate) =>
       candidate &&
@@ -381,6 +384,11 @@ async function main() {
   }
 
   const selection = selectedProbity(declaration, harnessId);
+  if (selection.invalid) {
+    process.stderr.write('probity-gate: Probity integrations field is invalid\n');
+    if (isUnattended(root)) process.stdout.write(unavailableAnswer(harnessArg, 'Probity declaration integrations field is invalid; repair .rig/integrations.json.'));
+    return 0;
+  }
   if (!selection) return 0;
   if (selection.ambiguous) {
     process.stdout.write(unavailableAnswer(harnessArg, 'Required Probity declaration is ambiguous; repair .rig/integrations.json.'));
