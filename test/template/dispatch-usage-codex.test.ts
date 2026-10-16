@@ -480,7 +480,7 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
     expect('usage' in data).toBe(false);
   });
 
-  it('ignores a token_usage_record for a DIFFERENT thread_id, even when it appears after the matching one', async () => {
+  it('ignores a decreasing foreign-thread sequence around valid own-thread records', async () => {
     const agentId = 'ignore-other-thread';
     const file = await writeRollout('rollout.jsonl', [
       sessionMetaLine(agentId),
@@ -490,7 +490,15 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
       }),
       tokenUsageLine({
         threadId: 'some-other-thread',
-        threadTokenUsage: { input_tokens: 999999, output_tokens: 999999 },
+        threadTokenUsage: { input_tokens: 9_000_000, output_tokens: 9_000_000 },
+      }),
+      tokenUsageLine({
+        threadId: 'some-other-thread',
+        threadTokenUsage: { input_tokens: 1, output_tokens: 1 },
+      }),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 42, output_tokens: 7 },
       }),
     ]);
     const result = await runHook(
@@ -505,7 +513,7 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
     expect(usage?.inputTokens).toBe(42);
     expect(usage?.outputTokens).toBe(7);
     const bytes = await eventsFileBytes(runDir);
-    expect(bytes).not.toContain('999999');
+    expect(bytes).not.toContain('9000000');
   });
 
   it('a counter absent from thread_token_usage stays absent — never zero, never inferred', async () => {

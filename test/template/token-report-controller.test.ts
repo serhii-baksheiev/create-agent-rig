@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -33,7 +33,9 @@ import { beforeAll, describe, expect, it } from 'vitest';
 // written here rather than imported.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const hooksDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'hooks');
 const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
+const readersUrl = pathToFileURL(path.join(hooksDir, 'lib', 'usage-readers.mjs')).href;
 const reportUrl = pathToFileURL(path.join(scriptsDir, 'token-report.mjs')).href;
 const journalUrl = pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href;
 
@@ -231,6 +233,103 @@ const codexSnapshot = (runDir: string, n: number): JournalRecord =>
     harnessVersion: CODEX_VERSION,
     usage: { evidenceSource: 'codex-controller-rollout', ...codexCounters() },
   });
+
+it('makes combined unavailable when actual Codex parent and child readers reject a decreasing own-thread rollout', async () => {
+  const root = await runsRoot();
+  const readers = (await import(readersUrl)) as {
+    readCodexControllerUsage(file: string, sessionId: string): Record<string, unknown>;
+    readCodexRolloutUsage(file: string, agentId: string): Record<string, unknown>;
+  };
+  const counters = (n: number) => ({
+    input_tokens: n,
+    cached_input_tokens: n,
+    output_tokens: n,
+    reasoning_output_tokens: n,
+  });
+  const rollout = (threadId: string, values: number[], name: string) => {
+    const records = [
+      { type: 'session_meta', payload: { id: threadId, cli_version: CODEX_VERSION } },
+      ...values.map((value, ordinal) => ({
+        type: 'token_usage_record',
+        payload: {
+          response_id: `${name}-${ordinal}`,
+          thread_id: threadId,
+          thread_token_usage: counters(value),
+        },
+      })),
+    ];
+    const file = path.join(root, `${name}.jsonl`);
+    return writeFile(
+      file,
+      `${records.map((record) => JSON.stringify(record)).join('\n')}\n`,
+      'utf8',
+    ).then(() => file);
+  };
+  const writeCompleteRun = (
+    name: string,
+    controllerProjection: Record<string, unknown>,
+    childProjection: Record<string, unknown>,
+  ) =>
+    mkrun(root, name).then((dir) => {
+      const child = { harness: 'codex', agentType: 'worker', agentRef: `child-${name}` };
+      journal.recordEvent({
+        runDir: dir,
+        kind: 'controller-usage',
+        data: {
+          schema: 1,
+          harness: 'codex',
+          controller: CTRL,
+          trigger: 'Stop',
+          cumulative: true,
+          ...controllerProjection,
+        },
+        now: at(1),
+      });
+      journal.recordEvent({
+        runDir: dir,
+        kind: 'dispatch-start',
+        data: { schema: 1, ...child },
+        now: at(2),
+      });
+      journal.recordEvent({
+        runDir: dir,
+        kind: 'dispatch-end',
+        data: { schema: 1, ...child, ...childProjection },
+        now: at(3),
+      });
+    });
+
+  const validParent = readers.readCodexControllerUsage(
+    await rollout('parent-valid', [100], 'parent-valid'),
+    'parent-valid',
+  );
+  const validChild = readers.readCodexRolloutUsage(
+    await rollout('child-valid', [100], 'child-valid'),
+    'child-valid',
+  );
+  await writeCompleteRun('valid', validParent, validChild);
+  const valid = report(root, ['valid']);
+  expect(valid.totals.codex.combined).toEqual({
+    inputTokens: 200,
+    cachedInputTokens: 200,
+    outputTokens: 200,
+    reasoningOutputTokens: 200,
+  });
+  expect(valid.totals.codex.combinedUnavailable).toBeNull();
+
+  const decreasingParent = readers.readCodexControllerUsage(
+    await rollout('parent-decreasing', [1000, 100], 'parent-decreasing'),
+    'parent-decreasing',
+  );
+  const decreasingChild = readers.readCodexRolloutUsage(
+    await rollout('child-decreasing', [1000, 100], 'child-decreasing'),
+    'child-decreasing',
+  );
+  await writeCompleteRun('decreasing', decreasingParent, decreasingChild);
+  const decreasing = report(root, ['decreasing']);
+  expect(decreasing.totals.codex.combined).toBeNull();
+  expect(typeof decreasing.totals.codex.combinedUnavailable).toBe('string');
+});
 
 const subUsage = (over: Partial<Record<string, number>> = {}) => ({
   requests: 1,
