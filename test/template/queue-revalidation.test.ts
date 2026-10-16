@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -88,6 +88,34 @@ const runNode = (
 
 const runCli = (args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
   runNode(path.join(queueDir, 'index.mjs'), args, cwd, env);
+
+const outcomeShell = async (cwd: string, env: NodeJS.ProcessEnv): Promise<string> => {
+  if (process.platform === 'win32') {
+    const gitExecPath = await new Promise<{ code: number; stdout: string; out: string }>(
+      (resolve) => {
+        execFile('git', ['--exec-path'], { cwd, env }, (error, stdout, stderr) => {
+          resolve({
+            code: error ? ((error as { code?: number }).code ?? 1) : 0,
+            stdout,
+            out: stdout + stderr,
+          });
+        });
+      },
+    );
+    if (gitExecPath.code !== 0) {
+      throw new Error(`could not discover a supported outcome shell: ${gitExecPath.out}`);
+    }
+
+    const shell = path.resolve(gitExecPath.stdout.trim(), '..', '..', '..', 'usr', 'bin', 'sh.exe');
+    try {
+      return await realpath(shell);
+    } catch {
+      throw new Error(`Git for Windows did not provide a supported outcome shell at ${shell}`);
+    }
+  }
+
+  return 'sh';
+};
 
 const git = async (args: string[], cwd: string): Promise<void> => {
   const result = await new Promise<{ code: number; out: string }>((resolve) => {
@@ -574,12 +602,11 @@ describe('`next` revalidates through the durable claim and preserves take-up evi
       },
       now: T2,
     });
+    const env = { ...withoutGitLocation(), RIG_RUN_DIR: runDir };
+    const shell = await outcomeShell(project, env);
     const result = await new Promise<{ code: number; out: string }>((resolve) => {
-      execFile(
-        'sh',
-        ['-c', command],
-        { cwd: project, env: { ...withoutGitLocation(), RIG_RUN_DIR: runDir } },
-        (error, stdout, stderr) => resolve({ code: error ? 1 : 0, out: stdout + stderr }),
+      execFile(shell, ['-c', command], { cwd: project, env }, (error, stdout, stderr) =>
+        resolve({ code: error ? 1 : 0, out: stdout + stderr }),
       );
     });
     expect(result.code, result.out).toBe(0);
