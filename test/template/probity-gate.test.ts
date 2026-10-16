@@ -12,16 +12,17 @@
 // probity-gate.mjs`). Every case below is RED for that reason until it is
 // written — this file pins the behaviour, not the implementation.
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const hook = path.join(universal, '.claude', 'hooks', 'probity-gate.mjs');
+const unattendedFlagScript = path.join(universal, '.claude', 'scripts', 'unattended-flag.mjs');
 
 // Env vars the fake launchers use to report what they saw, without the test
 // having to scrape process output that is also under test. A well-behaved
@@ -63,9 +64,10 @@ function runGate(
 }
 
 /** `.rig/integrations.json` content for a declared `probity` entry. */
-function declaration(harnesses: string[], selected?: boolean): unknown {
+function declaration(harnesses: string[], selected?: boolean, required?: boolean): unknown {
   const entry: Record<string, unknown> = { id: 'probity', version: '1.10.1', harnesses };
   if (selected !== undefined) entry.selected = selected;
+  if (required !== undefined) entry.required = required;
   return { schemaVersion: 1, integrations: [entry] };
 }
 
@@ -147,12 +149,55 @@ function floodLauncherScript(bytes: number): string {
   ].join('\n');
 }
 
+async function spawnFaultPreloader(
+  root: string,
+  fault: 'async-error' | 'sync-throw',
+): Promise<string> {
+  const preloader = path.join(root, `.probity-spawn-${fault}.mjs`);
+  const replacement =
+    fault === 'sync-throw'
+      ? "childProcess.spawn = () => { throw new Error('injected synchronous spawn failure'); };"
+      : [
+          'childProcess.spawn = () => {',
+          '  const child = new EventEmitter();',
+          '  child.stdin = new PassThrough();',
+          '  child.stdout = new PassThrough();',
+          "  queueMicrotask(() => child.emit('error', new Error('injected asynchronous spawn failure')));",
+          '  return child;',
+          '};',
+        ].join('\n');
+  await writeFile(
+    preloader,
+    [
+      "import childProcess from 'node:child_process';",
+      "import { EventEmitter } from 'node:events';",
+      "import { syncBuiltinESMExports } from 'node:module';",
+      "import { PassThrough } from 'node:stream';",
+      replacement,
+      'syncBuiltinESMExports();',
+    ].join('\n'),
+  );
+  return pathToFileURL(preloader).href;
+}
+
 // ── Payload builders — the exact shapes Claude Code / Codex send ──
 
 const claudeWrite = (filePath = 'notes.txt') => ({
   hook_event_name: 'PreToolUse',
   tool_name: 'Write',
   tool_input: { file_path: filePath, content: 'hello\n' },
+});
+
+const claudeEdit = (filePath = 'notes.txt') => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'Edit',
+  tool_input: { file_path: filePath, old_string: 'x', new_string: 'y' },
+});
+
+const claudeNotebookEdit = (filePath = 'notes.ipynb') => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'NotebookEdit',
+  tool_input: { notebook_path: filePath, new_source: 'print(1)\n' },
 });
 
 const claudeMultiEdit = (filePath = 'notes.txt') => ({
@@ -180,6 +225,17 @@ const codexBash = () => ({
   tool_name: 'Bash',
   tool_input: { command: 'echo hi' },
 });
+
+const itOnWindows = process.platform === 'win32' ? it : it.skip;
+const itOnPosix = process.platform === 'win32' ? it.skip : it;
+
+const loadUnattendedFlag = () =>
+  import(pathToFileURL(unattendedFlagScript).href) as Promise<{
+    writeUnattended: (
+      input: { item: string; runDir?: string | null; allow?: string[] },
+      env: NodeJS.ProcessEnv,
+    ) => string[];
+  }>;
 
 describe('probity-gate: ships as a hook file at the path the wiring will name', () => {
   it('exists under templates/agent-os/universal/.claude/hooks/', async () => {
@@ -236,6 +292,27 @@ describe('probity-gate: inert when nothing selected it for this harness', () => 
     roots.push(root);
 
     const result = await runGate(args as unknown as string[], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not spawn the launcher or relay a decision for a wholly foreign absolute Codex apply_patch path', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-foreign-marker.json');
+    const payload = JSON.stringify(
+      codexApplyPatch(path.join(tmpdir(), 'probity-foreign-patch.txt')),
+    );
+
+    const result = await runGate(['--harness=codex'], payload, {
       CLAUDE_PROJECT_DIR: root,
       [MARKER_ENV]: markerFile,
     });
@@ -389,6 +466,383 @@ describe('probity-gate: tool filtering — only the named tools are ever forward
   );
 });
 
+describe('probity-gate: project scope — edits provably outside the project are inert', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => removeFixture(root)));
+  });
+
+  it('does not spawn the launcher or relay a decision for a wholly foreign absolute Claude Write path', async () => {
+    const markerFile = path.join(tmpdir(), `probity-marker-foreign-${Date.now()}.json`);
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+
+    const result = await runGate(
+      ['--harness=claude'],
+      JSON.stringify(claudeWrite(path.join(tmpdir(), 'probity-foreign-write.txt'))),
+      { CLAUDE_PROJECT_DIR: root, [MARKER_ENV]: markerFile },
+    );
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('forwards a lexical project path below an alias whose canonical target is foreign', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    const foreignRoot = await mkdtemp(path.join(tmpdir(), 'probity-foreign-alias-'));
+    roots.push(root, foreignRoot);
+    const alias = path.join(root, 'linked-outside');
+    await symlink(foreignRoot, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const markerFile = path.join(root, '.probity-alias-marker.json');
+    const payload = JSON.stringify(claudeWrite(path.join(alias, 'owned-spelling.txt')));
+
+    const result = await runGate(['--harness=claude'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('does not spawn the launcher or relay a decision for a wholly foreign absolute Claude Edit path', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-foreign-edit-marker.json');
+
+    const result = await runGate(
+      ['--harness=claude'],
+      JSON.stringify(claudeEdit(path.join(tmpdir(), 'probity-foreign-edit.txt'))),
+      { CLAUDE_PROJECT_DIR: root, [MARKER_ENV]: markerFile },
+    );
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not spawn the launcher or relay a decision for a wholly foreign absolute Claude NotebookEdit path', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-foreign-notebook-marker.json');
+
+    const result = await runGate(
+      ['--harness=claude'],
+      JSON.stringify(claudeNotebookEdit(path.join(tmpdir(), 'probity-foreign-notebook.ipynb'))),
+      { CLAUDE_PROJECT_DIR: root, [MARKER_ENV]: markerFile },
+    );
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('forwards a foreign lexical Write path below a dangling alias whose missing target is inside the project', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    const foreignRoot = await mkdtemp(path.join(tmpdir(), 'probity-foreign-dangling-alias-'));
+    roots.push(root, foreignRoot);
+    const target = path.join(root, 'missing-target-directory');
+    const alias = path.join(foreignRoot, 'link-into-project');
+    await symlink(target, alias, process.platform === 'win32' ? 'junction' : 'dir');
+    const markerFile = path.join(root, '.probity-dangling-alias-marker.json');
+    const payload = JSON.stringify(claudeWrite(path.join(alias, 'notes.txt')));
+
+    const result = await runGate(['--harness=claude'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('forwards a mixed Codex patch with a foreign add and an owned add without changing its bytes', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-mixed-patch-marker.json');
+    const command = [
+      '*** Begin Patch',
+      `*** Add File: ${path.join(tmpdir(), 'probity-foreign-mixed-add.txt')}`,
+      '+foreign',
+      '*** Add File: owned-mixed-add.txt',
+      '+owned',
+      '*** End Patch',
+    ].join('\n');
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+
+    const result = await runGate(['--harness=codex'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('forwards a Codex Move from an owned source to a foreign destination without changing its bytes', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-owned-to-foreign-move-marker.json');
+    const command = [
+      '*** Begin Patch',
+      '*** Update File: owned-move-source.txt',
+      `*** Move to: ${path.join(tmpdir(), 'probity-foreign-move-destination.txt')}`,
+      '*** End Patch',
+    ].join('\n');
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+
+    const result = await runGate(['--harness=codex'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('forwards a Codex patch when its 129th section is an owned add after 128 foreign adds', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-section-budget-marker.json');
+    const foreignSections = Array.from(
+      { length: 128 },
+      (_, index) =>
+        `*** Add File: ${path.join(tmpdir(), `probity-foreign-section-${index}.txt`)}\n+foreign`,
+    );
+    const command = [
+      '*** Begin Patch',
+      ...foreignSections,
+      '*** Add File: owned-after-section-budget.txt',
+      '+owned',
+      '*** End Patch',
+    ].join('\n');
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+
+    const result = await runGate(['--harness=codex'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('forwards a Codex patch with a malformed command shape without changing its bytes', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-malformed-command-marker.json');
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command: ['*** Begin Patch', 42, '*** End Patch'] },
+    });
+
+    const result = await runGate(['--harness=codex'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('forwards an incomplete Codex patch string with a foreign Add header without changing its bytes', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-incomplete-patch-marker.json');
+    const command = [
+      '*** Begin Patch',
+      `*** Add File: ${path.join(tmpdir(), 'probity-foreign-incomplete-add.txt')}`,
+      '+foreign',
+    ].join('\n');
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+
+    const result = await runGate(['--harness=codex'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('forwards a Claude Write whose file path is a malformed JSON object without changing its bytes', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const markerFile = path.join(root, '.probity-malformed-direct-path-marker.json');
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'Write',
+      tool_input: { file_path: { toString: 'broken', valueOf: 'broken' }, content: 'hello\n' },
+    });
+
+    const result = await runGate(['--harness=claude'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('{"decision":"block"}');
+    const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+    expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+  });
+
+  it('does not spawn the launcher for a wholly foreign Codex Move with an existing foreign source', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    const foreignRoot = await mkdtemp(path.join(tmpdir(), 'probity-foreign-move-'));
+    roots.push(root, foreignRoot);
+    const source = path.join(foreignRoot, 'existing-source.txt');
+    await writeFile(source, 'foreign source\n');
+    const markerFile = path.join(root, '.probity-foreign-move-marker.json');
+    const command = [
+      '*** Begin Patch',
+      `*** Update File: ${source}`,
+      `*** Move to: ${path.join(foreignRoot, 'destination.txt')}`,
+      '*** End Patch',
+    ].join('\n');
+    const payload = JSON.stringify({
+      hook_event_name: 'PreToolUse',
+      tool_name: 'apply_patch',
+      tool_input: { command },
+    });
+
+    const result = await runGate(['--harness=codex'], payload, {
+      CLAUDE_PROJECT_DIR: root,
+      [MARKER_ENV]: markerFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  itOnPosix(
+    'forwards a literal trailing-space foreign symlink leaf that resolves to an owned file',
+    async () => {
+      const root = await makeFixture({
+        integrations: declaration(['claude-code', 'codex'], true),
+        launcherScript: relayLauncherScript('{"decision":"block"}'),
+      });
+      const foreignRoot = await mkdtemp(path.join(tmpdir(), 'probity-foreign-literal-leaf-'));
+      roots.push(root, foreignRoot);
+      const owned = path.join(root, 'owned.txt');
+      await writeFile(owned, 'owned\n');
+      const alias = path.join(foreignRoot, 'link ');
+      await symlink(owned, alias);
+      const markerFile = path.join(root, '.probity-literal-leaf-marker.json');
+      const payload = JSON.stringify(claudeWrite(alias));
+
+      const result = await runGate(['--harness=claude'], payload, {
+        CLAUDE_PROJECT_DIR: root,
+        [MARKER_ENV]: markerFile,
+      });
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toBe('{"decision":"block"}');
+      const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as { stdinBase64: string };
+      expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+    },
+  );
+});
+
+describe('probity-gate: opaque Windows roots do not prove a local-drive path foreign', () => {
+  itOnWindows(
+    'keeps a local candidate unknown when the project root is only an admin-share spelling',
+    async () => {
+      const root = await mkdtemp(path.join(tmpdir(), 'probity-opaque-unc-root-'));
+      try {
+        const drive = path.parse(root).root[0];
+        const opaqueRoot = `\\\\localhost\\${drive}$${root.slice(2)}`;
+        const candidate = path.join(root, 'candidate.txt');
+        const { adminShareDriveSpelling } = (await import(
+          pathToFileURL(path.join(universal, '.claude', 'hooks', 'lib', 'canonical-path.mjs')).href
+        )) as { adminShareDriveSpelling: (value: string) => string | undefined };
+        const { isKnownForeignAbsolutePath } = (await import(
+          pathToFileURL(path.join(universal, '.claude', 'hooks', 'lib', 'edit-input.mjs')).href
+        )) as {
+          isKnownForeignAbsolutePath: (
+            value: string,
+            repoRoot: string,
+            lexicalRoot?: string,
+          ) => boolean;
+        };
+
+        expect(adminShareDriveSpelling(opaqueRoot)).toBe(root);
+        expect(isKnownForeignAbsolutePath(candidate, opaqueRoot, opaqueRoot)).toBe(false);
+      } finally {
+        await removeFixture(root);
+      }
+    },
+  );
+});
+
 describe('probity-gate: declared, launcher missing — enforcement was promised, so silent allow is refused', () => {
   const roots: string[] = [];
   afterEach(async () => {
@@ -397,6 +851,497 @@ describe('probity-gate: declared, launcher missing — enforcement was promised,
 
   it('Claude Write: denies with a reason naming @nizos/probity and how to install it', async () => {
     const root = await makeFixture({ integrations: declaration(['claude-code', 'codex'], true) });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toContain('@nizos/probity');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toContain(
+        'npm install -D @nizos/probity',
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('Codex apply_patch: blocks with a reason naming @nizos/probity and how to install it', async () => {
+    const root = await makeFixture({ integrations: declaration(['claude-code', 'codex'], true) });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=codex'], JSON.stringify(codexApplyPatch()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      const parsed = JSON.parse(result.stdout) as { decision?: string; reason?: string };
+      expect(parsed.decision).toBe('block');
+      expect(parsed.reason).toContain('@nizos/probity');
+      expect(parsed.reason).toContain('npm install -D @nizos/probity');
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+});
+
+describe('probity-gate: selected Probity availability', () => {
+  const roots: string[] = [];
+  afterEach(async () => {
+    await Promise.all(roots.splice(0).map((root) => removeFixture(root)));
+  });
+
+  it('warns but allows when an attended selected optional Probity launcher is missing', async () => {
+    const root = await makeFixture({ integrations: declaration(['claude-code'], true) });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toMatch(/@nizos\/probity|not installed/i);
+  });
+
+  it('blocks when a selected required Probity launcher emits an asynchronous spawn error', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code'], true, true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const preloader = await spawnFaultPreloader(root, 'async-error');
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+      NODE_OPTIONS: `--import=${preloader}`,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('blocks when a selected required Probity launcher throws synchronously during spawn', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code'], true, true),
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    roots.push(root);
+    const preloader = await spawnFaultPreloader(root, 'sync-throw');
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+      NODE_OPTIONS: `--import=${preloader}`,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+  });
+
+  it('blocks when a selected required Probity launcher exits nonzero', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code'], true, true),
+      launcherScript: [
+        'process.stdin.resume();',
+        "process.stdin.on('end', () => process.exit(17));",
+      ].join('\n'),
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+      /Probity|launcher|required/i,
+    );
+  });
+
+  it('blocks a selected required Probity launcher timeout without relaying its partial answer and kills it', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code'], true, true),
+      launcherScript: [
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(process.env.${PID_ENV}, String(process.pid));`,
+        'process.stdout.write(\'{\\"partial\\":\');',
+        'setInterval(() => {}, 1000);',
+      ].join('\n'),
+    });
+    roots.push(root);
+    const pidFile = path.join(root, '.required-timeout-pid');
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+      RIG_PROBITY_GATE_TIMEOUT_MS: '1500',
+      [PID_ENV]: pidFile,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).toContain('blocking required control');
+    expect(result.stdout).not.toContain('partial');
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+      /Probity|timeout|required/i,
+    );
+
+    const pid = Number((await readFile(pidFile, 'utf8')).trim());
+    const deadline = Date.now() + 3000;
+    let alive = true;
+    while (Date.now() < deadline) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        alive = false;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    if (alive) {
+      try {
+        process.kill(pid, 'SIGKILL');
+      } catch {
+        // already gone
+      }
+    }
+    expect(alive).toBe(false);
+  });
+
+  it('blocks when a selected required Probity launcher exceeds the existing output cap', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code'], true, true),
+      launcherScript: floodLauncherScript(1024 * 1024 + 1),
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stderr).toContain('blocking required control');
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(/Probity|output|required/i);
+  });
+
+  it('blocks an armed unattended run when the present Probity declaration is malformed', async () => {
+    const root = await makeFixture({
+      integrations: '{ not valid json',
+      launcherScript: relayLauncherScript('{"decision":"block"}'),
+    });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+        /Probity|declaration|repair/i,
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('blocks an armed unattended run when the present Probity declaration is parseable but null', async () => {
+    const root = await makeFixture({ integrations: 'null' });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+        /Probity|declaration|repair/i,
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('blocks an armed unattended run when the present Probity declaration root is an array', async () => {
+    const root = await makeFixture({ integrations: '[]' });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+        /Probity|declaration|repair/i,
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('blocks an armed unattended run when the present Probity declaration root is a number', async () => {
+    const root = await makeFixture({ integrations: '42' });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+        /Probity|declaration|repair/i,
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('blocks an attended selected required Probity entry whose harness metadata is malformed', async () => {
+    const root = await makeFixture({
+      integrations: {
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: true,
+            harnesses: 'claude-code',
+          },
+        ],
+      },
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+      /Probity|harness|repair|required/i,
+    );
+  });
+
+  it('blocks an armed unattended selected Probity entry whose required flag is not a boolean', async () => {
+    const root = await makeFixture({
+      integrations: {
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: 'true',
+            harnesses: ['claude-code'],
+          },
+        ],
+      },
+      launcherScript: [
+        'process.stdin.resume();',
+        "process.stdin.on('end', () => process.exit(0));",
+      ].join('\n'),
+    });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+        /Probity|required|repair/i,
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('blocks an attended known-required Probity selection when an earlier duplicate has an invalid required flag', async () => {
+    const root = await makeFixture({
+      integrations: {
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: 'true',
+            harnesses: ['claude-code'],
+          },
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: true,
+            harnesses: ['claude-code'],
+          },
+        ],
+      },
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+      /Probity|required|invalid|repair/i,
+    );
+  });
+
+  it('blocks an armed unattended run when the present Probity declaration cannot be read', async () => {
+    const root = await makeFixture({ integrations: declaration(['claude-code'], true) });
+    const declarationPath = path.join(root, '.rig', 'integrations.json');
+    await rm(declarationPath);
+    await mkdir(declarationPath);
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+        /Probity|declaration|repair/i,
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('blocks duplicate selected Probity entries when a later required entry cannot be overridden by the first optional one', async () => {
+    const root = await makeFixture({
+      integrations: {
+        schemaVersion: 1,
+        integrations: [
+          { id: 'probity', version: '1.10.1', selected: true, harnesses: ['claude-code'] },
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: true,
+            harnesses: ['claude-code'],
+          },
+        ],
+      },
+      launcherScript: [
+        'process.stdin.resume();',
+        "process.stdin.on('end', () => process.exit(0));",
+      ].join('\n'),
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+      /Probity|duplicate|required|repair/i,
+    );
+  });
+
+  it('keeps a completed empty response from a selected required Probity launcher as an upstream allow', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code'], true, true),
+      launcherScript: [
+        'process.stdin.resume();',
+        "process.stdin.on('end', () => process.exit(0));",
+      ].join('\n'),
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
+  });
+
+  it('blocks when an attended selected required Probity launcher is missing', async () => {
+    const root = await makeFixture({ integrations: declaration(['claude-code'], true, true) });
     roots.push(root);
 
     const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
@@ -409,24 +1354,34 @@ describe('probity-gate: declared, launcher missing — enforcement was promised,
     };
     expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
     expect(parsed.hookSpecificOutput?.permissionDecisionReason).toContain('@nizos/probity');
-    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toContain(
-      'npm install -D @nizos/probity',
-    );
   });
 
-  it('Codex apply_patch: blocks with a reason naming @nizos/probity and how to install it', async () => {
-    const root = await makeFixture({ integrations: declaration(['claude-code', 'codex'], true) });
+  it('preserves a completed optional launcher deny response even when that launcher exits nonzero', async () => {
+    const response = JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'upstream optional deny',
+      },
+    });
+    const root = await makeFixture({
+      integrations: declaration(['claude-code'], true),
+      launcherScript: [
+        'process.stdin.resume();',
+        "process.stdin.on('end', () => {",
+        `  process.stdout.write(${JSON.stringify(response)});`,
+        '  process.exit(17);',
+        '});',
+      ].join('\n'),
+    });
     roots.push(root);
 
-    const result = await runGate(['--harness=codex'], JSON.stringify(codexApplyPatch()), {
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
       CLAUDE_PROJECT_DIR: root,
     });
 
     expect(result.code, result.stderr).toBe(0);
-    const parsed = JSON.parse(result.stdout) as { decision?: string; reason?: string };
-    expect(parsed.decision).toBe('block');
-    expect(parsed.reason).toContain('@nizos/probity');
-    expect(parsed.reason).toContain('npm install -D @nizos/probity');
+    expect(result.stdout).toBe(response);
   });
 });
 

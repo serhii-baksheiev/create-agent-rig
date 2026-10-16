@@ -67,6 +67,19 @@ costs it all its credibility.
 is handed a payload it cannot even tell apart from noise, it must allow the edit.
 A crashed guard that blocks everything gets deleted within the hour.
 
+**An explicitly required integration is an availability exception.** The
+Probity relay denies an eligible edit when a selected `required: true` control
+cannot start or complete within its execution bounds. It preserves a successful
+empty upstream answer as allow. See `test/template/probity-gate.test.ts` (generator
+evidence, absent in a generated rig) › "blocks when a selected required Probity
+launcher emits an asynchronous spawn error", › "blocks a selected required
+Probity launcher timeout without relaying its partial answer and kills it", and
+› "keeps a completed empty response from a selected required Probity launcher
+as an upstream allow". Optional availability handling and unreadable-declaration
+handling are pinned separately in that file's "probity-gate: selected Probity
+availability" describe block. This exception does not change other guards'
+error handling.
+
 **Refusing to inspect is a third outcome, not a match and not an error** — and it
 has two members, which the first version of this rule collapsed into one.
 

@@ -1825,7 +1825,7 @@ other than the Rig-tested 1.10.1 as an override and pins the manual install
 step to it"); a range or tag is refused as `probity-exact-version-required`
 (› "refuses a requested version that is a range rather than one exact
 release, naming the version problem rather than a generic refusal, and writes
-nothing"). Rig never runs `npm install` or the Probity launcher itself; the
+nothing"). The setup command runs neither `npm install` nor the Probity launcher; the
 plan names `npm install -D @nizos/probity@<declared version>` as a manual
 next step. On a first `add`, a pre-existing `probity.config.{ts,mts,js,mjs}`
 is refused unless `--adopt` is given. Once the declaration carries a
@@ -1842,6 +1842,27 @@ or rewrites any other recognised filename. Wiring the gate hook into
 — `setup` never edits either file for Probity.
 
 Executable evidence: `packages/cli/test/probity-command.test.ts`.
+
+The installed PreToolUse hook is a separate execution seam. It relays the
+project-local Probity launcher for selected harnesses and eligible edits;
+setup's manual installation step does not disable that relay. See
+`test/template/probity-gate.test.ts` › "Claude Write: spawns the launcher with
+--agent claude-code and the exact payload bytes, and relays its stdout verbatim"
+and › "Codex apply_patch: spawns the launcher with --agent codex and the exact
+payload bytes, and relays its stdout verbatim".
+
+The relay skips an edit only when its targets are provably wholly outside the
+project; mixed and uncertain targets remain eligible for auditing. See the
+same file's "probity-gate: project scope — edits provably outside the project
+are inert" describe block. The existing declaration field `required: true`
+makes launcher availability mandatory in both attended and unattended sessions.
+An attended missing optional launcher warns; an unattended missing launcher
+blocks. Required execution errors, nonzero exits and execution bounds deny;
+successful empty upstream output remains allow. A completed optional denial
+remains byte-identical even when the launcher exits nonzero. See the same file's
+"probity-gate: selected Probity availability" describe block. Shell tools remain
+outside this relay, as pinned in "probity-gate: tool filtering — only the named
+tools are ever forwarded".
 
 ## Fixtures
 
