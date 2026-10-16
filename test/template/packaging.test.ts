@@ -411,7 +411,7 @@ describe('the root manifest is publish-complete', () => {
     );
   });
 
-  it('records published 1.5.1 and 1.5.2, with 1.5.2 as `latest` and every overtaken version as neither', async () => {
+  it('records published 1.7.0 as `latest` and an unfrozen 1.7.1 release candidate', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
     // Read from the public registry on 11 Oct 2026. Keep both identities
     // literal: the reconciliation must not turn a published-version claim into
@@ -443,13 +443,11 @@ describe('the root manifest is publish-complete', () => {
     // those would grow a list forever against a shape that cannot recur.
     //
     expect(plan).toMatch(
-      /npm contains published `1\.6\.0`\s*\r?\n>\s*\(`gitHead` `536fe59f980d3ee0bea9d53e51f6589453ffb9bb`\) and `1\.6\.1`/,
+      /npm contains published `1\.7\.0`\s*\r?\n>\s*\(`gitHead` `abf675e698dafad3cee26806ec0afffc230af6cc`\); `latest` is `1\.7\.0`\./,
     );
-    expect(plan).toMatch(
-      /and `1\.6\.1`\s*\r?\n>\s*\(`gitHead` `3c520c5757a060ab3b90f56be9a15ea2879f0907`\); `latest` is `1\.6\.1`\./,
-    );
-    expect(plan).toMatch(/`latest` is `1\.6\.1`/);
-    expect(plan).toMatch(/Current release:\*\* 1\.6\.1/);
+    expect(plan).toMatch(/`latest` is `1\.7\.0`/);
+    expect(plan).toMatch(/Current release:\*\* 1\.7\.0/);
+    expect(plan).toMatch(/`1\.7\.1` is an unfrozen release candidate being prepared/);
     expect(plan).not.toMatch(
       /`?1\.6\.1`? is (?:the [^.`]*)?(?:being )?prepared|`?1\.6\.1`? prepared|`?1\.6\.1`? is the release candidate|1\.6\.1 publish pending|owner publishes `?1\.6\.1`?|`?1\.6\.1`? is waiting on the owner/,
     );
@@ -466,6 +464,8 @@ describe('the root manifest is publish-complete', () => {
     // and no superseded version may still be called `latest` — the 0.7.0
     // mistake, kept red for every version that has been overtaken.
     expect(plan).not.toMatch(/`?1\.6\.0`? is `latest`/);
+    expect(plan).not.toMatch(/`latest` is `1\.6\.1`/);
+    expect(plan).not.toMatch(/`?1\.6\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.5\.2`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.5\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?1\.5\.0`? is `latest`/);
@@ -487,13 +487,10 @@ describe('the root manifest is publish-complete', () => {
     expect(plan).not.toMatch(/`?0\.7\.1`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.7\.0`? is `latest`/);
     expect(plan).not.toMatch(/`?0\.6\.2`? is `latest`/);
-    // 1.7.0 is being prepared and remains unpublished: no voice of this file
-    // may announce it as shipped.
-    expect(plan).toMatch(/`1\.7\.0` is the Outcome Evidence minor being prepared/);
-    expect(plan).not.toMatch(/Status \(1\.7\.0 published/);
-    expect(plan).not.toMatch(/`?1\.7\.0`? is `latest`/);
-    expect(plan).not.toMatch(/through `?1\.7\.0`? are live/);
-    expect(plan).not.toMatch(/done through `1\.7\.0`/);
+    expect(plan).not.toMatch(/`1\.7\.0` is the Outcome Evidence minor being prepared/);
+    expect(plan).not.toMatch(/Status \(1\.7\.1 published/);
+    expect(plan).not.toMatch(/`?1\.7\.1`? is `latest`/);
+    expect(plan).not.toMatch(/`?1\.7\.1`? is frozen|frozen (?:release candidate )?`?1\.7\.1`?/i);
 
     // 🔴 What is deliberately NOT here any more, so the next reader does not
     // restore it: while 0.9.0 was prepared, an ENUMERATED negative forbade
