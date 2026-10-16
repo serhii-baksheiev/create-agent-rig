@@ -90,7 +90,7 @@ export const USAGE_COUNTER_FIELDS = Object.freeze([
 ]);
 
 /** `version` (Claude) / `cli_version` (Codex) as written by the harness — a short, narrow shape. */
-export const HARNESS_VERSION_RE = /^[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?$/;
+export const HARNESS_VERSION_RE = /^(?![\s\S]{129})[0-9]+\.[0-9]+\.[0-9]+(?:[-+.][0-9A-Za-z.-]{0,32})?(?![\s\S])/;
 
 /** A non-negative safe integer — the only shape a counter is ever read or summed as. */
 const isCounter = (value) => Number.isSafeInteger(value) && value >= 0;
@@ -124,6 +124,20 @@ function summedUsageCounters(usageByKey) {
     if (present < usageByKey.size) partialCounters.push(outKey);
   }
   return { counters, partialCounters };
+}
+
+/** The one valid harness version named by every retained request, if any. */
+function completeHarnessVersion(versionsByKey) {
+  let candidate;
+  for (const version of versionsByKey.values()) {
+    if (typeof version !== 'string' || !HARNESS_VERSION_RE.test(version)) return undefined;
+    if (candidate === undefined) {
+      candidate = version;
+    } else if (candidate !== version) {
+      return undefined;
+    }
+  }
+  return candidate;
 }
 
 /**
@@ -278,7 +292,7 @@ export function readBoundedLines(file, foldLine, { now = Date.now } = {}) {
 export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
   const usageByKey = new Map();
   const models = new Set();
-  const versions = new Set();
+  const versionsByKey = new Map();
 
   /** Parses and folds one complete line (no trailing newline) into the accumulators. */
   const foldLine = (lineBuf) => {
@@ -299,8 +313,8 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
     const messageId = typeof message.id === 'string' ? message.id : undefined;
     const key = requestId ?? messageId;
     if (key === undefined) return true;
-    if (typeof record.version === 'string') versions.add(record.version);
     usageByKey.set(key, usage); // last occurrence for this key wins
+    versionsByKey.set(key, record.version);
     return true;
   };
 
@@ -327,10 +341,8 @@ export function readClaudeTranscriptUsage(file, { now = Date.now } = {}) {
   }
   // The harness version every counted record agrees on — evidence for the
   // report's per-version exclusivity check, never a guess from the parent.
-  if (versions.size === 1) {
-    const candidate = [...versions][0];
-    if (HARNESS_VERSION_RE.test(candidate)) result.harnessVersion = candidate;
-  }
+  const harnessVersion = completeHarnessVersion(versionsByKey);
+  if (harnessVersion !== undefined) result.harnessVersion = harnessVersion;
   return result;
 }
 
@@ -493,7 +505,7 @@ const MAX_COST_STATE_MODELS = 16;
  */
 export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = {}) {
   const usageByKey = new Map();
-  const versions = new Set();
+  const versionsByKey = new Map();
   let assistantRecords = 0;
   let foreignSessionRecords = 0;
   let compactBoundaries = 0;
@@ -531,12 +543,12 @@ export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = 
       return true;
     }
     assistantRecords += 1;
-    if (typeof record.version === 'string') versions.add(record.version);
     const requestId = typeof record.requestId === 'string' ? record.requestId : undefined;
     const messageId = typeof message.id === 'string' ? message.id : undefined;
     const key = requestId ?? messageId;
     if (key === undefined) return true;
     usageByKey.set(key, usage);
+    versionsByKey.set(key, record.version);
     return true;
   };
 
@@ -565,10 +577,8 @@ export function readClaudeControllerUsage(file, sessionId, { now = Date.now } = 
   // A counter some counted records omit is summed from the records that
   // carry it and NAMED here, so a reader never takes the sum for complete.
   if (summed.partialCounters.length > 0) result.coverage.partialCounters = summed.partialCounters;
-  if (versions.size === 1) {
-    const candidate = [...versions][0];
-    if (HARNESS_VERSION_RE.test(candidate)) result.harnessVersion = candidate;
-  }
+  const harnessVersion = completeHarnessVersion(versionsByKey);
+  if (harnessVersion !== undefined) result.harnessVersion = harnessVersion;
   if (costState !== null) {
     const aggregate = sessionAggregateOf(costState);
     if (aggregate !== null) {

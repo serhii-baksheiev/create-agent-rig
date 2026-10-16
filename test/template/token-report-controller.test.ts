@@ -1104,6 +1104,20 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data2.controllers[0]!.usage?.inputTokens).toBe(100);
   });
 
+  it('rejects an oversized numeric semantic harness version at report ingress without dropping measured controller counters', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    const oversized = `${'1'.repeat(125)}.2.3`;
+    snapshot(dir, 1, { harnessVersion: oversized });
+    const data = report(root, ['run-a']);
+    expect(data.controllers[0]!.harnessVersion).toBeNull();
+    expect(data.controllers[0]!.usage).toEqual({
+      evidenceSource: 'claude-controller-transcript',
+      ...claudeCounters(),
+    });
+    expect(JSON.stringify(data)).not.toContain(oversized);
+  });
+
   it('sessionAggregate is projected through an allowlist: counters per model only, costUSD and unknown fields dropped, flags forced to false', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
