@@ -107,6 +107,21 @@ const applyPatch = (filePath: string, addition: string) => ({
   },
 });
 
+const updatePatch = (filePath: string, before: string, after: string) => ({
+  hook_event_name: 'PreToolUse',
+  tool_name: 'apply_patch',
+  tool_input: {
+    command: [
+      '*** Begin Patch',
+      `*** Update File: ${filePath}`,
+      '@@',
+      `-${before}`,
+      `+${after}`,
+      '*** End Patch',
+    ].join('\n'),
+  },
+});
+
 // RP-507: Node's Windows `realpathSync.native` expands a valid DOS 8.3 cwd
 // alias, while ordinary `realpathSync` can preserve it. The containment guard
 // must compare one canonical identity, without making traversal or junction
@@ -219,6 +234,563 @@ describe('guard-secret-file: accepts an ordinary relative Add from a real Window
     } finally {
       await removeFixture(canonicalRoot);
       await removeFixture(outside);
+    }
+  });
+});
+
+describe('guard-secret-file: a real Windows 8.3 alias cannot hide an existing credential file (RP-517)', () => {
+  it('refuses the credential alias while allowing the distinct ordinary-file alias', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const root = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp517-file-alias-')));
+    const credential = path.join(root, '.env.local');
+    const ordinary = path.join(root, 'ordinary-long-note.txt');
+    const marker = 'harmless disposable audit fixture';
+    const shortPath = async (filePath: string) => {
+      const escaped = filePath.replaceAll("'", "''");
+      const { stdout } = await run('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${escaped}').ShortPath`,
+      ]);
+      return stdout.trim();
+    };
+
+    try {
+      await writeFile(credential, marker);
+      await writeFile(ordinary, marker);
+      await run('git', ['init', '-q', root], { env: gitEnv() });
+
+      const credentialAlias = await shortPath(credential);
+      const ordinaryAlias = await shortPath(ordinary);
+      const credentialAliasBase = path.basename(credentialAlias);
+      const ordinaryAliasBase = path.basename(ordinaryAlias);
+      if (
+        credentialAliasBase === path.basename(credential) ||
+        ordinaryAliasBase === path.basename(ordinary)
+      ) {
+        ctx.skip('the Windows fixture did not provide distinct 8.3 aliases for both files');
+        return;
+      }
+
+      expect(realpathSync.native(credentialAlias)).toBe(realpathSync.native(credential));
+      expect(realpathSync.native(ordinaryAlias)).toBe(realpathSync.native(ordinary));
+      await expect(readFile(credentialAlias, 'utf8')).resolves.toBe(marker);
+      await expect(readFile(ordinaryAlias, 'utf8')).resolves.toBe(marker);
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: root };
+      const ordinaryThroughAlias = await runHook(
+        { ...updatePatch(ordinaryAliasBase, marker, 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(ordinaryThroughAlias.code, ordinaryThroughAlias.stderr).toBe(0);
+
+      const canonicalCredential = await runHook(
+        { ...updatePatch('.env.local', marker, 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(canonicalCredential.code, canonicalCredential.stderr).toBe(2);
+
+      const credentialThroughAlias = await runHook(
+        { ...updatePatch(credentialAliasBase, marker, 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(credentialThroughAlias.code, credentialThroughAlias.stderr).toBe(2);
+      expect(credentialThroughAlias.stderr).toMatch(/credential file/i);
+    } finally {
+      await removeFixture(root);
+    }
+  });
+});
+
+describe('guard-secret-file: canonicalizing an 8.3 alias preserves its literal credential policy (RP-517)', () => {
+  it('refuses a short alias whose extension is credential-named even when its canonical filename is ordinary', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const root = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp517-literal-policy-')));
+    const relativeOrdinary = 'ordinary-long-note.jwtcatalog';
+    const ordinary = path.join(root, relativeOrdinary);
+    const marker = 'harmless disposable audit fixture';
+    try {
+      await writeFile(ordinary, marker);
+      await run('git', ['init', '-q', root], { env: gitEnv() });
+      const escaped = ordinary.replaceAll("'", "''");
+      const { stdout } = await run('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${escaped}').ShortPath`,
+      ]);
+      const alias = stdout.trim();
+      const aliasBase = path.basename(alias);
+      if (aliasBase === path.basename(ordinary)) {
+        ctx.skip('the Windows fixture did not provide a distinct 8.3 alias for the ordinary file');
+        return;
+      }
+
+      expect(path.extname(relativeOrdinary)).toBe('.jwtcatalog');
+      expect(path.extname(aliasBase).toLowerCase()).toBe('.jwt');
+      expect(realpathSync.native(alias)).toBe(realpathSync.native(ordinary));
+      await expect(readFile(alias, 'utf8')).resolves.toBe(marker);
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: root };
+      const canonical = await runHook(
+        { ...write(relativeOrdinary, 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(canonical.code, canonical.stderr).toBe(0);
+
+      const shortAlias = await runHook(
+        { ...write(aliasBase, 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(shortAlias.code, shortAlias.stderr).toBe(2);
+      expect(shortAlias.stderr).toMatch(/credential file/i);
+    } finally {
+      await removeFixture(root);
+    }
+  });
+});
+
+describe('guard-secret-file: Windows 8.3-looking names retain a safe local identity boundary (RP-517)', () => {
+  it('rejects reparse, outside, UNC, device, and drive-relative aliases while allowing an absent ordinary Add', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const root = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp517-boundary-root-')));
+    const outside = realpathSync.native(
+      await mkdtemp(path.join(tmpdir(), 'rp517-boundary-outside-')),
+    );
+    const outsideCredential = path.join(outside, '.env.local');
+    const ordinary = path.join(root, 'ordinary-long-note.txt');
+    const marker = 'harmless disposable audit fixture';
+    const shortPath = async (filePath: string) => {
+      const escaped = filePath.replaceAll("'", "''");
+      const { stdout } = await run('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${escaped}').ShortPath`,
+      ]);
+      return stdout.trim();
+    };
+
+    try {
+      await writeFile(outsideCredential, marker);
+      await writeFile(ordinary, marker);
+      await run('git', ['init', '-q', root], { env: gitEnv() });
+      await symlink(outside, path.join(root, 'junction-escape'), 'junction');
+
+      const outsideAlias = await shortPath(outsideCredential);
+      const aliasBase = path.basename(outsideAlias);
+      const ordinaryAlias = await shortPath(ordinary);
+      if (
+        aliasBase === path.basename(outsideCredential) ||
+        path.basename(ordinaryAlias) === path.basename(ordinary)
+      ) {
+        ctx.skip('the Windows fixture did not provide distinct 8.3 aliases for both files');
+        return;
+      }
+
+      const junctionInput = `junction-escape/${aliasBase}`;
+      expect(realpathSync.native(outsideAlias)).toBe(realpathSync.native(outsideCredential));
+      expect(realpathSync.native(ordinaryAlias)).toBe(realpathSync.native(ordinary));
+      expect(realpathSync.native(path.join(root, junctionInput))).toBe(
+        realpathSync.native(outsideCredential),
+      );
+      await expect(access(path.join(root, 'ABSENT~1.TXT'))).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: root };
+      const missingOrdinary = await runHook(
+        { ...applyPatch('ABSENT~1.TXT', 'export const safe = true;'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(missingOrdinary.code, missingOrdinary.stderr).toBe(0);
+
+      const uncInput = String.raw`\\rp517-no-such-host\share` + '\\' + aliasBase;
+      const deviceInput = String.raw`\\?\C:\rp517` + '\\' + aliasBase;
+      const deviceExistingOrdinaryAlias = String.raw`\\?` + '\\' + ordinaryAlias;
+      for (const input of [uncInput, deviceInput, deviceExistingOrdinaryAlias]) {
+        expect(input).not.toContain('${aliasBase}');
+        expect(input).not.toContain('${ordinaryAlias}');
+      }
+      expect(uncInput.endsWith(aliasBase)).toBe(true);
+      expect(deviceInput.endsWith(aliasBase)).toBe(true);
+      expect(deviceExistingOrdinaryAlias.endsWith(ordinaryAlias)).toBe(true);
+
+      const unsafeInputs: Array<[string, string]> = [
+        ['junction', junctionInput],
+        ['outside existing alias', outsideAlias],
+        ['UNC', uncInput],
+        ['device', deviceInput],
+        ['device existing ordinary alias', deviceExistingOrdinaryAlias],
+        ['drive-relative', `C:${aliasBase}`],
+      ];
+      const results = [] as Array<{ label: string; result: HookResult }>;
+      for (const [label, filePath] of unsafeInputs) {
+        results.push({
+          label,
+          result: await runHook(
+            { ...write(filePath, 'harmless replacement'), cwd: root },
+            hookEnv,
+            root,
+          ),
+        });
+      }
+      expect(
+        results.map(({ label, result }) => ({ label, code: result.code })),
+        results.map(({ label, result }) => `${label}: ${result.stderr}`).join(', '),
+      ).toEqual([
+        { label: 'junction', code: 2 },
+        { label: 'outside existing alias', code: 2 },
+        { label: 'UNC', code: 2 },
+        { label: 'device', code: 2 },
+        { label: 'device existing ordinary alias', code: 2 },
+        { label: 'drive-relative', code: 2 },
+      ]);
+    } finally {
+      await removeFixture(root);
+      await removeFixture(outside);
+    }
+  });
+});
+
+interface CredentialAliasFixture {
+  root: string;
+  marker: string;
+  aliasBase: string;
+  ordinaryAliasBase: string;
+}
+
+const existingCredentialAliasFixture = async (
+  ctx: Parameters<typeof skipUnless>[0],
+): Promise<CredentialAliasFixture | undefined> => {
+  skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+  const root = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp517-direct-alias-')));
+  const credential = path.join(root, '.env.local');
+  const ordinary = path.join(root, 'ordinary-long-note.txt');
+  const marker = 'harmless disposable audit fixture';
+  try {
+    await writeFile(credential, marker);
+    await writeFile(ordinary, marker);
+    await run('git', ['init', '-q', root], { env: gitEnv() });
+    const escaped = credential.replaceAll("'", "''");
+    const { stdout } = await run('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${escaped}').ShortPath`,
+    ]);
+    const alias = stdout.trim();
+    const aliasBase = path.basename(alias);
+    const ordinaryEscaped = ordinary.replaceAll("'", "''");
+    const { stdout: ordinaryStdout } = await run('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${ordinaryEscaped}').ShortPath`,
+    ]);
+    const ordinaryAlias = ordinaryStdout.trim();
+    const ordinaryAliasBase = path.basename(ordinaryAlias);
+    if (aliasBase === path.basename(credential) || ordinaryAliasBase === path.basename(ordinary)) {
+      await removeFixture(root);
+      ctx.skip('the Windows fixture did not provide distinct 8.3 aliases for both files');
+      return undefined;
+    }
+    expect(realpathSync.native(alias)).toBe(realpathSync.native(credential));
+    expect(realpathSync.native(ordinaryAlias)).toBe(realpathSync.native(ordinary));
+    await expect(readFile(alias, 'utf8')).resolves.toBe(marker);
+    await expect(readFile(ordinaryAlias, 'utf8')).resolves.toBe(marker);
+    return { root, marker, aliasBase, ordinaryAliasBase };
+  } catch (error) {
+    await removeFixture(root);
+    throw error;
+  }
+};
+
+const withExistingCredentialAlias = async (
+  ctx: Parameters<typeof skipUnless>[0],
+  assertion: (fixture: CredentialAliasFixture) => Promise<void>,
+) => {
+  const fixture = await existingCredentialAliasFixture(ctx);
+  if (!fixture) return;
+  try {
+    const ordinary = await runHook(
+      {
+        ...updatePatch(fixture.ordinaryAliasBase, fixture.marker, 'harmless replacement'),
+        cwd: fixture.root,
+      },
+      { CLAUDE_PROJECT_DIR: fixture.root },
+      fixture.root,
+    );
+    expect(ordinary.code, ordinary.stderr).toBe(0);
+    await assertion(fixture);
+  } finally {
+    await removeFixture(fixture.root);
+  }
+};
+
+describe('guard-secret-file: direct edit tools retain credential policy through real Windows 8.3 aliases (RP-517)', () => {
+  it('refuses every direct edit tool after the ordinary alias remains writable', async (ctx) => {
+    await withExistingCredentialAlias(ctx, async ({ root, aliasBase, ordinaryAliasBase }) => {
+      const payloads: Array<[string, (filePath: string) => Record<string, unknown>]> = [
+        ['Write', (filePath) => write(filePath, 'harmless replacement')],
+        ['Edit', (filePath) => edit(filePath, 'harmless replacement')],
+        ['MultiEdit', (filePath) => multiEdit(filePath, ['harmless replacement'])],
+        ['NotebookEdit', (filePath) => notebookEdit(filePath, 'harmless replacement')],
+      ];
+      const results = [] as Array<{ tool: string; result: HookResult }>;
+      for (const [tool, payloadFor] of payloads) {
+        const ordinary = await runHook(
+          { ...payloadFor(ordinaryAliasBase), cwd: root },
+          { CLAUDE_PROJECT_DIR: root },
+          root,
+        );
+        expect(ordinary.code, `${tool}: ${ordinary.stderr}`).toBe(0);
+        results.push({
+          tool,
+          result: await runHook(
+            { ...payloadFor(aliasBase), cwd: root },
+            { CLAUDE_PROJECT_DIR: root },
+            root,
+          ),
+        });
+      }
+      expect(
+        results.map(({ tool, result }) => ({ tool, code: result.code })),
+        results.map(({ tool, result }) => `${tool}: ${result.stderr}`).join(', '),
+      ).toEqual([
+        { tool: 'Write', code: 2 },
+        { tool: 'Edit', code: 2 },
+        { tool: 'MultiEdit', code: 2 },
+        { tool: 'NotebookEdit', code: 2 },
+      ]);
+    });
+  });
+});
+
+// RP-517 round 3. Direct tools resolve a relative filename from their effective
+// cwd. The 8.3 canonicaliser must use that same cwd, rather than treating every
+// relative alias as root-relative under CLAUDE_PROJECT_DIR.
+describe('guard-secret-file: a direct relative 8.3 alias resolves from its effective Windows cwd (RP-517)', () => {
+  let root = '';
+  let subdirectory = '';
+  let shortSubdirectory = '';
+  let credentialAlias = '';
+  let ordinaryAlias = '';
+  const marker = 'harmless disposable audit fixture';
+
+  const shortPath = async (filePath: string) => {
+    const escaped = filePath.replaceAll("'", "''");
+    const { stdout } = await run('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `(New-Object -ComObject Scripting.FileSystemObject).GetFile('${escaped}').ShortPath`,
+    ]);
+    return stdout.trim();
+  };
+
+  const shortFolderPath = async (directory: string) => {
+    const escaped = directory.replaceAll("'", "''");
+    const { stdout } = await run('powershell.exe', [
+      '-NoProfile',
+      '-Command',
+      `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${escaped}').ShortPath`,
+    ]);
+    return stdout.trim();
+  };
+
+  beforeEach(async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    root = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp517-subdir-alias-')));
+    subdirectory = path.join(root, 'subdirectory-with-long-name');
+    await mkdir(subdirectory, { recursive: true });
+    const credential = path.join(subdirectory, '.env.local');
+    const ordinary = path.join(subdirectory, 'ordinary-long-note.txt');
+    await writeFile(credential, marker);
+    await writeFile(ordinary, marker);
+    await run('git', ['init', '-q', root], { env: gitEnv() });
+
+    credentialAlias = path.basename(await shortPath(credential));
+    ordinaryAlias = path.basename(await shortPath(ordinary));
+    shortSubdirectory = await shortFolderPath(subdirectory);
+    if (
+      credentialAlias === path.basename(credential) ||
+      ordinaryAlias === path.basename(ordinary)
+    ) {
+      ctx.skip('the Windows fixture did not provide distinct 8.3 aliases for both files');
+      return;
+    }
+
+    expect(realpathSync.native(path.join(subdirectory, credentialAlias))).toBe(
+      realpathSync.native(credential),
+    );
+    expect(realpathSync.native(path.join(subdirectory, ordinaryAlias))).toBe(
+      realpathSync.native(ordinary),
+    );
+    expect(realpathSync.native(shortSubdirectory)).toBe(realpathSync.native(subdirectory));
+    await expect(readFile(path.join(subdirectory, credentialAlias), 'utf8')).resolves.toBe(marker);
+    await expect(readFile(path.join(subdirectory, ordinaryAlias), 'utf8')).resolves.toBe(marker);
+  });
+
+  afterEach(async () => {
+    if (root !== '') await removeFixture(root);
+  });
+
+  it('refuses a credential alias from the payload cwd after allowing an ordinary alias there', async () => {
+    const hookEnv = { CLAUDE_PROJECT_DIR: root };
+    const ordinary = await runHook(
+      { ...write(ordinaryAlias, 'harmless replacement'), cwd: subdirectory },
+      hookEnv,
+      root,
+    );
+    expect(ordinary.code, ordinary.stderr).toBe(0);
+
+    const credential = await runHook(
+      { ...write(credentialAlias, 'harmless replacement'), cwd: subdirectory },
+      hookEnv,
+      root,
+    );
+    expect(credential.code, credential.stderr).toBe(2);
+    expect(credential.stderr).toMatch(/credential file/i);
+  });
+
+  it('refuses a credential alias from the hook process cwd when the payload omits cwd', async () => {
+    const hookEnv = { CLAUDE_PROJECT_DIR: root };
+    const ordinary = await runHook(
+      write(ordinaryAlias, 'harmless replacement'),
+      hookEnv,
+      subdirectory,
+    );
+    expect(ordinary.code, ordinary.stderr).toBe(0);
+
+    const credential = await runHook(
+      write(credentialAlias, 'harmless replacement'),
+      hookEnv,
+      subdirectory,
+    );
+    expect(credential.code, credential.stderr).toBe(2);
+    expect(credential.stderr).toMatch(/credential file/i);
+  });
+
+  it('refuses a credential alias when the payload cwd is the directory short alias', async (ctx) => {
+    skipUnless(
+      ctx,
+      shortSubdirectory.toLocaleLowerCase() !== subdirectory.toLocaleLowerCase(),
+      'the Windows fixture did not provide a distinct 8.3 alias for the subdirectory cwd',
+    );
+    const hookEnv = { CLAUDE_PROJECT_DIR: root };
+    const ordinary = await runHook(
+      { ...write(ordinaryAlias, 'harmless replacement'), cwd: shortSubdirectory },
+      hookEnv,
+      root,
+    );
+    expect(ordinary.code, ordinary.stderr).toBe(0);
+
+    const credential = await runHook(
+      { ...write(credentialAlias, 'harmless replacement'), cwd: shortSubdirectory },
+      hookEnv,
+      root,
+    );
+    expect(credential.code, credential.stderr).toBe(2);
+    expect(credential.stderr).toMatch(/credential file/i);
+  });
+
+  it('keeps an Update from the payload cwd on its resolver-established subdirectory target', async () => {
+    const hookEnv = { CLAUDE_PROJECT_DIR: root };
+    const ordinary = await runHook(
+      { ...updatePatch(ordinaryAlias, marker, 'harmless replacement'), cwd: subdirectory },
+      hookEnv,
+      root,
+    );
+    expect(ordinary.code, ordinary.stderr).toBe(0);
+
+    const credential = await runHook(
+      { ...updatePatch(credentialAlias, marker, 'harmless replacement'), cwd: subdirectory },
+      hookEnv,
+      root,
+    );
+    expect(credential.code, credential.stderr).toBe(2);
+    expect(credential.stderr).toMatch(/credential file/i);
+  });
+});
+
+describe('guard-secret-file: a Windows 8.3 alias keeps credential policy for NTFS alternate data streams (RP-517)', () => {
+  it('refuses existing and new credential streams while allowing ordinary alias streams', async (ctx) => {
+    const fixture = await existingCredentialAliasFixture(ctx);
+    if (!fixture) return;
+    const { root, marker, aliasBase, ordinaryAliasBase } = fixture;
+    const credentialExistingStream = path.join(root, '.env.local:rp517audit');
+    const ordinaryExistingStream = path.join(root, 'ordinary-long-note.txt:rp517audit');
+    try {
+      await writeFile(credentialExistingStream, marker);
+      await writeFile(ordinaryExistingStream, marker);
+      const credentialStreamText = await readNamedStreamOrSkip(
+        ctx,
+        credentialExistingStream,
+        'a readable credential-file named stream',
+      );
+      const ordinaryStreamText = await readNamedStreamOrSkip(
+        ctx,
+        ordinaryExistingStream,
+        'a readable ordinary-file named stream',
+      );
+      if (credentialStreamText === undefined || ordinaryStreamText === undefined) return;
+
+      const credentialAliasExistingStream = path.join(root, `${aliasBase}:rp517audit`);
+      const ordinaryAliasExistingStream = path.join(root, `${ordinaryAliasBase}:rp517audit`);
+      expect(credentialStreamText).toBe(marker);
+      expect(ordinaryStreamText).toBe(marker);
+      await expect(readFile(credentialAliasExistingStream, 'utf8')).resolves.toBe(marker);
+      await expect(readFile(ordinaryAliasExistingStream, 'utf8')).resolves.toBe(marker);
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: root };
+      const cases: Array<[string, Record<string, unknown>, number]> = [
+        [
+          'canonical credential existing stream',
+          write('.env.local:rp517audit', 'harmless replacement'),
+          2,
+        ],
+        [
+          'credential alias existing stream Write',
+          write(`${aliasBase}:rp517audit`, 'harmless replacement'),
+          2,
+        ],
+        [
+          'credential alias existing stream Edit',
+          edit(`${aliasBase}:rp517audit`, 'harmless replacement'),
+          2,
+        ],
+        [
+          'credential alias new stream Write',
+          write(`${aliasBase}:rp517new`, 'harmless replacement'),
+          2,
+        ],
+        [
+          'ordinary alias existing stream',
+          write(`${ordinaryAliasBase}:rp517audit`, 'harmless replacement'),
+          0,
+        ],
+        [
+          'ordinary alias new stream',
+          write(`${ordinaryAliasBase}:rp517new`, 'harmless replacement'),
+          0,
+        ],
+      ];
+      const results = [] as Array<{ label: string; expectedCode: number; result: HookResult }>;
+      for (const [label, payload, expectedCode] of cases) {
+        results.push({
+          label,
+          expectedCode,
+          result: await runHook({ ...payload, cwd: root }, hookEnv, root),
+        });
+      }
+      expect(
+        results.map(({ label, result }) => ({ label, code: result.code })),
+        results.map(({ label, result }) => `${label}: ${result.stderr}`).join(', '),
+      ).toEqual(results.map(({ label, expectedCode }) => ({ label, code: expectedCode })));
+    } finally {
+      await removeFixture(root);
     }
   });
 });
