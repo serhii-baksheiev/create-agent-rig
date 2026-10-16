@@ -83,6 +83,9 @@
 // unbounded work in a fail-open guard is a total bypass of every rule at once,
 // not just of this one.
 
+import { lstatSync, readlinkSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+
 import { findSecretValues, isCredentialPath } from '../scripts/lib/secrets.mjs';
 import { editFragments } from './lib/edit-input.mjs';
 import { readHookInput } from './lib/hook-input.mjs';
@@ -91,6 +94,102 @@ import { readHookInput } from './lib/hook-input.mjs';
 const WHERE_CREDENTIALS_BELONG =
   'Credentials live outside the repo (an env file in your home config, a secret manager) ' +
   'and reach the process through the environment — see .claude/rules/autonomy.md, "Never".';
+
+const DOS_SHORT_COMPONENT = /(?:^|[\\/:])[^\\/:]{1,6}~\d+(?:\.[^\\/:]*)?(?=$|[\\/:])/i;
+const WINDOWS_UNSAFE_PREFIX = /^(?:[\\/]{2}|[\\/](?![\\/])|[A-Za-z]:(?![\\/]))/;
+
+const strictlyWithin = (root, candidate) =>
+  candidate === root || candidate.startsWith(root.endsWith(path.sep) ? root : `${root}${path.sep}`);
+
+/**
+ * A literal 8.3 name can refer to a credential file whose short spelling does
+ * not match the credential vocabulary. Resolve only existing local targets:
+ * UNC/device and reparse-point inputs are refused before native resolution.
+ */
+function canonicalWindowsAlias(filePath, projectDir, directEditCwd) {
+  if (process.platform !== 'win32' || projectDir === '') {
+    return { kind: 'not-applicable' };
+  }
+  if (!DOS_SHORT_COMPONENT.test(filePath)) return { kind: 'not-applicable' };
+  if (
+    WINDOWS_UNSAFE_PREFIX.test(filePath) ||
+    WINDOWS_UNSAFE_PREFIX.test(projectDir) ||
+    (!path.isAbsolute(filePath) && WINDOWS_UNSAFE_PREFIX.test(directEditCwd))
+  ) {
+    return { kind: 'unsafe' };
+  }
+
+  // `name:stream` resolves through the existing base file even when the named
+  // stream has not been created yet. Credential classification remains in
+  // `isCredentialPath`; this only finds the local filesystem identity to inspect.
+  const finalSeparator = Math.max(filePath.lastIndexOf('/'), filePath.lastIndexOf('\\'));
+  const streamSeparator = filePath.indexOf(':', finalSeparator + 1);
+  const basePath = streamSeparator < 0 ? filePath : filePath.slice(0, streamSeparator);
+  const root = path.resolve(projectDir);
+  const resolutionDir = path.isAbsolute(basePath) ? root : directEditCwd;
+  const candidate = path.resolve(resolutionDir, basePath);
+  if (
+    !path.isAbsolute(root) ||
+    !path.isAbsolute(resolutionDir) ||
+    !path.isAbsolute(candidate)
+  ) {
+    return { kind: 'unsafe' };
+  }
+
+  const inspectExistingLocalPath = (value) => {
+    const parsed = path.parse(value);
+    let cursor = parsed.root;
+    for (const component of path.relative(parsed.root, value).split(path.sep)) {
+      if (component === '') continue;
+      cursor = path.join(cursor, component);
+      try {
+        const entry = lstatSync(cursor);
+        if (!entry.isSymbolicLink()) continue;
+        readlinkSync(cursor);
+        return 'unsafe';
+      } catch (error) {
+        return error?.code === 'ENOENT' ? 'missing' : 'unsafe';
+      }
+    }
+    return 'existing';
+  };
+
+  const rootState = inspectExistingLocalPath(root);
+  const resolutionDirState = inspectExistingLocalPath(resolutionDir);
+  if (rootState === 'missing') return { kind: 'not-applicable' };
+  if (rootState !== 'existing' || resolutionDirState !== 'existing') return { kind: 'unsafe' };
+
+  try {
+    const canonicalRoot = realpathSync.native(root);
+    const canonicalResolutionDir = realpathSync.native(resolutionDir);
+    if (!strictlyWithin(canonicalRoot, canonicalResolutionDir)) return { kind: 'unsafe' };
+    const candidateState = inspectExistingLocalPath(candidate);
+    if (candidateState === 'missing') return { kind: 'not-applicable' };
+    if (candidateState !== 'existing') return { kind: 'unsafe' };
+    const canonicalCandidate = realpathSync.native(candidate);
+    if (!strictlyWithin(canonicalRoot, canonicalCandidate)) return { kind: 'unsafe' };
+    return {
+      kind: 'resolved',
+      relativePath: path.relative(canonicalRoot, canonicalCandidate).split(path.sep).join('/'),
+    };
+  } catch {
+    return { kind: 'unsafe' };
+  }
+}
+
+function directLiteralPath(input) {
+  const toolInput = input.tool_input;
+  if (toolInput === null || typeof toolInput !== 'object' || Array.isArray(toolInput)) {
+    return undefined;
+  }
+  if (input.tool_name === 'Write' || input.tool_name === 'Edit' || input.tool_name === 'MultiEdit') {
+    return typeof toolInput.file_path === 'string' ? toolInput.file_path : undefined;
+  }
+  if (input.tool_name === 'NotebookEdit') {
+    return typeof toolInput.notebook_path === 'string' ? toolInput.notebook_path : undefined;
+  }
+  return undefined;
+}
 
 function main() {
   const input = readHookInput();
@@ -124,9 +223,10 @@ function main() {
     return 0; // nothing to judge; fail open
   }
 
-  // The tool sends an absolute path. Judge the repo-relative tail so a checkout
-  // living under a directory literally called `secrets` does not make every edit
-  // in the project a credential.
+  // apply_patch fragments are repository-relative; direct edit tools can carry
+  // absolute or effective-cwd-relative paths. Judge the repo-relative tail so a
+  // checkout living under a directory literally called `secrets` does not make
+  // every edit in the project a credential.
   // Trailing slashes stripped: with `CLAUDE_PROJECT_DIR=/repo/` the prefix test
   // below never matches, every path stays absolute, and a checkout that happens
   // to live under a directory called `secrets` has EVERY edit refused. That is
@@ -136,8 +236,15 @@ function main() {
   const projectDir = String(process.env.CLAUDE_PROJECT_DIR ?? '')
     .replaceAll('\\', '/')
     .replace(/\/+$/, '');
+  const literalPath = directLiteralPath(input);
+  const directEditCwd =
+    input.tool_name === 'apply_patch'
+      ? projectDir
+      : typeof input.cwd === 'string' && input.cwd.trim() !== ''
+        ? input.cwd
+        : process.cwd();
   let refused = false;
-  for (const { filePath, fragment, inspectionRefusal, possibleContent } of fragments) {
+  for (const { filePath, rawFilePath, fragment, inspectionRefusal, possibleContent } of fragments) {
     const relativePath =
       projectDir !== '' && filePath.startsWith(`${projectDir}/`)
         ? filePath.slice(projectDir.length + 1)
@@ -152,7 +259,23 @@ function main() {
       );
       continue;
     }
-    if (isCredentialPath(relativePath)) {
+    const canonicalAlias = canonicalWindowsAlias(
+      rawFilePath ?? literalPath ?? filePath,
+      projectDir,
+      directEditCwd,
+    );
+    if (canonicalAlias.kind === 'unsafe') {
+      refused = true;
+      process.stderr.write(
+        `BLOCKED - cannot safely inspect the Windows 8.3 path "${relativePath}". ` +
+          'Use a contained local repository path without a reparse point.\n',
+      );
+      continue;
+    }
+    if (
+      isCredentialPath(relativePath) ||
+      (canonicalAlias.kind === 'resolved' && isCredentialPath(canonicalAlias.relativePath))
+    ) {
       refused = true;
       process.stderr.write(
         `BLOCKED — "${relativePath}" is a credential file, and this repository never carries one.\n` +

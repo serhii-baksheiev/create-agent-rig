@@ -417,6 +417,89 @@ describe('usage-readers.mjs — readClaudeControllerUsage (RP-511)', () => {
     expect(projected).not.toContain('webSearchRequests');
     expect(own).toBeGreaterThan(byKey.size); // several records per request: the dedupe is load-bearing
   });
+
+  it('uses only retained keyed controller records to establish complete agreeing version evidence', async () => {
+    const withoutVersion = (requestId: string, usage: Record<string, number>): string =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: SESSION,
+        requestId,
+        message: { id: `msg-${requestId}`, role: 'assistant', model: 'claude-sonnet-5', usage },
+      });
+    const missingLast = await writeLines('missing-last.jsonl', [
+      claudeAssistant({
+        requestId: 'r1',
+        version: '2.1.296',
+        usage: { input_tokens: 5, output_tokens: 1 },
+      }),
+      withoutVersion('r1', { input_tokens: 10, output_tokens: 2 }),
+      claudeAssistant({
+        requestId: 'r2',
+        version: '2.1.296',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+    ]);
+    const validLastWithBait = await writeLines('valid-last.jsonl', [
+      withoutVersion('r1', { input_tokens: 5, output_tokens: 1 }),
+      claudeAssistant({
+        requestId: 'r1',
+        version: '2.1.296',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+      claudeAssistant({
+        requestId: 'r2',
+        version: '2.1.296',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: SESSION,
+        version: '2.1.297',
+        message: { role: 'assistant', usage: { input_tokens: 999, output_tokens: 999 } },
+      }),
+    ]);
+    const missingLastLines = (await readFile(missingLast, 'utf8')).trim().split('\n');
+    const validLastLines = (await readFile(validLastWithBait, 'utf8')).trim().split('\n');
+    expect(JSON.parse(missingLastLines[1]!) as Record<string, unknown>).not.toHaveProperty(
+      'version',
+    );
+    expect(JSON.parse(validLastLines[0]!) as Record<string, unknown>).not.toHaveProperty('version');
+    const reader = await readers();
+    const missing = reader.readClaudeControllerUsage(missingLast, SESSION);
+    const retained = reader.readClaudeControllerUsage(validLastWithBait, SESSION);
+    expect(missing.harnessVersion).toBeUndefined();
+    expect(missing.usage).toMatchObject({ requests: 2, inputTokens: 20, outputTokens: 4 });
+    expect(retained.harnessVersion).toBe('2.1.296');
+    expect(retained.usage).toMatchObject({ requests: 2, inputTokens: 20, outputTokens: 4 });
+  });
+
+  it('accepts a 128-character numeric semantic version but omits a longer one for Claude and Codex readers', async () => {
+    const atLimit = `${'1'.repeat(124)}.2.3`;
+    const tooLong = `${'1'.repeat(125)}.2.3`;
+    const claudeAtLimit = await writeLines('claude-at-limit.jsonl', [
+      claudeAssistant({ requestId: 'r1', version: atLimit, usage: { input_tokens: 1 } }),
+    ]);
+    const claudeTooLong = await writeLines('claude-too-long.jsonl', [
+      claudeAssistant({ requestId: 'r1', version: tooLong, usage: { input_tokens: 1 } }),
+    ]);
+    const codexAtLimit = await writeLines('codex-at-limit.jsonl', [
+      codexMeta('thread-at-limit', { cli_version: atLimit }),
+      codexUsage('thread-at-limit', { input_tokens: 1 }),
+    ]);
+    const codexTooLong = await writeLines('codex-too-long.jsonl', [
+      codexMeta('thread-too-long', { cli_version: tooLong }),
+      codexUsage('thread-too-long', { input_tokens: 1 }),
+    ]);
+    const reader = await readers();
+    expect(reader.readClaudeControllerUsage(claudeAtLimit, SESSION).harnessVersion).toBe(atLimit);
+    expect(reader.readClaudeControllerUsage(claudeTooLong, SESSION).harnessVersion).toBeUndefined();
+    expect(reader.readCodexControllerUsage(codexAtLimit, 'thread-at-limit').harnessVersion).toBe(
+      atLimit,
+    );
+    expect(
+      reader.readCodexControllerUsage(codexTooLong, 'thread-too-long').harnessVersion,
+    ).toBeUndefined();
+  });
 });
 
 describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
@@ -446,6 +529,17 @@ describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
         },
         'resp-2',
       ),
+      codexUsage(
+        'thread-A',
+        {
+          input_tokens: 300,
+          cached_input_tokens: 150,
+          output_tokens: 30,
+          reasoning_output_tokens: 6,
+          total_tokens: 330,
+        },
+        'resp-3',
+      ),
       codexUsage('thread-child', { input_tokens: 999, output_tokens: 999 }, 'resp-3'),
     ]);
     const { readCodexControllerUsage } = await readers();
@@ -459,8 +553,8 @@ describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
     });
     expect(result.coverage).toEqual({
       basis: 'thread-cumulative-last-record',
-      tokenUsageRecords: 2,
-      distinctResponseIds: 2,
+      tokenUsageRecords: 3,
+      distinctResponseIds: 3,
       foreignThreadRecords: 1,
       compactedRecords: 1,
     });
@@ -477,6 +571,58 @@ describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
     expect(readCodexControllerUsage(file, 'thread-A')).toEqual({
       usageUnavailable: 'session-identity-mismatch',
     });
+  });
+
+  it('rejects an own-thread cumulative input counter decrease across a compaction boundary', async () => {
+    const file = await writeLines('rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage('thread-A', { input_tokens: 1000, output_tokens: 1000 }, 'resp-before-compact'),
+      JSON.stringify({ type: 'compacted', payload: {} }),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 1000 }, 'resp-after-resume'),
+    ]);
+    const { readCodexControllerUsage } = await readers();
+    const result = readCodexControllerUsage(file, 'thread-A');
+    expect(typeof result.usageUnavailable).toBe('string');
+    expect(result.usage).toBeUndefined();
+  });
+
+  it('rejects a later optional output counter decrease after an intervening own snapshot omits that counter', async () => {
+    const file = await writeLines('rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 100 }, 'resp-before-omission'),
+      codexUsage('thread-A', { input_tokens: 100 }, 'resp-omits-output'),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 99 }, 'resp-after-omission'),
+    ]);
+    const { readCodexControllerUsage } = await readers();
+    const result = readCodexControllerUsage(file, 'thread-A');
+    expect(typeof result.usageUnavailable).toBe('string');
+    expect(result.usage).toBeUndefined();
+  });
+
+  it('rejects a valid final cumulative total when an earlier own snapshot has an unsafe counter', async () => {
+    const valid = await writeLines('valid-rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 100 }, 'resp-valid'),
+    ]);
+    const { readCodexControllerUsage } = await readers();
+    expect(readCodexControllerUsage(valid, 'thread-A').usage).toEqual({
+      evidenceSource: 'codex-controller-rollout',
+      inputTokens: 100,
+      outputTokens: 100,
+    });
+
+    const unsafeEarlier = await writeLines('unsafe-earlier-rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage(
+        'thread-A',
+        { input_tokens: Number.MAX_SAFE_INTEGER + 1, output_tokens: 100 },
+        'resp-unsafe-earlier',
+      ),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 100 }, 'resp-valid-later'),
+    ]);
+    const result = readCodexControllerUsage(unsafeEarlier, 'thread-A');
+    expect(typeof result.usageUnavailable).toBe('string');
+    expect(result.usage).toBeUndefined();
   });
 
   it('reports no-usage-records for an own rollout with no own-thread usage record', async () => {

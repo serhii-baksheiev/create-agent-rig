@@ -441,6 +441,62 @@ describe('record-dispatch.mjs — Claude usage capture on SubagentStop (RP-226)'
     }
   });
 
+  it('omits harnessVersion when any retained subagent request is missing its version, in either transcript order', async () => {
+    for (const [agentId, versions] of [
+      ['version-missing-first', [undefined, '2.1.296']],
+      ['version-missing-last', ['2.1.296', undefined]],
+    ] as const) {
+      const file = await writeTranscript(agentId, [
+        assistantLine({
+          requestId: 'req-1',
+          version: versions[0],
+          usage: { input_tokens: 10, output_tokens: 1 },
+        }),
+        assistantLine({
+          requestId: 'req-2',
+          version: versions[1],
+          usage: { input_tokens: 10, output_tokens: 1 },
+        }),
+      ]);
+      const result = await runHook(
+        JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+        env(),
+        ['--harness=claude'],
+      );
+      expect(result.code).toBe(0);
+    }
+    const events = await readEvents(runDir);
+    expect(events).toHaveLength(2);
+    for (const event of events) {
+      const data = (event.data ?? {}) as Record<string, unknown>;
+      expect(data.harnessVersion).toBeUndefined();
+      expect(data.usage).toMatchObject({ requests: 2, inputTokens: 20, outputTokens: 2 });
+    }
+  });
+
+  it('does not persist an oversized numeric semantic harness version from a usage-bearing subagent transcript', async () => {
+    const agentId = 'oversized-semver';
+    const oversized = `${'1'.repeat(1_000_000)}.2.3`;
+    const file = await writeTranscript(agentId, [
+      assistantLine({
+        requestId: 'req-1',
+        version: oversized,
+        usage: { input_tokens: 10, output_tokens: 1 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=claude'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(data.harnessVersion === undefined).toBe(true);
+    expect(data.usage).toMatchObject({ requests: 1, inputTokens: 10, outputTokens: 1 });
+    expect(await eventsFileBytes(runDir)).not.toContain(oversized);
+  });
+
   it('records measuredModel when every assistant record names the same model', async () => {
     const agentId = 'model-agree';
     const file = await writeTranscript(agentId, [
