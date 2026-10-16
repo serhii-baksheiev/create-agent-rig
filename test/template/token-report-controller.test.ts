@@ -797,6 +797,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     });
     const data = report(root, ['run-a']);
     expect(data.totals.claude.subagents).toBeNull();
+    expect(data.totals.claude.combined).toBeNull();
     expect(data.totals.claude.combinedUnavailable).toBe('subagent-usage-incomplete');
   });
 

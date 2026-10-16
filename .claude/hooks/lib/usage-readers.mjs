@@ -345,15 +345,43 @@ export const CODEX_USAGE_COUNTER_FIELDS = Object.freeze([
 ]);
 
 /**
+ * Checks every present counter in one own-thread cumulative snapshot without
+ * changing the final-snapshot mapping. A field omitted from a snapshot leaves
+ * its earlier observed value in place, so a later value cannot decrease across
+ * an omission or compaction boundary. The fixed four-field check is covered by
+ * test/template/dispatch-usage-codex.test.ts (absent in a generated rig) ›
+ * "rejects an own-thread cumulative input counter decrease instead of recording
+ * measured usage" (and the corresponding cached-input, output, and
+ * reasoning-output cases), plus test/template/session-usage.test.ts (absent
+ * in a generated rig) › "rejects a later optional output counter decrease
+ * after an intervening own snapshot omits that counter" and › "rejects a
+ * valid final cumulative total when an earlier own snapshot has an unsafe
+ * counter".
+ */
+function validateCodexCumulativeSnapshot(threadTokenUsage, observedCounters) {
+  const snapshot =
+    threadTokenUsage !== null && typeof threadTokenUsage === 'object' ? threadTokenUsage : {};
+  for (const [rawKey, outKey] of CODEX_USAGE_COUNTER_FIELDS) {
+    const value = snapshot[rawKey];
+    if (value === undefined) continue;
+    if (!isCounter(value)) return 'invalid-usage-counter';
+    const previous = observedCounters[outKey];
+    if (previous !== undefined && value < previous) return 'non-monotonic-cumulative-usage';
+    observedCounters[outKey] = value;
+  }
+  return undefined;
+}
+
+/**
  * Reads one Codex rollout, bounded exactly as `readClaudeTranscriptUsage` is,
  * and returns either `{ usage, harnessVersion? }` or `{ usageUnavailable:
  * <short reason code> }` — `harnessVersion` is `session_meta.payload.cli_version`
  * when it passes `HARNESS_VERSION_RE`. `agentId` is the dispatch's own `agent_id` — the rollout's
  * `session_meta.payload.id` must equal it (a rollout with no `session_meta`
- * record at all is the same failure: `'rollout-identity-mismatch'`), and only
- * the LAST `token_usage_record` whose `payload.thread_id === agentId` is
- * read; its `thread_token_usage` (the cumulative total) is mapped, never
- * summed across records. Never returns or logs the path or any rollout
+ * record at all is the same failure: `'rollout-identity-mismatch'`). Every
+ * own-thread `thread_token_usage` is first checked for a counter decrease;
+ * only then is the LAST snapshot (the cumulative total) mapped, never summed
+ * across records. Never returns or logs the path or any rollout
  * content — only aggregated numbers, that version string, or a short static
  * reason code.
  *
@@ -366,6 +394,8 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
   let cliVersion;
   let matched = false;
   let lastThreadTokenUsage = {};
+  const observedCounters = Object.create(null);
+  let cumulativeError;
 
   const foldLine = (lineBuf) => {
     if (lineBuf.length === 0) return true;
@@ -396,6 +426,7 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
       if (payload !== null && typeof payload === 'object' && payload.thread_id === agentId) {
         matched = true;
         const threadTokenUsage = payload.thread_token_usage;
+        cumulativeError ??= validateCodexCumulativeSnapshot(threadTokenUsage, observedCounters);
         // thread_token_usage is the thread's cumulative total, so the LAST
         // matching record replaces (never sums with) the previous one.
         lastThreadTokenUsage =
@@ -413,6 +444,7 @@ export function readCodexRolloutUsage(file, agentId, { now = Date.now } = {}) {
     return { usageUnavailable: 'rollout-identity-mismatch' };
   }
   if (!matched) return { usageUnavailable: 'no-usage-records' };
+  if (cumulativeError !== undefined) return { usageUnavailable: cumulativeError };
 
   const usage = { evidenceSource: 'codex-subagent-rollout' };
   let anyCounter = false;
@@ -622,7 +654,12 @@ function sessionAggregateOf(record) {
  * `session_meta.payload.id` must equal it, and the LAST `token_usage_record`
  * whose `payload.thread_id` equals it supplies `thread_token_usage` — the
  * thread's cumulative total, replaced never summed. Records of other threads
- * are counted under `coverage.foreignThreadRecords`; `compacted` records
+ * Before mapping the last snapshot, an own-thread counter decline or invalid
+ * counter makes usage unavailable — test/template/session-usage.test.ts
+ * (absent in a generated rig) › "rejects an own-thread cumulative input
+ * counter decrease across a compaction boundary" and › "rejects a valid final
+ * cumulative total when an earlier own snapshot has an unsafe counter".
+ * Records of other threads are counted under `coverage.foreignThreadRecords`; `compacted` records
  * under `coverage.compactedRecords` —
  * test/template/session-usage.test.ts (absent in a generated rig) › "reads
  * the last own-thread cumulative total, counts foreign-thread and compacted
@@ -639,6 +676,8 @@ export function readCodexControllerUsage(file, sessionId, { now = Date.now } = {
   let compactedRecords = 0;
   const responseIds = new Set();
   let lastThreadTokenUsage = null;
+  const observedCounters = Object.create(null);
+  let cumulativeError;
 
   const foldLine = (lineBuf) => {
     if (lineBuf.length === 0) return true;
@@ -674,6 +713,7 @@ export function readCodexControllerUsage(file, sessionId, { now = Date.now } = {
     ownRecords += 1;
     if (typeof payload.response_id === 'string') responseIds.add(payload.response_id);
     const threadTokenUsage = payload.thread_token_usage;
+    cumulativeError ??= validateCodexCumulativeSnapshot(threadTokenUsage, observedCounters);
     lastThreadTokenUsage =
       threadTokenUsage !== null && typeof threadTokenUsage === 'object' ? threadTokenUsage : {};
     return true;
@@ -685,6 +725,7 @@ export function readCodexControllerUsage(file, sessionId, { now = Date.now } = {
     return { usageUnavailable: 'session-identity-mismatch' };
   }
   if (lastThreadTokenUsage === null) return { usageUnavailable: 'no-usage-records' };
+  if (cumulativeError !== undefined) return { usageUnavailable: cumulativeError };
 
   const usage = { evidenceSource: 'codex-controller-rollout' };
   let anyCounter = false;
