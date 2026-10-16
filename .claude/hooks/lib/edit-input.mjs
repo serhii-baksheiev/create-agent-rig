@@ -144,7 +144,7 @@ export function pathComponentOverflowFragment() {
   };
 }
 
-export function editFragments(input) {
+export function editFragments(input, { projectRoot } = {}) {
   const toolName = input?.tool_name;
   const rawToolInput = input?.tool_input;
   // 🔴 **"I could not look" is not "there was nothing to look at" — and this
@@ -275,11 +275,12 @@ export function editFragments(input) {
       },
     ];
   }
-  return patchFragments(command, input?.cwd);
+  return patchFragments(command, input?.cwd, projectRoot);
 }
 
-function patchFragments(command, payloadCwd) {
+function patchFragments(command, payloadCwd, projectRoot) {
   const fragments = [];
+  const scopesProject = typeof projectRoot === 'string';
   const budget = {
     movedBytes: 0,
     hunkLines: 0,
@@ -293,14 +294,20 @@ function patchFragments(command, payloadCwd) {
     resolvedDirectories: new Map(),
     exhausted: null,
   };
-  try {
-    const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
-      ? path.resolve(payloadCwd)
-      : process.cwd();
-    budget.repoRoot = realpathSync.native(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_ROOT_TIMEOUT_MS, env: withoutGitLocation() }).trim());
-    budget.patchCwd = realpathSync.native(requestedCwd);
-    if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
-  } catch { /* moved inspection below refuses without a trusted root and cwd */ }
+  if (scopesProject) {
+    try {
+      budget.repoRoot = realpathSync.native(projectRoot);
+    } catch { /* scope classification below remains unproven and therefore refuses to classify */ }
+  } else {
+    try {
+      const requestedCwd = typeof payloadCwd === 'string' && payloadCwd.trim() !== ''
+        ? path.resolve(payloadCwd)
+        : process.cwd();
+      budget.repoRoot = realpathSync.native(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: requestedCwd, encoding: 'utf8', maxBuffer: 16 * 1024, stdio: ['ignore', 'pipe', 'ignore'], timeout: GIT_ROOT_TIMEOUT_MS, env: withoutGitLocation() }).trim());
+      budget.patchCwd = realpathSync.native(requestedCwd);
+      if (!isWithin(budget.repoRoot, budget.patchCwd)) budget.patchCwd = null;
+    } catch { /* moved inspection below refuses without a trusted root and cwd */ }
+  }
   let current = null;
   let patchRefusal = null;
 
@@ -338,8 +345,21 @@ function patchFragments(command, payloadCwd) {
         current = null;
         return false;
       }
-      const destination = repositoryPatchPath(destinationPath, budget);
-      if (destination === null) {
+      const destinationIsForeign =
+        scopesProject && isKnownForeignAbsolutePath(destinationPath, budget.repoRoot, projectRoot);
+      const sourceIsForeign =
+        current.moveTo !== null &&
+        isKnownForeignAbsolutePath(current.sourcePath, budget.repoRoot, projectRoot);
+      if (destinationIsForeign && sourceIsForeign && overPathComponentBudget(current.sourcePath)) {
+        patchRefusal = pathComponentRefusal();
+        current = null;
+        return false;
+      }
+      const foreign = current.moveTo === null ? destinationIsForeign : destinationIsForeign && sourceIsForeign;
+      const destination = foreign ? null : repositoryPatchPath(destinationPath, budget);
+      if (foreign) {
+        fragments.push({ filePath: '', fragment: '', projectScope: 'foreign' });
+      } else if (destination === null) {
         fragments.push({
           filePath: '',
           fragment: '',
@@ -465,6 +485,9 @@ function patchFragments(command, payloadCwd) {
     }
   }
   if (patchRefusal !== null) return [patchRefusal];
+  if (scopesProject && current !== null) {
+    return [{ filePath: '', fragment: '', projectScope: 'unknown' }];
+  }
   flush();
   if (patchRefusal !== null) return [patchRefusal];
   return fragments;
@@ -876,6 +899,58 @@ function trimRustLeadingWhitespace(value) {
     start += 1;
   }
   return value.slice(start);
+}
+
+export function isKnownForeignAbsolutePath(
+  value,
+  repoRoot,
+  lexicalRoot = repoRoot,
+  { trimTrailingWhitespace = true } = {},
+) {
+  if (repoRoot === null) return false;
+  if (
+    process.platform === 'win32' &&
+    (/^[\\/]{2}/.test(repoRoot) || /^[\\/]{2}/.test(lexicalRoot))
+  ) {
+    return false;
+  }
+  if (typeof value !== 'string') return false;
+  const originalValue = value;
+  if (originalValue.startsWith('\u0085') || originalValue.endsWith('\u0085')) return false;
+  const rawValue = trimTrailingWhitespace ? trimRustTrailingWhitespace(originalValue) : originalValue;
+  const withoutLeadingWhitespace = trimTrailingWhitespace ? trimRustLeadingWhitespace(rawValue) : rawValue;
+  if (withoutLeadingWhitespace !== rawValue || rawValue.split(/[\\/]/).some((part) => part === '..')) {
+    return false;
+  }
+  const isDeviceOrUnc =
+    /^[\\/]{2}[?.](?:[\\/]|$)/.test(rawValue) || /^[\\/]{2}/.test(rawValue);
+  const isWindowsRootRelative =
+    process.platform === 'win32' && /^[\\/](?![\\/])/.test(rawValue);
+  if (isDeviceOrUnc || isWindowsRootRelative || !path.isAbsolute(rawValue)) return false;
+
+  const candidate = path.resolve(rawValue);
+  if (isWithin(lexicalRoot, candidate)) return false;
+
+  let existing = candidate;
+  const suffix = [];
+  while (true) {
+    try {
+      const resolved = realpathSync.native(existing);
+      return !isWithin(repoRoot, path.resolve(resolved, ...suffix));
+    } catch (error) {
+      if (error?.code !== 'ENOENT') return false;
+      try {
+        lstatSync(existing);
+        return false;
+      } catch (lstatError) {
+        if (lstatError?.code !== 'ENOENT') return false;
+      }
+      const parent = path.dirname(existing);
+      if (parent === existing) return false;
+      suffix.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
 }
 
 function repositoryPatchPath(value, budget) {
