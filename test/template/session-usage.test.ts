@@ -417,6 +417,89 @@ describe('usage-readers.mjs — readClaudeControllerUsage (RP-511)', () => {
     expect(projected).not.toContain('webSearchRequests');
     expect(own).toBeGreaterThan(byKey.size); // several records per request: the dedupe is load-bearing
   });
+
+  it('uses only retained keyed controller records to establish complete agreeing version evidence', async () => {
+    const withoutVersion = (requestId: string, usage: Record<string, number>): string =>
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: SESSION,
+        requestId,
+        message: { id: `msg-${requestId}`, role: 'assistant', model: 'claude-sonnet-5', usage },
+      });
+    const missingLast = await writeLines('missing-last.jsonl', [
+      claudeAssistant({
+        requestId: 'r1',
+        version: '2.1.296',
+        usage: { input_tokens: 5, output_tokens: 1 },
+      }),
+      withoutVersion('r1', { input_tokens: 10, output_tokens: 2 }),
+      claudeAssistant({
+        requestId: 'r2',
+        version: '2.1.296',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+    ]);
+    const validLastWithBait = await writeLines('valid-last.jsonl', [
+      withoutVersion('r1', { input_tokens: 5, output_tokens: 1 }),
+      claudeAssistant({
+        requestId: 'r1',
+        version: '2.1.296',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+      claudeAssistant({
+        requestId: 'r2',
+        version: '2.1.296',
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        sessionId: SESSION,
+        version: '2.1.297',
+        message: { role: 'assistant', usage: { input_tokens: 999, output_tokens: 999 } },
+      }),
+    ]);
+    const missingLastLines = (await readFile(missingLast, 'utf8')).trim().split('\n');
+    const validLastLines = (await readFile(validLastWithBait, 'utf8')).trim().split('\n');
+    expect(JSON.parse(missingLastLines[1]!) as Record<string, unknown>).not.toHaveProperty(
+      'version',
+    );
+    expect(JSON.parse(validLastLines[0]!) as Record<string, unknown>).not.toHaveProperty('version');
+    const reader = await readers();
+    const missing = reader.readClaudeControllerUsage(missingLast, SESSION);
+    const retained = reader.readClaudeControllerUsage(validLastWithBait, SESSION);
+    expect(missing.harnessVersion).toBeUndefined();
+    expect(missing.usage).toMatchObject({ requests: 2, inputTokens: 20, outputTokens: 4 });
+    expect(retained.harnessVersion).toBe('2.1.296');
+    expect(retained.usage).toMatchObject({ requests: 2, inputTokens: 20, outputTokens: 4 });
+  });
+
+  it('accepts a 128-character numeric semantic version but omits a longer one for Claude and Codex readers', async () => {
+    const atLimit = `${'1'.repeat(124)}.2.3`;
+    const tooLong = `${'1'.repeat(125)}.2.3`;
+    const claudeAtLimit = await writeLines('claude-at-limit.jsonl', [
+      claudeAssistant({ requestId: 'r1', version: atLimit, usage: { input_tokens: 1 } }),
+    ]);
+    const claudeTooLong = await writeLines('claude-too-long.jsonl', [
+      claudeAssistant({ requestId: 'r1', version: tooLong, usage: { input_tokens: 1 } }),
+    ]);
+    const codexAtLimit = await writeLines('codex-at-limit.jsonl', [
+      codexMeta('thread-at-limit', { cli_version: atLimit }),
+      codexUsage('thread-at-limit', { input_tokens: 1 }),
+    ]);
+    const codexTooLong = await writeLines('codex-too-long.jsonl', [
+      codexMeta('thread-too-long', { cli_version: tooLong }),
+      codexUsage('thread-too-long', { input_tokens: 1 }),
+    ]);
+    const reader = await readers();
+    expect(reader.readClaudeControllerUsage(claudeAtLimit, SESSION).harnessVersion).toBe(atLimit);
+    expect(reader.readClaudeControllerUsage(claudeTooLong, SESSION).harnessVersion).toBeUndefined();
+    expect(reader.readCodexControllerUsage(codexAtLimit, 'thread-at-limit').harnessVersion).toBe(
+      atLimit,
+    );
+    expect(
+      reader.readCodexControllerUsage(codexTooLong, 'thread-too-long').harnessVersion,
+    ).toBeUndefined();
+  });
 });
 
 describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
