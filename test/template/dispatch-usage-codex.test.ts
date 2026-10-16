@@ -354,14 +354,17 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
       sessionMetaLine(agentId),
       tokenUsageLine({
         threadId: agentId,
-        threadTokenUsage: { input_tokens: 1000, output_tokens: 1000 },
+        threadTokenUsage: { input_tokens: 100, output_tokens: 100 },
       }),
-      // A second, later snapshot — the true cumulative total as of the end
-      // of the turn. If the reader summed instead of taking the last one,
-      // this would read 1100/1100 instead of 100/100.
+      // A later cumulative snapshot replaces the earlier one. If the reader
+      // summed snapshots, this would read 1100/1100 instead of 1000/1000.
       tokenUsageLine({
         threadId: agentId,
-        threadTokenUsage: { input_tokens: 100, output_tokens: 100 },
+        threadTokenUsage: { input_tokens: 1000, output_tokens: 1000 },
+      }),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, output_tokens: 1000 },
       }),
     ]);
     const result = await runHook(
@@ -373,11 +376,111 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
     const events = await readEvents(runDir);
     const data = (events[0]?.data ?? {}) as Record<string, unknown>;
     const usage = data.usage as Record<string, unknown> | undefined;
-    expect(usage?.inputTokens).toBe(100);
-    expect(usage?.outputTokens).toBe(100);
+    expect(usage?.inputTokens).toBe(1000);
+    expect(usage?.outputTokens).toBe(1000);
   });
 
-  it('ignores a token_usage_record for a DIFFERENT thread_id, even when it appears after the matching one', async () => {
+  it('rejects an own-thread cumulative input counter decrease instead of recording measured usage', async () => {
+    const agentId = 'decreasing-own-input';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, output_tokens: 1000 },
+      }),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 100, output_tokens: 1000 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('rejects an own-thread cumulative cached input counter decrease instead of recording measured usage', async () => {
+    const agentId = 'decreasing-own-cached-input';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, cached_input_tokens: 1000, output_tokens: 1000 },
+      }),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, cached_input_tokens: 100, output_tokens: 1000 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('rejects an own-thread cumulative output counter decrease instead of recording measured usage', async () => {
+    const agentId = 'decreasing-own-output';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, output_tokens: 1000 },
+      }),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, output_tokens: 100 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('rejects an own-thread cumulative reasoning output counter decrease instead of recording measured usage', async () => {
+    const agentId = 'decreasing-own-reasoning-output';
+    const file = await writeRollout('rollout.jsonl', [
+      sessionMetaLine(agentId),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, reasoning_output_tokens: 1000 },
+      }),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 1000, reasoning_output_tokens: 100 },
+      }),
+    ]);
+    const result = await runHook(
+      JSON.stringify(dispatch({ agent_id: agentId, agent_transcript_path: file })),
+      env(),
+      ['--harness=codex'],
+    );
+    expect(result.code).toBe(0);
+    const events = await readEvents(runDir);
+    const data = (events[0]?.data ?? {}) as Record<string, unknown>;
+    expect(typeof data.usageUnavailable).toBe('string');
+    expect('usage' in data).toBe(false);
+  });
+
+  it('ignores a decreasing foreign-thread sequence around valid own-thread records', async () => {
     const agentId = 'ignore-other-thread';
     const file = await writeRollout('rollout.jsonl', [
       sessionMetaLine(agentId),
@@ -387,7 +490,15 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
       }),
       tokenUsageLine({
         threadId: 'some-other-thread',
-        threadTokenUsage: { input_tokens: 999999, output_tokens: 999999 },
+        threadTokenUsage: { input_tokens: 9_000_000, output_tokens: 9_000_000 },
+      }),
+      tokenUsageLine({
+        threadId: 'some-other-thread',
+        threadTokenUsage: { input_tokens: 1, output_tokens: 1 },
+      }),
+      tokenUsageLine({
+        threadId: agentId,
+        threadTokenUsage: { input_tokens: 42, output_tokens: 7 },
       }),
     ]);
     const result = await runHook(
@@ -402,7 +513,7 @@ describe('record-dispatch.mjs — Codex usage capture on SubagentStop (RP-227)',
     expect(usage?.inputTokens).toBe(42);
     expect(usage?.outputTokens).toBe(7);
     const bytes = await eventsFileBytes(runDir);
-    expect(bytes).not.toContain('999999');
+    expect(bytes).not.toContain('9000000');
   });
 
   it('a counter absent from thread_token_usage stays absent — never zero, never inferred', async () => {

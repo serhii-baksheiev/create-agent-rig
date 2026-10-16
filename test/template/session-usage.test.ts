@@ -529,6 +529,17 @@ describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
         },
         'resp-2',
       ),
+      codexUsage(
+        'thread-A',
+        {
+          input_tokens: 300,
+          cached_input_tokens: 150,
+          output_tokens: 30,
+          reasoning_output_tokens: 6,
+          total_tokens: 330,
+        },
+        'resp-3',
+      ),
       codexUsage('thread-child', { input_tokens: 999, output_tokens: 999 }, 'resp-3'),
     ]);
     const { readCodexControllerUsage } = await readers();
@@ -542,8 +553,8 @@ describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
     });
     expect(result.coverage).toEqual({
       basis: 'thread-cumulative-last-record',
-      tokenUsageRecords: 2,
-      distinctResponseIds: 2,
+      tokenUsageRecords: 3,
+      distinctResponseIds: 3,
       foreignThreadRecords: 1,
       compactedRecords: 1,
     });
@@ -560,6 +571,58 @@ describe('usage-readers.mjs — readCodexControllerUsage (RP-511)', () => {
     expect(readCodexControllerUsage(file, 'thread-A')).toEqual({
       usageUnavailable: 'session-identity-mismatch',
     });
+  });
+
+  it('rejects an own-thread cumulative input counter decrease across a compaction boundary', async () => {
+    const file = await writeLines('rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage('thread-A', { input_tokens: 1000, output_tokens: 1000 }, 'resp-before-compact'),
+      JSON.stringify({ type: 'compacted', payload: {} }),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 1000 }, 'resp-after-resume'),
+    ]);
+    const { readCodexControllerUsage } = await readers();
+    const result = readCodexControllerUsage(file, 'thread-A');
+    expect(typeof result.usageUnavailable).toBe('string');
+    expect(result.usage).toBeUndefined();
+  });
+
+  it('rejects a later optional output counter decrease after an intervening own snapshot omits that counter', async () => {
+    const file = await writeLines('rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 100 }, 'resp-before-omission'),
+      codexUsage('thread-A', { input_tokens: 100 }, 'resp-omits-output'),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 99 }, 'resp-after-omission'),
+    ]);
+    const { readCodexControllerUsage } = await readers();
+    const result = readCodexControllerUsage(file, 'thread-A');
+    expect(typeof result.usageUnavailable).toBe('string');
+    expect(result.usage).toBeUndefined();
+  });
+
+  it('rejects a valid final cumulative total when an earlier own snapshot has an unsafe counter', async () => {
+    const valid = await writeLines('valid-rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 100 }, 'resp-valid'),
+    ]);
+    const { readCodexControllerUsage } = await readers();
+    expect(readCodexControllerUsage(valid, 'thread-A').usage).toEqual({
+      evidenceSource: 'codex-controller-rollout',
+      inputTokens: 100,
+      outputTokens: 100,
+    });
+
+    const unsafeEarlier = await writeLines('unsafe-earlier-rollout.jsonl', [
+      codexMeta('thread-A'),
+      codexUsage(
+        'thread-A',
+        { input_tokens: Number.MAX_SAFE_INTEGER + 1, output_tokens: 100 },
+        'resp-unsafe-earlier',
+      ),
+      codexUsage('thread-A', { input_tokens: 100, output_tokens: 100 }, 'resp-valid-later'),
+    ]);
+    const result = readCodexControllerUsage(unsafeEarlier, 'thread-A');
+    expect(typeof result.usageUnavailable).toBe('string');
+    expect(result.usage).toBeUndefined();
   });
 
   it('reports no-usage-records for an own rollout with no own-thread usage record', async () => {
