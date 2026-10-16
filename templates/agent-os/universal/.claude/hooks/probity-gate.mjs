@@ -114,12 +114,6 @@
 //     stay verbatim; see "preserves a completed optional launcher deny response
 //     even when that launcher exits nonzero".
 //
-// Work includes input/declaration parsing, bounded edit-fragment inspection,
-// path metadata and checkout-scoped flag reads, plus capped launcher output.
-// Windows process-tree cleanup may also launch taskkill. Filesystem and
-// configuration operations are synchronous; the launcher deadline does not
-// bound those operations. Cleanup remains best effort, as stated above.
-
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import path from 'node:path';
@@ -131,6 +125,7 @@ const WIN32 = process.platform === 'win32';
 
 /** argv `--harness=claude`/`--harness=codex` → the declaration's own harness id. */
 const HARNESS_IDS = { claude: 'claude-code', codex: 'codex' };
+const DECLARATION_HARNESS_IDS = new Set(Object.values(HARNESS_IDS));
 
 // Bash is deliberately absent from both sets — see the header's "What this
 // file GUARANTEES", last bullet.
@@ -229,21 +224,26 @@ const selectedProbity = (declaration, harnessId) => {
   if (!Array.isArray(declaration.integrations)) return { invalid: true };
   const integrations = declaration.integrations;
   const selected = integrations.filter((candidate) => candidate && candidate.id === 'probity' && candidate.selected === true);
-  const malformedRequired = selected.some(
-    (candidate) => candidate.required === true && (!Array.isArray(candidate.harnesses) || candidate.harnesses.length === 0),
-  );
+  const hasValidHarnesses = (candidate) =>
+    Array.isArray(candidate.harnesses) &&
+    candidate.harnesses.length > 0 &&
+    new Set(candidate.harnesses).size === candidate.harnesses.length &&
+    candidate.harnesses.every((harness) => DECLARATION_HARNESS_IDS.has(harness));
+  const invalidApplicability = selected.filter((candidate) => !hasValidHarnesses(candidate));
+  const malformedRequired = invalidApplicability.some((candidate) => candidate.required === true);
   const applicable = integrations.filter(
     (candidate) =>
       candidate &&
       candidate.id === 'probity' &&
       candidate.selected === true &&
-      Array.isArray(candidate.harnesses) &&
+      hasValidHarnesses(candidate) &&
       candidate.harnesses.includes(harnessId),
   );
   const required = applicable.filter((candidate) => candidate.required === true);
   const unknownRequired = applicable.some((candidate) => Object.hasOwn(candidate, 'required') && candidate.required !== true && candidate.required !== false);
   if (malformedRequired) return { required: true, ambiguous: true };
   if (required.length > 0) return { required: true, ambiguous: applicable.length !== 1 };
+  if (invalidApplicability.length > 0) return { invalid: true };
   if (unknownRequired) return { required: false, unknown: true };
   return applicable.length === 0 ? undefined : { required: false, ambiguous: false };
 };
@@ -384,12 +384,12 @@ async function main() {
   }
 
   const selection = selectedProbity(declaration, harnessId);
+  if (!selection) return 0;
   if (selection.invalid) {
     process.stderr.write('probity-gate: Probity integrations field is invalid\n');
     if (isUnattended(root)) process.stdout.write(unavailableAnswer(harnessArg, 'Probity declaration integrations field is invalid; repair .rig/integrations.json.'));
     return 0;
   }
-  if (!selection) return 0;
   if (selection.ambiguous) {
     process.stdout.write(unavailableAnswer(harnessArg, 'Required Probity declaration is ambiguous; repair .rig/integrations.json.'));
     return 0;

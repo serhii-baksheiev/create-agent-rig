@@ -298,6 +298,7 @@ describe('probity-gate: inert when nothing selected it for this harness', () => 
 
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toBe('');
+    expect(result.stderr).toBe('');
     await expect(readFile(markerFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
@@ -1271,6 +1272,107 @@ describe('probity-gate: selected Probity availability', () => {
     } finally {
       await Promise.all(flags.map((flag) => rm(flag, { force: true })));
     }
+  });
+
+  it('blocks an armed unattended selected Probity entry whose required flag and harness metadata are both invalid', async () => {
+    const root = await makeFixture({
+      integrations: {
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: 'true',
+            harnesses: 'claude-code',
+          },
+        ],
+      },
+    });
+    const home = await mkdtemp(path.join(tmpdir(), 'probity-unattended-home-'));
+    roots.push(root, home);
+    const env = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_PROJECT_DIR: root };
+    const { writeUnattended } = await loadUnattendedFlag();
+    const flags = writeUnattended({ item: 'RP-522', runDir: root, allow: [] }, env);
+    try {
+      const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), env);
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"permissionDecision":"deny"');
+      const parsed = JSON.parse(result.stdout) as {
+        hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+      };
+      expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+      expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+        /Probity|required|harness|repair/i,
+      );
+    } finally {
+      await Promise.all(flags.map((flag) => rm(flag, { force: true })));
+    }
+  });
+
+  it('blocks an attended selected required Probity entry whose harness name is unknown', async () => {
+    const root = await makeFixture({
+      integrations: {
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: true,
+            harnesses: ['not-a-harness'],
+          },
+        ],
+      },
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+      /Probity|harness|repair|required/i,
+    );
+  });
+
+  it('blocks an attended selected required Probity entry whose harness list repeats a valid name', async () => {
+    const root = await makeFixture({
+      integrations: {
+        schemaVersion: 1,
+        integrations: [
+          {
+            id: 'probity',
+            version: '1.10.1',
+            selected: true,
+            required: true,
+            harnesses: ['codex', 'codex'],
+          },
+        ],
+      },
+    });
+    roots.push(root);
+
+    const result = await runGate(['--harness=claude'], JSON.stringify(claudeWrite()), {
+      CLAUDE_PROJECT_DIR: root,
+    });
+
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"permissionDecision":"deny"');
+    const parsed = JSON.parse(result.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(parsed.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(parsed.hookSpecificOutput?.permissionDecisionReason).toMatch(
+      /Probity|harness|repair|required/i,
+    );
   });
 
   it('blocks an attended known-required Probity selection when an earlier duplicate has an invalid required flag', async () => {
