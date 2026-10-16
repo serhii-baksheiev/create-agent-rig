@@ -86,7 +86,7 @@ describe('the root manifest is publish-complete', () => {
     expect(compareSemver(root.version, highestReleased)).toBeGreaterThan(0);
   });
 
-  it('puts the 1.7.0 release candidate first and preserves the published 1.6.1, 1.6.0, 1.5.2, 1.5.1 and 1.5.0 history', async () => {
+  it('puts the 1.7.1 release candidate first and preserves the published 1.7.0, 1.6.1, 1.6.0, 1.5.2, 1.5.1 and 1.5.0 history', async () => {
     const changelog = await readFile(path.join(repoRoot, 'CHANGELOG.md'), 'utf8');
     // RP-374: the previous form of this regex required the heading's digits
     // to be followed immediately by a newline, so a "(release candidate)"
@@ -96,18 +96,26 @@ describe('the root manifest is publish-complete', () => {
     const first = changelog.match(
       /^## (\d+\.\d+\.\d+)(?: \(release candidate\))?\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m,
     );
-    expect(first?.[1]).toBe('1.7.0');
+    expect(first?.[1]).toBe('1.7.1');
+    expect(first?.[2]).toMatch(/Outcome Evidence/i);
+    expect(first?.[2]).toMatch(/controller and subagent measurements/i);
+    expect(first?.[2]).toMatch(/version provenance/i);
+    expect(first?.[2]).toMatch(/8\.3 aliases/i);
+    expect(first?.[2]).toMatch(/verified published 1\.7\.0 payload/i);
+    expect(first?.[2]).toMatch(/owner-directed exception/i);
+
+    const published170 = changelog.match(/^## 1\.7\.0\n([\s\S]*?)(?=^## \d+\.\d+\.\d+)/m);
     // The named subjects of THIS release, not words any release note would
     // contain — so an entry copied forward from 1.6.1 fails here.
     for (const ticket of ['RP-355', 'RP-356', 'RP-445', 'RP-446', 'RP-447', 'RP-476']) {
-      expect(first?.[2]).toMatch(new RegExp(ticket));
+      expect(published170?.[1]).toMatch(new RegExp(ticket));
     }
     // A minor must say why it is a minor, independently of the version digits.
-    expect(first?.[2]).toMatch(/is additive on the 1\.6 line — Outcome Evidence/i);
-    expect(first?.[2]).toMatch(/release-evidence\.mjs --outcome/);
-    expect(first?.[2]).toMatch(/integrations freshness/);
-    expect(first?.[2]).toMatch(/Known limitations/i);
-    expect(first?.[2]).toMatch(/RP-501/);
+    expect(published170?.[1]).toMatch(/is additive on the 1\.6 line — Outcome Evidence/i);
+    expect(published170?.[1]).toMatch(/release-evidence\.mjs --outcome/);
+    expect(published170?.[1]).toMatch(/integrations freshness/);
+    expect(published170?.[1]).toMatch(/Known limitations/i);
+    expect(published170?.[1]).toMatch(/RP-501/);
     // 1.6.1 is published, so its heading is reconciled to the plain form and
     // its pins move one release down. Each pin pairs the shipped behavior
     // with the ticket that owns it.
@@ -531,8 +539,10 @@ describe('the root manifest is publish-complete', () => {
     expect(ledger['1.6.0']).toBe('536fe59f980d3ee0bea9d53e51f6589453ffb9bb');
     // `npm view create-agent-rig@1.6.1 gitHead`, read on 2026-10-13.
     expect(ledger['1.6.1']).toBe('3c520c5757a060ab3b90f56be9a15ea2879f0907');
-    // 1.7.0 is being prepared and unpublished, so it has no ledger row.
-    expect(ledger).not.toHaveProperty('1.7.0');
+    // `npm view create-agent-rig@1.7.0 gitHead`, independently verified on 2026-10-16.
+    expect(ledger['1.7.0']).toBe('abf675e698dafad3cee26806ec0afffc230af6cc');
+    // 1.7.1 is being prepared and unpublished, so it has no ledger row.
+    expect(ledger).not.toHaveProperty('1.7.1');
     // and every row is a full sha, never an abbreviation
     for (const [version, sha] of Object.entries(ledger)) {
       if (sha !== null) expect(sha, `${version} is not a full sha`).toMatch(/^[0-9a-f]{40}$/);

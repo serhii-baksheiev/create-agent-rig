@@ -15,7 +15,29 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
-## 1.7.0 (release candidate)
+## 1.7.1 (release candidate)
+
+**1.7.1 follows the owner's release plan for published 1.7.0.** This patch
+includes additive usage reporting alongside the corrections below, as an
+owner-directed exception to the additive-is-a-minor convention.
+
+### Fixed
+
+- **Outcome Evidence excludes premature or malformed review replies.** Replies
+  preceding the recorded fan-out or naming malformed heads no longer count as
+  observed SHIP. Invalid claim-to-merge durations remain unavailable.
+- **Usage reports preserve observed controller and subagent measurements.**
+  Claude and Codex cumulative readers retain version provenance. Incomplete
+  selected journals, incompatible time windows, unknown partial counters,
+  unverified accounting versions and ambiguous child identities withhold
+  unsupported combined totals while valid isolated observations remain visible.
+- **Windows path guards recognize existing 8.3 aliases.** Ordinary short-path
+  working-directory edits remain usable; credential filenames, including
+  alternate-data-stream targets, remain blocked through their aliases.
+- **Upgrade history includes the verified published 1.7.0 payload.** Its hashes
+  and package integrity are recorded for predecessor verification.
+
+## 1.7.0
 
 **1.7.0 is additive on the 1.6 line — Outcome Evidence.** It adds a
 descriptive read of how agent work went, built only from records a rig
