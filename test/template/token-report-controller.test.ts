@@ -17,15 +17,15 @@ import { beforeAll, describe, expect, it } from 'vitest';
 //   - controller usage is attributed to the run only (`attribution.mode:
 //     'run'`), with the run's taken tickets listed, never credited to one;
 //   - `totals.<harness>.combined` (controller + subagents) is printed only when
-//     EVERY run relevant to the harness carries a controller snapshot for every
-//     controller ref its dispatches name (a dispatch that names none — every
-//     Codex one — needs any snapshot of the harness in its run, and the total
-//     then carries the `dispatch-controller-unnamed` caveat), no snapshot is
-//     malformed, every controller and dispatch group is measured, no sum
-//     overflowed, and the LAST snapshot of every (run, controller) AND every
-//     dispatch carries a `harnessVersion` on which parent/subagent exclusivity
-//     was verified; otherwise it is `null` with a reason, and it is never more
-//     than `measured-lower-bound-not-billing`;
+//     the selected evidence is readable and in a common `--since` interval,
+//     all dispatches are witnessed and name a matching controller snapshot,
+//     every controller and dispatch group is measured, no snapshot is malformed
+//     or non-monotonic, no sum overflowed, and the snapshot and dispatch
+//     versions have verified parent/subagent exclusivity. Unnamed dispatches,
+//     configured-but-unwitnessed hooks, unreadable selected runs, partial
+//     evidence, and ambiguous cross-run identities make the affected aggregate
+//     `null` with a reason. It is never more than
+//     `measured-lower-bound-not-billing`;
 //   - `schemaVersion` is 2 and `accountingBasis` states what every number
 //     rests on; `money` keeps its exact `{ line, estimate }` shape.
 //
@@ -108,8 +108,10 @@ interface HarnessTotals {
 interface DispatchGroup {
   harness: string;
   controller: string;
+  dispatches: { ended: number; noEndObserved: number; withUsage?: number };
   usage: { claude: Counters | null; codex: Counters | null };
   partialCounters: string[];
+  partialCountersIncomplete: boolean;
   harnessVersions: string[];
   counterOverflow: string[];
 }
@@ -129,7 +131,12 @@ interface Report {
 
 interface ReportModule {
   tokenReportOf(input: {
-    runs: Array<{ run: string; decisions?: JournalRecord[]; events?: JournalRecord[] }>;
+    runs: Array<{
+      run: string;
+      decisions?: JournalRecord[];
+      events?: JournalRecord[];
+      error?: string;
+    }>;
     since: string;
     wiring?: Record<string, string>;
   }): Report;
@@ -271,7 +278,12 @@ it('makes combined unavailable when actual Codex parent and child readers reject
     childProjection: Record<string, unknown>,
   ) =>
     mkrun(root, name).then((dir) => {
-      const child = { harness: 'codex', agentType: 'worker', agentRef: `child-${name}` };
+      const child = {
+        harness: 'codex',
+        controller: CTRL,
+        agentType: 'worker',
+        agentRef: `child-${name}`,
+      };
       journal.recordEvent({
         runDir: dir,
         kind: 'controller-usage',
@@ -309,6 +321,20 @@ it('makes combined unavailable when actual Codex parent and child readers reject
   );
   await writeCompleteRun('valid', validParent, validChild);
   const valid = report(root, ['valid']);
+  const expected = {
+    inputTokens: 100,
+    cachedInputTokens: 100,
+    outputTokens: 100,
+    reasoningOutputTokens: 100,
+  };
+  expect(validParent).toMatchObject({ usage: expected, harnessVersion: CODEX_VERSION });
+  expect(validChild).toMatchObject({ usage: expected, harnessVersion: CODEX_VERSION });
+  expect(valid.totals.codex.controller).toEqual(expected);
+  expect(valid.totals.codex.subagents).toEqual(expected);
+  expect(valid.controllers[0]!.harnessVersion).toBe(CODEX_VERSION);
+  expect(valid.dispatchGroups[0]!.controller).toBe(CTRL);
+  expect(valid.dispatchGroups[0]!.harnessVersions).toEqual([CODEX_VERSION]);
+  expect(valid.dispatchGroups[0]!.usage.codex).toEqual(expected);
   expect(valid.totals.codex.combined).toEqual({
     inputTokens: 200,
     cachedInputTokens: 200,
@@ -325,10 +351,20 @@ it('makes combined unavailable when actual Codex parent and child readers reject
     await rollout('child-decreasing', [1000, 100], 'child-decreasing'),
     'child-decreasing',
   );
+  expect(decreasingParent).toEqual({ usageUnavailable: 'non-monotonic-cumulative-usage' });
+  expect(decreasingChild).toEqual({ usageUnavailable: 'non-monotonic-cumulative-usage' });
   await writeCompleteRun('decreasing', decreasingParent, decreasingChild);
   const decreasing = report(root, ['decreasing']);
+  expect(decreasing.controllers[0]!.usage).toBeNull();
+  expect(decreasing.controllers[0]!.usageUnavailable).toBe('non-monotonic-cumulative-usage');
+  expect(decreasing.dispatchGroups[0]!.usage.codex).toBeNull();
+  expect(decreasing.dispatchGroups[0]!.controller).toBe(CTRL);
+  expect(decreasing.controllers[0]!.harnessVersion).toBeNull();
+  expect(decreasing.dispatchGroups[0]!.harnessVersions).toEqual([]);
   expect(decreasing.totals.codex.combined).toBeNull();
-  expect(typeof decreasing.totals.codex.combinedUnavailable).toBe('string');
+  expect(decreasing.totals.codex.combinedUnavailable).toBe(
+    'exclusivity-unverified-for-harness-version',
+  );
 });
 
 const subUsage = (over: Partial<Record<string, number>> = {}) => ({
@@ -390,7 +426,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(Object.keys(data.money).sort()).toEqual(['estimate', 'line']);
   });
 
-  it('controller-only run with the dispatch hook configured: the snapshot is the controller usage, subagents are null, and combined equals the controller on a verified harness version', async () => {
+  it('controller-only run with a configured but unwitnessed dispatch hook preserves controller evidence but withholds combined', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
     snapshot(dir, 1);
@@ -405,12 +441,12 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(entry.harnessVersion).toBe(CLAUDE_VERSION);
     expect(data.totals.claude.controller).toEqual(claudeCounters());
     expect(data.totals.claude.subagents).toBeNull();
-    expect(data.totals.claude.combined).toEqual(claudeCounters());
-    expect(data.totals.claude.combinedUnavailable).toBeNull();
-    expect(data.totals.claude.combinedBasis).toBe('measured-lower-bound-not-billing');
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).toBe('subagent-evidence-unobserved');
+    expect(data.totals.claude.combinedBasis).toBeNull();
     // The subagent side of this run rests on hook configuration, not on a
     // witnessed dispatch — said on the total, never silently.
-    expect(data.totals.claude.combinedCaveats).toEqual(['subagent-hook-configured-not-witnessed']);
+    expect(data.totals.claude.combinedCaveats).toEqual([]);
     expect(data.totals.claude.controllerRuns).toMatchObject({
       relevant: 1,
       complete: 1,
@@ -544,6 +580,301 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.controllers[0]!.attribution).toEqual({ mode: 'run', tickets: ['RP-1'] });
   });
 
+  it('a repeated Claude child ref within a run withholds aggregates even when its lifecycle observations fall in one group or separate groups', async () => {
+    const child = subUsage({
+      inputTokens: 10,
+      outputTokens: 1,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    });
+    const pair = (
+      runDir: string,
+      n: number,
+      agentRef: string,
+      agentType: string,
+      declaredModel: string,
+    ) => {
+      const base = {
+        harness: 'claude',
+        controller: CTRL,
+        agentType,
+        agentRef,
+        declaredModel,
+      };
+      journal.recordEvent({
+        runDir,
+        kind: 'dispatch-start',
+        data: { schema: 1, ...base },
+        now: at(n),
+      });
+      journal.recordEvent({
+        runDir,
+        kind: 'dispatch-end',
+        data: {
+          schema: 1,
+          ...base,
+          harnessVersion: CLAUDE_VERSION,
+          usage: { evidenceSource: 'claude-subagent-transcript', ...child },
+        },
+        now: at(n + 1),
+      });
+    };
+    const reportWith = async (
+      name: string,
+      pairs: Array<[agentRef: string, agentType: string, declaredModel: string]>,
+    ) => {
+      const root = await runsRoot();
+      const dir = await mkrun(root, name);
+      snapshot(dir, 1);
+      for (const [index, [agentRef, agentType, declaredModel]] of pairs.entries()) {
+        pair(dir, 2 + index * 2, agentRef, agentType, declaredModel);
+      }
+      return report(root, [name]);
+    };
+
+    const distinct = await reportWith('distinct', [
+      ['child-a', 'code-reviewer', 'model-a'],
+      ['child-b', 'code-reviewer', 'model-a'],
+    ]);
+    expect(distinct.totals.claude.subagents).toEqual(add(child, child));
+    expect(distinct.totals.claude.combined).toEqual(add(claudeCounters(), child, child));
+
+    const sameGroup = await reportWith('same-group', [
+      ['same-child', 'code-reviewer', 'model-a'],
+      ['same-child', 'code-reviewer', 'model-a'],
+    ]);
+    expect(sameGroup.dispatchGroups).toHaveLength(1);
+    expect(sameGroup.dispatchGroups[0]!.dispatches).toEqual({ ended: 2, noEndObserved: 0 });
+    expect(sameGroup.dispatchGroups[0]!.usage.claude).toBeNull();
+    expect(sameGroup.totals.claude.subagents).toBeNull();
+    expect(sameGroup.totals.claude.combined).toBeNull();
+    expect(sameGroup.totals.claude.combinedUnavailable).not.toBeNull();
+
+    const separateGroups = await reportWith('separate-groups', [
+      ['same-child', 'code-reviewer', 'model-a'],
+      ['same-child', 'implementation-agent', 'model-b'],
+    ]);
+    expect(separateGroups.dispatchGroups).toHaveLength(2);
+    expect(separateGroups.dispatchGroups.map((group) => group.dispatches.ended).sort()).toEqual([
+      1, 1,
+    ]);
+    expect(separateGroups.dispatchGroups.map((group) => group.usage.claude)).toEqual([
+      { evidenceSource: 'claude-subagent-transcript', ...child },
+      { evidenceSource: 'claude-subagent-transcript', ...child },
+    ]);
+    expect(separateGroups.totals.claude.subagentGroups).toEqual({ total: 2, measured: 2 });
+    expect(separateGroups.totals.claude.subagents).toBeNull();
+    expect(separateGroups.totals.claude.combined).toBeNull();
+    expect(separateGroups.totals.claude.combinedUnavailable).toBe(
+      'subagent-cumulative-identity-repeated',
+    );
+  });
+
+  it('requires a non-empty Claude child identity before aggregating multiple child observations', async () => {
+    const child = subUsage({
+      inputTokens: 10,
+      outputTokens: 1,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    });
+    const pair = (
+      runDir: string,
+      n: number,
+      agentRef: string | undefined,
+      agentType: string,
+      declaredModel: string,
+    ) => {
+      const base = {
+        harness: 'claude',
+        controller: CTRL,
+        agentType,
+        declaredModel,
+        ...(agentRef === undefined ? {} : { agentRef }),
+      };
+      journal.recordEvent({
+        runDir,
+        kind: 'dispatch-start',
+        data: { schema: 1, ...base },
+        now: at(n),
+      });
+      journal.recordEvent({
+        runDir,
+        kind: 'dispatch-end',
+        data: {
+          schema: 1,
+          ...base,
+          harnessVersion: CLAUDE_VERSION,
+          usage: { evidenceSource: 'claude-subagent-transcript', ...child },
+        },
+        now: at(n + 1),
+      });
+    };
+    const reportWith = async (
+      name: string,
+      pairs: Array<[agentRef: string | undefined, agentType: string, declaredModel: string]>,
+    ) => {
+      const root = await runsRoot();
+      const dir = await mkrun(root, name);
+      snapshot(dir, 1);
+      for (const [index, [agentRef, agentType, declaredModel]] of pairs.entries()) {
+        pair(dir, 2 + index * 2, agentRef, agentType, declaredModel);
+      }
+      return report(root, [name]);
+    };
+
+    const distinct = await reportWith('distinct', [
+      ['child-a', 'code-reviewer', 'model-a'],
+      ['child-b', 'implementation-agent', 'model-b'],
+    ]);
+    expect(distinct.totals.claude.subagents?.inputTokens).toBe(20);
+    expect(distinct.totals.claude.subagents?.outputTokens).toBe(2);
+    expect(distinct.totals.claude.combined?.inputTokens).toBe(120);
+    expect(distinct.totals.claude.combined?.outputTokens).toBe(202);
+
+    const indeterminateCases: Array<{
+      name: string;
+      pairs: Array<[string | undefined, string, string]>;
+      groups: number;
+    }> = [
+      {
+        name: 'absent refs in one group',
+        pairs: [
+          [undefined, 'code-reviewer', 'model-a'],
+          [undefined, 'code-reviewer', 'model-a'],
+        ],
+        groups: 1,
+      },
+      {
+        name: 'empty refs in one group',
+        pairs: [
+          ['', 'code-reviewer', 'model-a'],
+          ['', 'code-reviewer', 'model-a'],
+        ],
+        groups: 1,
+      },
+      {
+        name: 'absent refs in separate groups',
+        pairs: [
+          [undefined, 'code-reviewer', 'model-a'],
+          [undefined, 'implementation-agent', 'model-b'],
+        ],
+        groups: 2,
+      },
+      {
+        name: 'empty refs in separate groups',
+        pairs: [
+          ['', 'code-reviewer', 'model-a'],
+          ['', 'implementation-agent', 'model-b'],
+        ],
+        groups: 2,
+      },
+      {
+        name: 'one absent ref and one identified child',
+        pairs: [
+          [undefined, 'code-reviewer', 'model-a'],
+          ['child-b', 'implementation-agent', 'model-b'],
+        ],
+        groups: 2,
+      },
+    ];
+    for (const { name, pairs, groups } of indeterminateCases) {
+      const data = await reportWith(name, pairs);
+      expect(data.dispatchGroups).toHaveLength(groups);
+      if (groups === 1) {
+        expect(data.dispatchGroups[0]!.usage.claude, name).toBeNull();
+      } else {
+        expect(data.dispatchGroups.map((group) => group.usage.claude)).toEqual([
+          { evidenceSource: 'claude-subagent-transcript', ...child },
+          { evidenceSource: 'claude-subagent-transcript', ...child },
+        ]);
+      }
+      expect(data.totals.claude.controller).toEqual(claudeCounters());
+      expect(data.totals.claude.subagents, name).toBeNull();
+      expect(data.totals.claude.combined, name).toBeNull();
+    }
+  });
+
+  it('a repeated Codex child ref within a run withholds aggregates across one or separate groups', async () => {
+    const child = {
+      inputTokens: 10,
+      cachedInputTokens: 5,
+      outputTokens: 1,
+      reasoningOutputTokens: 0,
+    };
+    const pair = (
+      runDir: string,
+      n: number,
+      agentRef: string,
+      agentType: string,
+      declaredModel: string,
+    ) => {
+      const base = { harness: 'codex', agentType, agentRef, declaredModel };
+      journal.recordEvent({
+        runDir,
+        kind: 'dispatch-start',
+        data: { schema: 1, ...base },
+        now: at(n),
+      });
+      journal.recordEvent({
+        runDir,
+        kind: 'dispatch-end',
+        data: {
+          schema: 1,
+          ...base,
+          harnessVersion: CODEX_VERSION,
+          usage: { evidenceSource: 'codex-subagent-rollout', ...child },
+        },
+        now: at(n + 1),
+      });
+    };
+    const reportWith = async (
+      name: string,
+      pairs: Array<[agentRef: string, agentType: string, declaredModel: string]>,
+    ) => {
+      const root = await runsRoot();
+      const dir = await mkrun(root, name);
+      codexSnapshot(dir, 1);
+      for (const [index, [agentRef, agentType, declaredModel]] of pairs.entries()) {
+        pair(dir, 2 + index * 2, agentRef, agentType, declaredModel);
+      }
+      return report(root, [name]);
+    };
+
+    const distinct = await reportWith('distinct', [
+      ['child-a', 'code-reviewer', 'model-a'],
+      ['child-b', 'code-reviewer', 'model-a'],
+    ]);
+    expect(distinct.totals.codex.subagents).toEqual(add(child, child));
+
+    const sameGroup = await reportWith('same-group', [
+      ['same-child', 'code-reviewer', 'model-a'],
+      ['same-child', 'code-reviewer', 'model-a'],
+    ]);
+    expect(sameGroup.dispatchGroups).toHaveLength(1);
+    expect(sameGroup.dispatchGroups[0]!.dispatches).toEqual({ ended: 2, noEndObserved: 0 });
+    expect(sameGroup.dispatchGroups[0]!.usage.codex).toBeNull();
+    expect(sameGroup.totals.codex.subagents).toBeNull();
+    expect(sameGroup.totals.codex.combined).toBeNull();
+
+    const separateGroups = await reportWith('separate-groups', [
+      ['same-child', 'code-reviewer', 'model-a'],
+      ['same-child', 'implementation-agent', 'model-b'],
+    ]);
+    expect(separateGroups.dispatchGroups).toHaveLength(2);
+    expect(separateGroups.dispatchGroups.map((group) => group.dispatches.ended).sort()).toEqual([
+      1, 1,
+    ]);
+    expect(separateGroups.dispatchGroups.map((group) => group.usage.codex)).toEqual([child, child]);
+    expect(separateGroups.totals.codex.subagentGroups).toEqual({ total: 2, measured: 2 });
+    expect(separateGroups.dispatchGroups.map((group) => group.controller)).toEqual([
+      'unknown',
+      'unknown',
+    ]);
+    expect(separateGroups.totals.codex.subagents).toBeNull();
+    expect(separateGroups.totals.codex.combined).toBeNull();
+    expect(separateGroups.totals.codex.combinedUnavailable).toBe('dispatch-controller-unnamed');
+  });
+
   // The regression fixture the owner correction asked for: several runs, one
   // of them with dispatches but no controller snapshot.
   it('three runs, one with dispatches and no controller snapshot: no combined total for the harness, and the run is named', async () => {
@@ -563,10 +894,11 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     const data = report(root, ['run-a', 'run-b', 'run-c']);
     // The two snapshots that exist are still reported — the gap is in the total, not the entries.
     expect(data.controllers.map((entry) => entry.run).sort()).toEqual(['run-a', 'run-c']);
-    expect(data.totals.claude.controller).toEqual(
-      add(claudeCounters(), claudeCounters({ inputTokens: 1 })),
-    );
-    expect(data.totals.claude.subagents).toEqual(add(subUsage(), subUsage({ inputTokens: 50 })));
+    expect(data.totals.claude.controller).toBeNull();
+    expect(data.dispatchGroups.map((group) => group.usage.claude?.inputTokens).sort()).toEqual([
+      5, 50,
+    ]);
+    expect(data.totals.claude.subagents).toBeNull();
     expect(data.totals.claude.combined).toBeNull();
     expect(data.totals.claude.combinedUnavailable).toBe('controller-snapshot-missing-for-run');
     expect(data.totals.claude.controllerRuns).toMatchObject({
@@ -575,11 +907,14 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
       missingSnapshot: 1,
       missingSnapshotRuns: ['run-b'],
     });
-    // With run-b left out of the read, the same evidence combines.
+    // Even with run-b left out, two salted run refs cannot establish that
+    // these are independent provider sessions. Their entries remain visible;
+    // cross-run aggregates stay unavailable.
     const complete = report(root, ['run-a', 'run-c']);
-    expect(complete.totals.claude.combined).toEqual(
-      add(claudeCounters(), claudeCounters({ inputTokens: 1 }), subUsage()),
-    );
+    expect(complete.controllers.map((entry) => entry.usage?.inputTokens).sort()).toEqual([1, 100]);
+    expect(complete.totals.claude.controller).toBeNull();
+    expect(complete.totals.claude.subagents).toEqual(subUsage());
+    expect(complete.totals.claude.combined).toBeNull();
   });
 
   it('a run that journalled records but no usage evidence for any harness is relevant to every harness — its controller is unaccounted for', async () => {
@@ -593,7 +928,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.totals.claude.controllerRuns.missingSnapshotRuns).toEqual(['run-b']);
   });
 
-  it('mixed-harness run: a codex controller snapshot does not stand in for the claude controller of the same run', async () => {
+  it('mixed-harness run: a codex snapshot cannot establish a combined total for its unnamed child dispatch', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
     dispatchPair(dir, 1, subUsage());
@@ -608,15 +943,16 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     const data = report(root, ['run-a']);
     expect(data.totals.claude.combinedUnavailable).toBe('no-controller-snapshot');
     expect(data.totals.claude.controllerRuns.missingSnapshotRuns).toEqual(['run-a']);
-    expect(data.totals.codex.combined).toEqual(add(codexCounters(), codexSub));
-    expect(data.totals.codex.combinedCaveats).toEqual(['dispatch-controller-unnamed']);
+    expect(data.totals.codex.combined).toBeNull();
+    expect(data.totals.codex.combinedBasis).toBeNull();
+    expect(data.totals.codex.combinedCaveats).toEqual([]);
     expect(data.totals.codex.controllerRuns.missingSnapshot).toBe(0);
   });
 
   // Production shape, not the fixture's convenience: a Codex dispatch-start
-  // never names a controller, so per (run, controller) completeness is not
-  // decidable for it — the rule is per (run, harness), said on the total.
-  it('a codex run whose dispatches name no controller is complete once the run carries a codex snapshot: combined prints with the dispatch-controller-unnamed caveat, and the run is never reported missing', async () => {
+  // never names a controller, so a run-level snapshot cannot prove a unique
+  // parent session; preserve the entries but withhold combined.
+  it('a codex run whose dispatches name no controller preserves observed entries but withholds combined', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
     const codexSub = {
@@ -630,9 +966,9 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     codexSnapshot(dir, 5);
     const data = report(root, ['run-a']);
     expect(data.dispatchGroups[0]?.controller).toBe('unknown');
-    expect(data.totals.codex.combined).toEqual(add(codexCounters(), codexSub, codexSub));
-    expect(data.totals.codex.combinedUnavailable).toBeNull();
-    expect(data.totals.codex.combinedCaveats).toEqual(['dispatch-controller-unnamed']);
+    expect(data.totals.codex.combined).toBeNull();
+    expect(data.totals.codex.combinedBasis).toBeNull();
+    expect(data.totals.codex.combinedCaveats).toEqual([]);
     expect(data.totals.codex.controllerRuns).toMatchObject({
       relevant: 1,
       complete: 1,
@@ -704,14 +1040,15 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     }
   });
 
-  it('a claude dispatch-start without a controller ref follows the same per-(run, harness) rule, with the caveat; a start that names a ref no snapshot carries still leaves the run missing', async () => {
+  it('a claude dispatch-start without a controller ref preserves observed values but withholds combined; a named ref with no snapshot remains missing', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
     dispatchPair(dir, 1, subUsage(), { controller: null });
     snapshot(dir, 3);
     const data = report(root, ['run-a']);
-    expect(data.totals.claude.combined).toEqual(add(claudeCounters(), subUsage()));
-    expect(data.totals.claude.combinedCaveats).toEqual(['dispatch-controller-unnamed']);
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedBasis).toBeNull();
+    expect(data.totals.claude.combinedCaveats).toEqual([]);
     expect(data.totals.claude.controllerRuns.unnamedDispatchStarts).toBe(1);
 
     const dir2 = await mkrun(root, 'run-b');
@@ -834,6 +1171,51 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data2.totals.claude.unverifiedHarnessVersions).toEqual(['absent']);
   });
 
+  it('requires a verified harness version on every cumulative snapshot: a later verified version cannot certify earlier usage', async () => {
+    const child = subUsage({
+      inputTokens: 10,
+      outputTokens: 1,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    });
+    const cases: Array<{
+      name: string;
+      firstVersion: string | undefined;
+      unverified: string | null;
+    }> = [
+      { name: 'known then known', firstVersion: CLAUDE_VERSION, unverified: null },
+      { name: 'unknown then known', firstVersion: '2.1.281', unverified: '2.1.281' },
+      { name: 'absent then known', firstVersion: undefined, unverified: 'absent' },
+    ];
+    for (const { name, firstVersion, unverified } of cases) {
+      const root = await runsRoot();
+      const dir = await mkrun(root, name);
+      snapshot(dir, 1, { harnessVersion: firstVersion });
+      snapshot(dir, 2, { harnessVersion: CLAUDE_VERSION });
+      dispatchPair(dir, 3, child);
+      const data = report(root, [name]);
+      expect(data.controllers).toHaveLength(1);
+      expect(data.controllers[0]!.snapshots).toBe(2);
+      expect(data.controllers[0]!.usage).toEqual({
+        evidenceSource: 'claude-controller-transcript',
+        ...claudeCounters(),
+      });
+      expect(data.dispatchGroups[0]!.usage.claude).toEqual({
+        evidenceSource: 'claude-subagent-transcript',
+        ...child,
+      });
+      if (unverified === null) {
+        expect(data.totals.claude.combined?.inputTokens).toBe(110);
+        expect(data.totals.claude.combined?.outputTokens).toBe(201);
+        expect(data.totals.claude.unverifiedHarnessVersions).toEqual([]);
+      } else {
+        expect(data.totals.claude.combined, name).toBeNull();
+        expect(data.totals.claude.combinedUnavailable, name).not.toBeNull();
+        expect(data.totals.claude.unverifiedHarnessVersions, name).toContain(unverified);
+      }
+    }
+  });
+
   it('an absent or unverified DISPATCH harness version leaves combined null — the controller binary is never assumed for its subagents', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
@@ -911,6 +1293,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     });
     const data = report(root, ['run-a']);
     expect(data.dispatchGroups[0]!.partialCounters).toEqual(['cacheReadInputTokens']);
+    expect(data.dispatchGroups[0]!.partialCountersIncomplete).toBe(true);
     expect(data.totals.claude.subagentGroups).toEqual({ total: 1, measured: 0 });
     expect(data.totals.claude.combinedUnavailable).toBe('subagent-usage-incomplete');
   });
@@ -939,14 +1322,19 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.totals.claude.combinedUnavailable).toBe('controller-counters-partial');
   });
 
-  it('a controller sum that leaves the safe-integer range is null with counter-overflow, never a wrapped number', async () => {
+  it('two distinct controllers in one run whose sum leaves the safe-integer range are null with counter-overflow, never wrapped', async () => {
     const root = await runsRoot();
-    const a = await mkrun(root, 'run-a');
-    const b = await mkrun(root, 'run-b');
+    const dir = await mkrun(root, 'run-a');
     const huge = claudeCounters({ inputTokens: Number.MAX_SAFE_INTEGER });
-    snapshot(a, 1, { usage: { evidenceSource: 'claude-controller-transcript', ...huge } });
-    snapshot(b, 1, { usage: { evidenceSource: 'claude-controller-transcript', ...huge } });
-    const data = report(root, ['run-a', 'run-b']);
+    snapshot(dir, 1, {
+      controller: CTRL,
+      usage: { evidenceSource: 'claude-controller-transcript', ...huge },
+    });
+    snapshot(dir, 2, {
+      controller: 'fedcba9876543210',
+      usage: { evidenceSource: 'claude-controller-transcript', ...huge },
+    });
+    const data = report(root, ['run-a']);
     expect(data.totals.claude.controller?.inputTokens).toBeNull();
     expect(data.totals.claude.controller?.outputTokens).toBe(400);
     expect(data.totals.claude.combined).toBeNull();
@@ -1087,7 +1475,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.totals.claude.combinedUnavailable).toBe('counter-missing-on-one-side');
   });
 
-  it('a codex controller snapshot is reported with its own counters and verified against the codex version list', async () => {
+  it('a codex controller snapshot preserves its counters but does not combine an unnamed Codex dispatch', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
     const codexSub = {
@@ -1100,7 +1488,9 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     codexSnapshot(dir, 3);
     const data = report(root, ['run-a']);
     expect(data.totals.codex.controller).toEqual(codexCounters());
-    expect(data.totals.codex.combined).toEqual(add(codexCounters(), codexSub));
+    expect(data.dispatchGroups[0]!.usage.codex).toEqual(codexSub);
+    expect(data.totals.codex.combined).toBeNull();
+    expect(data.totals.codex.combinedUnavailable).toBe('dispatch-controller-unnamed');
     expect(data.totals.claude.combinedUnavailable).toBe('no-controller-snapshot');
 
     const dir2 = await mkrun(root, 'run-b');
@@ -1190,7 +1580,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(entry.lastTrigger).toBe('unknown');
     expect(entry.harnessVersion).toBeNull();
     expect(entry.usageUnavailable).not.toContain('\n');
-    expect(entry.coverage).toEqual({ dedupedRequests: 1 });
+    expect(entry.coverage).toEqual({ dedupedRequests: 1, incomplete: true });
     const text = reportModule.render(data);
     expect(text.split('\n').filter((line) => line.startsWith('totals claude:'))).toHaveLength(1);
     expect(JSON.stringify(data)).not.toContain(forged);
@@ -1248,6 +1638,250 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(JSON.stringify(data)).not.toContain('costUSD');
   });
 
+  it('an unreadable selected run preserves readable observations but withholds the combined total', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    snapshot(dir, 1);
+    const data = reportModule.tokenReportOf({
+      runs: [...readRuns(root, ['run-a']), { run: 'run-b', error: 'events.jsonl unreadable' }],
+      since: SINCE,
+      wiring: CONFIGURED,
+    });
+    expect(data.controllers[0]!.usage?.inputTokens).toBe(100);
+    expect(data.totals.claude.controller?.inputTokens).toBe(100);
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).not.toBeNull();
+  });
+
+  it('a --since window never combines a cumulative controller snapshot with a child filtered before the window', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    dispatchPair(dir, 1, subUsage({ inputTokens: 10, outputTokens: 1 }));
+    snapshot(dir, 4);
+    const data = reportModule.tokenReportOf({
+      runs: readRuns(root, ['run-a']),
+      since: at(3),
+      wiring: CONFIGURED,
+    });
+    expect(data.controllers[0]!.usage?.inputTokens).toBe(100);
+    expect(data.dispatchGroups).toEqual([]);
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).not.toBeNull();
+  });
+
+  it('an omitted counter between cumulative snapshots does not hide a later decrease', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    snapshot(dir, 1, {
+      usage: {
+        evidenceSource: 'claude-controller-transcript',
+        ...claudeCounters({ outputTokens: 100 }),
+      },
+    });
+    const { outputTokens: omitted, ...withoutOutputTokens } = claudeCounters();
+    void omitted;
+    snapshot(dir, 2, {
+      usage: { evidenceSource: 'claude-controller-transcript', ...withoutOutputTokens },
+    });
+    snapshot(dir, 3, {
+      usage: {
+        evidenceSource: 'claude-controller-transcript',
+        ...claudeCounters({ outputTokens: 50 }),
+      },
+    });
+    const data = report(root, ['run-a']);
+    expect(data.controllers[0]!.usage).toBeNull();
+    expect(data.controllers[0]!.usageUnavailable).toBe('non-monotonic-snapshots');
+    expect(data.controllers[0]!.snapshotCounters?.map((c) => c.outputTokens)).toEqual([
+      100,
+      undefined,
+      50,
+    ]);
+    expect(data.totals.claude.combined).toBeNull();
+  });
+
+  it('partial metadata that exceeds the bounded scan or is malformed fails closed without dropping observed values', async () => {
+    const cases: Array<{
+      name: string;
+      partialCounters: unknown;
+      side: 'dispatch' | 'controller';
+    }> = [
+      {
+        name: 'dispatch counter after 64 irrelevant names',
+        partialCounters: [...Array.from({ length: 64 }, () => 'irrelevant'), 'inputTokens'],
+        side: 'dispatch',
+      },
+      {
+        name: 'dispatch non-array metadata',
+        partialCounters: { inputTokens: true },
+        side: 'dispatch',
+      },
+      {
+        name: 'controller counter after 64 irrelevant names',
+        partialCounters: [...Array.from({ length: 64 }, () => 'irrelevant'), 'inputTokens'],
+        side: 'controller',
+      },
+      {
+        name: 'controller non-array metadata',
+        partialCounters: { inputTokens: true },
+        side: 'controller',
+      },
+    ];
+    for (const { name, partialCounters, side } of cases) {
+      const root = await runsRoot();
+      const dir = await mkrun(root, name);
+      snapshot(dir, 1, {
+        ...(side === 'controller'
+          ? { coverage: { basis: 'assistant-records-last-per-request', partialCounters } }
+          : {}),
+      });
+      if (side === 'dispatch') dispatchPair(dir, 2, { ...subUsage(), partialCounters });
+      const data = report(root, [name]);
+      if (side === 'dispatch') {
+        expect(data.dispatchGroups[0]!.usage.claude).toEqual({
+          evidenceSource: 'claude-subagent-transcript',
+          ...subUsage(),
+        });
+        expect(data.dispatchGroups[0]!.partialCountersIncomplete, name).toBe(true);
+      } else {
+        expect(data.controllers[0]!.usage).toEqual({
+          evidenceSource: 'claude-controller-transcript',
+          ...claudeCounters(),
+        });
+        expect(data.controllers[0]!.coverage, name).toMatchObject({ incomplete: true });
+      }
+      expect(data.totals.claude.combined, name).toBeNull();
+      expect(data.totals.claude.combinedUnavailable, name).not.toBeNull();
+    }
+  });
+
+  it('an empty partial list stays complete while unknown or malformed partial names fail closed without leaking metadata', async () => {
+    const child = subUsage({ inputTokens: 10, outputTokens: 1 });
+    const validRoot = await runsRoot();
+    const validDir = await mkrun(validRoot, 'valid-empty');
+    snapshot(validDir, 1, {
+      coverage: { basis: 'assistant-records-last-per-request', partialCounters: [] },
+    });
+    dispatchPair(validDir, 2, { ...child, partialCounters: [] });
+    const valid = report(validRoot, ['valid-empty']);
+    expect(valid.totals.claude.combined?.inputTokens).toBe(110);
+    expect(valid.totals.claude.combined?.outputTokens).toBe(201);
+
+    const cases: Array<{
+      name: string;
+      side: 'controller' | 'dispatch';
+      entries: unknown[];
+      allowed: string[];
+    }> = [
+      {
+        name: 'controller unknown only',
+        side: 'controller',
+        entries: ['unknown-counter'],
+        allowed: [],
+      },
+      {
+        name: 'controller unknown and known',
+        side: 'controller',
+        entries: ['unknown-counter', 'inputTokens'],
+        allowed: ['inputTokens'],
+      },
+      {
+        name: 'dispatch unknown only',
+        side: 'dispatch',
+        entries: ['unknown-counter'],
+        allowed: [],
+      },
+      {
+        name: 'dispatch unknown and known',
+        side: 'dispatch',
+        entries: ['unknown-counter', 'inputTokens'],
+        allowed: ['inputTokens'],
+      },
+      { name: 'controller null', side: 'controller', entries: [null], allowed: [] },
+      { name: 'controller number', side: 'controller', entries: [123], allowed: [] },
+      { name: 'controller object', side: 'controller', entries: [{}], allowed: [] },
+      { name: 'dispatch null', side: 'dispatch', entries: [null], allowed: [] },
+      { name: 'dispatch number', side: 'dispatch', entries: [123], allowed: [] },
+      { name: 'dispatch object', side: 'dispatch', entries: [{}], allowed: [] },
+    ];
+    for (const { name, side, entries, allowed } of cases) {
+      const root = await runsRoot();
+      const dir = await mkrun(root, name);
+      snapshot(dir, 1, {
+        ...(side === 'controller'
+          ? { coverage: { basis: 'assistant-records-last-per-request', partialCounters: entries } }
+          : {}),
+      });
+      dispatchPair(dir, 2, {
+        ...child,
+        ...(side === 'dispatch' ? { partialCounters: entries } : {}),
+      });
+      const data = report(root, [name]);
+      expect(data.controllers[0]!.usage?.inputTokens, name).toBe(100);
+      expect(data.dispatchGroups[0]!.usage.claude?.inputTokens, name).toBe(10);
+      if (side === 'controller') {
+        expect(data.controllers[0]!.coverage).toMatchObject({ incomplete: true });
+        expect(data.controllers[0]!.coverage?.partialCounters ?? []).toEqual(allowed);
+      } else {
+        expect(data.dispatchGroups[0]!.partialCounters).toEqual(allowed);
+        expect(data.dispatchGroups[0]!.partialCountersIncomplete).toBe(true);
+      }
+      expect(JSON.stringify(data), name).not.toContain('unknown-counter');
+      expect(data.totals.claude.combined, name).toBeNull();
+      expect(data.totals.claude.combinedUnavailable, name).not.toBeNull();
+    }
+  });
+
+  it('run-salted controller references cannot prove two cumulative parent snapshots disjoint, while each observation remains available', async () => {
+    const root = await runsRoot();
+    const a = await mkrun(root, 'run-a');
+    const b = await mkrun(root, 'run-b');
+    snapshot(a, 1, { controller: CTRL });
+    snapshot(b, 1, { controller: 'fedcba9876543210' });
+    const data = report(root, ['run-a', 'run-b']);
+    expect(data.controllers.map((entry) => entry.usage?.inputTokens)).toEqual([100, 100]);
+    expect(data.totals.claude.controller).toBeNull();
+    expect(data.totals.claude.combined).toBeNull();
+  });
+
+  it('run-salted child references cannot prove two replayed child observations disjoint, while each group remains available', async () => {
+    const root = await runsRoot();
+    const a = await mkrun(root, 'run-a');
+    const b = await mkrun(root, 'run-b');
+    const controllerA = CTRL;
+    const controllerB = 'fedcba9876543210';
+    const child = subUsage({ inputTokens: 10, outputTokens: 1 });
+    dispatchPair(a, 1, child, { controller: controllerA });
+    snapshot(a, 3, { controller: controllerA });
+    dispatchPair(b, 1, child, { controller: controllerB });
+    snapshot(b, 3, { controller: controllerB });
+    const data = report(root, ['run-a', 'run-b']);
+    expect(data.dispatchGroups.map((group) => group.usage.claude?.inputTokens)).toEqual([10, 10]);
+    expect(data.totals.claude.controller).toBeNull();
+    expect(data.totals.claude.subagents).toBeNull();
+    expect(data.totals.claude.combined).toBeNull();
+  });
+
+  it('a complete single-run named child and controller retain their literal observed 110 input and 201 output total', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    const child = subUsage({ inputTokens: 10, outputTokens: 1 });
+    dispatchPair(dir, 1, child);
+    snapshot(dir, 3);
+    const data = report(root, ['run-a']);
+    expect(data.controllers[0]!.usage).toEqual({
+      evidenceSource: 'claude-controller-transcript',
+      ...claudeCounters(),
+    });
+    expect(data.dispatchGroups[0]!.usage.claude).toEqual({
+      evidenceSource: 'claude-subagent-transcript',
+      ...child,
+    });
+    expect(data.totals.claude.combined).toEqual(add(claudeCounters(), child));
+    expect(data.totals.claude.combined?.inputTokens).toBe(110);
+    expect(data.totals.claude.combined?.outputTokens).toBe(201);
+  });
+
   it('the text render lists controllers and totals, names the completeness counts, and still ends with the money line', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');
@@ -1257,7 +1891,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(text).toContain('controllers: 1');
     expect(text).toContain('attribution=run');
     expect(text).toMatch(/totals claude: controller=\{/);
-    expect(text).toContain('caveats=["subagent-hook-configured-not-witnessed"]');
+    expect(text).toContain('combined=null (subagent-evidence-unobserved)');
     expect(text).toContain('controllerRuns=1/1 missingSnapshot=0 malformedSnapshots=0');
 
     const dir2 = await mkrun(root, 'run-b');

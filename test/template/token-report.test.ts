@@ -109,7 +109,15 @@
 // stays `null` on that row rather than a merged/zeroed total.
 import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -276,6 +284,15 @@ interface Report {
   // `dispatchGroups`/`tickets[].occurrences[].dispatches`, both of which
   // exclude them entirely.
   orphanEnds: number;
+}
+
+interface AccountingReport extends Report {
+  totals: {
+    claude: {
+      combined: Omit<ClaudeUsage, 'evidenceSource'> | null;
+      combinedUnavailable: string | null;
+    };
+  };
 }
 
 const SINCE = '2026-09-01T00:00:00.000Z';
@@ -901,6 +918,269 @@ describe('token-report.mjs usageEvidence: dispatch/hook witness availability mad
     expect(data.usageEvidence.controller.snapshots).toBe(0);
     expect(data.usageEvidence.controller.reason).toMatch(/controller-usage snapshot/i);
     expect(data.usageEvidence.controller.reason).toMatch(/never zero/i);
+  });
+
+  it('CLI refuses a combined total when the final events or decisions JSONL record is interrupted', async () => {
+    const controller = {
+      evidenceSource: 'claude-controller-transcript',
+      requests: 10,
+      inputTokens: 100,
+      outputTokens: 200,
+      cacheCreationInputTokens: 300,
+      cacheReadInputTokens: 400,
+    };
+    const child = {
+      evidenceSource: 'claude-subagent-transcript',
+      requests: 1,
+      inputTokens: 10,
+      outputTokens: 1,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+    };
+    const populate = async (runsDir: string, name: string): Promise<string> => {
+      const runDir = await mkrun(runsDir, name);
+      const dispatch = {
+        schema: 1,
+        harness: 'claude',
+        controller: '0123456789abcdef',
+        agentType: 'code-reviewer',
+        agentRef: 'bounded-child',
+      };
+      journal.recordEvent({
+        runDir,
+        kind: 'controller-usage',
+        data: {
+          schema: 1,
+          harness: 'claude',
+          controller: dispatch.controller,
+          trigger: 'Stop',
+          cumulative: true,
+          harnessVersion: '2.1.296',
+          usage: controller,
+          coverage: { basis: 'assistant-records-last-per-request', dedupedRequests: 10 },
+        },
+        now: T1,
+      });
+      dispatchStart(runDir, T2, dispatch);
+      dispatchEnd(runDir, T3, {
+        ...dispatch,
+        harnessVersion: '2.1.296',
+        usage: child,
+      });
+      return runDir;
+    };
+
+    const completeRuns = await runsRoot();
+    await populate(completeRuns, 'complete');
+    const complete = (await cliJson(['--runs', completeRuns, '--since', SINCE]))
+      .data as AccountingReport;
+    expect(complete.totals.claude.combined?.inputTokens).toBe(110);
+    expect(complete.totals.claude.combined?.outputTokens).toBe(201);
+
+    for (const file of ['events.jsonl', 'decisions.jsonl']) {
+      const runsDir = await runsRoot();
+      const runDir = await populate(runsDir, 'interrupted');
+      await appendFile(
+        path.join(runDir, file),
+        '{"seq":4,"at":"2026-10-14T06:00:15.000Z","kind":"dispatch-start","data":',
+      );
+      const { code, data, out } = await cliJson(['--runs', runsDir, '--since', SINCE]);
+      expect(code, out).toBe(0);
+      const report = data as AccountingReport;
+      expect(report.totals.claude.combined, file).toBeNull();
+      expect(report.totals.claude.combinedUnavailable, file).not.toBeNull();
+    }
+  });
+
+  it('CLI refuses a combined total when a writer completes the tail after the reader has opened its partial record', async () => {
+    const runsDir = await runsRoot();
+    const runDir = await mkrun(runsDir, 'interrupted');
+    const dispatch = {
+      schema: 1,
+      harness: 'claude',
+      controller: '0123456789abcdef',
+      agentType: 'code-reviewer',
+      agentRef: 'bounded-child',
+    };
+    journal.recordEvent({
+      runDir,
+      kind: 'controller-usage',
+      data: {
+        schema: 1,
+        harness: 'claude',
+        controller: dispatch.controller,
+        trigger: 'Stop',
+        cumulative: true,
+        harnessVersion: '2.1.296',
+        usage: {
+          evidenceSource: 'claude-controller-transcript',
+          requests: 10,
+          inputTokens: 100,
+          outputTokens: 200,
+          cacheCreationInputTokens: 300,
+          cacheReadInputTokens: 400,
+        },
+        coverage: { basis: 'assistant-records-last-per-request', dedupedRequests: 10 },
+      },
+      now: T1,
+    });
+    dispatchStart(runDir, T2, dispatch);
+    dispatchEnd(runDir, T3, {
+      ...dispatch,
+      harnessVersion: '2.1.296',
+      usage: {
+        evidenceSource: 'claude-subagent-transcript',
+        requests: 1,
+        inputTokens: 10,
+        outputTokens: 1,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+    });
+    const eventsFile = path.join(runDir, 'events.jsonl');
+    await appendFile(
+      eventsFile,
+      '{"seq":4,"at":"2026-10-14T06:00:15.000Z","kind":"dispatch-start","data":',
+    );
+    const preload = path.join(runsDir, 'finish-writer-after-read.mjs');
+    await writeFile(
+      preload,
+      [
+        "import fs from 'node:fs';",
+        "import { syncBuiltinESMExports } from 'node:module';",
+        'const original = fs.readFileSync;',
+        'let fired = false;',
+        'fs.readFileSync = function (file, ...args) {',
+        '  const value = original.call(this, file, ...args);',
+        `  if (!fired && String(file) === ${JSON.stringify(eventsFile)}) {`,
+        '    fired = true;',
+        `    fs.appendFileSync(file, ${JSON.stringify(`${JSON.stringify({ ...dispatch, agentRef: 'new-child' })}\n`)});`,
+        '  }',
+        '  return value;',
+        '};',
+        'syncBuiltinESMExports();',
+        '',
+      ].join('\n'),
+    );
+    const result = await run(
+      process.execPath,
+      [
+        '--import',
+        pathToFileURL(preload).href,
+        reportScript,
+        '--runs',
+        runsDir,
+        '--since',
+        SINCE,
+        '--json',
+      ],
+      repoRoot,
+      withoutGitLocation(),
+    );
+    expect(result.code, result.out).toBe(0);
+    const data = JSON.parse(result.stdout) as AccountingReport;
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).not.toBeNull();
+  });
+
+  it('CLI refuses a combined total when a complete dispatch start is appended after a full journal snapshot is captured', async () => {
+    const runsDir = await runsRoot();
+    const runDir = await mkrun(runsDir, 'complete-then-appended');
+    const dispatch = {
+      schema: 1,
+      harness: 'claude',
+      controller: '0123456789abcdef',
+      agentType: 'code-reviewer',
+      agentRef: 'bounded-child',
+    };
+    journal.recordEvent({
+      runDir,
+      kind: 'controller-usage',
+      data: {
+        schema: 1,
+        harness: 'claude',
+        controller: dispatch.controller,
+        trigger: 'Stop',
+        cumulative: true,
+        harnessVersion: '2.1.296',
+        usage: {
+          evidenceSource: 'claude-controller-transcript',
+          requests: 10,
+          inputTokens: 100,
+          outputTokens: 200,
+          cacheCreationInputTokens: 300,
+          cacheReadInputTokens: 400,
+        },
+        coverage: { basis: 'assistant-records-last-per-request', dedupedRequests: 10 },
+      },
+      now: T1,
+    });
+    dispatchStart(runDir, T2, dispatch);
+    dispatchEnd(runDir, T3, {
+      ...dispatch,
+      harnessVersion: '2.1.296',
+      usage: {
+        evidenceSource: 'claude-subagent-transcript',
+        requests: 1,
+        inputTokens: 10,
+        outputTokens: 1,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+      },
+    });
+    const initial = (await cliJson(['--runs', runsDir, '--since', SINCE])).data as AccountingReport;
+    expect(initial.totals.claude.combined?.inputTokens).toBe(110);
+    expect(initial.totals.claude.combined?.outputTokens).toBe(201);
+
+    const eventsFile = path.join(runDir, 'events.jsonl');
+    const appended = JSON.stringify({
+      seq: 4,
+      at: '2026-10-14T06:00:15.000Z',
+      kind: 'dispatch-start',
+      data: { ...dispatch, agentRef: 'new-child' },
+    });
+    const preload = path.join(runsDir, 'append-complete-record-after-read.mjs');
+    await writeFile(
+      preload,
+      [
+        "import fs from 'node:fs';",
+        "import { syncBuiltinESMExports } from 'node:module';",
+        'const original = fs.readFileSync;',
+        'let fired = false;',
+        'fs.readFileSync = function (file, ...args) {',
+        '  const value = original.call(this, file, ...args);',
+        `  if (!fired && String(file) === ${JSON.stringify(eventsFile)}) {`,
+        '    fired = true;',
+        `    fs.appendFileSync(file, ${JSON.stringify(`${appended}\n`)});`,
+        '  }',
+        '  return value;',
+        '};',
+        'syncBuiltinESMExports();',
+        '',
+      ].join('\n'),
+    );
+    const raced = await run(
+      process.execPath,
+      [
+        '--import',
+        pathToFileURL(preload).href,
+        reportScript,
+        '--runs',
+        runsDir,
+        '--since',
+        SINCE,
+        '--json',
+      ],
+      repoRoot,
+      withoutGitLocation(),
+    );
+    expect(raced.code, raced.out).toBe(0);
+    const racedReport = JSON.parse(raced.stdout) as AccountingReport;
+    expect(racedReport.totals.claude.combined).toBeNull();
+    expect(racedReport.totals.claude.combinedUnavailable).not.toBeNull();
+
+    const after = (await cliJson(['--runs', runsDir, '--since', SINCE])).data as AccountingReport;
+    expect(after.totals.claude.combined).toBeNull();
   });
 
   it('a hostile usageUnavailable code carrying a control character reaches neither the text nor the --json output raw', async () => {
