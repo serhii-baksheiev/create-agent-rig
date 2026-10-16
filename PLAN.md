@@ -1,18 +1,20 @@
 # PLAN — `create-agent-rig` (harness package manager and composition layer)
 
-> **Current release:** 1.6.1. Live work, status, dependencies and acceptance
+> **Current release:** 1.7.0. Live work, status, dependencies and acceptance
 > are on the Jira `RP` board. This file records the product boundary and the
 > order that makes those tickets coherent; it is not a second queue.
 
-> **Registry reconciliation (13 Oct 2026):** npm contains published `1.6.0`
-> (`gitHead` `536fe59f980d3ee0bea9d53e51f6589453ffb9bb`) and `1.6.1`
-> (`gitHead` `3c520c5757a060ab3b90f56be9a15ea2879f0907`); `latest` is `1.6.1`.
+> **Registry reconciliation (16 Oct 2026):** npm contains published `1.7.0`
+> (`gitHead` `abf675e698dafad3cee26806ec0afffc230af6cc`); `latest` is `1.7.0`.
 > npm metadata SHA1/SHA512 are recorded in the predecessor-integrity file.
-> Their accepted source candidates remain unchanged at the SHA-addressed
+> The preceding reconciliation (13 Oct 2026) recorded published `1.6.0`
+> (`gitHead` `536fe59f980d3ee0bea9d53e51f6589453ffb9bb`) and `1.6.1`
+> (`gitHead` `3c520c5757a060ab3b90f56be9a15ea2879f0907`); `latest` was `1.6.1`.
+> Their accepted source candidates remained unchanged at the SHA-addressed
 > `release/1.6.0-rc-536fe59f980d3ee0bea9d53e51f6589453ffb9bb` and at
 > `release/1.6.1-rc`.
 > Earlier releases, `1.5.2` and `1.5.1` included, are recorded in the ledger.
-> `1.7.0` is the Outcome Evidence minor being prepared, cut from `master`.
+> `1.7.1` is being prepared; acceptance and freeze remain pending.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,

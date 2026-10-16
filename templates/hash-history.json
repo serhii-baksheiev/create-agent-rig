@@ -30,7 +30,8 @@
     "1.5.1",
     "1.5.2",
     "1.6.0",
-    "1.6.1"
+    "1.6.1",
+    "1.7.0"
   ],
   "files": {
     ".agents/skills/check-premises/SKILL.md": {
@@ -446,7 +447,8 @@
       "hashes": [
         "797be3dd837b5b6a1bbf1d9a72fb2ae0d0f6064a89caa09a93173460ef76456a",
         "96780b138fe01d7f6c7411d5bbfb131faaf452fbea0023f37e6a91cd5c5be368",
-        "ca53bed3ae292321d4a8614acf6c7717a8440f6440cc9ac87b55ebeb602ef84d"
+        "ca53bed3ae292321d4a8614acf6c7717a8440f6440cc9ac87b55ebeb602ef84d",
+        "33a2cd212ebf0b43f6ca6c6beabe3a2e0ff90dde0a5578a8289d406543c8431a"
       ]
     },
     ".claude/scripts/decision-router.mjs": {
@@ -529,6 +531,12 @@
         "df0875c07fca457776281557217d2367093026b23a1040e836bea46c200767a1"
       ]
     },
+    ".claude/scripts/lib/evidence-query.mjs": {
+      "since": "1.7.0",
+      "hashes": [
+        "b013a49f94124a2b46421f9a814b2335a2e353781e7bc85651c385765763fe98"
+      ]
+    },
     ".claude/scripts/lib/gate-coverage.mjs": {
       "since": "0.6.0",
       "hashes": [
@@ -547,7 +555,8 @@
     ".claude/scripts/lib/outcome-signals.mjs": {
       "since": "1.6.0",
       "hashes": [
-        "ab4ecb73aa226ec7123091f8ca2d891fc294b376f0ab6d3bba91eaad4ca172f9"
+        "ab4ecb73aa226ec7123091f8ca2d891fc294b376f0ab6d3bba91eaad4ca172f9",
+        "ebc87b5ccf6c30e24ba4bb08897deafcb82c03d2f474ddfd24d73e4585753e29"
       ]
     },
     ".claude/scripts/lib/posture.mjs": {
@@ -662,7 +671,8 @@
         "b5349837d16de0966139f5b65e2800486592f1b24d7e87087c2b7212cead479d",
         "b14d15e30dd74585a3470913f6a6bb0250010a8dd5561dfa2033c211ac8288cb",
         "de67256099dbe0fe64402950c40aad9771c09f1601e0345a2d0c2f60a627d352",
-        "553c8918e363ffd33a549b496bcb4a1aede2dd9c4e8a8006ab65b81739b0551e"
+        "553c8918e363ffd33a549b496bcb4a1aede2dd9c4e8a8006ab65b81739b0551e",
+        "771f358597be65b75e91fd349cfc83ca9cf06d9bab9775446c6d675015b258d7"
       ]
     },
     ".claude/scripts/queue/index.mjs": {
@@ -695,7 +705,8 @@
         "5b9690a98c289229949a5e69ea90703f3831ab7315a0d5c9faf96bc7827f50d2",
         "68c41a376cc7d5d7104668556313130bcf62d4f50d4685d52b91d9a66e6021ab",
         "16798b93f58f1718238746af3e6bd742effab486025693b5d32b247ca502665d",
-        "84f1a085d832be503b3bac24fbaa2276c86d119c622237647c4e09317f828541"
+        "84f1a085d832be503b3bac24fbaa2276c86d119c622237647c4e09317f828541",
+        "09fc32941c3b7515915740d21ea1e639c90f3d86e417ccef23cdff1d3ff6480c"
       ]
     },
     ".claude/scripts/queue/plan-md.mjs": {
@@ -706,7 +717,8 @@
         "27d7ae3832a32219d5c0ab136bc542388eb686e9f34053c3058104cdeea1574d",
         "1320909605824b2cd1ff57878e463ef360463b2b175d2152638eda2dff72f5ea",
         "816aec4cb84492370972f71813a9fec7c0309e5f501951a93620a37cb318ac39",
-        "a45373feb5605f6eea4d9a51318deb895986d2f9476596f25480dbf20c387676"
+        "a45373feb5605f6eea4d9a51318deb895986d2f9476596f25480dbf20c387676",
+        "a500477a9614c1c5d11d316bed56285ba6647e919268b5aa57fb55693fc90057"
       ]
     },
     ".claude/scripts/queue/propose.mjs": {
@@ -761,7 +773,8 @@
     ".claude/scripts/release-evidence.mjs": {
       "since": "1.0.0",
       "hashes": [
-        "729ed9e049d755c94b2de9e470d96079673ad36f65f79198600c202d7f0b1865"
+        "729ed9e049d755c94b2de9e470d96079673ad36f65f79198600c202d7f0b1865",
+        "a633ac7e720998f2d8558e3ce4d53d413352fe5d464f44f085c789c3018bf2e0"
       ]
     },
     ".claude/scripts/revalidate.mjs": {
@@ -801,7 +814,8 @@
         "dd870520caa2002be8dd0d29123112c2b1af01aeeeeb39d7bc5c73c68657fff2",
         "0d9420f1995d666193ef300ce9f065a122c2ff5dd01b33969d113187d537678c",
         "7406771fd6a3592749e0f51d8923d98d52087038385dbaa73d73c5988ecd2513",
-        "70a6701b62f30563e9ec82887e770c2bf9d75c75403060d39423bfe65952f93d"
+        "70a6701b62f30563e9ec82887e770c2bf9d75c75403060d39423bfe65952f93d",
+        "5653616c32825b7d2dbd7516b2ff10625b8ef572241ccb60315203f406b507fb"
       ]
     },
     ".claude/scripts/stop-flag.mjs": {
@@ -1160,7 +1174,8 @@
     "docs/decisions/outcome-signals.md": {
       "since": "1.6.0",
       "hashes": [
-        "930021db31e809e03f3b072430de490ad91c93cd5d5e4b02c93aa05be97b40d1"
+        "930021db31e809e03f3b072430de490ad91c93cd5d5e4b02c93aa05be97b40d1",
+        "7e02637db20b330a3385dbe55234d9d769e9c32fe48a8bff36c4c1f5cb7176a9"
       ]
     },
     "docs/decisions/review-lanes.md": {

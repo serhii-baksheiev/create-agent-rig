@@ -1,8 +1,13 @@
-import { execFileSync } from 'node:child_process';
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  assertLedgerCommitPackages,
+  gitAt,
+  type GitCommand,
+  type Ledger,
+} from '../helpers/hash-history-ledger.js';
 import {
   buildHistory,
   installRelPath,
@@ -10,8 +15,6 @@ import {
   tagDisagreements,
   // @ts-expect-error — a plain .mjs release script, imported for its pure parts
 } from '../../scripts/build-hash-history.mjs';
-// @ts-expect-error — a plain .mjs rulebook script
-import { withoutGitLocation } from '../../.claude/scripts/git-env.mjs';
 // RP-353: the heading-parsing half of `changelogVersions()` is private and
 // reads straight off disk, so it cannot be pinned directly with a synthetic
 // fixture today. Taken off the namespace, not by name — a missing export fails
@@ -96,8 +99,6 @@ const readHistory = async (): Promise<HashHistory> =>
  * the published bytes are not recoverable from git (0.1.0's gitHead already
  * reads 0.2.0), so no row is built for it. An ABSENT entry is a mistake.
  */
-type Ledger = Record<string, string | null>;
-
 const readLedger = async (): Promise<Ledger> =>
   JSON.parse(await readFile(path.join(repoRoot, 'templates', 'release-ledger.json'), 'utf8'));
 
@@ -121,9 +122,6 @@ const changelogVersions = async (): Promise<string[]> =>
       /^## (\d+\.\d+\.\d+)$/gm,
     ),
   ].map((match) => match[1]!);
-
-const git = (...args: string[]): string =>
-  execFileSync('git', args, { cwd: repoRoot, env: withoutGitLocation(), encoding: 'utf8' });
 
 const asNumbers = (version: string): number[] =>
   version.split('.').map((part) => Number.parseInt(part, 10));
@@ -272,16 +270,146 @@ describe('the release ledger — which commit each version was published from', 
 });
 
 describe('the committed ledger against this repository', () => {
+  const fakeGit = (
+    versions: Record<string, string>,
+    missingCommits = new Set<string>(),
+    objectTypes: Record<string, 'commit' | 'tree'> = {},
+    batchOverrides: Partial<{ commitCheck: string; packages: string }> = {},
+  ): { calls: string[][]; inputs: string[]; git: GitCommand } => {
+    const calls: string[][] = [];
+    const inputs: string[] = [];
+    const git: GitCommand = (args, input = '') => {
+      calls.push(args);
+      inputs.push(input);
+      const refs = input.split('\n').filter(Boolean);
+      if (args[0] === 'cat-file' && args.some((arg) => arg.startsWith('--batch-check'))) {
+        if (refs.some((ref) => !ref.endsWith('^{commit}'))) {
+          throw new Error('batch commit checks must preserve the ^{commit} expression');
+        }
+        return (
+          batchOverrides.commitCheck ??
+          `${refs
+            .map((ref) =>
+              missingCommits.has(ref.slice(0, 40))
+                ? `${ref} missing`
+                : `${ref.slice(0, 40)} ${objectTypes[ref.slice(0, 40)] ?? 'commit'} 0`,
+            )
+            .join('\n')}\n`
+        );
+      }
+      if (args[0] === 'cat-file' && args.includes('--batch')) {
+        return (
+          batchOverrides.packages ??
+          refs
+            .map((ref) => {
+              if (!ref.endsWith(':package.json')) {
+                throw new Error('batch package checks must request package.json');
+              }
+              const body = `{\n  "version": "${versions[ref.slice(0, 40)]}",\n  "note": "£"\n}`;
+              return `${'d'.repeat(40)} blob ${Buffer.byteLength(body)}\n${body}\n`;
+            })
+            .join('')
+        );
+      }
+      if (args[0] === 'cat-file' && args[1] === '-e') {
+        const commitish = args[2];
+        if (typeof commitish !== 'string' || !commitish.endsWith('^{commit}')) {
+          throw new Error('legacy commit checks must preserve the ^{commit} expression');
+        }
+        const sha = commitish.slice(0, 40);
+        if (missingCommits.has(sha) || objectTypes[sha] === 'tree') {
+          throw new Error(`${sha}: missing or not a commit`);
+        }
+        return '';
+      }
+      if (args[0] === 'show') {
+        const packageRef = args[1];
+        if (typeof packageRef !== 'string' || !packageRef.endsWith(':package.json')) {
+          throw new Error('legacy package checks must request package.json');
+        }
+        const sha = packageRef.slice(0, 40);
+        return JSON.stringify({ version: versions[sha] });
+      }
+      throw new Error(`unexpected git invocation: ${args.join(' ')}`);
+    };
+    return { calls, inputs, git };
+  };
+
+  it('bounds Git starts while validating several committed releases', () => {
+    const { calls, git } = fakeGit({ [SHA_A]: '1.0.0', [SHA_B]: '1.1.0', [SHA_C]: '1.2.0' });
+
+    assertLedgerCommitPackages({ '1.0.0': SHA_A, '1.1.0': SHA_B, '1.2.0': SHA_C }, git);
+
+    expect(
+      calls.length,
+      'one bounded batch acquisition validates all ledger rows',
+    ).toBeLessThanOrEqual(2);
+  });
+
+  it('rejects a ledger object missing from Git even when its package bytes match', () => {
+    const { git } = fakeGit({ [SHA_A]: '1.0.0' }, new Set([SHA_A]));
+
+    expect(() => assertLedgerCommitPackages({ '1.0.0': SHA_A }, git)).toThrow(
+      /1\.0\.0.*not a commit/,
+    );
+  });
+
+  it('rejects a ledger object that resolves to a tree even when its package bytes match', () => {
+    const { git } = fakeGit({ [SHA_A]: '1.0.0' }, new Set(), { [SHA_A]: 'tree' });
+
+    expect(() => assertLedgerCommitPackages({ '1.0.0': SHA_A }, git)).toThrow(
+      /1\.0\.0.*not a commit/,
+    );
+  });
+
+  it('rejects a commit whose historical package version differs from the ledger', () => {
+    const { git } = fakeGit({ [SHA_A]: '1.0.1' });
+
+    expect(() => assertLedgerCommitPackages({ '1.0.0': SHA_A }, git)).toThrow(/1\.0\.0.*1\.0\.1/);
+  });
+
+  it('fails closed for malformed or incomplete Git batch records', () => {
+    const validBody = '{\n  "version": "1.0.0",\n  "note": "£"\n}';
+    const validRecord = `${'d'.repeat(40)} blob ${Buffer.byteLength(validBody)}\n${validBody}\n`;
+    const cases: Array<{
+      name: string;
+      overrides: Partial<{ commitCheck: string; packages: string }>;
+    }> = [
+      { name: 'malformed commit header', overrides: { commitCheck: 'not a batch header\n' } },
+      { name: 'missing commit header', overrides: { commitCheck: `${SHA_A}^{commit} missing\n` } },
+      {
+        name: 'truncated blob body',
+        overrides: {
+          packages: `${'d'.repeat(40)} blob ${Buffer.byteLength(validBody) + 1}\n${validBody}`,
+        },
+      },
+      {
+        name: 'incorrect UTF-8 blob byte length',
+        overrides: { packages: `${'d'.repeat(40)} blob ${validBody.length}\n${validBody}\n` },
+      },
+      { name: 'trailing batch record', overrides: { packages: `${validRecord}trailing\n` } },
+    ];
+
+    const accepted = cases
+      .filter(({ overrides }) => {
+        const { git } = fakeGit({ [SHA_A]: '1.0.0' }, new Set(), {}, overrides);
+        try {
+          assertLedgerCommitPackages({ '1.0.0': SHA_A }, git);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .map(({ name }) => name);
+
+    expect(accepted, 'every malformed batch response must throw').toEqual([]);
+  });
+
   it('points at a commit whose package.json carries that version', async () => {
     const ledger = await readLedger();
     const entries = Object.entries(ledger).filter(([, sha]) => sha !== null);
     expect(entries.length, 'a ledger with no resolvable entry pins nothing').toBeGreaterThan(0);
-    for (const [version, sha] of entries) {
-      expect(sha, version).toMatch(/^[0-9a-f]{40}$/);
-      expect(() => git('cat-file', '-e', `${sha}^{commit}`), `${version}: ${sha}`).not.toThrow();
-      const pkg = JSON.parse(git('show', `${sha}:package.json`)) as { version: string };
-      expect(pkg.version, `${version} -> ${sha}`).toBe(version);
-    }
+    assertLedgerCommitPackages(ledger, gitAt(repoRoot));
   });
 
   it('has an entry (null or sha) for every CHANGELOG version below the current one', async () => {
