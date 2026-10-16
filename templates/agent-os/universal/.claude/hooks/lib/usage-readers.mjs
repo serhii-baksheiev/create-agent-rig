@@ -126,7 +126,14 @@ function summedUsageCounters(usageByKey) {
   return { counters, partialCounters };
 }
 
-/** The one valid harness version named by every retained request, if any. */
+/**
+ * The one valid harness version named by every retained request, if any —
+ * test/template/session-usage.test.ts (absent in a generated rig) › "uses
+ * only retained keyed controller records to establish complete agreeing version
+ * evidence" and test/template/dispatch-usage.test.ts (absent in a generated
+ * rig) › "omits harnessVersion when any retained subagent request is missing
+ * its version, in either transcript order".
+ */
 function completeHarnessVersion(versionsByKey) {
   let candidate;
   for (const version of versionsByKey.values()) {
