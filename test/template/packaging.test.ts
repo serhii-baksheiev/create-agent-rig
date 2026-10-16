@@ -411,11 +411,10 @@ describe('the root manifest is publish-complete', () => {
     );
   });
 
-  it('records published 1.7.0 as `latest` and an unfrozen 1.7.1 release candidate', async () => {
+  it('records published 1.7.0 as `latest` and 1.7.1 pending acceptance and freeze', async () => {
     const plan = await readFile(path.join(repoRoot, 'PLAN.md'), 'utf8');
-    // Read from the public registry on 11 Oct 2026. Keep both identities
-    // literal: the reconciliation must not turn a published-version claim into
-    // a version-only claim.
+    // The 16 Oct 2026 published 1.7.0 reconciliation and retained 1.6.x
+    // history keep their registry identities literal.
     // 🔴 This assertion has been wrong in BOTH directions now, one release
     // apart, and it carries a guard for each.
     //
@@ -447,7 +446,10 @@ describe('the root manifest is publish-complete', () => {
     );
     expect(plan).toMatch(/`latest` is `1\.7\.0`/);
     expect(plan).toMatch(/Current release:\*\* 1\.7\.0/);
-    expect(plan).toMatch(/`1\.7\.1` is an unfrozen release candidate being prepared/);
+    expect(plan).toMatch(
+      /The preceding reconciliation \(13 Oct 2026\) recorded published `1\.6\.0`\s*\r?\n>\s*\(`gitHead` `536fe59f980d3ee0bea9d53e51f6589453ffb9bb`\) and `1\.6\.1`\s*\r?\n>\s*\(`gitHead` `3c520c5757a060ab3b90f56be9a15ea2879f0907`\); `latest` was `1\.6\.1`\./,
+    );
+    expect(plan).toMatch(/`1\.7\.1` is being prepared; acceptance and freeze remain pending/);
     expect(plan).not.toMatch(
       /`?1\.6\.1`? is (?:the [^.`]*)?(?:being )?prepared|`?1\.6\.1`? prepared|`?1\.6\.1`? is the release candidate|1\.6\.1 publish pending|owner publishes `?1\.6\.1`?|`?1\.6\.1`? is waiting on the owner/,
     );

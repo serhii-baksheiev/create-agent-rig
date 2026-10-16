@@ -14,7 +14,7 @@
 > `release/1.6.0-rc-536fe59f980d3ee0bea9d53e51f6589453ffb9bb` and at
 > `release/1.6.1-rc`.
 > Earlier releases, `1.5.2` and `1.5.1` included, are recorded in the ledger.
-> `1.7.1` is an unfrozen release candidate being prepared, cut from `master`.
+> `1.7.1` is being prepared; acceptance and freeze remain pending.
 >
 > **The default branch is not that release.** Work merges to `master`
 > continuously, so what is on it at any moment is ahead of `latest`,
