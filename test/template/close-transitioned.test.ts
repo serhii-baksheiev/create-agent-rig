@@ -37,6 +37,7 @@ describe('jira close proves the transition by reading the issue back', () => {
     pathname: string;
     search: string;
     method: string;
+    body: unknown;
   }
 
   const calls: Call[] = [];
@@ -48,16 +49,19 @@ describe('jira close proves the transition by reading the issue back', () => {
   let rejectDiscovery = false;
   let unreadableDiscovery = false;
   let rejectComment = false;
+  let postedTransitionId: string | null = null;
+  let statusByTransitionId: Record<string, typeof statusAfter> | null = null;
 
   beforeEach(() => {
     calls.length = 0;
     realFetch = globalThis.fetch;
     // A hand-written structural stub: comment POST → 201, transition POST → 204,
     // and the read-back GET answers whatever `statusAfter` says the board did.
-    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+    globalThis.fetch = ((input: unknown, init: { method?: string; body?: unknown } = {}) => {
       const url = new URL(String(input));
       const method = String(init.method ?? 'GET');
-      calls.push({ pathname: url.pathname, search: url.search, method });
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
+      calls.push({ pathname: url.pathname, search: url.search, method, body });
       if (method === 'GET' && url.pathname.endsWith('/transitions')) {
         return Promise.resolve({
           ok: !rejectDiscovery && !unreadableDiscovery,
@@ -71,11 +75,12 @@ describe('jira close proves the transition by reading the issue back', () => {
         });
       }
       if (method === 'GET') {
+        const status = statusByTransitionId?.[postedTransitionId ?? ''] ?? statusAfter;
         return Promise.resolve({
           ok: !unreadableReadBack,
           status: unreadableReadBack ? 503 : 200,
           statusText: unreadableReadBack ? 'Service Unavailable' : 'OK',
-          json: () => Promise.resolve({ fields: { status: statusAfter } }),
+          json: () => Promise.resolve({ fields: { status } }),
         });
       }
       if (method === 'POST' && url.pathname.endsWith('/transitions') && rejectTransition) {
@@ -94,6 +99,18 @@ describe('jira close proves the transition by reading the issue back', () => {
           json: () => Promise.resolve({}),
         });
       }
+      if (method === 'POST' && url.pathname.endsWith('/transitions')) {
+        postedTransitionId =
+          typeof body === 'object' &&
+          body !== null &&
+          'transition' in body &&
+          typeof body.transition === 'object' &&
+          body.transition !== null &&
+          'id' in body.transition &&
+          typeof body.transition.id === 'string'
+            ? body.transition.id
+            : null;
+      }
       const status = url.pathname.endsWith('/transitions') ? 204 : 201;
       return Promise.resolve({
         ok: true,
@@ -108,6 +125,8 @@ describe('jira close proves the transition by reading the issue back', () => {
     rejectDiscovery = false;
     unreadableDiscovery = false;
     rejectComment = false;
+    postedTransitionId = null;
+    statusByTransitionId = null;
   });
 
   afterEach(() => {
@@ -147,14 +166,18 @@ describe('jira close proves the transition by reading the issue back', () => {
   });
 
   it('selects a Done-category transition, confirms Done, then posts the closing comment', async () => {
-    statusAfter = { name: 'Done', statusCategory: { key: 'done' } };
+    statusAfter = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
+    statusByTransitionId = {
+      '21': { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      '31': { name: 'Archive', statusCategory: { key: 'done' } },
+    };
     availableTransitions = [
-      { id: '21', to: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } },
-      { id: '31', to: { name: 'Done', statusCategory: { key: 'done' } } },
+      { id: '21', to: { name: 'Done', statusCategory: { key: 'indeterminate' } } },
+      { id: '31', to: { name: 'Archive', statusCategory: { key: 'done' } } },
     ];
     const { close } = await load('jira.mjs');
     const result = await close(ticket, { env: CREDENTIALS });
-    expect(result).toMatchObject({ ok: true, transitioned: true, status: 'Done' });
+    expect(result).toMatchObject({ ok: true, transitioned: true, status: 'Archive' });
     const discoveryAt = calls.findIndex(
       (c) => c.method === 'GET' && c.pathname.endsWith('/transitions'),
     );
@@ -169,6 +192,7 @@ describe('jira close proves the transition by reading the issue back', () => {
     );
     expect(discoveryAt, JSON.stringify(calls)).toBeGreaterThan(-1);
     expect(transitionAt, JSON.stringify(calls)).toBeGreaterThan(discoveryAt);
+    expect(calls[transitionAt]!.body).toEqual({ transition: { id: '31' } });
     expect(readBackAt, JSON.stringify(calls)).toBeGreaterThan(transitionAt);
     expect(commentAt, JSON.stringify(calls)).toBeGreaterThan(readBackAt);
   });
@@ -618,12 +642,69 @@ describe('close journals an item-closed event only when it transitioned', () => 
     }
   });
 
+  it('jira journals the confirmed Done close when its later closing comment fails', async () => {
+    const runDir = await freshRunDir();
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+      const method = String(init.method ?? 'GET');
+      const pathname = new URL(String(input)).pathname;
+      if (method === 'GET') {
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          statusText: 'OK',
+          json: () =>
+            Promise.resolve({
+              fields: { status: { name: 'Done', statusCategory: { key: 'done' } } },
+            }),
+        });
+      }
+      if (method === 'POST' && pathname.endsWith('/comment')) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          json: () => Promise.resolve({}),
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 204,
+        statusText: 'No Content',
+        json: () => Promise.resolve({}),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const { close } = await load('jira.mjs');
+      const result = await close(ticket, {
+        transitionId: '31',
+        env: {
+          JIRA_BASE_URL: 'https://example.invalid',
+          JIRA_EMAIL: 'a@b.c',
+          JIRA_API_TOKEN: 'x',
+          RIG_RUN_DIR: runDir,
+        },
+      });
+      expect(result).toMatchObject({ ok: false, transitioned: true, reason: expect.any(String) });
+      const events = await itemClosedEvents(runDir);
+      expect(events).toHaveLength(1);
+      expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: 'ABC-13' });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
   /** The same `gh` the github close tests above install: it answers `issue view` with `state`. */
   let stub: StubHandle | undefined;
-  const installGh = async (state: 'CLOSED' | 'OPEN'): Promise<void> => {
+  const installGh = async (
+    state: 'CLOSED' | 'OPEN',
+    { rejectComment = false, rejectLabelCleanup = false } = {},
+  ): Promise<void> => {
     stub = await stubCommand(
       'gh',
       `if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"state":"${state}"}\\n' };
+       if (${rejectComment} && args[0] === 'issue' && args[1] === 'comment') throw new Error('comment unavailable');
+       if (${rejectLabelCleanup} && args[0] === 'issue' && args[1] === 'edit') throw new Error('label cleanup unavailable');
        return {};`,
     );
   };
@@ -642,6 +723,28 @@ describe('close journals an item-closed event only when it transitioned', () => 
       { prUrl: 'https://example.invalid/pr/1', env: { ...process.env, RIG_RUN_DIR: runDir } },
     );
     expect(result).toMatchObject({ transitioned: true });
+    const events = await itemClosedEvents(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '13' });
+  });
+
+  it('github-issues journals the confirmed CLOSED close when its later closing comment fails', async () => {
+    const runDir = await freshRunDir();
+    await installGh('CLOSED', { rejectComment: true });
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' }, { env: { ...process.env, RIG_RUN_DIR: runDir } });
+    expect(result).toMatchObject({ ok: false, transitioned: true, reason: expect.any(String) });
+    const events = await itemClosedEvents(runDir);
+    expect(events).toHaveLength(1);
+    expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '13' });
+  });
+
+  it('github-issues journals the confirmed CLOSED close when in-progress label cleanup fails', async () => {
+    const runDir = await freshRunDir();
+    await installGh('CLOSED', { rejectLabelCleanup: true });
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' }, { env: { ...process.env, RIG_RUN_DIR: runDir } });
+    expect(result).toMatchObject({ ok: false, transitioned: true, reason: expect.any(String) });
     const events = await itemClosedEvents(runDir);
     expect(events).toHaveLength(1);
     expect(events[0]!.data).toEqual({ schemaVersion: 1, ticket: '13' });

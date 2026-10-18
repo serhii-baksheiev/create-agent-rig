@@ -577,6 +577,7 @@ export const close = async (ticket, { prUrl = null, env = process.env } = {}) =>
   }
   const transitioned = String(after?.state ?? '').toUpperCase() === 'CLOSED';
   if (!transitioned) return { ok: false, transitioned: false, reason: 'close-not-confirmed' };
+  await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   try {
     ghText(['issue', 'comment', ticket.id, '--body', note]);
   } catch (error) {
@@ -588,7 +589,6 @@ export const close = async (ticket, { prUrl = null, env = process.env } = {}) =>
     return { ok: false, transitioned: true, reason: 'close-cleanup-failed', detail: error.message };
   }
   rebaseline(ticket);
-  await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   return { ok: true, transitioned: true };
 };
 

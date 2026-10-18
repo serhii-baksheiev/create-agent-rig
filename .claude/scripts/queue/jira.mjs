@@ -1299,12 +1299,12 @@ export const close = async (ticket, { prUrl = null, transitionId = null, env = p
       status: fields.status?.name ?? null,
     };
   }
+  await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   try {
     await comment(ticket, prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.', { env });
   } catch (error) {
     return { ok: false, transitioned: true, reason: 'close-comment-failed', detail: error.message };
   }
-  await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   return {
     ok: true,
     transitioned: true,
