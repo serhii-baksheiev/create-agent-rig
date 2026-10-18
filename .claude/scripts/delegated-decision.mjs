@@ -593,13 +593,13 @@ const journalDecisionTexts = (projectRoot, runDir) => {
  * (RP-442): a durable, COMMITTED `extra-gate-round` authorization for this
  * ticket and branch whose head is HEAD, or HEAD's record-only descendant,
  * and no review verdict yet on any head that authorization covers. That
- * verdict set is the only consumption fact — there is no consumed-state
- * file. The authorization is read only from HEAD's own committed tree
+ * verdict set controls new admission; an admitted fan-out records its
+ * consumption receipt in the gate-round counter. The authorization is read only from HEAD's own committed tree
  * (`committedExtraGateRoundsFor`/`committedExtraGateRoundsOnBranch`, above)
  * — never the working tree — so a record that was never committed can never
  * be honoured (RP-442, security-scanner).
  *
- * The CONSUMING call needs its own authority too, checked BEFORE any
+ * The ADMISSION call needs its own authority too, checked BEFORE any
  * decision record is even read: `runDir` (`RIG_RUN_DIR`) must be set, and
  * that run's declared authority must be exactly `delegated` AND journalled
  * as such — the same two checks `record` itself runs

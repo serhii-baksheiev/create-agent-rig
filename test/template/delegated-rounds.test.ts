@@ -98,6 +98,7 @@ const { recordDecision } = (await import(pathToFileURL(scriptPath('run-journal.m
     verdict: string;
     headSha?: string;
     reviewers?: string[];
+    why?: string;
     now: string;
   }) => unknown;
 };
@@ -125,11 +126,27 @@ const runDelegated = (args: string[], cwd: string, env: NodeJS.ProcessEnv) =>
   run(process.execPath, [delegatedDecisionScript, ...args], cwd, env);
 
 const runGateRound = async (args: string[], cwd: string, env: NodeJS.ProcessEnv) => {
-  // A declared run is the public evidence source for the new gate-round
-  // contract. Tests that deliberately leave it absent still exercise that
-  // absence; every authority-bearing call gets the non-empty exact-head
-  // fan-out the production workflow records before consuming it.
-  if (env.RIG_RUN_DIR) await recordFanOut(cwd, env.RIG_RUN_DIR);
+  // A successful consume needs its own admission before a durable, exact-head
+  // fan-out. Read-only preflight remains a direct public CLI call.
+  if (env.RIG_RUN_DIR && !args.includes('--check')) {
+    const reserved = await run(
+      process.execPath,
+      [queueIndexScript, 'gate-round', ...args, '--reserve'],
+      cwd,
+      env,
+    );
+    if (reserved.code !== 0) return reserved;
+    const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    if (!token)
+      throw new Error(`gate-round --reserve did not emit a reservation token: ${reserved.stdout}`);
+    await recordFanOut(cwd, env.RIG_RUN_DIR, `gate-round reservation: ${token}`);
+    return run(
+      process.execPath,
+      [queueIndexScript, 'gate-round', ...args, '--reservation', token],
+      cwd,
+      env,
+    );
+  }
   return run(process.execPath, [queueIndexScript, 'gate-round', ...args], cwd, env);
 };
 
@@ -177,7 +194,7 @@ const git = async (args: string[], cwd: string): Promise<string> => {
 
 const head = (cwd: string) => git(['rev-parse', 'HEAD'], cwd);
 
-const recordFanOut = async (cwd: string, runDir: string): Promise<void> => {
+const recordFanOut = async (cwd: string, runDir: string, why?: string): Promise<void> => {
   await mkdir(runDir, { recursive: true });
   recordDecision({
     runDir,
@@ -185,6 +202,7 @@ const recordFanOut = async (cwd: string, runDir: string): Promise<void> => {
     verdict: 'launched',
     headSha: await head(cwd),
     reviewers: ['code-reviewer'],
+    why,
     now: new Date().toISOString(),
   });
 };
@@ -1097,7 +1115,26 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         dir,
         envFor(authorizedRun),
       );
-      expect(result.code, result.out).toBe(0);
+      expect(result.code, result.out).toBe(1);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+      const checked = await run(
+        process.execPath,
+        [
+          queueIndexScript,
+          'gate-round',
+          '--check',
+          '--branch',
+          'fix/a',
+          '--ticket',
+          'RP-1',
+          '--authorized',
+          '--config',
+          cfg,
+        ],
+        dir,
+        envFor(authorizedRun),
+      );
+      expect(checked.code, checked.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(3);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
@@ -1133,12 +1170,27 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       await git(['commit', '-q', '-m', 'authorization'], dir);
       await git(['push', '-q'], dir);
       const args = ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg];
-      const first = await runGateRound(args, dir, envFor(runDir));
+      const reserved = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(runDir),
+      );
+      expect(reserved.code, reserved.out).toBe(0);
+      const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+      expect(token).toBeDefined();
+      await recordFanOut(dir, runDir, `gate-round reservation: ${token!}`);
+      const first = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reservation', token!],
+        dir,
+        envFor(runDir),
+      );
       expect(first.code, first.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
       const replay = await run(
         process.execPath,
-        [queueIndexScript, 'gate-round', ...args],
+        [queueIndexScript, 'gate-round', ...args, '--reservation', token!],
         dir,
         envFor(runDir),
       );
@@ -1217,7 +1269,6 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       await git(['add', '-A'], dir);
       await git(['commit', '-q', '-m', 'authorization'], dir);
       await git(['push', '-q'], dir);
-      await recordFanOut(dir, runDir);
 
       const rounds = roundsFileFor(cfg);
       const state = path.join(runDir, 'state.json');
@@ -1247,13 +1298,195 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       const args = ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg];
       const result = await run(
         process.execPath,
-        ['--import', pathToFileURL(preload).href, queueIndexScript, 'gate-round', ...args],
+        [
+          '--import',
+          pathToFileURL(preload).href,
+          queueIndexScript,
+          'gate-round',
+          ...args,
+          '--reserve',
+        ],
         dir,
         envFor(runDir),
       );
       expect(await readFile(trace, 'utf8')).toBe('filled\n');
       expect(result.code, result.out).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('counts a reserved delegated fan-out after a reviewer verdict makes a new admission ineligible', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+      const authorizationHead = await head(dir);
+      const runDir = await delegatedRunDir();
+      roots.push(runDir);
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'fast verdict',
+          '--head',
+          authorizationHead,
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+      const args = ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg];
+      const reserved = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(runDir),
+      );
+      expect(reserved.code, reserved.out).toBe(0);
+      const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+      expect(token).toBeDefined();
+      await recordFanOut(dir, runDir, `gate-round reservation: ${token!}`);
+
+      const reviewRun = path.join(dir, '.claude', 'runs', 'r1');
+      await mkdir(reviewRun, { recursive: true });
+      recordDecision({
+        runDir: reviewRun,
+        gate: 'code-reviewer',
+        verdict: 'HOLD',
+        headSha: authorizationHead,
+        now: new Date().toISOString(),
+      });
+      const consumed = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reservation', token!],
+        dir,
+        envFor(runDir),
+      );
+      expect(consumed.code, consumed.out).toBe(0);
+      expect(consumed.stdout).toMatch(/round 4 of 4/);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('does not let maxDelegatedRounds: 2 reuse one committed authorization for a second reservation', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir, cfg } = await newPreparedBudgetTwoProject(roots);
+      const runDir = await delegatedRunDir();
+      roots.push(runDir);
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'one token',
+          '--head',
+          await head(dir),
+        ],
+        dir,
+        envFor(runDir),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+      const args = ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg];
+      const first = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(runDir),
+      );
+      expect(first.code, first.out).toBe(0);
+      const token = first.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+      expect(token).toBeDefined();
+      await recordFanOut(dir, runDir, `gate-round reservation: ${token!}`);
+      const consumed = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reservation', token!],
+        dir,
+        envFor(runDir),
+      );
+      expect(consumed.code, consumed.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      const repeated = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(runDir),
+      );
+      expect(repeated.code).toBe(2);
+      expect(repeated.stdout).not.toMatch(/\breservation\s+[^\s]+/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('does not let a second declared run reserve an unconsumed committed authorization', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir, cfg } = await newPreparedBudgetTwoProject(roots);
+      const authorizingRun = await delegatedRunDir();
+      const otherRun = await delegatedRunDir();
+      roots.push(authorizingRun, otherRun);
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'active token',
+          '--head',
+          await head(dir),
+        ],
+        dir,
+        envFor(authorizingRun),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+      const args = ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg];
+      const first = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(authorizingRun),
+      );
+      expect(first.code, first.out).toBe(0);
+      expect(first.stdout).toMatch(/\breservation\s+[^\s]+/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+
+      const second = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(otherRun),
+      );
+
+      expect(second.code).toBe(2);
+      expect(second.stdout).not.toMatch(/\breservation\s+[^\s]+/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }

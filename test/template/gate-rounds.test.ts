@@ -40,6 +40,7 @@ const { recordDecision } = (await import(
     verdict: string;
     headSha: string;
     reviewers: string[];
+    why?: string;
     now: string;
   }) => unknown;
 };
@@ -332,7 +333,7 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
 
   const countsFile = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');
 
-  /** Record the non-empty, exact-head fan-out a CLI call is about. */
+  /** Reserve, then record the non-empty exact-head fan-out that consumes the slot. */
   const runRecordedGateRound = async (
     args: string[],
     cfg: string,
@@ -341,15 +342,24 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     const root = path.join(path.dirname(cfg), '..');
     const runDir = await mkdtemp(path.join(tmpdir(), `gate-round-evidence-${fanOutSequence++}-`));
     try {
+      const env = { ...process.env, RIG_RUN_DIR: runDir };
+      const reserved = await run([...args, '--reserve'], stages, env);
+      if (reserved.code !== 0) return reserved;
+      const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+      if (!token)
+        throw new Error(
+          `gate-round --reserve did not emit a reservation token: ${reserved.stdout}`,
+        );
       recordDecision({
         runDir,
         gate: 'reviewer-fan-out',
         verdict: 'launched',
         headSha: gitIn(root, ['rev-parse', 'HEAD']),
         reviewers: ['code-reviewer'],
+        why: `gate-round reservation: ${token}`,
         now: '2026-10-18T00:00:00.000Z',
       });
-      return await run(args, stages, { ...process.env, RIG_RUN_DIR: runDir });
+      return await run([...args, '--reservation', token], stages, env);
     } finally {
       await removeFixture(runDir);
     }

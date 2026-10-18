@@ -97,20 +97,21 @@ enlarge it by recording decisions — the generator's
 `test/template/delegated-rounds.test.ts` (absent in a generated rig) ›
 "absent maxDelegatedRounds defaults to 1: a first record succeeds, a second
 for the same ticket+branch is refused". The authorization is committed with
-the branch, only a record committed at HEAD counts, and the consuming call
-must itself run under a journalled delegated authority — › "gate-round
+the branch, only a record committed at HEAD counts, and admission for the
+launch must run under a journalled delegated authority — › "gate-round
 --authorized refuses a bypass of the committed-record and consuming-authority
-rules (RP-442, security-scanner)". `gate-round --authorized` counts the round only while no review
-verdict exists on the head it covers, and that verdict is the only record that
-the round was spent — › "exits 2 on a second --authorized call at the same
-head once a reviewer verdict is recorded for it". A new head earns nothing on
+rules (RP-442, security-scanner)". Admission for a new delegated fan-out requires
+that no reviewer has answered on the covered head. Consumption records the actual
+non-empty fan-out once in the existing gate counter; a reviewer answer that arrives
+after valid admission does not erase that launched work — › "counts a reserved delegated fan-out after a reviewer verdict makes a new admission ineligible".
+Reviewer verdicts still prevent a fresh admission on the answered authorization.
+A new head earns nothing on
 its own — › "exits 2 on a fix commit past the default budget — no second
 authorization exists to match". With the default budget a run therefore stops
 at the owner after three base rounds and one delegated round, however the
 records are edited — › "an in-place rewrite of the single counted record to a
-new, unverdicted head cannot buy a round past the total cap (probe 3)". Consumption is
-read from this checkout's run journals; a second clone with no verdicts of its
-own does not see it spent.
+new, unverdicted head cannot buy a round past the total cap (probe 3)". Admission and consumption are local to the main checkout shared by its linked
+worktrees. A second clone does not share this counter or these run journals.
 
 The run's authority is self-declared. In the opt-in workflow layer,
 `run-state.mjs authority` journals each declaration with the value before and after it —

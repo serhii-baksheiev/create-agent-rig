@@ -69,6 +69,8 @@ export const gateRoundsPathFor = (projectRoot) =>
 // cannot collide with a CLI branch and survive older numeric-only writers.
 const RECEIPTS_KEY = '\u0000rig:gate-round-evidence';
 const RECEIPT_PREFIX = `${RECEIPTS_KEY}:`;
+const RESERVATION_PREFIX = '\u0000rig:gate-round-reservation:';
+const COMPLETED_RESERVATION_PREFIX = '\u0000rig:gate-round-reservation-completed:';
 
 const receiptKeyFor = (branch, identity) => `${RECEIPT_PREFIX}${JSON.stringify([branch, identity])}`;
 
@@ -85,13 +87,71 @@ const receiptFromKey = (key) => {
   }
 };
 
+const reservationKeyFor = (reservation) => `${RESERVATION_PREFIX}${JSON.stringify(reservation)}`;
+
+const reservationFromKey = (key) => {
+  if (!key.startsWith(RESERVATION_PREFIX)) return null;
+  try {
+    const reservation = JSON.parse(key.slice(RESERVATION_PREFIX.length));
+    return Array.isArray(reservation) && reservation.length === 7 &&
+      reservation.every((value, index) =>
+        index === 3
+          ? Number.isInteger(value) && value >= 0
+          : index === 5 || index === 6
+            ? value === null || typeof value === 'string'
+            : typeof value === 'string' && value !== '',
+      )
+      ? {
+          branch: reservation[0],
+          head: reservation[1],
+          runDir: reservation[2],
+          seqFloor: reservation[3],
+          token: reservation[4],
+          ticket: reservation[5],
+          authorizationHead: reservation[6],
+        }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const completedReservationKeyFor = (reservation) =>
+  `${COMPLETED_RESERVATION_PREFIX}${JSON.stringify(reservation)}`;
+
+const completedReservationFromKey = (key) => {
+  if (!key.startsWith(COMPLETED_RESERVATION_PREFIX)) return null;
+  try {
+    const reservation = JSON.parse(key.slice(COMPLETED_RESERVATION_PREFIX.length));
+    return Array.isArray(reservation) && reservation.length === 8 &&
+      reservation.every((value, index) =>
+        index === 3 || index === 7
+          ? Number.isInteger(value) && value >= (index === 3 ? 0 : 1)
+          : index === 5 || index === 6
+            ? value === null || typeof value === 'string'
+            : typeof value === 'string' && value !== '',
+      )
+      ? {
+          branch: reservation[0], head: reservation[1], runDir: reservation[2],
+          seqFloor: reservation[3], token: reservation[4], ticket: reservation[5],
+          authorizationHead: reservation[6], fanOuts: reservation[7],
+        }
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const readRoundState = (file) => {
   let raw;
   try {
     raw = readFileSync(file, 'utf8');
   } catch (error) {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
-      return { rounds: Object.create(null), receipts: Object.create(null) };
+      return {
+        rounds: Object.create(null), receipts: Object.create(null), reservations: [],
+        completedReservations: [],
+      };
     }
     throw new Error(
       `${file} exists but could not be read (${error?.code ?? 'unknown error'}), so the ` +
@@ -130,7 +190,27 @@ const readRoundState = (file) => {
   // defect, and the failure was silent.
   const clean = Object.create(null);
   const receipts = Object.create(null);
+  const reservations = [];
+  const completedReservations = [];
   for (const [branch, count] of Object.entries(parsed)) {
+    if (branch.startsWith(COMPLETED_RESERVATION_PREFIX)) {
+      const reservation = completedReservationFromKey(branch);
+      if (reservation === null || count !== 1) {
+        throw new Error(`${file} has invalid completed gate-round reservations, so replay safety cannot be trusted.`);
+      }
+      clean[branch] = count;
+      completedReservations.push({ ...reservation, key: branch });
+      continue;
+    }
+    if (branch.startsWith(RESERVATION_PREFIX)) {
+      const reservation = reservationFromKey(branch);
+      if (reservation === null || count !== 1) {
+        throw new Error(`${file} has invalid gate-round reservations, so the available budget cannot be trusted.`);
+      }
+      clean[branch] = count;
+      reservations.push({ ...reservation, key: branch });
+      continue;
+    }
     if (branch.startsWith(RECEIPT_PREFIX)) {
       const receipt = receiptFromKey(branch);
       if (receipt === null || count !== 1) {
@@ -152,7 +232,7 @@ const readRoundState = (file) => {
       `${file} has unsupported gate-round evidence receipts, so duplicate evidence cannot be detected.`,
     );
   }
-  return { rounds: clean, receipts };
+  return { rounds: clean, receipts, reservations, completedReservations };
 };
 
 const readRounds = (file) => readRoundState(file).rounds;
@@ -192,6 +272,24 @@ export const gateRoundEvidenceRecorded = ({ branch, projectRoot, roundsPath, evi
   if (typeof evidenceIdentity !== 'string' || evidenceIdentity === '') return false;
   const file = roundsPath ?? gateRoundsPathFor(projectRoot);
   return (readRoundState(file).receipts[requireBranch(branch)] ?? []).includes(evidenceIdentity);
+};
+
+export const gateRoundReservationFor = ({ branch, projectRoot, roundsPath, token } = {}) => {
+  if (typeof token !== 'string' || token === '') return null;
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  const key = requireBranch(branch);
+  return readRoundState(file).reservations.find(
+    (reservation) => reservation.branch === key && reservation.token === token,
+  ) ?? null;
+};
+
+export const completedGateRoundReservationFor = ({ branch, projectRoot, roundsPath, token } = {}) => {
+  if (typeof token !== 'string' || token === '') return null;
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  const key = requireBranch(branch);
+  return readRoundState(file).completedReservations.find(
+    (reservation) => reservation.branch === key && reservation.token === token,
+  ) ?? null;
 };
 
 const writeRoundState = (file, rounds) => {
@@ -277,6 +375,126 @@ export const recordEvidenceGateRound = ({
     rounds[receiptKeyFor(key, evidenceIdentity)] = 1;
     writeRoundState(file, rounds);
     return { rounds: next, recorded: true };
+  });
+};
+
+export const reconcileEvidenceGateRounds = ({
+  branch,
+  projectRoot,
+  roundsPath,
+  evidenceIdentities,
+} = {}) => {
+  const key = requireBranch(branch);
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  return withCounterLock(file, () => {
+    const { rounds, receipts } = readRoundState(file);
+    const seen = receipts[key] ?? [];
+    const unrecorded = evidenceIdentities.filter((identity) => !seen.includes(identity));
+    if (unrecorded.length === 0) return { rounds: rounds[key] ?? 0, recorded: 0 };
+    const next = (rounds[key] ?? 0) + unrecorded.length;
+    rounds[key] = next;
+    for (const identity of unrecorded) rounds[receiptKeyFor(key, identity)] = 1;
+    writeRoundState(file, rounds);
+    return { rounds: next, recorded: unrecorded.length };
+  });
+};
+
+export const reserveGateRound = ({ branch, projectRoot, roundsPath, reservation, max } = {}) => {
+  const key = requireBranch(branch);
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  const reservationKey = reservationKeyFor([
+    reservation?.branch,
+    reservation?.head,
+    reservation?.runDir,
+    reservation?.seqFloor,
+    reservation?.token,
+    reservation?.ticket ?? null,
+    reservation?.authorizationHead ?? null,
+  ]);
+  if (reservationFromKey(reservationKey) === null || reservation.branch !== key) {
+    throw new Error('the gate-round reservation has invalid binding data.');
+  }
+  return withCounterLock(file, () => {
+    const { rounds, reservations, completedReservations } = readRoundState(file);
+    const spent = rounds[key] ?? 0;
+    const sameRun = reservations.find(
+      (existing) =>
+        existing.branch === key &&
+        existing.runDir === reservation.runDir &&
+        existing.head === reservation.head,
+    );
+    if (sameRun) return { reserved: false, pending: true, reservation: sameRun, spent };
+    const authorizationUsed =
+      reservation.ticket !== null &&
+      (reservations.some(
+          (existing) =>
+            existing.branch === key &&
+            existing.ticket === reservation.ticket &&
+            existing.authorizationHead === reservation.authorizationHead,
+        ) ||
+        completedReservations.some(
+          (existing) =>
+            existing.branch === key &&
+            existing.ticket === reservation.ticket &&
+            existing.authorizationHead === reservation.authorizationHead,
+        ));
+    if (authorizationUsed) return { reserved: false, authorizationUsed: true, spent };
+    const held = reservations.filter((existing) => existing.branch === key).length;
+    if (Number.isInteger(max) && spent + held >= max) {
+      return { reserved: false, exhausted: true, spent, held };
+    }
+    rounds[reservationKey] = 1;
+    writeRoundState(file, rounds);
+    return { reserved: true, reservation, spent, held };
+  });
+};
+
+export const consumeReservedEvidenceGateRound = ({
+  branch,
+  projectRoot,
+  roundsPath,
+  token,
+  evidenceIdentities,
+} = {}) => {
+  const key = requireBranch(branch);
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  return withCounterLock(file, () => {
+    const { rounds, reservations, completedReservations } = readRoundState(file);
+    const reservation = reservations.find((existing) => existing.branch === key && existing.token === token);
+    if (!reservation) {
+      const completed = completedReservations.find((existing) => existing.branch === key && existing.token === token);
+      if (completed) return { rounds: rounds[key] ?? 0, completed };
+      throw new Error('the gate-round reservation is no longer active.');
+    }
+    const next = (rounds[key] ?? 0) + evidenceIdentities.length;
+    rounds[key] = next;
+    for (const evidenceIdentity of evidenceIdentities) {
+      rounds[receiptKeyFor(key, evidenceIdentity)] = 1;
+    }
+    delete rounds[reservation.key];
+    rounds[completedReservationKeyFor([
+      reservation.branch,
+      reservation.head,
+      reservation.runDir,
+      reservation.seqFloor,
+      reservation.token,
+      reservation.ticket,
+      reservation.authorizationHead,
+      evidenceIdentities.length,
+    ])] = 1;
+    writeRoundState(file, rounds);
+    return { rounds: next, completed: null };
+  });
+};
+
+export const releaseGateRoundReservation = ({ branch, projectRoot, roundsPath, token } = {}) => {
+  const key = requireBranch(branch);
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  return withCounterLock(file, () => {
+    const { rounds, reservations } = readRoundState(file);
+    const reservation = reservations.find((existing) => existing.branch === key && existing.token === token);
+    delete rounds[reservation.key];
+    writeRoundState(file, rounds);
   });
 };
 

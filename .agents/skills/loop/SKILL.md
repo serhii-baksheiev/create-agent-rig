@@ -984,18 +984,20 @@ Both then follow the same three steps:
 🔴 **The gate-round cap is the stop a run will not reach on its own.** Every other
 stop here has a red thing behind it; a gate that keeps finding fixable prose is all
 green, so three strikes never fires and the run has no reason to stop re-entering it.
-`pr-ship` step 0 counts the round per branch in `.claude/gate-rounds.json` and exits 2
-past the cap. The count outlives the session, which is the point — a counter held in
-context is one the next context does not have.
+`pr-ship` step 0 checks availability without spending a round. Before launching
+reviewers, its later admission step reserves capacity in the existing
+`.claude/gate-rounds.json`; only a durable non-empty exact-head fan-out consumes
+that capacity. The per-branch count and evidence receipts outlive the session.
+See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
+› "reserves an unspent slot with an opaque token without regranting it to a shared run".
 
 ⚠ **What the cap does not carry, stated because the gap decides what you can write in
-the escalation:** the counter records the round and nothing about it. Findings travel
-separately, and the two do not cover the same ground — the count is **per branch, in
-the main checkout, across runs**, while a verdict is journalled into **this run's**
-directory. So `decisions.jsonl` holds the rounds this run spent and nothing about a
-round spent before it: a branch on its third round in its second run has one round's
-findings here, and the earlier ones in whichever directory that run declared, or
-nowhere if it declared none.
+the escalation:** the counter holds totals, admission and consumption receipts;
+reviewer findings remain in run journals. The count is **per branch, in the main
+checkout, across runs**, while a verdict is journalled into **this run's**
+directory. `decisions.jsonl` records this run's actual launches and parsed answers,
+not every review on the branch. Earlier findings remain in the directories those
+runs declared and may be unavailable here.
 
 Write the diagnosis from what you can actually read — the round count, plus this run's
 records where there are any — and say which of the rounds that leaves unaccounted for

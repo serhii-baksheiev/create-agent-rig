@@ -18,6 +18,7 @@ const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const scriptsDir = path.join(universal, '.claude', 'scripts');
 const queueCli = path.join(scriptsDir, 'queue', 'index.mjs');
 const journalModule = path.join(scriptsDir, 'run-journal.mjs');
+const prShipSkill = path.join(universal, '.claude', 'skills', 'pr-ship', 'SKILL.md');
 
 type Exit = { code: number; stdout: string; stderr: string };
 
@@ -95,10 +96,12 @@ const fanOut = async ({
   runDir,
   headSha,
   reviewers,
+  why,
 }: {
   runDir: string;
   headSha: string;
   reviewers: string[];
+  why?: string;
 }) => {
   const { recordDecision } = await journal();
   recordDecision({
@@ -107,8 +110,18 @@ const fanOut = async ({
     verdict: 'launched',
     headSha,
     reviewers,
+    why,
     now: '2026-10-18T00:00:00.000Z',
   });
+};
+
+const reserve = async (args: string[], env: NodeJS.ProcessEnv): Promise<string> => {
+  const result = await run([...args, '--reserve'], env);
+  if (result.code !== 0) throw new Error(`gate-round --reserve failed: ${result.stderr}`);
+  const token = result.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+  if (!token)
+    throw new Error(`gate-round --reserve did not emit a reservation token: ${result.stdout}`);
+  return token;
 };
 
 describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence', () => {
@@ -134,11 +147,17 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
       { ...process.env, RIG_RUN_DIR: runDir },
     );
 
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/fan-out|evidence|reservation|launch/i);
+    const checked = await run(
+      ['gate-round', '--check', '--branch', value.branch, '--config', value.configPath],
+      { ...process.env, RIG_RUN_DIR: runDir },
+    );
+    expect(checked.code, checked.stderr).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(0);
   });
 
-  it('does not consume a round when no run directory is declared', async () => {
+  it('refuses a post-launch call when no run directory is declared', async () => {
     const value = await newFixture();
 
     const result = await run(
@@ -146,7 +165,409 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
       { ...process.env, RIG_RUN_DIR: undefined },
     );
 
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/run|evidence|reservation|fan-out/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+  });
+
+  it('refuses reconciliation when no declared run can scope the historic evidence', async () => {
+    const value = await newFixture();
+
+    const result = await run(
+      ['gate-round', '--reconcile', '--branch', value.branch, '--config', value.configPath],
+      { ...process.env, RIG_RUN_DIR: undefined },
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/run|reconcile|evidence/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+  });
+
+  it('makes pr-ship reserve a durable slot before launch and fail when its fan-out cannot be recorded', async () => {
+    const skill = await readFile(prShipSkill, 'utf8');
+
+    expect(skill).toMatch(/gate-round\s+--reserve/);
+    expect(skill).toMatch(/fan-out[^\n]*(fail|refus)|(?:fail|refus)[^\n]*fan-out/i);
+    expect(skill).not.toMatch(
+      /catch\s*\([^)]*isTraceExhausted[^)]*\)[\s\S]{0,300}?(?:return|continue)/,
+    );
+  });
+
+  it('reserves an unspent slot with an opaque token without regranting it to a shared run', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-reserve-shared-run-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+
+    const created = await run([...args, '--reserve'], env);
+    expect(created.code, created.stderr).toBe(0);
+    const token = created.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+
+    const resumed = await run([...args, '--reserve', '--reservation', token!], env);
+    expect(resumed.code, resumed.stderr).toBe(0);
+    expect(resumed.stdout).toMatch(/reservation.*resum|resum.*reservation/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+
+    const duplicate = await run([...args, '--reserve'], env);
+    expect(duplicate.code).toBe(1);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+  });
+
+  it('requires a post-reservation fan-out bound to the reservation token instead of reusing an older event', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-seq-floor-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
+
+    const reserved = await run([...args, '--reserve'], env);
+    expect(reserved.code, reserved.stderr).toBe(0);
+    const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+
+    const oldEvent = await run([...args, '--reservation', token!], env);
+    expect(oldEvent.code).toBe(1);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token!}`,
+    });
+    const counted = await run([...args, '--reservation', token!], env);
+    expect(counted.code, counted.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
+
+  it('accounts for every launch under a duplicated reservation token before refusing further use', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-double-fanout-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const reserved = await run([...args, '--reserve'], env);
+    expect(reserved.code, reserved.stderr).toBe(0);
+    const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token!}`,
+    });
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['security-scanner'],
+      why: `gate-round reservation: ${token!}`,
+    });
+
+    const consumed = await run([...args, '--reservation', token!], env);
+
+    expect(consumed.code).toBe(1);
+    expect(consumed.stderr).toMatch(/fan-out|evidence|reservation|reconcile/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+    const replay = await run([...args, '--reservation', token!], env);
+    expect(replay.code).toBe(1);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
+  it('acknowledges a replayed consumed reservation token without recounting its fan-out', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-replay-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const reserved = await run([...args, '--reserve'], env);
+    expect(reserved.code, reserved.stderr).toBe(0);
+    const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token!}`,
+    });
+    const consumed = await run([...args, '--reservation', token!], env);
+    expect(consumed.code, consumed.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+
+    const replay = await run([...args, '--reservation', token!], env);
+
+    expect(replay.code, replay.stderr).toBe(0);
+    expect(replay.stdout).toMatch(/reservation|already|consumed/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
+
+  it('acknowledges concurrent consumption of one reservation token without recounting its fan-out', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-concurrent-replay-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const reserved = await run([...args, '--reserve'], env);
+    expect(reserved.code, reserved.stderr).toBe(0);
+    const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token!}`,
+    });
+
+    const results = await Promise.all([
+      run([...args, '--reservation', token!], env),
+      run([...args, '--reservation', token!], env),
+    ]);
+
+    expect(results.map(({ code }) => code).sort()).toEqual([0, 0]);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
+
+  it('refuses a post-launch call without the durable fan-out bound to its reservation', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-no-fanout-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const reserved = await run([...args, '--reserve'], env);
+    expect(reserved.code, reserved.stderr).toBe(0);
+    const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+
+    const postLaunch = await run([...args, '--reservation', token!], env);
+
+    expect(postLaunch.code).toBe(1);
+    expect(postLaunch.stderr).toMatch(/fan-out|evidence|reservation|launch/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+  });
+
+  it('releases an unused reservation so a different declared run can reserve the slot', async () => {
+    const value = await newFixture();
+    const firstRun = await mkdtemp(path.join(tmpdir(), 'rp521-release-first-'));
+    const secondRun = await mkdtemp(path.join(tmpdir(), 'rp521-release-second-'));
+    roots.push(firstRun, secondRun);
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const created = await run([...args, '--reserve'], { ...process.env, RIG_RUN_DIR: firstRun });
+    expect(created.code, created.stderr).toBe(0);
+    const token = created.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+
+    const released = await run([...args, '--release', '--reservation', token!], {
+      ...process.env,
+      RIG_RUN_DIR: firstRun,
+    });
+    expect(released.code, released.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+
+    const next = await run([...args, '--reserve'], { ...process.env, RIG_RUN_DIR: secondRun });
+    expect(next.code, next.stderr).toBe(0);
+    expect(next.stdout).toMatch(/\breservation\s+[^\s]+/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+  });
+
+  it('refuses to release a reservation once its token-bound fan-out was launched', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-release-launched-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+
+    const released = await run([...args, '--release', '--reservation', token], env);
+
+    expect(released.code).toBe(1);
+    expect(released.stderr).toMatch(/fan-out|evidence|reservation|launch/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+  });
+
+  it('refuses a completed reservation token from a different declared run', async () => {
+    const value = await newFixture();
+    const ownerRun = await mkdtemp(path.join(tmpdir(), 'rp521-completed-owner-'));
+    const otherRun = await mkdtemp(path.join(tmpdir(), 'rp521-completed-other-'));
+    roots.push(ownerRun, otherRun);
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const ownerEnv = { ...process.env, RIG_RUN_DIR: ownerRun };
+    const token = await reserve(args, ownerEnv);
+    await fanOut({
+      runDir: ownerRun,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token], ownerEnv)).code).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+
+    const foreign = await run([...args, '--reservation', token], {
+      ...process.env,
+      RIG_RUN_DIR: otherRun,
+    });
+
+    expect(foreign.code).toBe(1);
+    expect(foreign.stderr).toMatch(/reservation|branch|head|run/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
+
+  it('refuses a second reservation when spent rounds and an active reservation fill the base cap', async () => {
+    const value = await newFixture();
+    const firstRun = await mkdtemp(path.join(tmpdir(), 'rp521-reserve-cap-first-'));
+    const secondRun = await mkdtemp(path.join(tmpdir(), 'rp521-reserve-cap-second-'));
+    roots.push(firstRun, secondRun);
+    const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
+    await writeFile(counterPath, JSON.stringify({ [value.branch]: 2 }));
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+
+    const first = await run([...args, '--reserve'], { ...process.env, RIG_RUN_DIR: firstRun });
+    expect(first.code, first.stderr).toBe(0);
+    expect(first.stdout).toMatch(/\breservation\s+[^\s]+/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+
+    const blocked = await run([...args, '--reserve'], { ...process.env, RIG_RUN_DIR: secondRun });
+    expect(blocked.code).toBe(2);
+    expect(blocked.stdout).not.toMatch(/\breservation\s+[^\s]+/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
+  it('admits only one simultaneous final-slot reservation across declared runs', async () => {
+    const value = await newFixture();
+    const firstRun = await mkdtemp(path.join(tmpdir(), 'rp521-reserve-race-first-'));
+    const secondRun = await mkdtemp(path.join(tmpdir(), 'rp521-reserve-race-second-'));
+    roots.push(firstRun, secondRun);
+    const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
+    await writeFile(counterPath, JSON.stringify({ [value.branch]: 2 }));
+    const args = [
+      'gate-round',
+      '--branch',
+      value.branch,
+      '--config',
+      value.configPath,
+      '--reserve',
+    ];
+
+    const results = await Promise.all([
+      run(args, { ...process.env, RIG_RUN_DIR: firstRun }),
+      run(args, { ...process.env, RIG_RUN_DIR: secondRun }),
+    ]);
+
+    expect(results.map((result) => result.code).sort()).toEqual([0, 2]);
+    expect(results.filter((result) => /\breservation\s+[^\s]+/i.test(result.stdout))).toHaveLength(
+      1,
+    );
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
+  it('refuses to resume a reservation token from a different declared run', async () => {
+    const value = await newFixture();
+    const ownerRun = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-owner-'));
+    const otherRun = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-other-'));
+    roots.push(ownerRun, otherRun);
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const created = await run([...args, '--reserve'], { ...process.env, RIG_RUN_DIR: ownerRun });
+    expect(created.code, created.stderr).toBe(0);
+    const token = created.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+
+    const foreign = await run([...args, '--reserve', '--reservation', token!], {
+      ...process.env,
+      RIG_RUN_DIR: otherRun,
+    });
+
+    expect(foreign.code).toBe(1);
+    expect(foreign.stderr).toMatch(/reservation|branch|head|run/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+
+    const foreignRelease = await run([...args, '--release', '--reservation', token!], {
+      ...process.env,
+      RIG_RUN_DIR: otherRun,
+    });
+    expect(foreignRelease.code).toBe(1);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+    const ownerResume = await run([...args, '--reserve', '--reservation', token!], {
+      ...process.env,
+      RIG_RUN_DIR: ownerRun,
+    });
+    expect(ownerResume.code, ownerResume.stderr).toBe(0);
+  });
+
+  it('keeps --check read-only so another run can reserve the final available slot', async () => {
+    const value = await newFixture();
+    const checkedRun = await mkdtemp(path.join(tmpdir(), 'rp521-check-read-only-'));
+    const reservingRun = await mkdtemp(path.join(tmpdir(), 'rp521-check-reserve-after-'));
+    roots.push(checkedRun, reservingRun);
+    const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
+    await writeFile(counterPath, JSON.stringify({ [value.branch]: 2 }));
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+
+    const checked = await run([...args, '--check'], { ...process.env, RIG_RUN_DIR: checkedRun });
+    expect(checked.code, checked.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+
+    const reserved = await run([...args, '--reserve'], {
+      ...process.env,
+      RIG_RUN_DIR: reservingRun,
+    });
+    expect(reserved.code, reserved.stderr).toBe(0);
+    expect(reserved.stdout).toMatch(/\breservation\s+[^\s]+/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
+  it('refuses conflicting --check --reserve flags without creating a held slot', async () => {
+    const value = await newFixture();
+    const checkedRun = await mkdtemp(path.join(tmpdir(), 'rp521-check-reserve-conflict-'));
+    const reservingRun = await mkdtemp(path.join(tmpdir(), 'rp521-check-reserve-next-'));
+    const reconcileRun = await mkdtemp(path.join(tmpdir(), 'rp521-check-reconcile-conflict-'));
+    roots.push(checkedRun, reservingRun, reconcileRun);
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+
+    const conflicting = await run([...args, '--check', '--reserve'], {
+      ...process.env,
+      RIG_RUN_DIR: checkedRun,
+    });
+
+    expect(conflicting.code).toBe(1);
+    expect(conflicting.stdout).not.toMatch(/\breservation\s+[^\s]+/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+
+    const next = await run([...args, '--reserve'], { ...process.env, RIG_RUN_DIR: reservingRun });
+    expect(next.code, next.stderr).toBe(0);
+    expect(next.stdout).toMatch(/\breservation\s+[^\s]+/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+
+    const token = next.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+    const checkRelease = await run([...args, '--check', '--release', '--reservation', token!], {
+      ...process.env,
+      RIG_RUN_DIR: reservingRun,
+    });
+    expect(checkRelease.code).toBe(1);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+    expect(
+      (
+        await run([...args, '--reserve', '--reservation', token!], {
+          ...process.env,
+          RIG_RUN_DIR: reservingRun,
+        })
+      ).code,
+    ).toBe(0);
+
+    await fanOut({ runDir: reconcileRun, headSha: value.head, reviewers: ['code-reviewer'] });
+    const checkReconcile = await run([...args, '--check', '--reconcile'], {
+      ...process.env,
+      RIG_RUN_DIR: reconcileRun,
+    });
+    expect(checkReconcile.code).toBe(1);
     expect(await counterAt(value.configPath, value.branch)).toBe(0);
   });
 
@@ -173,9 +594,15 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     for (let round = 0; round < 3; round += 1) {
       const runDir = await mkdtemp(path.join(tmpdir(), `rp521-check-cap-${round}-`));
       roots.push(runDir);
-      await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
       latestEnv = { ...process.env, RIG_RUN_DIR: runDir };
-      expect((await run(args, latestEnv)).code).toBe(0);
+      const token = await reserve(args, latestEnv);
+      await fanOut({
+        runDir,
+        headSha: value.head,
+        reviewers: ['code-reviewer'],
+        why: `gate-round reservation: ${token}`,
+      });
+      expect((await run([...args, '--reservation', token], latestEnv)).code).toBe(0);
     }
     expect(await counterAt(value.configPath, value.branch)).toBe(3);
 
@@ -190,19 +617,25 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
   it('lets a default replay acknowledge already-consumed evidence at the cap without changing it', async () => {
     const value = await newFixture();
     const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
-    const consumed: NodeJS.ProcessEnv[] = [];
+    const consumed: Array<{ env: NodeJS.ProcessEnv; token: string }> = [];
 
     for (let round = 0; round < 3; round += 1) {
       const runDir = await mkdtemp(path.join(tmpdir(), `rp521-replay-cap-${round}-`));
       roots.push(runDir);
-      await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
       const env = { ...process.env, RIG_RUN_DIR: runDir };
-      expect((await run(args, env)).code).toBe(0);
-      consumed.push(env);
+      const token = await reserve(args, env);
+      await fanOut({
+        runDir,
+        headSha: value.head,
+        reviewers: ['code-reviewer'],
+        why: `gate-round reservation: ${token}`,
+      });
+      expect((await run([...args, '--reservation', token], env)).code).toBe(0);
+      consumed.push({ env, token });
     }
     expect(await counterAt(value.configPath, value.branch)).toBe(3);
 
-    const replay = await run(args, consumed[0]!);
+    const replay = await run([...args, '--reservation', consumed[0]!.token], consumed[0]!.env);
     expect(replay.code, replay.stderr).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(3);
   });
@@ -218,7 +651,23 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
       { ...process.env, RIG_RUN_DIR: runDir },
     );
 
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.code, result.stderr).toBe(1);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+  });
+
+  it('refuses a tokenless exact-head fan-out until explicit reconciliation', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-tokenless-valid-fanout-'));
+    roots.push(runDir);
+    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
+
+    const result = await run(
+      ['gate-round', '--branch', value.branch, '--config', value.configPath],
+      { ...process.env, RIG_RUN_DIR: runDir },
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/reservation|reconcile|fan-out|evidence/i);
     expect(await counterAt(value.configPath, value.branch)).toBe(0);
   });
 
@@ -233,7 +682,7 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
       { ...process.env, RIG_RUN_DIR: runDir },
     );
 
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.code, result.stderr).toBe(1);
     expect(await counterAt(value.configPath, value.branch)).toBe(0);
   });
 
@@ -248,7 +697,7 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
       { ...process.env, RIG_RUN_DIR: runDir },
     );
 
-    expect(result.code, result.stderr).toBe(0);
+    expect(result.code, result.stderr).toBe(1);
     expect(await counterAt(value.configPath, value.branch)).toBe(0);
   });
 
@@ -256,20 +705,21 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const value = await newFixture();
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-repeat-evidence-'));
     roots.push(runDir);
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
     const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
 
-    const first = await run(
-      ['gate-round', '--branch', value.branch, '--config', value.configPath],
-      env,
-    );
+    const first = await run([...args, '--reservation', token], env);
     expect(first.code, first.stderr).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(1);
 
-    const resumed = await run(
-      ['gate-round', '--branch', value.branch, '--config', value.configPath],
-      env,
-    );
+    const resumed = await run([...args, '--reservation', token], env);
     expect(resumed.code, resumed.stderr).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(1);
   });
@@ -280,13 +730,24 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const aliasRoot = await mkdtemp(path.join(tmpdir(), 'rp521-symlink-alias-'));
     const alias = path.join(aliasRoot, 'run');
     roots.push(runDir, aliasRoot);
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
     const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const token = await reserve(args, { ...process.env, RIG_RUN_DIR: runDir });
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
 
-    expect((await run(args, { ...process.env, RIG_RUN_DIR: runDir })).code).toBe(0);
+    expect(
+      (await run([...args, '--reservation', token], { ...process.env, RIG_RUN_DIR: runDir })).code,
+    ).toBe(0);
     await symlink(runDir, alias, process.platform === 'win32' ? 'junction' : 'dir');
 
-    const resumed = await run(args, { ...process.env, RIG_RUN_DIR: alias });
+    const resumed = await run([...args, '--reservation', token], {
+      ...process.env,
+      RIG_RUN_DIR: alias,
+    });
     expect(resumed.code, resumed.stderr).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(1);
   });
@@ -295,11 +756,17 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const value = await newFixture();
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-legacy-writer-'));
     roots.push(runDir);
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
     const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
     const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
 
-    expect((await run(args, env)).code).toBe(0);
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(1);
 
     const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
@@ -310,7 +777,7 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     legacyProjection['fix/another-controller'] = 1;
     await writeFile(counterPath, JSON.stringify(legacyProjection));
 
-    const replay = await run(args, env);
+    const replay = await run([...args, '--reservation', token], env);
     expect([0, 1]).toContain(replay.code);
     expect(await counterAt(value.configPath, value.branch)).toBe(1);
   });
@@ -320,37 +787,84 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-second-fanout-'));
     roots.push(runDir);
     const env = { ...process.env, RIG_RUN_DIR: runDir };
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const firstToken = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${firstToken}`,
+    });
 
-    expect(
-      (await run(['gate-round', '--branch', value.branch, '--config', value.configPath], env)).code,
-    ).toBe(0);
+    expect((await run([...args, '--reservation', firstToken], env)).code).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(1);
 
-    await fanOut({ runDir, headSha: value.head, reviewers: ['security-scanner'] });
-    const second = await run(
-      ['gate-round', '--branch', value.branch, '--config', value.configPath],
-      env,
-    );
+    const secondToken = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['security-scanner'],
+      why: `gate-round reservation: ${secondToken}`,
+    });
+    const second = await run([...args, '--reservation', secondToken], env);
     expect(second.code, second.stderr).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(2);
   });
 
-  it('refuses two unconsumed valid fan-outs at one head instead of silently selecting one', async () => {
+  it('reconciles every tokenless historic fan-out at one head exactly once without creating a new admission', async () => {
     const value = await newFixture();
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-ambiguous-fanout-'));
     roots.push(runDir);
     await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
     await fanOut({ runDir, headSha: value.head, reviewers: ['security-scanner'] });
 
-    const result = await run(
-      ['gate-round', '--branch', value.branch, '--config', value.configPath],
-      { ...process.env, RIG_RUN_DIR: runDir },
-    );
+    const args = [
+      'gate-round',
+      '--reconcile',
+      '--branch',
+      value.branch,
+      '--config',
+      value.configPath,
+    ];
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const result = await run(args, env);
 
-    expect(result.code).toBe(1);
-    expect(result.stderr).toMatch(/fan-out|evidence|ambiguous|unconsumed/i);
-    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+    expect(result.code, result.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+    const replay = await run(args, env);
+    expect(replay.code, replay.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
+  it('reconciles every over-cap tokenless historic fan-out before refusing further rounds', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-over-cap-reconcile-'));
+    roots.push(runDir);
+    for (const reviewer of [
+      'code-reviewer',
+      'security-scanner',
+      'prose-reviewer',
+      'architecture-reviewer',
+    ]) {
+      await fanOut({ runDir, headSha: value.head, reviewers: [reviewer] });
+    }
+    const args = [
+      'gate-round',
+      '--reconcile',
+      '--branch',
+      value.branch,
+      '--config',
+      value.configPath,
+    ];
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+
+    const reconciled = await run(args, env);
+
+    expect(reconciled.code).toBe(2);
+    expect(await counterAt(value.configPath, value.branch)).toBe(4);
+    const replay = await run(args, env);
+    expect(replay.code).toBe(2);
+    expect(await counterAt(value.configPath, value.branch)).toBe(4);
   });
 
   it('refuses corrupt evidence receipts without resetting the branch count', async () => {
@@ -407,8 +921,14 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     roots.push(runDir);
     const env = { ...process.env, RIG_RUN_DIR: runDir };
     const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
-    expect((await run(args, env)).code).toBe(0);
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
     const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
     const stored = JSON.parse(await readFile(counterPath, 'utf8')) as Record<string, unknown>;
     const receiptKey = Object.keys(stored).find((key) =>
@@ -418,7 +938,7 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     stored[receiptKey!] = 0;
     await writeFile(counterPath, JSON.stringify(stored));
 
-    const replay = await run(args, env);
+    const replay = await run([...args, '--reservation', token], env);
 
     expect(replay.code).toBe(1);
     expect(replay.stderr).toMatch(/evidence|receipt|counter|round/i);
@@ -431,8 +951,14 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     roots.push(runDir);
     const env = { ...process.env, RIG_RUN_DIR: runDir };
     const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
-    expect((await run(args, env)).code).toBe(0);
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
     const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
     const stored = JSON.parse(await readFile(counterPath, 'utf8')) as Record<string, unknown>;
     const receiptKey = Object.keys(stored).find((key) =>
@@ -442,7 +968,7 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     stored[receiptKey!] = 'one';
     await writeFile(counterPath, JSON.stringify(stored));
 
-    const replay = await run(args, env);
+    const replay = await run([...args, '--reservation', token], env);
 
     expect(replay.code).toBe(1);
     expect(replay.stderr).toMatch(/evidence|receipt|counter|round/i);
@@ -455,8 +981,14 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     roots.push(runDir);
     const env = { ...process.env, RIG_RUN_DIR: runDir };
     const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
-    expect((await run(args, env)).code).toBe(0);
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
     const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
     const stored = JSON.parse(await readFile(counterPath, 'utf8')) as Record<string, unknown>;
     const receiptKey = Object.keys(stored).find((key) =>
@@ -467,7 +999,7 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     stored['\u0000rig:gate-round-evidence:[not-json'] = 1;
     await writeFile(counterPath, JSON.stringify(stored));
 
-    const replay = await run(args, env);
+    const replay = await run([...args, '--reservation', token], env);
 
     expect(replay.code).toBe(1);
     expect(replay.stderr).toMatch(/evidence|receipt|counter|round/i);
@@ -478,11 +1010,20 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const value = await newFixture();
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-concurrent-replay-'));
     roots.push(runDir);
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
     const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
     const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
 
-    const results = await Promise.all([run(args, env), run(args, env)]);
+    const results = await Promise.all([
+      run([...args, '--reservation', token], env),
+      run([...args, '--reservation', token], env),
+    ]);
 
     expect(
       results.map((result) => result.code),
@@ -497,21 +1038,51 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const nextRun = async (name: string) => {
       const runDir = await mkdtemp(path.join(tmpdir(), name));
       roots.push(runDir);
-      await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
-      return { ...process.env, RIG_RUN_DIR: runDir };
+      const env = { ...process.env, RIG_RUN_DIR: runDir };
+      return { runDir, env };
     };
 
     const first = await nextRun('rp521-concurrent-cap-first-');
     const second = await nextRun('rp521-concurrent-cap-second-');
-    expect((await run(args, first)).code).toBe(0);
-    expect((await run(args, second)).code).toBe(0);
+    const firstToken = await reserve(args, first.env);
+    const secondToken = await reserve(args, second.env);
+    await fanOut({
+      runDir: first.runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${firstToken}`,
+    });
+    await fanOut({
+      runDir: second.runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${secondToken}`,
+    });
+    expect((await run([...args, '--reservation', firstToken], first.env)).code).toBe(0);
+    expect((await run([...args, '--reservation', secondToken], second.env)).code).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(2);
 
-    const left = await nextRun('rp521-concurrent-cap-left-');
-    const right = await nextRun('rp521-concurrent-cap-right-');
-    const results = await Promise.all([run(args, left), run(args, right)]);
+    const [left, right] = await Promise.all([
+      nextRun('rp521-concurrent-cap-left-'),
+      nextRun('rp521-concurrent-cap-right-'),
+    ]);
+    const results = await Promise.all([
+      run([...args, '--reserve'], left.env),
+      run([...args, '--reserve'], right.env),
+    ]);
 
     expect(results.map((result) => result.code).sort()).toEqual([0, 2]);
+    const winner =
+      results[0].code === 0 ? { result: results[0], ...left } : { result: results[1], ...right };
+    const token = winner.result.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    expect(token).toBeDefined();
+    await fanOut({
+      runDir: winner.runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token!], winner.env)).code).toBe(0);
     expect(await counterAt(value.configPath, value.branch)).toBe(3);
   });
 
@@ -520,21 +1091,21 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-cap-'));
     roots.push(runDir);
     const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
 
     for (const reviewer of ['code-reviewer', 'security-scanner', 'prose-reviewer']) {
-      await fanOut({ runDir, headSha: value.head, reviewers: [reviewer] });
-      expect(
-        (await run(['gate-round', '--branch', value.branch, '--config', value.configPath], env))
-          .code,
-      ).toBe(0);
+      const token = await reserve(args, env);
+      await fanOut({
+        runDir,
+        headSha: value.head,
+        reviewers: [reviewer],
+        why: `gate-round reservation: ${token}`,
+      });
+      expect((await run([...args, '--reservation', token], env)).code).toBe(0);
     }
     expect(await counterAt(value.configPath, value.branch)).toBe(3);
 
-    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
-    const exhausted = await run(
-      ['gate-round', '--branch', value.branch, '--config', value.configPath],
-      env,
-    );
+    const exhausted = await run([...args, '--reserve'], env);
     expect(exhausted.code).toBe(2);
     expect(await counterAt(value.configPath, value.branch)).toBe(3);
   });

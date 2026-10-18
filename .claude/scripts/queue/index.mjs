@@ -5,7 +5,9 @@
 //   node .claude/scripts/queue/index.mjs next --json
 //   node .claude/scripts/queue/index.mjs list            # every item, with skip reasons
 //   node .claude/scripts/queue/index.mjs hygiene         # stale labels, link anomalies, overtaken proposals
-//   node .claude/scripts/queue/index.mjs gate-round --branch <b>   # count a gate round
+//   node .claude/scripts/queue/index.mjs gate-round --check --branch <b>       # read-only budget check
+//   node .claude/scripts/queue/index.mjs gate-round --reserve --branch <b>     # admit one reviewer launch
+//   node .claude/scripts/queue/index.mjs gate-round --reservation <token> --branch <b> # record its fan-out
 //   node .claude/scripts/queue/index.mjs board [<name>]       # the active board; or switch this checkout to <name>
 //
 // The adapter comes from `.claude/queue.json` (`{"adapter": "plan-md"}`) and
@@ -13,6 +15,7 @@
 // generated project. An unknown adapter is a hard error, never a fallback: a loop
 // that silently reads the wrong queue is worse than one that refuses to start.
 import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { basename, dirname, join } from 'node:path';
@@ -215,7 +218,7 @@ const parseArgs = (argv) => {
   const args = {
     command: argv[0] ?? 'next', json: false, config: null, branch: null, name: null,
     source: null, target: null, tasksPath: null, dryRun: false, unknownOptions: [],
-    ticket: null, authorized: false, check: false,
+    ticket: null, authorized: false, check: false, reserve: false, release: false, reconcile: false, reservation: null,
   };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
@@ -224,6 +227,10 @@ const parseArgs = (argv) => {
     else if (argv[i] === '--ticket') args.ticket = argv[++i];
     else if (argv[i] === '--authorized') args.authorized = true;
     else if (argv[i] === '--check') args.check = true;
+    else if (argv[i] === '--reserve') args.reserve = true;
+    else if (argv[i] === '--release') args.release = true;
+    else if (argv[i] === '--reconcile') args.reconcile = true;
+    else if (argv[i] === '--reservation') args.reservation = argv[++i];
     else if (argv[i] === '--to') args.target = argv[++i];
     else if (argv[i] === '--tasks') args.tasksPath = argv[++i];
     else if (argv[i] === '--dry-run') args.dryRun = true;
@@ -396,6 +403,9 @@ if (invokedDirectly()) {
   // rounds.
   if (args.command === 'gate-round') {
     try {
+      if (args.check && (args.reserve || args.release || args.reconcile)) {
+        throw new Error('--check cannot be used with a mutating gate-round mode.');
+      }
       // 🔴 Inside the `try`, and a review round is why. Left outside it, a rig whose
       // `.claude/scripts/` predates this CLI printed a raw `ERR_MODULE_NOT_FOUND`
       // and exited 1 — which `pr-ship` step 0 would have read as "rounds
@@ -403,7 +413,15 @@ if (invokedDirectly()) {
       // exact lesson about `resolveAdapter` fifty lines below; the reason it
       // repeated is that the lesson was written as prose and not as a test.
       const { gateRoundVerdict } = await import('./core.mjs');
-      const { recordEvidenceGateRound, gateRoundEvidenceRecorded, gateRoundsPathFor } =
+      const {
+        reconcileEvidenceGateRounds,
+        completedGateRoundReservationFor,
+        consumeReservedEvidenceGateRound,
+        gateRoundReservationFor,
+        gateRoundsPathFor,
+        releaseGateRoundReservation,
+        reserveGateRound,
+      } =
         await import('./gate-rounds.mjs');
 
       const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
@@ -439,23 +457,31 @@ if (invokedDirectly()) {
         stdio: ['ignore', 'pipe', 'ignore'],
         env: withoutGitLocation(),
       }).trim();
-      let evidenceIdentities = [];
+      let runDir = null;
+      let decisions = [];
+      let runSeqFloor = 0;
       if (process.env.RIG_RUN_DIR) {
-        const runDir = realpathSync(process.env.RIG_RUN_DIR);
+        runDir = realpathSync(process.env.RIG_RUN_DIR);
         const { readRun } = await import('../run-journal.mjs');
-        const { decisions } = readRun({ runDir });
-        evidenceIdentities = decisions
-          .filter(
-            (decision) =>
-              decision.gate === 'reviewer-fan-out' &&
-              decision.verdict === 'launched' &&
-              decision.headSha === head &&
-              Array.isArray(decision.reviewers) &&
-              decision.reviewers.length > 0 &&
-              decision.reviewers.every((reviewer) => typeof reviewer === 'string' && reviewer.trim() !== ''),
-          )
-          .map((decision) => JSON.stringify([runDir, decision.seq]));
+        ({ decisions } = readRun({ runDir }));
+        runSeqFloor = Math.max(0, ...decisions.map((decision) => decision.seq));
       }
+      const isValidReviewerFanOut = (decision, expectedHead = head) =>
+        decision.gate === 'reviewer-fan-out' &&
+        decision.verdict === 'launched' &&
+        decision.headSha === expectedHead &&
+        Array.isArray(decision.reviewers) &&
+        decision.reviewers.length > 0 &&
+        decision.reviewers.every((reviewer) => typeof reviewer === 'string' && reviewer.trim() !== '');
+      const fanOutsForReservation = (reservation) =>
+        reservation !== null && reservation.runDir === runDir
+          ? decisions.filter(
+              (decision) =>
+                isValidReviewerFanOut(decision, reservation.head) &&
+                decision.seq > reservation.seqFloor &&
+                decision.why === `gate-round reservation: ${reservation.token}`,
+            )
+          : [];
 
       // RP-442: past the base cap, `--authorized` buys exactly one round, and
       // only for a durable extra-gate-round authorization bound to this ticket,
@@ -463,47 +489,51 @@ if (invokedDirectly()) {
       // counting, like an exhausted cap.
       const { gateRoundsFor } = await import('./gate-rounds.mjs');
       const spent = gateRoundsFor({ branch: args.branch, roundsPath });
-      const pendingEvidence = evidenceIdentities.filter(
-        (identity) =>
-          !gateRoundEvidenceRecorded({ branch: args.branch, roundsPath, evidenceIdentity: identity }),
-      );
-      if (spent < verdictFor(0).max && pendingEvidence.length > 1) {
-        throw new Error(
-          `the run has ${pendingEvidence.length} uncounted reviewer fan-outs for this head; ` +
-            'refusing to choose one and leave another uncounted.',
-        );
+      if (args.authorized && !runDir) {
+        throw new Error('--authorized needs the declared RIG_RUN_DIR that holds its authority evidence.');
       }
-      const evidenceIdentity = pendingEvidence[0] ?? null;
-      if (args.check && spent < verdictFor(0).max) {
-        process.stdout.write(
-          `gate round precheck on ${args.branch}: ${spent} of ${verdictFor(0).max} spent.\n`,
-        );
+      if (args.check && args.authorized && spent >= verdictFor(0).max) {
+        const { authorizedRoundFor, delegatedRoundBudget } = await import('../delegated-decision.mjs');
+        const total = verdictFor(0).max + delegatedRoundBudget(config);
+        const authorization =
+          spent >= total
+            ? { ok: false, why: `${args.branch} has spent ${spent} gate rounds, the cap of ${total}.` }
+            : authorizedRoundFor({
+                projectRoot: gitRoot,
+                ticket: args.ticket,
+                branch: args.branch,
+                runDir: process.env.RIG_RUN_DIR,
+              });
+        if (!authorization.ok) {
+          process.stderr.write(`DELEGATED ROUND REFUSED — ${authorization.why} Nothing was counted.\n`);
+          process.exit(2);
+        }
+        process.stdout.write(`gate round precheck on ${args.branch}: ${spent} of ${total} spent.\n`);
         process.exit(0);
       }
-      if (!args.check && evidenceIdentities.length > 0 && evidenceIdentity === null) {
-        process.stdout.write(
-          `gate round evidence on ${args.branch} was already counted; ${spent} of ${verdictFor(0).max} spent.\n`,
-        );
-        process.exit(0);
-      }
-      if (evidenceIdentity === null && spent < verdictFor(0).max) {
-        process.stdout.write(
-          `gate round precheck on ${args.branch}: ${spent} of ${verdictFor(0).max} spent; no reviewer fan-out was recorded.\n`,
-        );
-        process.exit(0);
-      }
-      if (args.authorized) {
-        if (spent >= verdictFor(0).max) {
-          const { authorizedRoundFor, delegatedRoundBudget } = await import(
-            '../delegated-decision.mjs'
-          );
-          const total = verdictFor(0).max + delegatedRoundBudget(config);
+      if (args.reserve) {
+        if (!runDir) throw new Error('--reserve needs a declared RIG_RUN_DIR to bind the launch to its journal.');
+        if (args.reservation !== null) {
+          const active = gateRoundReservationFor({
+            branch: args.branch,
+            roundsPath,
+            token: args.reservation,
+          });
+          if (active === null || active.head !== head || active.runDir !== runDir) {
+            throw new Error('the gate-round reservation does not belong to this branch, head and run.');
+          }
+          process.stdout.write(`gate round reservation ${args.reservation} resumed; no launch permission was granted.\n`);
+          process.exit(0);
+        }
+        let max = verdictFor(0).max;
+        let ticket = null;
+        let authorizationHead = null;
+        if (spent >= max && args.authorized) {
+          const { authorizedRoundFor, delegatedRoundBudget } = await import('../delegated-decision.mjs');
+          max += delegatedRoundBudget(config);
           const authorization =
-            spent >= total
-              ? {
-                  ok: false,
-                  why: `${args.branch} has spent ${spent} gate rounds, the cap of ${total} (maxGateRounds plus maxDelegatedRounds).`,
-                }
+            spent >= max
+              ? { ok: false, why: `${args.branch} has spent ${spent} gate rounds, the cap of ${max}.` }
               : authorizedRoundFor({
                   projectRoot: gitRoot,
                   ticket: args.ticket,
@@ -511,56 +541,131 @@ if (invokedDirectly()) {
                   runDir: process.env.RIG_RUN_DIR,
                 });
           if (!authorization.ok) {
-            process.stderr.write(
-              `DELEGATED ROUND REFUSED — ${authorization.why} Nothing was counted; the ` +
-                'stop belongs to the owner.\n',
-            );
+            process.stderr.write(`DELEGATED ROUND REFUSED — ${authorization.why} Nothing was counted.\n`);
             process.exit(2);
           }
-          if (args.check || evidenceIdentity === null) {
-            process.stdout.write(
-              `gate round precheck on ${args.branch}: ${spent} of ${total} spent; no reviewer fan-out was recorded.\n`,
-            );
-            process.exit(0);
-          }
-          const recorded = recordEvidenceGateRound({
-            branch: args.branch,
-            roundsPath,
-            evidenceIdentity,
-            max: total,
-          });
-          if (recorded.exhausted) {
-            process.stderr.write(
-              `DELEGATED ROUND REFUSED — ${args.branch} has spent ${recorded.spent} gate rounds, ` +
-                `the cap of ${total} (maxGateRounds plus maxDelegatedRounds). Nothing was counted; ` +
-                'the stop belongs to the owner.\n',
-            );
-            process.exit(2);
-          }
-          process.stdout.write(
-            `delegated gate round on ${args.branch}: round ${recorded.rounds}, authorized for ` +
-              `${args.ticket} at ${authorization.head}.\n`,
+          ticket = args.ticket;
+          authorizationHead = authorization.head;
+        }
+        const reservation = {
+          branch: args.branch,
+          head,
+          runDir,
+          seqFloor: runSeqFloor,
+          token: randomUUID(),
+          ticket,
+          authorizationHead,
+        };
+        const reserved = reserveGateRound({
+          branch: args.branch,
+          roundsPath,
+          reservation,
+          max,
+        });
+        if (reserved.exhausted) {
+          process.stderr.write(
+            `GATE ROUNDS EXHAUSTED — ${reserved.spent} rounds plus ${reserved.held} reservation on ` +
+              `${args.branch}, cap is ${max}.\n`,
           );
+          process.exit(2);
+        }
+        if (reserved.pending) {
+          throw new Error('this run already holds a gate-round reservation.');
+        }
+        if (reserved.authorizationUsed) {
+          process.stderr.write(
+            'DELEGATED ROUND REFUSED — this committed authorization already admitted a reservation. Nothing was counted.\n',
+          );
+          process.exit(2);
+        }
+        process.stdout.write(`gate round reservation ${reservation.token} created.\n`);
+        process.exit(0);
+      }
+      if (args.release) {
+        const reservation = gateRoundReservationFor({
+          branch: args.branch,
+          roundsPath,
+          token: args.reservation,
+        });
+        if (reservation === null || reservation.runDir !== runDir) {
+          throw new Error('the gate-round reservation does not belong to this declared run.');
+        }
+        if (fanOutsForReservation(reservation).length > 0) {
+          throw new Error('the reservation already has matching reviewer fan-out evidence and cannot be released.');
+        }
+        releaseGateRoundReservation({
+          branch: args.branch,
+          roundsPath,
+          token: args.reservation,
+        });
+        process.stdout.write(`gate round reservation ${args.reservation} released.\n`);
+        process.exit(0);
+      }
+      if (args.reconcile) {
+        if (!runDir) throw new Error('--reconcile needs a declared RIG_RUN_DIR to scope historic evidence.');
+        const reconciled = reconcileEvidenceGateRounds({
+          branch: args.branch,
+          roundsPath,
+          evidenceIdentities: decisions
+            .filter((decision) => isValidReviewerFanOut(decision) && decision.why === null)
+            .map((decision) => JSON.stringify([runDir, decision.seq])),
+        });
+        process.stdout.write(`reconciled ${reconciled.recorded} historic reviewer fan-out record(s).\n`);
+        if (reconciled.rounds > verdictFor(0).max) {
+          process.stderr.write(
+            `GATE ROUNDS EXHAUSTED — ${reconciled.rounds} rounds on ${args.branch}, cap is ${verdictFor(0).max}.\n`,
+          );
+          process.exit(2);
+        }
+        process.exit(0);
+      }
+      if (args.reservation !== null) {
+        if (!runDir) throw new Error('--reservation needs the declared run that holds it.');
+        const reservation = gateRoundReservationFor({
+          branch: args.branch,
+          roundsPath,
+          token: args.reservation,
+        });
+        const completed = reservation === null
+          ? completedGateRoundReservationFor({
+              branch: args.branch,
+              roundsPath,
+              token: args.reservation,
+            })
+          : null;
+        if (completed !== null) {
+          if (completed.runDir !== runDir) {
+            throw new Error('the completed gate-round reservation does not belong to this declared run.');
+          }
+          if (completed.fanOuts > 1) {
+            throw new Error('the reservation covered multiple reviewer fan-outs; no further use is permitted.');
+          }
+          process.stdout.write(`gate round reservation ${args.reservation} was already consumed as round ${spent}.\n`);
           process.exit(0);
         }
-      }
-
-      const { rounds } =
-        spent >= verdictFor(0).max
-          ? { rounds: spent + 1 }
-          : evidenceIdentity === null
-            ? { rounds: spent }
-            : recordEvidenceGateRound({
-                branch: args.branch,
-                roundsPath,
-                evidenceIdentity,
-                max: verdictFor(0).max,
-              });
-      const verdict = verdictFor(rounds);
-
-      if (!verdict.exceeded) {
+        const evidence = fanOutsForReservation(reservation);
+        if (reservation === null || evidence.length === 0) {
+          throw new Error('the reservation has no matching post-reservation reviewer fan-out evidence.');
+        }
+        const consumed = consumeReservedEvidenceGateRound({
+          branch: args.branch,
+          roundsPath,
+          token: args.reservation,
+          evidenceIdentities: evidence.map((decision) => JSON.stringify([runDir, decision.seq])),
+        });
+        if (evidence.length > 1) {
+          throw new Error(
+            'the reservation covered one launch but has multiple matching reviewer fan-outs; reconcile the extra evidence before continuing.',
+          );
+        }
+        const max =
+          reservation.ticket !== null && reservation.authorizationHead !== null
+            ? verdictFor(0).max + (await import('../delegated-decision.mjs')).delegatedRoundBudget(config)
+            : verdictFor(0).max;
+        const verdict = gateRoundVerdict(consumed.rounds, max);
         process.stdout.write(
-          `gate round ${verdict.rounds} of ${verdict.max} on ${args.branch}.\n` +
+          `gate round reservation ${args.reservation} consumed as round ${consumed.rounds}.\n` +
+            `gate round ${verdict.rounds} of ${verdict.max} on ${args.branch}.\n` +
             (verdict.rounds === verdict.max
               ? '  This is the last round this branch gets. If it holds again, the item ' +
                 'is escalated rather than re-reviewed.\n'
@@ -568,7 +673,30 @@ if (invokedDirectly()) {
         );
         process.exit(0);
       }
-
+      if (args.check && spent < verdictFor(0).max) {
+        process.stdout.write(
+          `gate round precheck on ${args.branch}: ${spent} of ${verdictFor(0).max} spent.\n`,
+        );
+        process.exit(0);
+      }
+      if (!args.check && !args.authorized && spent >= verdictFor(0).max) {
+        const verdict = verdictFor(spent + 1);
+        process.stderr.write(
+          `GATE ROUNDS EXHAUSTED — ${spent} rounds on ${args.branch}, cap is ` +
+            `${verdict.max}: ${verdict.stop}.\n` +
+            '  Do not run another round. The item stops here and goes back to a human ' +
+            'with the round count and whatever the last gate reported. Whether those ' +
+            'rounds were paying off is the reader\'s judgement — this command measured ' +
+            'only the count (AR-115).\n' +
+            '  Raising the cap to get one more pass on THIS item is the move this ' +
+            'refusal exists to prevent.\n',
+        );
+        process.exit(2);
+      }
+      if (!args.check) {
+        throw new Error('a reservation token is required to consume a reviewer fan-out; use --reconcile for historic tokenless evidence.');
+      }
+      const verdict = verdictFor(spent + 1);
       process.stderr.write(
         `GATE ROUNDS EXHAUSTED — ${spent} rounds on ${args.branch}, cap is ` +
           `${verdict.max}: ${verdict.stop}.\n` +
