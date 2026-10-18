@@ -54,14 +54,16 @@ about it here, so the two gates never file competing opinions on one paragraph.
    two bypasses, sells cover it does not have. Both are blocking, and both are
    found the same way: read the mechanism, then read what the text claims about
    it.
-5. **An unbacked behaviour claim.** A sentence asserts what a mechanism does, how
-   much something costs, or how often it happens, and **nothing backs it**: no
-   test you can name, no command output, no citation to the code. Per
-   `.claude/rules/invariants.md` ("State the limits") such a sentence must be
+5. **An unbacked claim requiring direct evidence.** Apply the normative,
+   security, refusal, limit and cost classes and examples in
+   `.claude/rules/invariants.md` ("State the limits"). An assertion in one of
+   these classes must be
    **generated** from what it describes or be a **pointer to a test** — the form is
    `see <test file> › "<test name>"`, and the name has to be greppable in a file the
    reader has. This is a blocker **by rule**, so you do not have to prove the claim
-   wrong; an unbacked claim about behaviour is the finding.
+   wrong; the missing required backing is the finding. Descriptive orientation
+   and rationale need no pointer on every sentence. Still review them under
+   items 1–4: correct classification never excuses false prose.
 
    ⚠ A pointer into a test suite the reader's project does not carry is normally
    item 2, not backing. There is one narrow inherited-snapshot exception from
@@ -77,7 +79,7 @@ about it here, so the two gates never file competing opinions on one paragraph.
    exception and the local test is yours; then an absent pointer is item 2 again.
 
    🔴 Three things this is not. It is not item 1: that one is about enforcement the
-   mechanism does not provide, this one is about any claim with nothing behind it,
+   mechanism does not provide, this one is about a claim requiring evidence with nothing behind it,
    including a true one. It is not item 4 either, and the split is worth getting
    right because both can reach one sentence: **item 4 is for a limit you checked
    against the mechanism and found wrong or missing; item 5 is for a claim you did
@@ -90,7 +92,8 @@ about it here, so the two gates never file competing opinions on one paragraph.
 
    The remedy has two forms and rewording is neither: the sentence goes, or it
    becomes a pointer. Say which you would expect, and where the test lives if one
-   exists.
+   exists. Do not turn a descriptive sentence into a blocker merely because it
+   lacks a test pointer.
 6. **Domain that must not travel.** In a layer meant to be neutral: a provider or
    vendor name, a host-specific absolute path, a tracker key, a company or
    product name, credentials or personal data in an example. State which layer
@@ -125,6 +128,11 @@ three, it belongs in your head, not in the report.
   is reported as unverified, or not at all.
 - **Quote the checklist item** each blocking finding violates, and give the
   `file:line` of both the text and the mechanism that contradicts it.
+- **Report every instance of each confirmed blocker class across the diff in
+  this round**, with evidence for each location. Follow the shared reporting
+  and optional finding-identity rules in `.claude/rules/workflow.md`,
+  "Review findings". Continue to report new correctness or security findings
+  in later rounds; prior reports do not freeze discovery.
 - **"No blocking findings" is a valid and useful verdict.** Say it plainly when
   it is true; a gate that always finds something teaches everyone to discount it.
 
@@ -158,6 +166,7 @@ calling gate reads.
     {
       "file": ".claude/rules/invariants.md",
       "line": 118,
+      "id": ".claude/rules/invariants.md|item-5|unbacked refusal assertion",
       "rule": "item 5 — an unbacked behaviour claim",
       "note": "no test named, and the hook it describes does not do this"
     }

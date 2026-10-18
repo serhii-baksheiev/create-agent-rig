@@ -4,6 +4,7 @@
  *
  *   node .claude/scripts/verdict.mjs check <file> [gate]   # `-` reads stdin
  *   node .claude/scripts/verdict.mjs coverage <commit>    # reads the run journal
+ *   node .claude/scripts/verdict.mjs findings <before-seq> <after-seq>
  *
  * `check` reads a gate's report, hands it to `lib/verdict.mjs`, and either prints
  * the parsed verdict on stdout (exit 0) or refuses with a diagnosis on stderr
@@ -36,7 +37,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 
 import { coverageOf } from './lib/gate-coverage.mjs';
-import { isCommitId, parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
+import { GATE_VOCABULARY, isCommitId, parseVerdict, safeForDiagnosis } from './lib/verdict.mjs';
 import { readRun } from './run-journal.mjs';
 import { withoutGitLocation } from './git-env.mjs';
 
@@ -85,7 +86,9 @@ const USAGE =
   'usage: node .claude/scripts/verdict.mjs check <file> [gate]   ' +
   '(`-` reads the report from stdin)\n' +
   '       node .claude/scripts/verdict.mjs coverage <commit>   ' +
-  '(reads the run journal in $RIG_RUN_DIR)\n';
+  '(reads the run journal in $RIG_RUN_DIR)\n' +
+  '       node .claude/scripts/verdict.mjs findings <before-seq> <after-seq>   ' +
+  '(compares two journaled reviewer decisions)\n';
 
 const refuse = (message) => {
   process.stderr.write(message);
@@ -106,11 +109,175 @@ const readReport = (source) => {
   }
 };
 
-const [subcommand, source, expectedGate] = process.argv.slice(2);
+const args = process.argv.slice(2);
+const [subcommand, source, expectedGate] = args;
 
-// Two arms, one branch apart, and telling them apart is the whole value of
-// either: an operator told the subcommand is unknown goes looking for a typo
-// that is not there.
+const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+const isText = (value) => typeof value === 'string' && value.trim() !== '';
+
+// The reviewing roles derive from the shared gate vocabulary. pr-ship makes a
+// SHIP/HOLD decision too, but it consumes reviewer verdicts rather than being
+// a reviewer whose findings can be compared.
+const isReviewerGate = (gate) => {
+  if (typeof gate !== 'string' || gate === 'pr-ship' || !Object.hasOwn(GATE_VOCABULARY, gate)) {
+    return false;
+  }
+  const words = GATE_VOCABULARY[gate];
+  return words.includes('SHIP') && words.includes('HOLD');
+};
+
+const sequence = (value, position) => {
+  if (typeof value !== 'string' || !/^[1-9][0-9]*$/.test(value)) {
+    refuse(
+      `verdict: the ${position} sequence must be a positive integer identifying an already-journaled ` +
+        'review decision.\n',
+    );
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    refuse(`verdict: the ${position} sequence is outside the journal's safe integer range.\n`);
+  }
+  return parsed;
+};
+
+const findingIdentity = (blocker, position) => {
+  if (!isPlainObject(blocker)) {
+    refuse(`verdict: ${position} has a blocker that is not an object, so its identity is ambiguous.\n`);
+  }
+  if (Object.hasOwn(blocker, 'id')) {
+    if (!isText(blocker.id)) {
+      refuse(`verdict: ${position} has a blocker id that is not a non-blank string.\n`);
+    }
+    return `id:${JSON.stringify(blocker.id)}`;
+  }
+  if (!isText(blocker.rule) || !isText(blocker.note)) {
+    refuse(
+        `verdict: ${position} has a legacy blocker without a usable rule and note tuple, ` +
+        'so its identity is ambiguous.\n',
+    );
+  }
+  // parseVerdict already validated location pairs. A finding may legitimately
+  // have no location, so retain that absence as explicit null tuple entries.
+  return `legacy:${JSON.stringify([
+    blocker.file ?? null,
+    blocker.line ?? null,
+    blocker.rule,
+    blocker.note,
+  ])}`;
+};
+
+const reviewedDecision = (record, position) => {
+  if (!isPlainObject(record)) refuse(`verdict: the ${position} record is malformed.\n`);
+  if (!Object.hasOwn(record, 'blockers') || !Array.isArray(record.blockers)) {
+    refuse(`verdict: the ${position} reviewer decision needs an explicit blockers array.\n`);
+  }
+  if (!Object.hasOwn(record, 'headSha')) {
+    refuse(`verdict: the ${position} reviewer decision names no explicit headSha for the reviewed head.\n`);
+  }
+
+  // Journal records predate this command and recordDecision deliberately accepts
+  // a permissive shape. Project the fields this command consumes through the
+  // verdict parser instead of introducing a second schema for review evidence.
+  const parsed = parseVerdict(
+    `\`\`\`json\n${JSON.stringify({
+      gate: record.gate,
+      verdict: record.verdict,
+      blockers: record.blockers,
+      headSha: record.headSha,
+    })}\n\`\`\``,
+  );
+  if (!parsed.ok) {
+    refuse(`verdict: the ${position} reviewer decision is malformed: ${parsed.problems.join(' ')}\n`);
+  }
+  if (!isReviewerGate(parsed.verdict.gate)) {
+    refuse(`verdict: the ${position} record is not a reviewer decision in the verdict vocabulary.\n`);
+  }
+  if (parsed.verdict.verdict !== 'SHIP' && parsed.verdict.verdict !== 'HOLD') {
+    refuse(`verdict: the ${position} reviewer decision may use only SHIP or HOLD.\n`);
+  }
+
+  const identities = new Set();
+  for (const blocker of parsed.verdict.blockers) {
+    const identity = findingIdentity(blocker, position);
+    if (identities.has(identity)) {
+      refuse(`verdict: the ${position} record has a duplicate finding identity, so the comparison is ambiguous.\n`);
+    }
+    identities.add(identity);
+  }
+  return { verdict: parsed.verdict, identities };
+};
+
+const decisionAt = (decisions, sequenceNumber, position) => {
+  const record = decisions.find((candidate) => candidate?.seq === sequenceNumber);
+  if (record === undefined) {
+    refuse(`verdict: the ${position} record with sequence ${sequenceNumber} is not in this run journal.\n`);
+  }
+  return record;
+};
+
+const findings = (beforeArgument, afterArgument) => {
+  const runDir = process.env.RIG_RUN_DIR;
+  if (!runDir) {
+    refuse('verdict: `findings` needs RIG_RUN_DIR declared to read already-journaled decisions.\n');
+  }
+  const beforeSequence = sequence(beforeArgument, 'before');
+  const afterSequence = sequence(afterArgument, 'after');
+
+  let decisions;
+  try {
+    ({ decisions } = readRun({ runDir }));
+  } catch (error) {
+    refuse(
+      `verdict: the run journal in ${runDir} could not be read, so findings were not checked ` +
+        `(${error?.message ?? 'unknown error'}).\n`,
+    );
+  }
+
+  const beforeRecord = decisionAt(decisions, beforeSequence, 'before');
+  const afterRecord = decisionAt(decisions, afterSequence, 'after');
+  if (afterSequence <= beforeSequence) {
+    refuse('verdict: the after sequence must be greater than the before sequence.\n');
+  }
+  const before = reviewedDecision(beforeRecord, 'before');
+  const after = reviewedDecision(afterRecord, 'after');
+  if (before.verdict.gate !== after.verdict.gate) {
+    refuse('verdict: findings may compare only the same reviewer role; the reviewer roles differ.\n');
+  }
+
+  const resolved = before.verdict.blockers.filter(
+    (blocker) => !after.identities.has(findingIdentity(blocker, 'before')),
+  );
+  const unresolved = after.verdict.blockers.filter((blocker) =>
+    before.identities.has(findingIdentity(blocker, 'after')),
+  );
+  const discovered = after.verdict.blockers.filter(
+    (blocker) => !before.identities.has(findingIdentity(blocker, 'after')),
+  );
+  process.stdout.write(
+    `${JSON.stringify(
+      {
+        before: {
+          seq: beforeSequence,
+          gate: before.verdict.gate,
+          headSha: before.verdict.headSha,
+        },
+        after: {
+          seq: afterSequence,
+          gate: after.verdict.gate,
+          headSha: after.verdict.headSha,
+        },
+        resolved,
+        unresolved,
+        new: discovered,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+};
+
+// Missing and unknown subcommands have different repairs: an operator told the
+// subcommand is unknown goes looking for a typo that is not there.
 if (subcommand === undefined) refuse(USAGE);
 
 if (subcommand === 'coverage') {
@@ -224,6 +391,14 @@ if (subcommand === 'coverage') {
       witnessLine +
       evidenceLine,
   );
+}
+
+if (subcommand === 'findings') {
+  if (args.length !== 3) {
+    refuse(`verdict: \`findings\` needs exactly a before and an after sequence.\n${USAGE}`);
+  }
+  findings(source, expectedGate);
+  process.exit(0);
 }
 
 if (subcommand !== 'check') {

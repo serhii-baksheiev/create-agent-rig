@@ -650,6 +650,31 @@ describe('the optional lists arrive as lists or not at all', () => {
   });
 });
 
+// RP-523: a reviewer may identify an individual blocker without inventing a
+// report-wide identifier. Existing reports without this optional field remain
+// valid, while a supplied identity stays attached to its finding.
+describe('a blocker may carry its own optional stable finding id', () => {
+  it('preserves a supplied string id, including the existing numeric-looking string form', async () => {
+    const verdict = acceptedVerdict(
+      await parse(answer(hold({ blockers: [blocker({ id: '17' })] }))),
+    );
+    expect(verdict.blockers).toEqual([blocker({ id: '17' })]);
+
+    const legacy = acceptedVerdict(await parse(answer(hold())));
+    expect('id' in (legacy.blockers[0] as Record<string, unknown>)).toBe(false);
+
+    for (const id of [17, null, '', '   ', { stable: 'finding-17' }]) {
+      const problems = problemsOf(await parse(answer(hold({ blockers: [blocker({ id })] }))));
+      expect(problems.join('\n')).toMatch(/blocker/i);
+      expect(problems.join('\n')).toMatch(/\bid\b|identifier/i);
+    }
+
+    const topLevel = problemsOf(await parse(answer(ship({ id: 'finding-17' }))));
+    expect(topLevel.join('\n')).toMatch(/\bid\b/i);
+    expect(topLevel.join('\n')).toMatch(/shape|define|blocker/i);
+  });
+});
+
 // 🔴 AR-101: a verdict cannot say which commit it answers for. A SHIP captured
 // before the last two pushes is indistinguishable from one captured after them,
 // so a reviewer's pass silently covers code no reviewer read. The gate may now
