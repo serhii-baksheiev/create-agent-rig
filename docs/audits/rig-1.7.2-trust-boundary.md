@@ -43,6 +43,35 @@ audit checkout's tracked configuration additionally listed unit tests. Husky
 and CI retain their own unit-test stages. A checkout-local Stop result must
 therefore identify its configuration before being used as completion evidence.
 
+## Probity worktree scope correction — RP-545
+
+The source and host snapshots above remain historical observations. For the
+generated-config correction, `packages/cli/test/probity-command.test.ts`
+› "shows the pinned CLI skip a nested worktree under anchored globs and deny
+it under the generated match-anywhere globs" compares the old anchored scope
+with recursive source/test globs using the pinned Probity CLI and a
+deterministic deny rule. The companion test › "has the pinned Probity CLI
+deny a Codex apply_patch in a supported nested worktree source directory"
+covers main/nested paths, dependency exclusion and a docs control.
+
+Existing config ownership is retained; see
+`packages/cli/test/probity-doctor.test.ts` › "warns that an anchored user-owned
+config misses a supported nested worktree without rewriting the config".
+The warning is a diagnostic for the recognized literal scope and nested
+worktree shape, not a proof of arbitrary custom-config coverage.
+
+This correction does not extend enforcement to external worktrees or resolve
+lexical aliases. The direct foreign Claude Write and Codex apply_patch
+exclusion cases and the lexical-alias case in
+`test/template/probity-gate.test.ts` retain that boundary; the exact test
+pointers are listed in [the compatibility scope notes](../compatibility.md#probity-scope-in-nested-worktrees-rp-545).
+The upstream subagent-transcript limitation tracked by RP-429/RP-465 remains
+outside this correction. `test/e2e/init.test.ts` › "denies nested source
+writes through the generated Claude and Codex hook commands" adds the
+generated POSIX command probe with a real nested Git worktree and a
+deterministic deny rule. It does not execute Windows `commandWindows` or
+measure a live model's TDD judgment.
+
 ## Owner-delegated elevated mode
 
 The owner explicitly authorized autonomous ordinary and elevated engineering

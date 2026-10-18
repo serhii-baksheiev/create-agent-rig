@@ -6,10 +6,10 @@
 // wiring check reads each harness's own hook file rather than the generic
 // MCP-ownership wiring `verifyIntegrations` already covers.
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runDoctor } from '../src/commands/doctor.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 import { skipUnless, symlinksAvailable } from '../../../test/helpers/env.js';
@@ -67,10 +67,10 @@ async function writeProbityLauncherBin(packageDir: string): Promise<void> {
 // Upstream's own documented shape (Probity 1.10.1 docs/configuration.md):
 // `defineConfig({ rules: [{ files, rules: [enforceTdd()] }] })`. The
 // previous fixture text — `defineConfig({ hooks: [enforceTdd({ files })] })`
-// — was never upstream's shape; doctor never parses this file (only checks
-// that it EXISTS, via `findProbityConfig`), so the mismatch never affected
-// any assertion below, but the fixture should still say what Probity itself
-// accepts rather than something it does not.
+// — was never upstream's shape. Doctor deliberately recognizes only the
+// bounded legacy literal scope needed for its nested-worktree advisory; it
+// never evaluates user JavaScript. This fixture remains upstream-valid so the
+// surrounding checks do not rely on an impossible configuration.
 const PROBITY_CONFIG_TEXT =
   "import { defineConfig, enforceTdd } from '@nizos/probity';\n" +
   "export default defineConfig({ rules: [{ files: ['src/**'], rules: [enforceTdd()] }] });\n";
@@ -101,7 +101,7 @@ async function writeWiring(harness: 'claude-code' | 'codex', includesGate: boole
   );
 }
 
-type CheckRecord = { id: string; status: string; reason?: string };
+type CheckRecord = { id: string; status: string; reason?: string; fix?: string };
 
 describe('doctor: probity (RP-416)', () => {
   it('reports not-configured and emits no probity:* check when probity is not declared', async () => {
@@ -220,6 +220,148 @@ describe('doctor: probity (RP-416)', () => {
       trust: 'not-observed',
     });
     await expect(access(marker)).rejects.toThrow();
+  });
+
+  it('warns that an anchored user-owned config misses a supported nested worktree without rewriting the config', async () => {
+    await writeDeclaration([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true },
+    ]);
+    await writeProbityConfig();
+    const configPath = path.join(repo, 'probity.config.mjs');
+    const before = await readFile(configPath);
+    await writeProbityPackageJson(VERSION);
+    await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+    await writeWiring('claude-code', true);
+    const worktree = path.join(repo, '.claude', 'worktrees', 'nested');
+    await mkdir(worktree, { recursive: true });
+    await writeFile(path.join(worktree, '.git'), 'gitdir: ../../.git/worktrees/nested\n');
+
+    const { body: report } = await body();
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        id: 'probity:claude-code',
+        status: 'warn',
+        reason: 'nested-worktree-scope',
+        fix: expect.stringContaining('**/src/**'),
+      }),
+    );
+    const check = (report.checks as CheckRecord[]).find(
+      (candidate) => candidate.id === 'probity:claude-code',
+    );
+    expect(check?.fix).toContain('--adopt');
+    expect(await readFile(configPath)).toEqual(before);
+  });
+
+  it('keeps the nested-worktree advisory when Windows separators construct its relative worktree path', async () => {
+    await writeDeclaration([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true },
+    ]);
+    await writeProbityConfig();
+    await writeProbityPackageJson(VERSION);
+    await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+    await writeWiring('claude-code', true);
+    const worktree = path.join(repo, '.claude', 'worktrees', 'nested');
+    await mkdir(worktree, { recursive: true });
+    await writeFile(path.join(worktree, '.git'), 'gitdir: ../../.git/worktrees/nested\n');
+    vi.resetModules();
+    vi.doMock('node:path', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:path')>();
+      return {
+        ...actual,
+        default: {
+          ...actual,
+          join: (...parts: string[]) =>
+            parts[0] === '.claude/worktrees' ? actual.win32.join(...parts) : actual.join(...parts),
+          posix: actual.posix,
+        },
+      };
+    });
+    try {
+      const { runDoctor: runWindowsDoctor } = await import('../src/commands/doctor.js');
+      const result = await runWindowsDoctor({
+        cwd: repo,
+        args: ['--json'],
+        env: { HOME: home, APPDATA: home, PATH: process.env.PATH ?? '' },
+      });
+      const report = JSON.parse(result.stdout) as Record<string, unknown>;
+
+      expect(report.checks).toContainEqual(
+        expect.objectContaining({
+          id: 'probity:claude-code',
+          status: 'warn',
+          reason: 'nested-worktree-scope',
+        }),
+      );
+    } finally {
+      vi.doUnmock('node:path');
+      vi.resetModules();
+    }
+  });
+
+  it('does not report nested-worktree-scope after a user-owned config explicitly covers nested source trees', async () => {
+    await writeDeclaration([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true },
+    ]);
+    await writeFile(
+      path.join(repo, 'probity.config.mjs'),
+      "import { defineConfig, enforceTdd } from '@nizos/probity';\n" +
+        "export default defineConfig({ rules: [{ files: ['**/src/**', '**/lib/**', '**/test/**', '**/tests/**', '!**/node_modules/**'], rules: [enforceTdd()] }] });\n",
+    );
+    await writeProbityPackageJson(VERSION);
+    await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+    await writeWiring('claude-code', true);
+    const worktree = path.join(repo, '.claude', 'worktrees', 'nested');
+    await mkdir(worktree, { recursive: true });
+    await writeFile(path.join(worktree, '.git'), 'gitdir: ../../.git/worktrees/nested\n');
+
+    const { body: report } = await body();
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({ id: 'probity:claude-code', status: 'ok', reason: 'wired' }),
+    );
+  });
+
+  it('does not report nested-worktree-scope for an anchored config when no supported nested worktree exists', async () => {
+    await writeDeclaration([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true },
+    ]);
+    await writeProbityConfig();
+    await writeProbityPackageJson(VERSION);
+    await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+    await writeWiring('claude-code', true);
+
+    const { body: report } = await body();
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({ id: 'probity:claude-code', status: 'ok', reason: 'wired' }),
+    );
+  });
+
+  it('does not follow a symlink below .claude/worktrees when deciding whether to warn', async (ctx) => {
+    skipUnless(ctx, symlinksAvailable().ok, symlinksAvailable().reason);
+    const outside = await mkdtemp(path.join(tmpdir(), 'caf-probity-doctor-outside-worktree-'));
+    try {
+      await writeDeclaration([
+        { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true },
+      ]);
+      await writeProbityConfig();
+      await writeProbityPackageJson(VERSION);
+      await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+      await writeWiring('claude-code', true);
+      await writeFile(path.join(outside, '.git'), 'gitdir: ../outside.git\n');
+      const alias = path.join(repo, '.claude', 'worktrees', 'outside');
+      await mkdir(path.dirname(alias), { recursive: true });
+      await symlink(outside, alias, process.platform === 'win32' ? 'junction' : 'dir');
+
+      const { body: report } = await body();
+
+      expect(report.checks).toContainEqual(
+        expect.objectContaining({ id: 'probity:claude-code', status: 'ok', reason: 'wired' }),
+      );
+    } finally {
+      await removeFixture(outside);
+    }
   });
 
   // RP-445: a repository may deliberately declare a different exact version;

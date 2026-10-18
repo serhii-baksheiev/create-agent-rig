@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -34,6 +34,41 @@ async function runInit(args: string[]): Promise<{ code: number; stdout: string; 
     const e = error as { code?: number; stdout?: string; stderr?: string };
     return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
   }
+}
+
+async function runCli(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  try {
+    const { stdout, stderr } = await exec(process.execPath, [cliBin, ...args], { cwd: repo });
+    return { code: 0, stdout, stderr };
+  } catch (error) {
+    const e = error as { code?: number; stdout?: string; stderr?: string };
+    return { code: e.code ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+  }
+}
+
+function runShellWithStdin(
+  command: string,
+  cwd: string,
+  stdin: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      '/bin/sh',
+      ['-c', command],
+      { cwd, env, timeout: 10_000, killSignal: 'SIGKILL' },
+      (error, stdout, stderr) => {
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout: String(stdout),
+          stderr: String(stderr),
+        });
+      },
+    );
+    if (!child.stdin) return reject(new Error('no stdin'));
+    child.stdin.on('error', () => {});
+    child.stdin.end(stdin);
+  });
 }
 
 async function hookFiles(root: string, dir = root): Promise<string[]> {
@@ -359,6 +394,127 @@ describe('create-agent-rig init --layer (RP-180)', () => {
     const warning = result.stdout.slice(start, end === -1 ? undefined : end);
     expect(warning).toContain('NOT wired');
     expect(warning).toContain('.claude/hooks/record-dispatch.mjs');
+  });
+});
+
+describe('create-agent-rig init (Probity nested-worktree hook wiring)', () => {
+  it('denies nested source writes through the generated Claude and Codex hook commands', async (ctx) => {
+    skipUnless(ctx, posixShellAvailable().ok, posixShellAvailable().reason);
+    await writeFile(path.join(repo, 'package.json'), '{"name":"host"}\n');
+    await exec('git', ['init', '-q'], { cwd: repo, env: gitEnv() });
+    await writeFile(path.join(repo, 'README.md'), '# fixture\n');
+    await exec('git', ['add', 'README.md'], { cwd: repo, env: gitEnv(), timeout: 10_000 });
+    await exec(
+      'git',
+      [
+        '-c',
+        'user.name=Rig test',
+        '-c',
+        'user.email=rig-test@example.invalid',
+        'commit',
+        '-qm',
+        'base',
+      ],
+      { cwd: repo, env: gitEnv(), timeout: 10_000 },
+    );
+    expect((await runInit([])).code).toBe(0);
+    for (const harness of ['claude-code', 'codex']) {
+      const setup = await runCli([
+        'setup',
+        'add',
+        'probity',
+        '--harness',
+        harness,
+        '--yes',
+        '--json',
+      ]);
+      expect(setup.code, setup.stderr).toBe(0);
+    }
+    await symlink(
+      path.join(repoRoot, 'node_modules'),
+      path.join(repo, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const configPath = path.join(repo, 'probity.config.mjs');
+    const generated = await readFile(configPath, 'utf8');
+    await writeFile(
+      configPath,
+      generated
+        .replace(
+          "import { defineConfig, enforceTdd } from '@nizos/probity';",
+          "import { defineConfig } from '@nizos/probity';",
+        )
+        .replace(
+          'rules: [enforceTdd()],',
+          "rules: [() => ({ kind: 'violation', reason: 'RP-545 nested sentinel' })],",
+        ),
+    );
+    const nested = path.join(repo, '.claude', 'worktrees', 'nested');
+    await exec('git', ['worktree', 'add', '-q', '-b', 'rp545-nested', nested], {
+      cwd: repo,
+      env: gitEnv(),
+      timeout: 10_000,
+    });
+
+    const settings = JSON.parse(
+      await readFile(path.join(repo, '.claude', 'settings.json'), 'utf8'),
+    ) as {
+      hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> };
+    };
+    const claudeCommand = settings.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
+      hook.command.includes('probity-gate.mjs'),
+    )?.command;
+    expect(claudeCommand).toBeDefined();
+    const codex = JSON.parse(await readFile(path.join(repo, '.codex', 'hooks.json'), 'utf8')) as {
+      hooks: { PreToolUse: Array<{ hooks: Array<{ command: string }> }> };
+    };
+    const codexCommand = codex.hooks.PreToolUse.flatMap((group) => group.hooks).find((hook) =>
+      hook.command.includes('probity-gate.mjs'),
+    )?.command;
+    expect(codexCommand).toBeDefined();
+
+    const claude = await runShellWithStdin(
+      claudeCommand!,
+      repo,
+      JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'Write',
+        tool_input: { file_path: 'src/nested.ts', content: 'unsafe\n' },
+        cwd: nested,
+      }),
+      { ...gitEnv(), CLAUDE_PROJECT_DIR: repo },
+    );
+    expect(claude.code, claude.stderr).toBe(0);
+    const claudeResponse = JSON.parse(claude.stdout) as {
+      hookSpecificOutput?: { permissionDecision?: string; permissionDecisionReason?: string };
+    };
+    expect(claudeResponse.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(claudeResponse.hookSpecificOutput?.permissionDecisionReason).toContain(
+      'RP-545 nested sentinel',
+    );
+
+    const codexResult = await runShellWithStdin(
+      codexCommand!,
+      repo,
+      JSON.stringify({
+        hook_event_name: 'PreToolUse',
+        tool_name: 'apply_patch',
+        tool_input: {
+          command: [
+            '*** Begin Patch',
+            '*** Add File: src/nested.ts',
+            '+unsafe',
+            '*** End Patch',
+          ].join('\n'),
+        },
+        cwd: nested,
+      }),
+      gitEnv(),
+    );
+    expect(codexResult.code, codexResult.stderr).toBe(0);
+    const codexResponse = JSON.parse(codexResult.stdout) as { decision?: string; reason?: string };
+    expect(codexResponse.decision).toBe('block');
+    expect(codexResponse.reason).toContain('RP-545 nested sentinel');
   });
 });
 
