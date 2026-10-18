@@ -795,6 +795,86 @@ describe('guard-secret-file: a Windows 8.3 alias keeps credential policy for NTF
   });
 });
 
+describe('guard-secret-file: a new leaf through a real Windows 8.3 credential-directory alias is refused (RP-541)', () => {
+  it('refuses the missing leaf below credentials while allowing one below an ordinary aliased directory', async (ctx) => {
+    skipUnless(ctx, onlyOnWindows().ok, onlyOnWindows().reason);
+    const root = realpathSync.native(await mkdtemp(path.join(tmpdir(), 'rp541-directory-alias-')));
+    const credentialDirectory = path.join(root, 'credentials');
+    const ordinaryDirectory = path.join(root, 'ordinary-long-directory');
+    const shortFolderPath = async (directory: string) => {
+      const escaped = directory.replaceAll("'", "''");
+      const { stdout } = await run('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${escaped}').ShortPath`,
+      ]);
+      return stdout.trim();
+    };
+
+    try {
+      await mkdir(credentialDirectory);
+      await mkdir(ordinaryDirectory);
+      await run('git', ['init', '-q', root], { env: gitEnv() });
+
+      const credentialAlias = await shortFolderPath(credentialDirectory);
+      const ordinaryAlias = await shortFolderPath(ordinaryDirectory);
+      const credentialAliasBase = path.basename(credentialAlias);
+      const ordinaryAliasBase = path.basename(ordinaryAlias);
+      const isNativeShortAlias = (aliasBase: string, directoryBase: string) =>
+        aliasBase.toLocaleLowerCase() !== directoryBase.toLocaleLowerCase() &&
+        /^[^\\/:]{1,6}~\d+(?:\.[^\\/:]*)?$/i.test(aliasBase);
+      if (
+        !isNativeShortAlias(credentialAliasBase, path.basename(credentialDirectory)) ||
+        !isNativeShortAlias(ordinaryAliasBase, path.basename(ordinaryDirectory))
+      ) {
+        ctx.skip(
+          'the Windows fixture did not provide distinct native ~digits 8.3 aliases for both directories',
+        );
+        return;
+      }
+
+      expect(realpathSync.native(credentialAlias)).toBe(realpathSync.native(credentialDirectory));
+      expect(realpathSync.native(ordinaryAlias)).toBe(realpathSync.native(ordinaryDirectory));
+      expect(realpathSync.native(path.join(root, credentialAliasBase))).toBe(
+        realpathSync.native(credentialDirectory),
+      );
+      expect(realpathSync.native(path.join(root, ordinaryAliasBase))).toBe(
+        realpathSync.native(ordinaryDirectory),
+      );
+
+      const credentialNewLeaf = path.join(root, credentialAliasBase, 'new.txt');
+      const ordinaryNewLeaf = path.join(root, ordinaryAliasBase, 'new.txt');
+      await expect(access(credentialNewLeaf)).rejects.toMatchObject({ code: 'ENOENT' });
+      await expect(access(ordinaryNewLeaf)).rejects.toMatchObject({ code: 'ENOENT' });
+
+      const hookEnv = { CLAUDE_PROJECT_DIR: root };
+      const ordinary = await runHook(
+        { ...write(path.join(ordinaryAliasBase, 'new.txt'), 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(ordinary.code, ordinary.stderr).toBe(0);
+
+      const canonicalCredential = await runHook(
+        { ...write(path.join('credentials', 'new.txt'), 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(canonicalCredential.code, canonicalCredential.stderr).toBe(2);
+
+      const credential = await runHook(
+        { ...write(path.join(credentialAliasBase, 'new.txt'), 'harmless replacement'), cwd: root },
+        hookEnv,
+        root,
+      );
+      expect(credential.code, credential.stderr).toBe(2);
+      expect(credential.stderr).toMatch(/credential file/i);
+    } finally {
+      await removeFixture(root);
+    }
+  });
+});
+
 const deny = async (payload: unknown, why: string): Promise<HookResult> => {
   const result = await runHook(payload);
   expect(result.code, `should BLOCK: ${why}\nstderr: ${result.stderr}`).toBe(2);
@@ -1185,6 +1265,20 @@ describe('guard-secret-file: a credential-named path is refused whatever is in i
     ['db.secret', 'a credential word used as the extension'],
   ])('blocks a Write to %s (%s)', async (filePath) => {
     await deny(write(filePath, 'anything at all\n'), filePath);
+  });
+
+  it('blocks trailing-dot and interior-trailing-space credential spellings while preserving direct-path trimming', async () => {
+    const dotBasename = await runHook(write('id_rsa.', 'harmless replacement'));
+    expect(dotBasename.code, dotBasename.stderr).toBe(2);
+
+    const dotDirectory = await runHook(write('secrets./config', 'harmless replacement'));
+    expect(dotDirectory.code, dotDirectory.stderr).toBe(2);
+
+    const spaceDirectory = await runHook(write('secrets /config', 'harmless replacement'));
+    expect(spaceDirectory.code, spaceDirectory.stderr).toBe(2);
+
+    const directTrailingSpace = await runHook(write('id_rsa ', 'harmless replacement'));
+    expect(directTrailingSpace.code, directTrailingSpace.stderr).toBe(2);
   });
 
   it('blocks a Write to a credential path given absolutely, as the tool actually sends it', async () => {
