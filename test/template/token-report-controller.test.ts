@@ -108,6 +108,7 @@ interface HarnessTotals {
 interface DispatchGroup {
   harness: string;
   controller: string;
+  cumulativeUsageRepeated?: boolean;
   dispatches: { ended: number; noEndObserved: number; withUsage?: number };
   usage: { claude: Counters | null; codex: Counters | null };
   partialCounters: string[];
@@ -459,10 +460,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     expect(data.totals.claude.combined).toBeNull();
     expect(data.totals.claude.combinedUnavailable).toBe('subagent-cumulative-identity-repeated');
     expect(data.dispatchGroups).toHaveLength(2);
-    expect(data.dispatchGroups).toEqual([
-      expect.objectContaining({ cumulativeUsageRepeated: true }),
-      expect.objectContaining({ cumulativeUsageRepeated: true }),
-    ]);
+    expect(data.dispatchGroups.map((group) => group.cumulativeUsageRepeated)).toEqual([true, true]);
     expect(data.dispatchGroups).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ agentRef: 'same-child' })]),
     );
@@ -523,10 +521,7 @@ describe('token-report.mjs — controller usage (RP-511)', () => {
     const data = report(root, ['run-a']);
     expect(data.totals.codex.combined).toBeNull();
     expect(data.dispatchGroups).toHaveLength(2);
-    expect(data.dispatchGroups).toEqual([
-      expect.objectContaining({ cumulativeUsageRepeated: true }),
-      expect.objectContaining({ cumulativeUsageRepeated: true }),
-    ]);
+    expect(data.dispatchGroups.map((group) => group.cumulativeUsageRepeated)).toEqual([true, true]);
   });
 
   it('renders the repeated cumulative marker on every affected Codex ticket group', async () => {

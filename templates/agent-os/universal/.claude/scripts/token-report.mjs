@@ -92,6 +92,15 @@
  * the same group is null, never partially summed", and test/template/token-report.test.ts
  * (absent in a generated rig) › "an absent claude usage field is null, not
  * zero" (codex: › "an absent codex usage field is null, not zero"). Each
+ * group may carry `cumulativeUsageRepeated?: boolean`; `true` names a known
+ * repeated cumulative child identity within the same run and harness. Its
+ * retained numeric usage is an observation, not an independent amount to add
+ * across groups. Absence of the marker does not prove independence —
+ * test/template/token-report-controller.test.ts (absent in a generated rig)
+ * › "marks every Claude ticket group when its cumulative child ref repeats in
+ * the run", and test/template/token-report-controller.test.ts (absent in a
+ * generated rig) › "marks every Codex ticket group when its cumulative child
+ * ref repeats in the run". The
  * group's `dispatches.withUsage` — how many of its ended dispatches carried
  * a usage object — is present only when that count is strictly between `0`
  * and `dispatches.ended`, so a fully- or never-measured group is not made
