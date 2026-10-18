@@ -149,13 +149,28 @@ rely on cover that is not there) or into staleness (limits listed that were
 fixed long ago, understating the guard). Both have happened here, in the same
 file, within one review cycle.
 
-**A sentence describing what a mechanism does or does not do is either generated
-from the thing it describes, or a pointer to the test that proves it** — the form is
+**Require direct evidence for normative, security, refusal, limit and cost
+assertions about a mechanism.** This includes promises that a check is required,
+an unsafe action is blocked, a path is outside protection, or an operation has a
+particular bound or measured cost. The assertion must be generated from what it
+describes or be a pointer to the test that proves it — the form is
 `see guard-invariant.example.test.mjs › "blocks the violation, and the reason names
 what to do instead"` — the test's whole name, so one grep lands on it, in a file the
-reader has. Free-standing prose about a mechanism's behaviour is a
+reader has. An unbacked assertion in one of these classes is a
 `prose-reviewer` blocker **by rule** (its checklist item 5), which means the finding
 is the absence of backing; nobody has to prove the claim wrong first.
+
+Descriptive orientation and design rationale need no per-sentence test pointer:
+"the CLI reads review reports" introduces a component; "the CLI refuses every
+unattributed report" promises a refusal and needs evidence. "We chose one file
+to keep the change small" explains a decision; "this halves review cost" needs
+a reproducible measurement. A procedural instruction such as "review every
+instance" states an obligation, not proof that anything enforces it. Reviewers
+must still check descriptive text for false claims, dead references and
+contradictions; this distinction does not excuse incorrect prose or weaken
+correctness or security review. Keep project-history measurements in the
+project's evidence record, with the command, scope and result a reader can
+re-check; do not export unsupported historical figures into generated rules.
 
 Why by rule rather than by discovery: it moves the check earlier. `check-premises`
 has a second entry point on the run's own prose, and it returns `UNMEASURED` for a

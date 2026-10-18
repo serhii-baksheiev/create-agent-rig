@@ -1,6 +1,6 @@
 ---
 name: check-premises
-description: Check claims about the code before building on them, or before shipping them. Use after taking a queue item and before the failing test — whenever the item asserts something exists, is missing, is broken, or works a particular way. Use again before the gate, on the run's own prose, where a behaviour claim nothing backs is UNMEASURED.
+description: Check claims about the code before building on them, or before shipping them. Use after taking a queue item and before the failing test — whenever the item asserts something exists, is missing, is broken, or works a particular way. Use again before the gate, on the run's own prose, applying the claim-typed evidence requirements in invariants.md.
 context: fork
 allowed-tools: Read, Grep, Glob, Bash
 argument-hint: <the queue item's text, or the diff and prose to check>
@@ -125,14 +125,14 @@ network tooling — where the session cannot reach the source, the claim is
 | `PREMISES HOLD` | every load-bearing claim checked out, or there were none | proceed to the Red step |
 | `PREMISE FALSE` | a load-bearing claim is contradicted by the code — or, for an external premise, by its four-part record | **stop and report** |
 | `UNVERIFIABLE` | a load-bearing claim could not be decided from the code — or, for an external premise, has no complete four-part record | report it as unverifiable, name what would decide it, and proceed only under a **labelled assumption** |
-| `UNMEASURED` | **second entry point only:** a sentence you wrote asserts behaviour, and nothing you can point at backs it | **delete the sentence, or turn it into a pointer to the test that proves it** — before the gate |
+| `UNMEASURED` | **second entry point only:** a normative/security/refusal/limit/cost assertion you wrote has no direct backing, under `invariants.md` | **delete the assertion, or turn it into a pointer to the test that proves it** — before the gate |
 
 🔴 **The edit belongs to the calling session, not to this skill.** It reports; the
 caller performs the exit before the gate. (The rule is the one at the top of this
 file — it writes nothing — not a property of its tool grant.)
 
 🔴 **`UNMEASURED` has exactly two exits, and "reword it" is not one of them.** A
-behaviour claim is either backed or it is not; softening the wording keeps an
+claim requiring direct evidence is either backed or it is not; softening the wording keeps an
 unbacked claim in a document agents follow literally. So either the sentence goes,
 or it becomes `see guard-invariant.example.test.mjs › "blocks the violation, and the
 reason names what to do instead"` — the test's whole name, in a file this project
@@ -147,7 +147,10 @@ you, or a citation to code that does the thing. What does not count: the queue i
 said so (the item is a claim too — that is what the first entry point is for), it was
 true of the previous design, or it is obviously right.
 
-*May it stay in the file as written?* Only the two forms `invariants.md` requires —
+*May it stay in the file as written?* Apply the claim classes in `invariants.md`,
+"State the limits — and test them". Descriptive orientation and rationale do
+not require a separate test pointer on every sentence, but false or contradictory
+text still needs correction. For assertions requiring direct evidence, use the two forms —
 **generated** from what it describes, or a **pointer** to the test. A command's output
 is not one of them: you saw it, the reader cannot, so a sentence resting on it is still
 `UNMEASURED` however sure you are. Point at the test that runs that command, or say

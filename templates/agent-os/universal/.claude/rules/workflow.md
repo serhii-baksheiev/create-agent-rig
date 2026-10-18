@@ -62,6 +62,22 @@ resolution, and neither is softening the flagged sentence or dropping the
 reviewer from the fan-out. This holds with or without the opt-in workflow
 layer, whoever drives the fan-out.
 
+Report **all instances of each confirmed blocker class across the diff in one
+round**, with a location and evidence for each instance. For example, if two
+changed guards promise the same unimplemented refusal, name both locations;
+do not hold the second instance back for the next round. Keep advisory style
+preferences separate from blockers. This is a reporting obligation, never a
+restriction on discovering new correctness or security defects in later rounds.
+
+A reviewer may give each blocker an optional nonblank string `id`, using a
+path, violated rule and quoted line or equivalent stable description. Reuse it
+when reporting the same finding after a line move; use distinct ids for distinct
+instances. It belongs inside the blocker, not at verdict level. Legacy reports
+without ids remain valid; see `test/template/verdict.test.ts` (absent in a
+generated rig) › "preserves a supplied string id, including the existing
+numeric-looking string form". Do not invent ids in historical reports or infer
+that an absent report means a finding was fixed.
+
 ## PR flow
 
 This applies **once the project has a remote and CI checks** — a freshly
