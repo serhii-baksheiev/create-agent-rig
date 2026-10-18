@@ -519,6 +519,7 @@ const literalHeredoc = (raw, index) => {
 export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) => {
   const segments = [];
   let args = [];
+  let segmentStart = null;
   let value = '';
   let quoted = false;
   let started = false;
@@ -540,6 +541,7 @@ export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) 
     endArg();
     if (args.length > 0) {
       if (scopes) {
+        args.start = segmentStart;
         args.subshellDepth = subshellDepth;
         args.subshellScope = subshells.at(-1);
         args.subshellParent = subshells.at(-2);
@@ -547,11 +549,15 @@ export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) 
       segments.push(args);
     }
     args = [];
+    segmentStart = null;
   };
 
   let i = 0;
   while (i < raw.length) {
     const ch = raw[i];
+    if (segmentStart === null && args.length === 0 && !started && !/\s/.test(ch) && !'|;&\n()`'.includes(ch)) {
+      segmentStart = i;
+    }
 
     if (ch === '\\' && raw[i + 1] === '\n') {
       i += 2; // a line continuation is whitespace, not a segment boundary
@@ -750,7 +756,7 @@ export const evaluatedSubstitutions = (raw, heredocBody = false, positions = fal
         const bodyEnd = found ? found.index : raw.length;
         if (!marker.quoted) {
           for (const script of evaluatedSubstitutions(raw.slice(bodyStart, bodyEnd), true, positions, offset + bodyStart)) {
-            scripts.push(script);
+            scripts.push(positions ? { ...script, index: marker.position } : script);
           }
         }
         bodyStart = found ? found.index + found[0].length : raw.length;
@@ -772,7 +778,7 @@ export const evaluatedSubstitutions = (raw, heredocBody = false, positions = fal
     if (!heredocBody && !quote && raw[index] === '<' && raw[index + 1] === '<') {
       const marker = literalHeredoc(raw, index);
       if (marker) {
-        pendingHeredocs.push(marker);
+        pendingHeredocs.push({ ...marker, position: offset + index });
         index += marker.length - 1;
       }
       continue;

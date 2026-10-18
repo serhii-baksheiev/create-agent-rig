@@ -17,6 +17,12 @@
 // "carries an existing HUSKY value when export names it among literal operands";
 // "carries exported HUSKY into substitutions at their lexical execution point"; and
 // "keeps env-local HUSKY changes and literal prose out of the parent shell state".
+// The same state reaches evaluated substitutions: see ›
+// "carries bare and multioperand exported HUSKY=0 into evaluated substitutions";
+// "uses restored or unset HUSKY state at the later substitution";
+// "keeps single-quoted export prose out of later substitution state";
+// "does not apply a post-header export before an unquoted heredoc body expands".
+// Ordered env operations: see › "applies env unsets and assignments to Git in their literal order".
 import { execFileSync } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -109,11 +115,16 @@ const huskyAssignment = (segment, command) => {
 
 const envHusky = (segment) => {
   if (segment[0]?.value.split('/').pop() !== 'env') return null;
+  let value = null;
   for (let index = 1; index < segment.length; index += 1) {
-    if (segment[index].value === '-u' && segment[index + 1]?.value === 'HUSKY') return false;
-    if (/^HUSKY=([01])$/.test(segment[index].value)) return segment[index].value === 'HUSKY=0';
+    if (segment[index].value === '-u' && segment[index + 1]?.value === 'HUSKY') {
+      value = false;
+      index += 1;
+    } else if (/^HUSKY=([01])$/.test(segment[index].value)) {
+      value = segment[index].value === 'HUSKY=0';
+    }
   }
-  return null;
+  return value;
 };
 
 const configuredHooksAreUsable = (context) => {
@@ -146,10 +157,13 @@ const configuredHooksAreUsable = (context) => {
 const inspect = (raw, depth = 0, inheritedHusky = false) => {
   if (depth > 16) return null;
   const states = new Map([[0, { exported: inheritedHusky, value: inheritedHusky }]]);
+  const snapshots = [];
   for (const segment of tokenize(raw, { literalHeredocs: true, scopes: true })) {
     const scope = segment.subshellScope;
     if (!states.has(scope)) states.set(scope, { ...(states.get(segment.subshellParent) ?? states.get(0)) });
     const state = states.get(scope);
+    // Expansions see the owning command's state before that command changes it.
+    snapshots.push({ start: segment.start, husky: state.exported && state.value });
     let command = commandOf(segment);
     if (command.name === 'if') command = commandOf(command.args);
     const localHusky = envHusky(segment) ?? huskyAssignment(segment, command);
@@ -189,8 +203,14 @@ const inspect = (raw, depth = 0, inheritedHusky = false) => {
     }
   }
   for (const { index, script } of evaluatedSubstitutions(raw, false, true)) {
-    const prefix = raw.slice(0, index);
-    const substitutionHusky = /(?:^|[;\n])\s*export\s+HUSKY=0(?:\s*;|\s*$)/.test(prefix);
+    let low = 0;
+    let high = snapshots.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (snapshots[middle].start <= index) low = middle + 1;
+      else high = middle;
+    }
+    const substitutionHusky = snapshots[low - 1]?.husky ?? inheritedHusky;
     const nested = inspect(script, depth + 1, substitutionHusky);
     if (nested) return nested;
   }

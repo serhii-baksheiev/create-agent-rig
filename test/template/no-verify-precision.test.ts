@@ -310,6 +310,50 @@ describe('block-no-verify R1 literal prose and Git option boundaries (RP-522)', 
     }
   });
 
+  it('carries bare and multioperand exported HUSKY=0 into evaluated substitutions', async () => {
+    const prefixes = ['HUSKY=0; export HUSKY', 'export HUSKY; HUSKY=0', 'export OTHER=1 HUSKY=0'];
+    for (const prefix of prefixes) {
+      for (const command of [
+        `${prefix}; printf '%s' "$(git commit -m x)"`,
+        `${prefix}; cat <<DOC\n$(git commit -m x)\nDOC`,
+      ]) {
+        const result = await inspect(command);
+        expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+      }
+    }
+  });
+
+  it('uses restored or unset HUSKY state at the later substitution', async () => {
+    for (const prefix of ['export HUSKY=0; HUSKY=1', 'export HUSKY=0; unset HUSKY']) {
+      for (const command of [
+        `${prefix}; printf '%s' "$(git commit -m x)"`,
+        `${prefix}; cat <<DOC\n$(git commit -m x)\nDOC`,
+      ]) {
+        const result = await inspect(command);
+        expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+      }
+    }
+  });
+
+  it('keeps single-quoted export prose out of later substitution state', async () => {
+    const result = await inspect(
+      `printf '%s' 'x; export HUSKY=0;'; printf '%s' "$(git commit -m x)"`,
+    );
+    expect.soft(result.code, result.stderr).toBe(0);
+  });
+
+  it('does not apply a post-header export before an unquoted heredoc body expands', async () => {
+    const result = await inspect('cat <<DOC; export HUSKY=0\n$(git commit -m x)\nDOC');
+    expect.soft(result.code, result.stderr).toBe(0);
+  });
+
+  it('applies env unsets and assignments to Git in their literal order', async () => {
+    const disabled = await inspect('env -u HUSKY HUSKY=0 git commit -m x');
+    expect.soft(disabled.code, disabled.stderr).toBe(2);
+    const cleared = await inspect('env -u HUSKY git commit -m x');
+    expect.soft(cleared.code, cleared.stderr).toBe(0);
+  });
+
   it('documents and retains the depth-16 literal shell inspection limit', async () => {
     const source = await readFile(hook, 'utf8');
     expect(source).toMatch(/depth 16|depth > 16/i);
