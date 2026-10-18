@@ -232,6 +232,84 @@ describe('block-no-verify R1 literal prose and Git option boundaries (RP-522)', 
     }
   });
 
+  it('treats a hash inside double quotes as text whose substitution still evaluates', async () => {
+    const evaluated = await inspect('printf " # $(git commit --no-verify -m x)"');
+    expect.soft(evaluated.code, evaluated.stderr).toBe(2);
+    for (const command of [
+      "printf '%s' ' # $(git commit --no-verify -m x)'",
+      'printf done # $(git commit --no-verify -m x)',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('keeps HUSKY state isolated between sibling and nested subshells', async () => {
+    for (const command of [
+      'export HUSKY=0; ( HUSKY=1 ); ( git commit -m x )',
+      'export HUSKY=0; ( ( HUSKY=1 ) ); ( git commit -m x )',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+    for (const command of [
+      '( HUSKY=0 ); ( git commit -m x )',
+      'export HUSKY=0; ( HUSKY=1 ); HUSKY=1; ( git commit -m x )',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('carries an existing HUSKY value when export names it among literal operands', async () => {
+    for (const command of [
+      "HUSKY=0; export HUSKY; sh -c 'git commit -m x'",
+      "export HUSKY; HUSKY=0; sh -c 'git commit -m x'",
+      'export OTHER=1 HUSKY=0; git commit -m x',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+    for (const command of [
+      "HUSKY=1; export HUSKY; sh -c 'git commit -m x'",
+      'export OTHER=1 HUSKY=1; git commit -m x',
+      'export OTHER=1; git commit -m x',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('carries exported HUSKY into substitutions at their lexical execution point', async () => {
+    for (const command of [
+      `export HUSKY=0; printf '%s' "$(git commit -m x)"`,
+      `export HUSKY=0; printf '%s' "$(git commit -m x)"; HUSKY=1`,
+      'export HUSKY=0; cat <<DOC\n$(git commit -m x)\nDOC',
+      'export HUSKY=0; cat <<DOC; HUSKY=1\n$(git commit -m x)\nDOC',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+    for (const command of [
+      `printf '%s' "$(git commit -m x)"; export HUSKY=0`,
+      "export HUSKY=0; cat <<'DOC'\n$(git commit -m x)\nDOC",
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('keeps env-local HUSKY changes and literal prose out of the parent shell state', async () => {
+    for (const command of [
+      'env HUSKY=0; git commit -m x',
+      'export HUSKY=0; env -u HUSKY git commit -m x',
+      "printf '%s' 'export HUSKY=0; git commit -m x'",
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
   it('documents and retains the depth-16 literal shell inspection limit', async () => {
     const source = await readFile(hook, 'utf8');
     expect(source).toMatch(/depth 16|depth > 16/i);

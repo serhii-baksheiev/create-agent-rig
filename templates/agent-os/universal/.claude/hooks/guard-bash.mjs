@@ -525,6 +525,8 @@ export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) 
   let heredocBudget = 32;
   let pendingHeredoc = null;
   let subshellDepth = 0;
+  let nextSubshell = 0;
+  const subshells = [0];
 
   const endArg = () => {
     if (started) {
@@ -537,7 +539,11 @@ export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) 
   const endSegment = () => {
     endArg();
     if (args.length > 0) {
-      if (scopes) args.subshellDepth = subshellDepth;
+      if (scopes) {
+        args.subshellDepth = subshellDepth;
+        args.subshellScope = subshells.at(-1);
+        args.subshellParent = subshells.at(-2);
+      }
       segments.push(args);
     }
     args = [];
@@ -670,8 +676,14 @@ export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) 
     // `commandOf`, and braces inside a token belong to the token.
     if ('|;&\n()`'.includes(ch)) {
       endSegment();
-      if (ch === '(') subshellDepth += 1;
-      if (ch === ')' && subshellDepth > 0) subshellDepth -= 1;
+      if (ch === '(') {
+        subshellDepth += 1;
+        subshells.push(++nextSubshell);
+      }
+      if (ch === ')' && subshellDepth > 0) {
+        subshellDepth -= 1;
+        subshells.pop();
+      }
       i += 1;
       if (ch === '\n' && pendingHeredoc) {
         // Skip the body and its terminator LINE, leaving the newline that ends
@@ -709,9 +721,10 @@ export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) 
  * "refuses a bypass evaluated by an unquoted heredoc body";
  * "refuses a header-suffix substitution after a quoted heredoc body";
  * "refuses an expanded first body when a later heredoc body is quoted";
- * "refuses a bypass inside single quotes in an unquoted heredoc body".
+ * "refuses a bypass inside single quotes in an unquoted heredoc body";
+ * "treats a hash inside double quotes as text whose substitution still evaluates".
  */
-export const evaluatedSubstitutions = (raw, heredocBody = false) => {
+export const evaluatedSubstitutions = (raw, heredocBody = false, positions = false, offset = 0) => {
   const scripts = [];
   let quote = null;
   const pendingHeredocs = [];
@@ -720,7 +733,7 @@ export const evaluatedSubstitutions = (raw, heredocBody = false) => {
       index += 1;
       continue;
     }
-    if (!heredocBody && raw[index] === '#' && (index === 0 || /[\s;|&()]/.test(raw[index - 1]))) {
+    if (!heredocBody && !quote && raw[index] === '#' && (index === 0 || /[\s;|&()]/.test(raw[index - 1]))) {
       const end = raw.indexOf('\n', index);
       index = end === -1 ? raw.length : end;
       continue;
@@ -736,7 +749,7 @@ export const evaluatedSubstitutions = (raw, heredocBody = false) => {
         const found = terminator.exec(raw);
         const bodyEnd = found ? found.index : raw.length;
         if (!marker.quoted) {
-          for (const script of evaluatedSubstitutions(raw.slice(bodyStart, bodyEnd), true)) {
+          for (const script of evaluatedSubstitutions(raw.slice(bodyStart, bodyEnd), true, positions, offset + bodyStart)) {
             scripts.push(script);
           }
         }
@@ -782,7 +795,7 @@ export const evaluatedSubstitutions = (raw, heredocBody = false) => {
       }
     }
     if (nesting === 0) {
-      scripts.push(raw.slice(index + 2, end - 1));
+      scripts.push(positions ? { index: offset + index, script: raw.slice(index + 2, end - 1) } : raw.slice(index + 2, end - 1));
       index = end - 1;
     }
   }
