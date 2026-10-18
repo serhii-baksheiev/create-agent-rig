@@ -7,6 +7,13 @@
 //
 // It shares the Never-tier tokenizer so quoted heredoc bodies remain prose and
 // follows shell `-c` without executing dynamic command text.
+// Static scope: literal Git options, shell `-c` payloads and direct `$()` forms.
+// Script inspection ends beyond depth 16; the shared tokenizer can inspect
+// literal bodies as commands beyond its 32-heredoc budget. Aliases, dynamically
+// assembled commands and general shell expansion remain outside this parser.
+// Persistent hook configuration is read in this hook's current repository;
+// command-local cwd/Git environment changes are not resolved. A usable hook
+// path is a preflight, never proof that a later commit executed its checks.
 import { execFileSync } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { resolve } from 'node:path';

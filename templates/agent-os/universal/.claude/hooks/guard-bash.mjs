@@ -636,32 +636,53 @@ export const tokenize = (raw) => {
  * Single-quoted text and quoted heredoc bodies are literal; double-quoted text
  * and unquoted heredoc bodies still evaluate substitutions. It intentionally
  * does not execute or expand the captured text.
+ * Heredoc headers finish before their queued bodies are consumed in order.
+ * The internal body mode keeps quotes as data while collecting substitutions.
  */
-export const evaluatedSubstitutions = (raw) => {
+export const evaluatedSubstitutions = (raw, heredocBody = false) => {
   const scripts = [];
   let quote = null;
+  const pendingHeredocs = [];
   for (let index = 0; index < raw.length; index += 1) {
     if (raw[index] === '\\') {
       index += 1;
       continue;
     }
-    if (quote) {
+    if (!quote && raw[index] === '\n' && pendingHeredocs.length > 0) {
+      let bodyStart = index + 1;
+      for (const marker of pendingHeredocs) {
+        const terminator = new RegExp(`^${marker.tabs ? '\\t*' : ''}${marker.word}(?=\\n|$)`, 'gm');
+        terminator.lastIndex = bodyStart;
+        const found = terminator.exec(raw);
+        const bodyEnd = found ? found.index : raw.length;
+        if (!marker.quoted) {
+          for (const script of evaluatedSubstitutions(raw.slice(bodyStart, bodyEnd), true)) {
+            scripts.push(script);
+          }
+        }
+        bodyStart = found ? found.index + found[0].length : raw.length;
+        if (raw[bodyStart] === '\n') bodyStart += 1;
+        if (!found) break;
+      }
+      pendingHeredocs.length = 0;
+      index = bodyStart - 1;
+      continue;
+    }
+    if (!heredocBody && quote) {
       if (raw[index] === quote) quote = null;
       if (quote !== '"' || raw[index] !== '$') continue;
     }
-    if (raw[index] === "'" || raw[index] === '"') {
+    if (!heredocBody && (raw[index] === "'" || raw[index] === '"')) {
       quote = raw[index];
       continue;
     }
-    if (!quote && raw[index] === '<' && raw[index + 1] === '<') {
+    if (!heredocBody && !quote && raw[index] === '<' && raw[index + 1] === '<') {
       const marker = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(
         raw.slice(index, index + 64),
       );
-      if (marker?.[2]) {
-        const bodyStart = raw.indexOf('\n', index);
-        const terminator = new RegExp(`(?:^|\\n)${marker[1] === '-' ? '\\t*' : ''}${marker[3]}(?=\\n|$)`);
-        const found = bodyStart === -1 ? null : terminator.exec(raw.slice(bodyStart + 1));
-        if (found) index = bodyStart + 1 + found.index + found[0].length - 1;
+      if (marker) {
+        pendingHeredocs.push({ word: marker[3], tabs: marker[1] === '-', quoted: Boolean(marker[2]) });
+        index += marker[0].length - 1;
       }
       continue;
     }

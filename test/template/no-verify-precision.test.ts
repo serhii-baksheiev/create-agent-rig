@@ -339,4 +339,29 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     const expanded = await inspect('cat <<DOC\n$(git commit --no-verify -m x)\nDOC');
     expect(expanded.code, expanded.stderr).toBe(2);
   });
+
+  it('refuses a bypass inside single quotes in an unquoted heredoc body', async () => {
+    const expanded = await inspect("cat <<DOC\n'$(git commit --no-verify -m x)'\nDOC");
+    expect(expanded.code, expanded.stderr).toBe(2);
+  });
+
+  it('refuses a header-suffix substitution after a quoted heredoc body', async () => {
+    const suffix = await inspect(
+      'cat <<\'DOC\'; printf "%s" "$(git commit --no-verify -m x)"\ntext\nDOC',
+    );
+    expect(suffix.code, suffix.stderr).toBe(2);
+  });
+
+  it('refuses an expanded first body when a later heredoc body is quoted', async () => {
+    const multiple = await inspect(
+      "cat <<FIRST <<'SECOND'\n$(git commit --no-verify -m x)\nFIRST\nliteral\nSECOND",
+    );
+    expect(multiple.code, multiple.stderr).toBe(2);
+  });
+
+  it('refuses a bypass after a large unquoted heredoc substitution prefix', async () => {
+    const body = '$() '.repeat(150_000) + '$(git commit --no-verify -m x)';
+    const result = await inspect(`cat <<DOC\n${body}\nDOC`);
+    expect(result.code, result.stderr).toBe(2);
+  });
 });
