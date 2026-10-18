@@ -102,7 +102,7 @@ describe("--version --json answers the rig's own handshake (RP-19)", () => {
         schemaVersion: 1,
         name: 'create-agent-rig',
         version: pkg.version,
-        contractVersion: '1.0',
+        contractVersion: '1.1',
       })}\n`,
     );
   });

@@ -6,10 +6,11 @@
 // already uses), and never runs `npm install` itself — that step stays
 // manual, named in the plan.
 import { createHash } from 'node:crypto';
-import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, mkdir, mkdtemp, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initProject } from '../src/commands/init.js';
 import { runIntegrationsCommand } from '../src/commands/integrations.js';
@@ -18,6 +19,8 @@ import { removeFixture } from '../../../test/helpers/remove-fixture.js';
 const PROBITY = 'probity';
 const VERSION = '1.10.1';
 const DECLARATION_REL = '.rig/integrations.json';
+const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+const probityBin = path.join(repositoryRoot, 'node_modules', '@nizos', 'probity', 'dist', 'bin.js');
 
 let repo: string;
 
@@ -62,6 +65,68 @@ function importsFromProbity(source: string, names: string[]): boolean {
       );
   }
   return names.every((name) => imported.has(name));
+}
+
+function runPinnedProbity(
+  cwd: string,
+  payload: string,
+): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      process.execPath,
+      [probityBin, '--agent', 'codex', '--config', mjsConfigPath()],
+      { cwd, maxBuffer: 10 * 1024 * 1024, timeout: 10_000, killSignal: 'SIGKILL' },
+      (error, stdout, stderr) => {
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout: String(stdout),
+          stderr: String(stderr),
+        });
+      },
+    );
+    if (!child.stdin) return reject(new Error('no stdin'));
+    child.stdin.on('error', () => {});
+    child.stdin.end(payload);
+  });
+}
+
+function codexApplyPatch(cwd: string, filePath: string): string {
+  return JSON.stringify({
+    tool_name: 'apply_patch',
+    tool_input: {
+      command: ['*** Begin Patch', `*** Add File: ${filePath}`, '+unsafe', '*** End Patch'].join(
+        '\n',
+      ),
+    },
+    cwd,
+  });
+}
+
+type LoadedProbityConfig = { rules: readonly { files?: readonly string[] }[] };
+
+async function matchesPinnedProbityScope(configPath: string, targetPath: string): Promise<boolean> {
+  const probityDist = path.join(repositoryRoot, 'node_modules', '@nizos', 'probity', 'dist');
+  const [{ loadConfig }, { actionMatchesFilesScope }] = await Promise.all([
+    import(pathToFileURL(path.join(probityDist, 'config.js')).href) as Promise<{
+      loadConfig(file: string): Promise<LoadedProbityConfig>;
+    }>,
+    import(
+      pathToFileURL(path.join(probityDist, 'rules', 'utils', 'match-paths.js')).href
+    ) as Promise<{
+      actionMatchesFilesScope(
+        files: readonly string[],
+        action: { kind: 'write'; path: string; content: string },
+      ): boolean;
+    }>,
+  ]);
+  const config = await loadConfig(configPath);
+  const files = config.rules.find((entry) => entry.files !== undefined)?.files;
+  if (!files) throw new Error(`missing files scope in ${configPath}`);
+  return actionMatchesFilesScope(files, {
+    kind: 'write',
+    path: targetPath.replace(/\\/g, '/'),
+    content: '',
+  });
 }
 
 describe('setup add probity', () => {
@@ -129,6 +194,162 @@ describe('setup add probity', () => {
     expect(await readFile(settingsPath)).toEqual(beforeSettings);
     expect(await readFile(codexHooksPath)).toEqual(beforeCodexHooks);
     expect(await exists(path.join(repo, 'node_modules', '@nizos', 'probity'))).toBe(false);
+  });
+
+  it('generates a TDD scope that reaches supported nested worktrees but excludes dependency trees', async () => {
+    const result = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'claude-code', '--yes', '--json'],
+      isTTY: false,
+    });
+
+    expect(result.exitCode, result.stderr).toBe(0);
+    const configText = await readFile(mjsConfigPath(), 'utf8');
+    expect(configText).toContain(
+      "files: ['**/src/**', '**/lib/**', '**/test/**', '**/tests/**', '!**/node_modules/**']",
+    );
+  });
+
+  it('matches dogfood for shared root and nested packages/cli code and test paths through pinned Probity', async () => {
+    const added = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'claude-code', '--yes', '--json'],
+      isTTY: false,
+    });
+    expect(added.exitCode, added.stderr).toBe(0);
+
+    const generatedConfig = mjsConfigPath();
+    const dogfoodConfig = path.join(repositoryRoot, 'probity.config.mjs');
+    const sharedCoveredPaths = [
+      'packages/cli/src/integrations/probity.ts',
+      '.claude/worktrees/nested/packages/cli/src/integrations/probity.ts',
+      'packages/cli/test/probity-command.test.ts',
+      '.claude/worktrees/nested/packages/cli/test/probity-command.test.ts',
+    ];
+
+    for (const relativePath of sharedCoveredPaths) {
+      const [generatedMatches, dogfoodMatches] = await Promise.all([
+        matchesPinnedProbityScope(generatedConfig, path.join(repo, relativePath)),
+        matchesPinnedProbityScope(dogfoodConfig, path.join(repositoryRoot, relativePath)),
+      ]);
+      expect(generatedMatches, `generated scope skipped ${relativePath}`).toBe(true);
+      expect(dogfoodMatches, `dogfood scope skipped ${relativePath}`).toBe(true);
+    }
+
+    const legacyAnchoredConfig = path.join(repo, 'legacy-anchored-probity.config.mjs');
+    await writeFile(
+      legacyAnchoredConfig,
+      "import { defineConfig, enforceTdd } from '@nizos/probity';\n" +
+        "export default defineConfig({ rules: [{ files: ['src/**', 'lib/**', 'test/**', 'tests/**'], rules: [enforceTdd()] }] });\n",
+    );
+    for (const relativePath of sharedCoveredPaths.filter((candidate) =>
+      candidate.includes('/nested/'),
+    )) {
+      await expect(
+        matchesPinnedProbityScope(legacyAnchoredConfig, path.join(repo, relativePath)),
+      ).resolves.toBe(false);
+    }
+
+    await expect(
+      matchesPinnedProbityScope(
+        generatedConfig,
+        path.join(repo, 'node_modules/fixture/src/dependency.ts'),
+      ),
+    ).resolves.toBe(false);
+    await expect(
+      matchesPinnedProbityScope(generatedConfig, path.join(repo, 'docs/guide.ts')),
+    ).resolves.toBe(false);
+  });
+
+  it('has the pinned Probity CLI apply the generated scope to root and nested sources but not dependency or docs paths', async () => {
+    const added = await runIntegrationsCommand({
+      cwd: repo,
+      verb: 'add',
+      args: [PROBITY, '--harness', 'codex', '--yes', '--json'],
+      isTTY: false,
+    });
+    expect(added.exitCode, added.stderr).toBe(0);
+    await symlink(
+      path.join(repositoryRoot, 'node_modules'),
+      path.join(repo, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const nestedWorktree = path.join(repo, '.claude', 'worktrees', 'nested');
+    await mkdir(nestedWorktree, { recursive: true });
+    const generated = await readFile(mjsConfigPath(), 'utf8');
+    await writeFile(
+      mjsConfigPath(),
+      generated
+        .replace(
+          "import { defineConfig, enforceTdd } from '@nizos/probity';",
+          "import { defineConfig } from '@nizos/probity';",
+        )
+        .replace(
+          'rules: [enforceTdd()],',
+          "rules: [() => ({ kind: 'violation', reason: 'RP-545 scope sentinel' })],",
+        ),
+    );
+
+    const rootSource = await runPinnedProbity(repo, codexApplyPatch(repo, 'src/root.ts'));
+    const nestedSource = await runPinnedProbity(
+      nestedWorktree,
+      codexApplyPatch(nestedWorktree, 'src/implementation.ts'),
+    );
+    const nestedSourceFromRoot = await runPinnedProbity(
+      repo,
+      codexApplyPatch(repo, '.claude/worktrees/nested/src/implementation.ts'),
+    );
+    const dependencySource = await runPinnedProbity(
+      repo,
+      codexApplyPatch(repo, 'node_modules/fixture/src/dependency.ts'),
+    );
+    const docs = await runPinnedProbity(repo, codexApplyPatch(repo, 'docs/guide.ts'));
+
+    for (const result of [rootSource, nestedSource, nestedSourceFromRoot]) {
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toContain('"decision":"block"');
+      expect(result.stdout).toContain('RP-545 scope sentinel');
+    }
+    for (const result of [dependencySource, docs]) {
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toBe('');
+    }
+  });
+
+  it('shows the pinned CLI skip a nested worktree under anchored globs and deny it under the generated match-anywhere globs', async () => {
+    await symlink(
+      path.join(repositoryRoot, 'node_modules'),
+      path.join(repo, 'node_modules'),
+      process.platform === 'win32' ? 'junction' : 'dir',
+    );
+    const nestedWorktree = path.join(repo, '.claude', 'worktrees', 'nested');
+    await mkdir(nestedWorktree, { recursive: true });
+    const config = (files: string) =>
+      "import { defineConfig } from '@nizos/probity';\n" +
+      `export default defineConfig({ rules: [{ files: [${files}], rules: [() => ({ kind: 'violation', reason: 'RP-545 scope sentinel' })] }] });\n`;
+    await writeFile(mjsConfigPath(), config("'src/**', 'lib/**', 'test/**', 'tests/**'"));
+
+    const anchored = await runPinnedProbity(
+      nestedWorktree,
+      codexApplyPatch(nestedWorktree, 'src/implementation.ts'),
+    );
+
+    expect(anchored.code, anchored.stderr).toBe(0);
+    expect(anchored.stdout).toBe('');
+    await writeFile(
+      mjsConfigPath(),
+      config("'**/src/**', '**/lib/**', '**/test/**', '**/tests/**', '!**/node_modules/**'"),
+    );
+
+    const matchAnywhere = await runPinnedProbity(
+      nestedWorktree,
+      codexApplyPatch(nestedWorktree, 'src/implementation.ts'),
+    );
+
+    expect(matchAnywhere.code, matchAnywhere.stderr).toBe(0);
+    expect(matchAnywhere.stdout).toContain('RP-545 scope sentinel');
   });
 
   it('refuses without --yes in JSON/non-interactive mode and writes nothing', async () => {
@@ -684,7 +905,7 @@ describe('the generated probity.config.mjs', () => {
       expect(loaded.default).toEqual({
         rules: [
           {
-            files: expect.arrayContaining(['src/**']) as unknown,
+            files: ['**/src/**', '**/lib/**', '**/test/**', '**/tests/**', '!**/node_modules/**'],
             rules: [{ marker: 'enforceTdd', args: [] }],
           },
         ],

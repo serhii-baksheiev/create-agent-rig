@@ -160,6 +160,8 @@ function probityFix(reason: string, version: VersionClassification | undefined):
     return 'Run create-agent-rig setup add probity (or --adopt an existing config) to generate probity.config.mjs.';
   if (reason === 'config-drift')
     return 'probity.config.mjs differs from the bytes Rig generated; keep the edit with create-agent-rig setup add probity --adopt, or restore the generated file.';
+  if (reason === 'nested-worktree-scope')
+    return "Update the literal TDD scope to include '**/src/**', '**/lib/**', '**/test/**', '**/tests/**', and '!**/node_modules/**'; then use create-agent-rig setup add probity --adopt to retain the existing config.";
   if (reason === 'launcher-missing')
     return `Run npm install -D @nizos/probity@${version?.declared ?? PROBITY_VERSION}.`;
   if (reason === 'version-drift')
