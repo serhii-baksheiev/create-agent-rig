@@ -238,6 +238,7 @@ export const close = async (ticket, { prUrl = null, planPath: p, env = process.e
   const file = p ?? 'PLAN.md';
   const before = readFileSync(file, 'utf8');
   const present = parsePlan(before).some((item) => item.id === String(ticket.id));
+  if (!present) return { ok: false, prUrl, transitioned: false, reason: 'close-not-confirmed' };
   writeFileSync(file, closeInPlan(before, ticket.id));
   // `transitioned` means the line was there and is now gone — an id the plan
   // never carried closed nothing, and saying otherwise would publish a close

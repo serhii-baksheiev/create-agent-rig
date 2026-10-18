@@ -1239,28 +1239,77 @@ export const comment = async (ticket, body, { env = process.env } = {}) => {
  * published as a close (AR-135).
  */
 export const close = async (ticket, { prUrl = null, transitionId = null, env = process.env } = {}) => {
-  await comment(ticket, prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.', { env });
-  if (transitionId) {
+  if (!transitionId) {
+    let available;
+    try {
+      available = await request(`/rest/api/3/issue/${ticket.id}/transitions`, { env });
+    } catch (error) {
+      return { ok: false, transitioned: false, reason: 'close-transition-discovery-failed', detail: error.message };
+    }
+    const transitions = available?.transitions;
+    if (
+      !Array.isArray(transitions) ||
+      !transitions.every(
+        (transition) =>
+          transition &&
+          typeof transition.id === 'string' &&
+          transition.id !== '' &&
+          transition.to &&
+          typeof transition.to === 'object',
+      )
+    ) {
+      return { ok: false, transitioned: false, reason: 'close-transition-discovery-malformed' };
+    }
+    const target = transitions.find(
+      (transition) => statusCategory(transition.to ? { status: transition.to } : {}) === 'done',
+    );
+    if (!target?.id) {
+      return { ok: false, transitioned: false, reason: 'close-done-transition-unavailable' };
+    }
+    transitionId = target.id;
+  }
+
+  try {
     await request(`/rest/api/3/issue/${ticket.id}/transitions`, {
       method: 'POST',
       body: { transition: { id: transitionId } },
       env,
     });
+  } catch (error) {
+    return { ok: false, transitioned: false, reason: 'close-transition-rejected', detail: error.message };
   }
-  // One read-back for both facts the close needs: the status that proves the
-  // transition, and the marker the write produced (AR-140) — `comment` above
-  // already re-baselined once; this is the read after the transition.
-  const after = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
+
+  let after;
+  try {
+    // The status is the close proof. Do not post its closing comment until this
+    // read-back confirms the tracker placed the item in its Done category.
+    after = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
+  } catch (error) {
+    return { ok: false, transitioned: false, reason: 'close-readback-failed', detail: error.message };
+  }
   const fields = after?.fields ?? {};
   // Through the same announce-never-throw path as `rebaseline`: the round
   // that inlined `recordTakeUp` here reintroduced a throw on a stale run
   // directory after the transition had landed.
   if (env?.RIG_RUN_DIR) recordMarker(ticket, toIso(fields.updated), env);
   const transitioned = statusCategory(fields) === 'done';
-  if (transitioned) await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
+  if (!transitioned) {
+    return {
+      ok: false,
+      transitioned: false,
+      reason: 'close-not-confirmed',
+      status: fields.status?.name ?? null,
+    };
+  }
+  try {
+    await comment(ticket, prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.', { env });
+  } catch (error) {
+    return { ok: false, transitioned: true, reason: 'close-comment-failed', detail: error.message };
+  }
+  await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
   return {
     ok: true,
-    transitioned,
+    transitioned: true,
     status: fields.status?.name ?? null,
   };
 };

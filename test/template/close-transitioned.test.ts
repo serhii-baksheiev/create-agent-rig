@@ -42,6 +42,12 @@ describe('jira close proves the transition by reading the issue back', () => {
   const calls: Call[] = [];
   let realFetch: typeof globalThis.fetch;
   let statusAfter: { name: string; statusCategory: { key: string } };
+  let availableTransitions: unknown;
+  let unreadableReadBack = false;
+  let rejectTransition = false;
+  let rejectDiscovery = false;
+  let unreadableDiscovery = false;
+  let rejectComment = false;
 
   beforeEach(() => {
     calls.length = 0;
@@ -52,12 +58,40 @@ describe('jira close proves the transition by reading the issue back', () => {
       const url = new URL(String(input));
       const method = String(init.method ?? 'GET');
       calls.push({ pathname: url.pathname, search: url.search, method });
+      if (method === 'GET' && url.pathname.endsWith('/transitions')) {
+        return Promise.resolve({
+          ok: !rejectDiscovery && !unreadableDiscovery,
+          status: rejectDiscovery ? 403 : unreadableDiscovery ? 503 : 200,
+          statusText: rejectDiscovery
+            ? 'Forbidden'
+            : unreadableDiscovery
+              ? 'Service Unavailable'
+              : 'OK',
+          json: () => Promise.resolve({ transitions: availableTransitions }),
+        });
+      }
       if (method === 'GET') {
         return Promise.resolve({
-          ok: true,
-          status: 200,
-          statusText: 'OK',
+          ok: !unreadableReadBack,
+          status: unreadableReadBack ? 503 : 200,
+          statusText: unreadableReadBack ? 'Service Unavailable' : 'OK',
           json: () => Promise.resolve({ fields: { status: statusAfter } }),
+        });
+      }
+      if (method === 'POST' && url.pathname.endsWith('/transitions') && rejectTransition) {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          statusText: 'Conflict',
+          json: () => Promise.resolve({}),
+        });
+      }
+      if (method === 'POST' && url.pathname.endsWith('/comment') && rejectComment) {
+        return Promise.resolve({
+          ok: false,
+          status: 503,
+          statusText: 'Service Unavailable',
+          json: () => Promise.resolve({}),
         });
       }
       const status = url.pathname.endsWith('/transitions') ? 204 : 201;
@@ -68,6 +102,12 @@ describe('jira close proves the transition by reading the issue back', () => {
         json: () => Promise.resolve({}),
       });
     }) as unknown as typeof globalThis.fetch;
+    availableTransitions = [{ id: '31', to: { name: 'Done', statusCategory: { key: 'done' } } }];
+    rejectTransition = false;
+    unreadableReadBack = false;
+    rejectDiscovery = false;
+    unreadableDiscovery = false;
+    rejectComment = false;
   });
 
   afterEach(() => {
@@ -84,28 +124,154 @@ describe('jira close proves the transition by reading the issue back', () => {
       (c) => c.method === 'POST' && c.pathname === '/rest/api/3/issue/ABC-13/transitions',
     );
     expect(transition, JSON.stringify(calls)).toBeGreaterThan(-1);
-    const readBack = calls[calls.length - 1]!;
+    const readBackAt = calls.findIndex(
+      (c) => c.method === 'GET' && c.pathname === '/rest/api/3/issue/ABC-13',
+    );
+    const readBack = calls[readBackAt]!;
     expect(readBack.method).toBe('GET');
     expect(readBack.pathname).toBe('/rest/api/3/issue/ABC-13');
     expect(readBack.search).toContain('fields=status');
-    expect(calls.indexOf(readBack)).toBeGreaterThan(transition);
+    const commentAt = calls.findIndex(
+      (c) => c.method === 'POST' && c.pathname.endsWith('/comment'),
+    );
+    expect(readBackAt, JSON.stringify(calls)).toBeGreaterThan(transition);
+    expect(commentAt, JSON.stringify(calls)).toBeGreaterThan(readBackAt);
   });
 
-  it('reports transitioned: false when the POST succeeded but the issue did not move', async () => {
+  it('returns a typed failed close without a comment when the readback is not Done', async () => {
     statusAfter = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
     const { close } = await load('jira.mjs');
     const result = await close(ticket, { transitionId: '31', env: CREDENTIALS });
-    expect(result).toEqual({ ok: true, transitioned: false, status: 'In Progress' });
+    expect(result).toMatchObject({ ok: false, transitioned: false, reason: expect.any(String) });
+    expect(calls.some((c) => c.method === 'POST' && c.pathname.endsWith('/comment'))).toBe(false);
   });
 
-  it('reports transitioned: false with no transitionId, still reading the status back', async () => {
-    statusAfter = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
+  it('selects a Done-category transition, confirms Done, then posts the closing comment', async () => {
+    statusAfter = { name: 'Done', statusCategory: { key: 'done' } };
+    availableTransitions = [
+      { id: '21', to: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } },
+      { id: '31', to: { name: 'Done', statusCategory: { key: 'done' } } },
+    ];
     const { close } = await load('jira.mjs');
     const result = await close(ticket, { env: CREDENTIALS });
-    expect(result).toMatchObject({ ok: true, transitioned: false, status: 'In Progress' });
-    expect(calls.some((c) => c.method === 'POST' && c.pathname.endsWith('/transitions'))).toBe(
-      false,
+    expect(result).toMatchObject({ ok: true, transitioned: true, status: 'Done' });
+    const discoveryAt = calls.findIndex(
+      (c) => c.method === 'GET' && c.pathname.endsWith('/transitions'),
     );
+    const transitionAt = calls.findIndex(
+      (c) => c.method === 'POST' && c.pathname.endsWith('/transitions'),
+    );
+    const readBackAt = calls.findIndex(
+      (c) => c.method === 'GET' && c.pathname === '/rest/api/3/issue/ABC-13',
+    );
+    const commentAt = calls.findIndex(
+      (c) => c.method === 'POST' && c.pathname.endsWith('/comment'),
+    );
+    expect(discoveryAt, JSON.stringify(calls)).toBeGreaterThan(-1);
+    expect(transitionAt, JSON.stringify(calls)).toBeGreaterThan(discoveryAt);
+    expect(readBackAt, JSON.stringify(calls)).toBeGreaterThan(transitionAt);
+    expect(commentAt, JSON.stringify(calls)).toBeGreaterThan(readBackAt);
+  });
+
+  it('returns a typed failed close without a comment when no Done transition is available', async () => {
+    statusAfter = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
+    availableTransitions = [
+      { id: '21', to: { name: 'In Progress', statusCategory: { key: 'indeterminate' } } },
+    ];
+    const { close } = await load('jira.mjs');
+    await expect(close(ticket, { env: CREDENTIALS })).resolves.toMatchObject({
+      ok: false,
+      transitioned: false,
+      reason: expect.any(String),
+    });
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('fails closed for every malformed transition-discovery shape before it writes', async () => {
+    const malformed = [
+      { id: '31' },
+      [null, { id: '31', to: { name: 'Done', statusCategory: { key: 'done' } } }],
+      [{ id: 31, to: { name: 'Done', statusCategory: { key: 'done' } } }],
+    ];
+    for (const transitions of malformed) {
+      calls.length = 0;
+      statusAfter = { name: 'Done', statusCategory: { key: 'done' } };
+      availableTransitions = transitions;
+      const { close } = await load('jira.mjs');
+      await expect(close(ticket, { env: CREDENTIALS })).resolves.toMatchObject({
+        ok: false,
+        transitioned: false,
+        reason: expect.any(String),
+      });
+      expect(calls.some((c) => c.method === 'POST')).toBe(false);
+    }
+  });
+
+  it('returns a typed failed close without a comment when Jira rejects transition discovery', async () => {
+    statusAfter = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
+    rejectDiscovery = true;
+    const { close } = await load('jira.mjs');
+    await expect(close(ticket, { env: CREDENTIALS })).resolves.toMatchObject({
+      ok: false,
+      transitioned: false,
+      reason: expect.any(String),
+    });
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('returns a typed failed close without a comment when transition discovery is unreadable', async () => {
+    statusAfter = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
+    unreadableDiscovery = true;
+    const { close } = await load('jira.mjs');
+    await expect(close(ticket, { env: CREDENTIALS })).resolves.toMatchObject({
+      ok: false,
+      transitioned: false,
+      reason: expect.any(String),
+    });
+    expect(calls.some((c) => c.method === 'POST')).toBe(false);
+  });
+
+  it('returns a typed failed close without a comment when Jira rejects the transition', async () => {
+    statusAfter = { name: 'In Progress', statusCategory: { key: 'indeterminate' } };
+    rejectTransition = true;
+    const { close } = await load('jira.mjs');
+    await expect(close(ticket, { transitionId: '31', env: CREDENTIALS })).resolves.toMatchObject({
+      ok: false,
+      transitioned: false,
+      reason: expect.any(String),
+    });
+    expect(calls.some((c) => c.method === 'POST' && c.pathname.endsWith('/comment'))).toBe(false);
+  });
+
+  it('returns a typed failed close without a comment when the post-transition readback is unreadable', async () => {
+    statusAfter = { name: 'Done', statusCategory: { key: 'done' } };
+    unreadableReadBack = true;
+    const { close } = await load('jira.mjs');
+    await expect(close(ticket, { transitionId: '31', env: CREDENTIALS })).resolves.toMatchObject({
+      ok: false,
+      transitioned: false,
+      reason: expect.any(String),
+    });
+    expect(calls.some((c) => c.method === 'POST' && c.pathname.endsWith('/comment'))).toBe(false);
+  });
+
+  it('reports a confirmed Done transition as a typed partial failure when its later closing comment is rejected', async () => {
+    statusAfter = { name: 'Done', statusCategory: { key: 'done' } };
+    rejectComment = true;
+    const { close } = await load('jira.mjs');
+    await expect(close(ticket, { transitionId: '31', env: CREDENTIALS })).resolves.toMatchObject({
+      ok: false,
+      transitioned: true,
+      reason: expect.any(String),
+    });
+    const transitionAt = calls.findIndex(
+      (c) => c.method === 'POST' && c.pathname.endsWith('/transitions'),
+    );
+    const commentAt = calls.findIndex(
+      (c) => c.method === 'POST' && c.pathname.endsWith('/comment'),
+    );
+    expect(transitionAt, JSON.stringify(calls)).toBeGreaterThan(-1);
+    expect(commentAt, JSON.stringify(calls)).toBeGreaterThan(transitionAt);
   });
 });
 
@@ -114,12 +280,24 @@ describe('github close proves the transition by asking gh for the state', () => 
 
   /** A `gh` on PATH that logs its argv one call per line and answers `issue view`. */
   let stub: StubHandle | undefined;
-  const installGh = async (state: 'CLOSED' | 'OPEN'): Promise<void> => {
+  const installGh = async (
+    state: 'CLOSED' | 'OPEN',
+    {
+      rejectComment = false,
+      rejectClose = false,
+      rejectReadBack = false,
+      rejectLabelCleanup = false,
+    } = {},
+  ): Promise<void> => {
     logFile = path.join(await mkdtemp(path.join(tmpdir(), 'stub-gh-')), 'calls.log');
     stub = await stubCommand(
       'gh',
       `require('node:fs').appendFileSync(${JSON.stringify(logFile)}, args.join(' ') + '\\n');
+       if (${rejectReadBack} && args[0] === 'issue' && args[1] === 'view') throw new Error('readback unavailable');
        if (args[0] === 'issue' && args[1] === 'view') return { stdout: '{"state":"${state}"}\\n' };
+       if (${rejectClose} && args[0] === 'issue' && args[1] === 'close') throw new Error('close rejected');
+       if (${rejectLabelCleanup} && args[0] === 'issue' && args[1] === 'edit') throw new Error('label cleanup unavailable');
+       if (${rejectComment} && args[0] === 'issue' && args[1] === 'comment') throw new Error('comment unavailable');
        return {};`,
     );
   };
@@ -140,16 +318,39 @@ describe('github close proves the transition by asking gh for the state', () => 
     const log = await argvLog();
     const closeAt = log.findIndex((line) => line.startsWith('issue close 13'));
     const viewAt = log.findIndex((line) => line.startsWith('issue view 13'));
+    const commentAt = log.findIndex((line) => line.startsWith('issue comment 13'));
     expect(closeAt, log.join('\n')).toBeGreaterThan(-1);
     expect(viewAt, log.join('\n')).toBeGreaterThan(closeAt);
     expect(log[viewAt]).toContain('--json state');
+    expect(commentAt, log.join('\n')).toBeGreaterThan(viewAt);
   });
 
-  it('reports transitioned: false when gh still sees the issue OPEN', async () => {
+  it('returns a typed failed close and does not post a closing comment when gh still sees the issue OPEN', async () => {
     await installGh('OPEN');
     const { close } = await load('github-issues.mjs');
     const result = await close({ id: '13' });
-    expect(result).toMatchObject({ ok: true, transitioned: false });
+    expect(result).toMatchObject({ ok: false, transitioned: false, reason: expect.any(String) });
+    expect((await argvLog()).some((line) => line.startsWith('issue comment 13'))).toBe(false);
+  });
+
+  it('returns a typed failed close without a comment when gh rejects issue close', async () => {
+    await installGh('OPEN', { rejectClose: true });
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' });
+    expect(result).toMatchObject({ ok: false, transitioned: false, reason: expect.any(String) });
+    const log = await argvLog();
+    expect(log.filter((line) => line.startsWith('issue close 13'))).toHaveLength(1);
+    expect(log.some((line) => line.startsWith('issue comment 13'))).toBe(false);
+  });
+
+  it('returns a typed failed close without a comment when the gh CLOSED readback is unavailable', async () => {
+    await installGh('CLOSED', { rejectReadBack: true });
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' });
+    expect(result).toMatchObject({ ok: false, transitioned: false, reason: expect.any(String) });
+    const log = await argvLog();
+    expect(log.filter((line) => line.startsWith('issue close 13'))).toHaveLength(1);
+    expect(log.some((line) => line.startsWith('issue comment 13'))).toBe(false);
   });
 
   it('leaves the in-progress label on an issue whose close did not land', async () => {
@@ -168,6 +369,27 @@ describe('github close proves the transition by asking gh for the state', () => 
     const viewAt = log.findIndex((line) => line.startsWith('issue view 13'));
     const labelAt = log.findIndex((line) => line.includes('--remove-label in-progress'));
     expect(labelAt, log.join('\n')).toBeGreaterThan(viewAt);
+  });
+
+  it('reports the confirmed transition as a typed partial failure when its later closing comment fails', async () => {
+    await installGh('CLOSED', { rejectComment: true });
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' });
+    expect(result).toMatchObject({ ok: false, transitioned: true, reason: expect.any(String) });
+    const log = await argvLog();
+    expect(log.filter((line) => line.startsWith('issue close 13'))).toHaveLength(1);
+  });
+
+  it('reports a confirmed CLOSED state as a typed partial failure when in-progress label cleanup fails', async () => {
+    await installGh('CLOSED', { rejectLabelCleanup: true });
+    const { close } = await load('github-issues.mjs');
+    const result = await close({ id: '13' });
+    expect(result).toMatchObject({ ok: false, transitioned: true, reason: expect.any(String) });
+    const log = await argvLog();
+    const closeAt = log.findIndex((line) => line.startsWith('issue close 13'));
+    const labelAt = log.findIndex((line) => line.includes('--remove-label in-progress'));
+    expect(closeAt, log.join('\n')).toBeGreaterThan(-1);
+    expect(labelAt, log.join('\n')).toBeGreaterThan(closeAt);
   });
 });
 
@@ -326,11 +548,11 @@ describe('plan-md close proves the transition by re-parsing the plan', () => {
     expect(await readFile(planPath, 'utf8')).not.toContain('- remove me');
   });
 
-  it('reports transitioned: false for an id the plan does not carry', async () => {
+  it('returns a typed failed close for an id the plan does not carry', async () => {
     const planPath = await planFile();
     const { close } = await load('plan-md.mjs');
     const result = await close({ id: '9' }, { planPath });
-    expect(result).toMatchObject({ ok: true, transitioned: false });
+    expect(result).toMatchObject({ ok: false, transitioned: false, reason: expect.any(String) });
     expect(await readFile(planPath, 'utf8')).toBe(PLAN);
   });
 });

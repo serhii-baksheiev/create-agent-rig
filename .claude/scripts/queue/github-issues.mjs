@@ -560,18 +560,36 @@ export const find = (id, { limit = 100, issues = null } = {}) => {
 
 export const close = async (ticket, { prUrl = null, env = process.env } = {}) => {
   const note = prUrl ? `Landed in ${prUrl}.` : 'Closed by the run.';
-  ghText(['issue', 'comment', ticket.id, '--body', note]);
-  ghText(['issue', 'close', ticket.id]);
+  try {
+    ghText(['issue', 'close', ticket.id]);
+  } catch (error) {
+    return { ok: false, transitioned: false, reason: 'close-transition-rejected', detail: error.message };
+  }
   // Read back, never inferred: `gh issue close` exits 0 on an issue that was
   // already closed, or that a workflow reopened a moment later (AR-135). The
   // claim label goes only once the read-back says CLOSED — a close that did
   // not land leaves the item claimed, exactly as it was found.
-  const after = ghJson(['issue', 'view', ticket.id, '--json', 'state']);
+  let after;
+  try {
+    after = ghJson(['issue', 'view', ticket.id, '--json', 'state']);
+  } catch (error) {
+    return { ok: false, transitioned: false, reason: 'close-readback-failed', detail: error.message };
+  }
   const transitioned = String(after?.state ?? '').toUpperCase() === 'CLOSED';
-  if (transitioned) ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
+  if (!transitioned) return { ok: false, transitioned: false, reason: 'close-not-confirmed' };
+  try {
+    ghText(['issue', 'comment', ticket.id, '--body', note]);
+  } catch (error) {
+    return { ok: false, transitioned: true, reason: 'close-comment-failed', detail: error.message };
+  }
+  try {
+    ghText(['issue', 'edit', ticket.id, '--remove-label', 'in-progress']);
+  } catch (error) {
+    return { ok: false, transitioned: true, reason: 'close-cleanup-failed', detail: error.message };
+  }
   rebaseline(ticket);
-  if (transitioned) await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
-  return { ok: true, transitioned };
+  await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
+  return { ok: true, transitioned: true };
 };
 
 export const comment = (ticket, body) => {
