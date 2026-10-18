@@ -984,12 +984,11 @@ Both then follow the same three steps:
 🔴 **The gate-round cap is the stop a run will not reach on its own.** Every other
 stop here has a red thing behind it; a gate that keeps finding fixable prose is all
 green, so three strikes never fires and the run has no reason to stop re-entering it.
-`pr-ship` step 0 checks availability without spending a round. Before launching
-reviewers, its later admission step reserves capacity in the existing
-`.claude/gate-rounds.json`; only a durable non-empty exact-head fan-out consumes
-that capacity. The per-branch count and evidence receipts outlive the session.
+Follow `pr-ship`'s non-consuming precheck and reserved fan-out procedure.
 See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
-› "reserves an unspent slot with an opaque token without regranting it to a shared run".
+› "keeps --check read-only so another run can reserve the final available slot",
+› "reserves an unspent slot with an opaque token without regranting it to a shared run"
+and › "consumes one recorded non-empty fan-out once when a resumed invocation sees the same evidence again".
 
 ⚠ **What the cap does not carry, stated because the gap decides what you can write in
 the escalation:** the counter holds totals, admission and consumption receipts;

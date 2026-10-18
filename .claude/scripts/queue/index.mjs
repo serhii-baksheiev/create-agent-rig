@@ -403,8 +403,12 @@ if (invokedDirectly()) {
   // rounds.
   if (args.command === 'gate-round') {
     try {
-      if (args.check && (args.reserve || args.release || args.reconcile)) {
-        throw new Error('--check cannot be used with a mutating gate-round mode.');
+      if (
+        (args.check && (args.reserve || args.release || args.reconcile || args.reservation !== null)) ||
+        (args.reserve && (args.release || args.reconcile)) ||
+        (args.reconcile && args.reservation !== null)
+      ) {
+        throw new Error('gate-round modes and reservation tokens cannot be combined this way.');
       }
       // 🔴 Inside the `try`, and a review round is why. Left outside it, a rig whose
       // `.claude/scripts/` predates this CLI printed a raw `ERR_MODULE_NOT_FOUND`

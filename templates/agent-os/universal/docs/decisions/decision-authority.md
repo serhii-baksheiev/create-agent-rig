@@ -110,8 +110,10 @@ its own — › "exits 2 on a fix commit past the default budget — no second
 authorization exists to match". With the default budget a run therefore stops
 at the owner after three base rounds and one delegated round, however the
 records are edited — › "an in-place rewrite of the single counted record to a
-new, unverdicted head cannot buy a round past the total cap (probe 3)". Admission and consumption are local to the main checkout shared by its linked
-worktrees. A second clone does not share this counter or these run journals.
+new, unverdicted head cannot buy a round past the total cap (probe 3)". The default
+counter path resolves to the main checkout for linked worktrees and to a separate
+path for an independent clone — see `test/template/gate-round-evidence.test.ts`
+(absent in a generated rig) › "shares the default counter path across linked worktrees but not independent clones".
 
 The run's authority is self-declared. In the opt-in workflow layer,
 `run-state.mjs authority` journals each declaration with the value before and after it —
