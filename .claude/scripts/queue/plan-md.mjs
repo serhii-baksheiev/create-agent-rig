@@ -243,10 +243,15 @@ export const close = async (ticket, { prUrl = null, planPath: p, env = process.e
   // `transitioned` means the line was there and is now gone — an id the plan
   // never carried closed nothing, and saying otherwise would publish a close
   // that changed no state (AR-135).
-  const gone = !parsePlan(readFileSync(file, 'utf8')).some((item) => item.id === String(ticket.id));
-  const transitioned = present && gone;
-  if (transitioned) await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
-  return { ok: true, prUrl, transitioned };
+  let gone;
+  try {
+    gone = !parsePlan(readFileSync(file, 'utf8')).some((item) => item.id === String(ticket.id));
+  } catch (error) {
+    return { ok: false, prUrl, transitioned: false, reason: 'close-readback-failed', detail: error.message };
+  }
+  if (!gone) return { ok: false, prUrl, transitioned: false, reason: 'close-not-confirmed' };
+  await recordItemClosed(env?.RIG_RUN_DIR, { ticket: ticket.id });
+  return { ok: true, prUrl, transitioned: true };
 };
 
 /** A flat list has no comment thread; the journal is where this lands. */

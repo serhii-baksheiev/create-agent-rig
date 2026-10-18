@@ -1281,8 +1281,6 @@ export const close = async (ticket, { prUrl = null, transitionId = null, env = p
 
   let after;
   try {
-    // The status is the close proof. Do not post its closing comment until this
-    // read-back confirms the tracker placed the item in its Done category.
     after = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated`, { env });
   } catch (error) {
     return { ok: false, transitioned: false, reason: 'close-readback-failed', detail: error.message };

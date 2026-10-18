@@ -1448,8 +1448,7 @@ three poisons the only channel by which this project learns.
   re-read leaves the action standing. Then call the
   adapter's `close(ticket, { prUrl, transitionId })` with the merged PR linked,
   immediately after the post-merge verdict — not in a cleanup pass — and read
-  its answer: `ok: true` says the call ran, and only `transitioned` set to
-  `true` says the close landed, because every adapter reads the item back after
+  its answer: only `transitioned` set to `true` says the close landed, because every adapter reads the item back after
   the transition — `jira` the status category after the POST, `github-issues`
   `gh issue view --json state`, `plan-md` the line being there and then gone
   (the generator's `test/template/close-transitioned.test.ts` (absent in a generated rig) › "GETs the issue
@@ -1457,11 +1456,18 @@ three poisons the only channel by which this project learns.
   category is done", › "runs `issue view <id> --json state` after `issue close`
   and reports transitioned: true on CLOSED", › "reports transitioned: true once
   the item's line is gone"). A close whose result says `transitioned: false` is
-  not a close: report it, and leave the item as the adapter left it — `jira` its
+  unconfirmed: report it, and leave the item as the adapter left it — `jira` its
   status, `github-issues` its `in-progress` label, which comes off only after a
   read-back that says CLOSED (› "leaves the in-progress label on an issue whose
-  close did not land"), `plan-md` nothing, because the line was never there. The
-  tier below is recorded only for a close that transitioned; a close that did
+  close did not land"). For PLAN.md, a failed confirmation can follow a write;
+  see `test/template/close-plan-verified.test.ts` (absent in a generated rig)
+  › "returns a typed failed close when its post-write readback is %s" (the `stale` and `throws` cases).
+  Reconcile the observed state before another close attempt. A confirmed close
+  can return `ok: false`, `transitioned: true` and a typed `reason` when its
+  later comment or label cleanup fails; see `test/template/close-transitioned.test.ts`
+  (absent in a generated rig) › "reports a confirmed Done transition as a typed partial failure when its later closing comment is rejected"
+  and › "reports a confirmed CLOSED state as a typed partial failure when in-progress label cleanup fails".
+  The tier below is recorded only for a close that transitioned; a close that did
   not is not the "something landed" the escalation streak resets on. **Record
   the tier in the same step**, because the next selection rations on it:
 
