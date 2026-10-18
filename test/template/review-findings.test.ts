@@ -375,6 +375,33 @@ describe('`findings` compares exactly two already-journaled review decisions', (
     }
   });
 
+  it('writes the complete findings JSON before reporting success for a large resolved set', async () => {
+    const run = await newRun();
+    const blockers = Array.from({ length: 100 }, (_, index) =>
+      finding({ id: `pipe-${index}`, rule: `rule ${index}`, note: 'x'.repeat(2048) }),
+    );
+    const before = await run.decide({
+      gate: 'code-reviewer',
+      verdict: 'HOLD',
+      blockers,
+      headSha: HEAD_A,
+    });
+    const after = await run.decide({
+      gate: 'code-reviewer',
+      verdict: 'SHIP',
+      blockers: [],
+      headSha: HEAD_B,
+    });
+
+    const result = await runCli(['findings', String(before.seq), String(after.seq)], run.runDir);
+    expect(result.code, result.out).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      resolved: blockers,
+      unresolved: [],
+      new: [],
+    });
+  });
+
   it('refuses an undeclared or unreadable run directory with no stdout verdict', async () => {
     await expectRefusal(
       ['findings', '1', '2'],

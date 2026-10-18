@@ -95,6 +95,14 @@ const refuse = (message) => {
   process.exit(1);
 };
 
+const writeStandardOutput = (text) =>
+  new Promise((resolve, reject) => {
+    process.stdout.write(text, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+
 const readReport = (source) => {
   try {
     return readFileSync(source === '-' ? 0 : source, 'utf8');
@@ -215,7 +223,7 @@ const decisionAt = (decisions, sequenceNumber, position) => {
   return record;
 };
 
-const findings = (beforeArgument, afterArgument) => {
+const findings = async (beforeArgument, afterArgument) => {
   const runDir = process.env.RIG_RUN_DIR;
   if (!runDir) {
     refuse('verdict: `findings` needs RIG_RUN_DIR declared to read already-journaled decisions.\n');
@@ -253,7 +261,7 @@ const findings = (beforeArgument, afterArgument) => {
   const discovered = after.verdict.blockers.filter(
     (blocker) => !before.identities.has(findingIdentity(blocker, 'after')),
   );
-  process.stdout.write(
+  await writeStandardOutput(
     `${JSON.stringify(
       {
         before: {
@@ -397,7 +405,7 @@ if (subcommand === 'findings') {
   if (args.length !== 3) {
     refuse(`verdict: \`findings\` needs exactly a before and an after sequence.\n${USAGE}`);
   }
-  findings(source, expectedGate);
+  await findings(source, expectedGate);
   process.exit(0);
 }
 
