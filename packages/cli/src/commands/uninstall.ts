@@ -785,9 +785,11 @@ async function protectHookAndDeps(
   readFileFn: (absolutePath: string) => Promise<Buffer>,
   walkedBytes: Map<string, Buffer>,
 ): Promise<void> {
-  // A direct wiring reference is authoritative even when an earlier seed
-  // already reached this hook through an import or a precaution sweep.
-  // Keep the first direct wiring, and let visited still prevent a second read.
+  // Direct-seed provenance: see test/e2e/uninstall.test.ts (absent in a generated rig) ›
+  // "the roll-up matches the per-path reasons when the unreadable hook is the LAST one the wiring names".
+  // Read bounds: see
+  // packages/cli/test/uninstall.test.ts (absent in a generated rig) ›
+  // "reads each file once however many duplicate imports name the same owned dependency".
   if (importedBy.has(seedRel) || unverified.has(seedRel) || !protectedHooks.has(seedRel)) {
     protectedHooks.set(seedRel, wiringRel);
   }
@@ -798,8 +800,8 @@ async function protectHookAndDeps(
   // directly; nothing imported it to get here). Recorded into `importedBy`
   // only the FIRST time `rel` is reached, mirroring `protectedHooks`'s own
   // `!has` guard just below — so a dependency reached by two importers keeps
-  // the first real connection. A later direct seed supersedes that import
-  // provenance above, without changing the walk's read-once bound.
+  // the first real connection; the direct-seed case and read bound are pinned
+  // by the two tests named above.
   const queue: Array<[string, string | undefined]> = [[seedRel, undefined]];
   while (queue.length > 0) {
     const [rel, parent] = queue.pop()!;

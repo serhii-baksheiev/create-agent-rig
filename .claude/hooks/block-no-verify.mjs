@@ -5,15 +5,14 @@
 // Contract (Claude Code): JSON on stdin; exit 0 = allow, exit 2 = block, and
 // stderr is shown to the agent as the reason.
 //
-// It shares the Never-tier tokenizer so quoted heredoc bodies remain prose and
-// follows shell `-c` without executing dynamic command text.
-// Static scope: literal Git options, shell `-c` payloads and direct `$()` forms.
-// Script inspection ends beyond depth 16; the shared tokenizer can inspect
-// literal bodies as commands beyond its 32-heredoc budget. Aliases, dynamically
-// assembled commands and general shell expansion remain outside this parser.
-// Persistent hook configuration is read in this hook's current repository;
-// command-local cwd/Git environment changes are not resolved. A usable hook
-// path is a preflight, never proof that a later commit executed its checks.
+// See test/template/no-verify-precision.test.ts (absent in a generated rig) ›
+// "documents and retains the depth-16 literal shell inspection limit";
+// "documents and retains the static-scope limits for aliases and runtime-assembled commands";
+// "documents and retains the shared 32-heredoc tokenizer budget".
+// Aliases, dynamically assembled commands, and general shell expansion remain
+// outside this parser; the shared tokenizer has a 32-heredoc budget.
+// Literal Git `-C`, `--git-dir`, and `--work-tree` values reach the bounded configuration preflight: see › "reads persistent hooksPath from literal -C targets, including a repeated relative target".
+// A usable hook path is only a preflight: see › "uses a usable hooksPath only as a preflight and does not execute the proposed commit".
 import { execFileSync } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -27,9 +26,40 @@ const refusal =
   'If a check fails, fix the failure (or stop and report why it cannot be fixed); ' +
   'see .claude/rules/workflow.md.';
 
+const GIT_GLOBAL_VALUE_FLAGS = new Set(['-C', '-c', '--config-env', '--git-dir', '--namespace', '--work-tree']);
+
 const operationOf = (args) => {
-  const index = args.findIndex(({ value }) => value === 'commit' || value === 'push');
-  return index === -1 ? null : { index, value: args[index].value };
+  for (let index = 0; index < args.length; index += 1) {
+    const value = args[index].value;
+    if (value === '--') return null;
+    if (GIT_GLOBAL_VALUE_FLAGS.has(value)) {
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('-C') || value.startsWith('--git-dir=')) continue;
+    if (value.startsWith('-')) continue;
+    return value === 'commit' || value === 'push' ? { index, value } : null;
+  }
+  return null;
+};
+
+const contextOptions = (args, operation) => {
+  const context = [];
+  for (let index = 0; index < operation.index; index += 1) {
+    const value = args[index].value;
+    if (value === '-C' && args[index + 1]) {
+      context.push('-C', args[index + 1].value);
+      index += 1;
+    } else if (value.startsWith('-C') && value.length > 2) {
+      context.push('-C', value.slice(2));
+    } else if ((value === '--git-dir' || value === '--work-tree') && args[index + 1]) {
+      context.push(value, args[index + 1].value);
+      index += 1;
+    } else if (value.startsWith('--git-dir=') || value.startsWith('--work-tree=')) {
+      context.push(value);
+    }
+  }
+  return context;
 };
 
 const bypassesOperation = (args, operation) => {
@@ -51,20 +81,29 @@ const bypassesOperation = (args, operation) => {
 };
 
 const hasInlineHooksPath = (args, operation) => {
+  const isHooksPath = (value) => value.split('=', 1)[0].toLowerCase() === 'core.hookspath';
   for (let index = 0; index < operation.index; index += 1) {
     const value = args[index].value;
-    if (value === '-c' && args[index + 1]?.value.startsWith('core.hooksPath=')) return true;
-    if (value.startsWith('-ccore.hooksPath=')) return true;
+    if (value === '-c' && args[index + 1] && isHooksPath(args[index + 1].value)) return true;
+    if (value.startsWith('-c') && isHooksPath(value.slice(2))) return true;
+    if (value === '--config-env' && args[index + 1] && isHooksPath(args[index + 1].value)) return true;
+    if (value.startsWith('--config-env=') && isHooksPath(value.slice('--config-env='.length))) return true;
   }
   return false;
 };
 
-const huskyDisabled = (segment) => {
-  const gitIndex = segment.findIndex(({ value }) => value.split('/').pop() === 'git');
-  return gitIndex !== -1 && segment.slice(0, gitIndex).some(({ value }) => value === 'HUSKY=0');
+const huskyAssignment = (segment, command) => {
+  const commandIndex = command.name
+    ? segment.findIndex(({ value }) => value.split('/').pop() === command.name)
+    : segment.length;
+  const match = segment
+    .slice(0, commandIndex)
+    .filter(({ value }) => /^HUSKY=([01])$/.test(value))
+    .at(-1)?.value.match(/^HUSKY=([01])$/);
+  return match ? match[1] === '0' : null;
 };
 
-const configuredHooksAreUsable = () => {
+const configuredHooksAreUsable = (context) => {
   const gitOptions = {
     env: withoutGitLocation(),
     encoding: 'utf8',
@@ -74,14 +113,14 @@ const configuredHooksAreUsable = () => {
   };
   let hooksPath;
   try {
-    hooksPath = execFileSync('git', ['config', '--get', 'core.hooksPath'], gitOptions).replace(/\r?\n$/, '');
+    hooksPath = execFileSync('git', [...context, 'config', '--get', 'core.hooksPath'], gitOptions).replace(/\r?\n$/, '');
   } catch (error) {
     if (error.status === 1) return null;
     return 'BLOCKED — Git hook configuration could not be read safely.';
   }
   try {
     if (!hooksPath) throw new Error('empty hooks path');
-    const root = execFileSync('git', ['rev-parse', '--show-toplevel'], gitOptions).replace(/\r?\n$/, '');
+    const root = execFileSync('git', [...context, 'rev-parse', '--show-toplevel'], gitOptions).replace(/\r?\n$/, '');
     const preCommit = resolve(root, hooksPath, 'pre-commit');
     if (!statSync(preCommit).isFile()) throw new Error('pre-commit is not a file');
     accessSync(preCommit, constants.X_OK);
@@ -91,15 +130,37 @@ const configuredHooksAreUsable = () => {
   return null;
 };
 
-const inspect = (raw, depth = 0) => {
+const inspect = (raw, depth = 0, inheritedHusky = false) => {
   if (depth > 16) return null;
-  for (const segment of tokenize(raw)) {
+  const shellHusky = [inheritedHusky];
+  const exportedHusky = [inheritedHusky];
+  for (const segment of tokenize(raw, { literalHeredocs: true, scopes: true })) {
+    const scope = segment.subshellDepth;
+    if (shellHusky[scope] === undefined) {
+      shellHusky[scope] = shellHusky[scope - 1] ?? false;
+      exportedHusky[scope] = exportedHusky[scope - 1] ?? false;
+    }
     let command = commandOf(segment);
     if (command.name === 'if') command = commandOf(command.args);
+    const localHusky = huskyAssignment(segment, command);
+    if (command.name === 'export' && /^HUSKY=([01])$/.test(command.args[0]?.value ?? '')) {
+      shellHusky[scope] = command.args[0].value === 'HUSKY=0';
+      exportedHusky[scope] = true;
+      continue;
+    }
+    if (command.name === 'unset' && command.args[0]?.value === 'HUSKY') {
+      shellHusky[scope] = false;
+      exportedHusky[scope] = false;
+      continue;
+    }
+    if (!command.name && localHusky !== null) {
+      shellHusky[scope] = localHusky;
+      continue;
+    }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(command.name)) {
       const script = shellScript(command.args);
       if (script) {
-        const nested = inspect(script, depth + 1);
+        const nested = inspect(script, depth + 1, localHusky ?? (exportedHusky[scope] ? shellHusky[scope] : false));
         if (nested) return nested;
       }
       continue;
@@ -107,11 +168,11 @@ const inspect = (raw, depth = 0) => {
     if (command.name !== 'git' && command.name !== 'git.exe') continue;
     const operation = operationOf(command.args);
     if (!operation) continue;
-    if (huskyDisabled(segment) || hasInlineHooksPath(command.args, operation) || bypassesOperation(command.args, operation)) {
+    if ((localHusky ?? shellHusky[scope]) || hasInlineHooksPath(command.args, operation) || bypassesOperation(command.args, operation)) {
       return refusal;
     }
     if (operation.value === 'commit') {
-      const configuration = configuredHooksAreUsable();
+      const configuration = configuredHooksAreUsable(contextOptions(command.args, operation));
       if (configuration) return configuration;
     }
   }

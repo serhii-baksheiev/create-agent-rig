@@ -443,6 +443,69 @@ const deniedByBrake = (name, args) => {
 // ── Tokenising ───────────────────────────────────────────────────────────────
 
 /**
+ * See test/template/no-verify-precision.test.ts (absent in a generated rig) ›
+ * "allows an escaped heredoc delimiter whose body is literal prose";
+ * "allows a heredoc delimiter assembled from an unquoted and quoted fragment";
+ * "allows an unquoted punctuation-bearing heredoc delimiter whose body is literal prose";
+ * "allows a concatenated heredoc delimiter whose body is literal prose".
+ */
+const literalHeredoc = (raw, index) => {
+  let cursor = index + 2;
+  const tabs = raw[cursor] === '-';
+  if (tabs) cursor += 1;
+  while (raw[cursor] === ' ' || raw[cursor] === '\t') cursor += 1;
+
+  let word = '';
+  let quoted = false;
+  while (cursor < raw.length) {
+    const ch = raw[cursor];
+    if (/\s/.test(ch) || ';|&<>()`'.includes(ch)) break;
+    if (ch === '\\') {
+      if (cursor + 1 >= raw.length || raw[cursor + 1] === '\n') return null;
+      word += raw[cursor + 1];
+      quoted = true;
+      cursor += 2;
+      continue;
+    }
+    if (ch === "'") {
+      const end = raw.indexOf("'", cursor + 1);
+      if (end === -1) return null;
+      word += raw.slice(cursor + 1, end);
+      quoted = true;
+      cursor = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+      cursor += 1;
+      while (cursor < raw.length && raw[cursor] !== '"') {
+        if (raw[cursor] === '$' || raw[cursor] === '`') return null;
+        if (raw[cursor] === '\\') {
+          if (cursor + 1 >= raw.length || raw[cursor + 1] === '\n') return null;
+          if ('"$`\\'.includes(raw[cursor + 1])) {
+            word += raw[cursor + 1];
+            cursor += 2;
+          } else {
+            word += '\\';
+            cursor += 1;
+          }
+        } else {
+          word += raw[cursor];
+          cursor += 1;
+        }
+      }
+      if (raw[cursor] !== '"') return null;
+      cursor += 1;
+      continue;
+    }
+    if (ch === '$') return null;
+    word += ch;
+    cursor += 1;
+  }
+  return word || quoted ? { length: cursor - index, quoted, tabs, word } : null;
+};
+
+/**
  * Split a command line into segments of arguments, honouring quotes.
  *
  * Each token records whether it was quoted, because the two facts matter
@@ -453,7 +516,7 @@ const deniedByBrake = (name, args) => {
  * current segment — every one of them introduces a new command whose first word
  * must be examined on its own.
  */
-export const tokenize = (raw) => {
+export const tokenize = (raw, { literalHeredocs = false, scopes = false } = {}) => {
   const segments = [];
   let args = [];
   let value = '';
@@ -461,6 +524,7 @@ export const tokenize = (raw) => {
   let started = false;
   let heredocBudget = 32;
   let pendingHeredoc = null;
+  let subshellDepth = 0;
 
   const endArg = () => {
     if (started) {
@@ -472,7 +536,10 @@ export const tokenize = (raw) => {
   };
   const endSegment = () => {
     endArg();
-    if (args.length > 0) segments.push(args);
+    if (args.length > 0) {
+      if (scopes) args.subshellDepth = subshellDepth;
+      segments.push(args);
+    }
     args = [];
   };
 
@@ -555,9 +622,9 @@ export const tokenize = (raw) => {
       // for the shell, and a guard that stops at `EOF` swallows further than the
       // shell does — the hide primitive again. When the models cannot be made to
       // agree, the marker is left inert and the body gets inspected.
-      const marker = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(
-        raw.slice(i, i + 64),
-      );
+      const marker = literalHeredocs
+        ? literalHeredoc(raw, i)
+        : /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(raw.slice(i, i + 64));
       if (marker) {
         // A TOTAL budget, not a per-step one: each lookahead scans forward, so an
         // input full of markers would be quadratic. Past the budget `<<` is two
@@ -566,8 +633,10 @@ export const tokenize = (raw) => {
         heredocBudget -= 1;
         // `<<-` strips leading TABS from the terminator line, so the terminator
         // the shell accepts is not the one a plain `\nEOF\n` search finds.
-        pendingHeredoc = { word: marker[3], tabs: marker[1] === '-' };
-        i += marker[0].length;
+        pendingHeredoc = literalHeredocs
+          ? { ...marker, escaped: true }
+          : { word: marker[3], tabs: marker[1] === '-' };
+        i += literalHeredocs ? marker.length : marker[0].length;
         continue;
       }
       i += 2;
@@ -601,14 +670,18 @@ export const tokenize = (raw) => {
     // `commandOf`, and braces inside a token belong to the token.
     if ('|;&\n()`'.includes(ch)) {
       endSegment();
+      if (ch === '(') subshellDepth += 1;
+      if (ch === ')' && subshellDepth > 0) subshellDepth -= 1;
       i += 1;
       if (ch === '\n' && pendingHeredoc) {
         // Skip the body and its terminator LINE, leaving the newline that ends
         // that line to act as the next boundary. If the terminator never appears
         // the body is kept and inspected rather than dropped — losing lines is
         // how the pre-pass hid commands.
-        const { word, tabs } = pendingHeredoc;
-        const terminator = new RegExp(`\n${tabs ? '\t*' : ''}${word}(?=\n|$)`);
+        const { word, tabs, escaped } = pendingHeredoc;
+        const terminator = new RegExp(
+          `\n${tabs ? '\t*' : ''}${escaped ? word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') : word}(?=\n|$)`,
+        );
         const found = terminator.exec(raw.slice(i - 1));
         if (found) i = i - 1 + found.index + found[0].length;
         pendingHeredoc = null;
@@ -629,15 +702,14 @@ export const tokenize = (raw) => {
 };
 
 /**
- * Command substitutions the shell evaluates directly in a command string.
- *
- * This supplements `tokenize` for a consumer that needs to inspect the command
- * inside `$()` without changing `guard-bash`'s existing segment traversal.
- * Single-quoted text and quoted heredoc bodies are literal; double-quoted text
- * and unquoted heredoc bodies still evaluate substitutions. It intentionally
- * does not execute or expand the captured text.
- * Heredoc headers finish before their queued bodies are consumed in order.
- * The internal body mode keeps quotes as data while collecting substitutions.
+ * See test/template/no-verify-precision.test.ts (absent in a generated rig) ›
+ * "allows a single-quoted substitution as literal prose";
+ * "refuses a substitution after a literal apostrophe inside double quotes";
+ * "allows a quoted heredoc body containing a literal bypass example";
+ * "refuses a bypass evaluated by an unquoted heredoc body";
+ * "refuses a header-suffix substitution after a quoted heredoc body";
+ * "refuses an expanded first body when a later heredoc body is quoted";
+ * "refuses a bypass inside single quotes in an unquoted heredoc body".
  */
 export const evaluatedSubstitutions = (raw, heredocBody = false) => {
   const scripts = [];
@@ -648,10 +720,18 @@ export const evaluatedSubstitutions = (raw, heredocBody = false) => {
       index += 1;
       continue;
     }
+    if (!heredocBody && raw[index] === '#' && (index === 0 || /[\s;|&()]/.test(raw[index - 1]))) {
+      const end = raw.indexOf('\n', index);
+      index = end === -1 ? raw.length : end;
+      continue;
+    }
     if (!quote && raw[index] === '\n' && pendingHeredocs.length > 0) {
       let bodyStart = index + 1;
       for (const marker of pendingHeredocs) {
-        const terminator = new RegExp(`^${marker.tabs ? '\\t*' : ''}${marker.word}(?=\\n|$)`, 'gm');
+        const terminator = new RegExp(
+          `^${marker.tabs ? '\\t*' : ''}${marker.word.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\$&')}(?=\\n|$)`,
+          'gm',
+        );
         terminator.lastIndex = bodyStart;
         const found = terminator.exec(raw);
         const bodyEnd = found ? found.index : raw.length;
@@ -677,12 +757,10 @@ export const evaluatedSubstitutions = (raw, heredocBody = false) => {
       continue;
     }
     if (!heredocBody && !quote && raw[index] === '<' && raw[index + 1] === '<') {
-      const marker = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(
-        raw.slice(index, index + 64),
-      );
+      const marker = literalHeredoc(raw, index);
       if (marker) {
-        pendingHeredocs.push({ word: marker[3], tabs: marker[1] === '-', quoted: Boolean(marker[2]) });
-        index += marker[0].length - 1;
+        pendingHeredocs.push(marker);
+        index += marker.length - 1;
       }
       continue;
     }
