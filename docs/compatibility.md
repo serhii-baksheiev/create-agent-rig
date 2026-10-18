@@ -57,6 +57,10 @@ path, dependency exclusion and an ordinary docs path. The comparison with
 the old anchored config is in `probity-command.test.ts` › "shows the pinned
 CLI skip a nested worktree under anchored globs and deny it under the
 generated match-anywhere globs". These are scope checks; they invoke no model.
+The shared root/nested source and test paths are compared with this
+repository's specialized dogfood scope in the same file's test › "matches
+dogfood for shared root and nested packages/cli code and test paths through
+pinned Probity"; the two policies otherwise retain their own scopes.
 
 The generated POSIX hook commands are exercised with a real nested Git
 worktree in `init.test.ts` › "denies nested source writes through the
@@ -80,6 +84,10 @@ source trees" and › "does not report nested-worktree-scope for an anchored
 config when no supported nested worktree exists". The advisory recognizes
 a literal anchored `src/**` and a direct nested worktree shape; it is not
 an assessment of arbitrary dynamic JavaScript configuration.
+For a hand-edited legacy config with a retained `configHash`, the specific
+scope warning precedes generic hash drift; see the same file's test
+› "prioritizes nested-worktree-scope over generic config-drift for a
+hand-edited legacy generated config". Operational failures still take priority.
 
 External-worktree enforcement remains unsupported: `probity-gate.test.ts`
 › "does not spawn the launcher or relay a decision for a wholly foreign

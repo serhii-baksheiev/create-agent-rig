@@ -461,6 +461,37 @@ describe('doctor: probity (RP-416)', () => {
     );
   });
 
+  it('prioritizes nested-worktree-scope over generic config-drift for a hand-edited legacy generated config', async () => {
+    const original = Buffer.from(PROBITY_CONFIG_TEXT);
+    const configHash = createHash('sha256').update(original).digest('hex');
+    await writeDeclaration([
+      { id: PROBITY, version: VERSION, harnesses: ['claude-code'], selected: true, configHash },
+    ]);
+    const configPath = path.join(repo, 'probity.config.mjs');
+    const edited = Buffer.concat([
+      original,
+      Buffer.from('// hand-edited after Rig generated it\n'),
+    ]);
+    await writeFile(configPath, edited);
+    await writeProbityPackageJson(VERSION);
+    await writeProbityLauncherBin(path.join(repo, 'node_modules', '@nizos', 'probity'));
+    await writeWiring('claude-code', true);
+    const worktree = path.join(repo, '.claude', 'worktrees', 'nested');
+    await mkdir(worktree, { recursive: true });
+    await writeFile(path.join(worktree, '.git'), 'gitdir: ../../.git/worktrees/nested\n');
+
+    const { body: report } = await body();
+
+    expect(report.checks).toContainEqual(
+      expect.objectContaining({
+        id: 'probity:claude-code',
+        status: 'warn',
+        reason: 'nested-worktree-scope',
+      }),
+    );
+    expect(await readFile(configPath)).toEqual(edited);
+  });
+
   it('reports an operational problem ahead of config-drift: a drifted config with no launcher is launcher-missing', async () => {
     const original = Buffer.from(PROBITY_CONFIG_TEXT);
     const configHash = createHash('sha256').update(original).digest('hex');

@@ -13,7 +13,7 @@ import { RIG_CONTRACT_VERSION, packageVersion, rigHandshake } from '../src/lib/v
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 describe('rigHandshake (RP-19)', () => {
-  it('answers schemaVersion 1, the rig name, the root package version, and contractVersion 1.0', async () => {
+  it('answers schemaVersion 1, the rig name, the root package version, and contractVersion 1.1', async () => {
     const pkg = JSON.parse(await readFile(path.join(repoRoot, 'package.json'), 'utf8')) as {
       version: string;
     };
@@ -26,7 +26,7 @@ describe('rigHandshake (RP-19)', () => {
       schemaVersion: 1,
       name: 'create-agent-rig',
       version: pkg.version,
-      contractVersion: '1.0',
+      contractVersion: '1.1',
     });
   });
 
@@ -37,7 +37,7 @@ describe('rigHandshake (RP-19)', () => {
 });
 
 describe('RIG_CONTRACT_VERSION', () => {
-  it('is 1.0 — the contract this rig currently implements', () => {
-    expect(RIG_CONTRACT_VERSION).toBe('1.0');
+  it('is 1.1 — the contract this rig currently implements', () => {
+    expect(RIG_CONTRACT_VERSION).toBe('1.1');
   });
 });

@@ -252,8 +252,10 @@ export type ProbityInspection = {
  * denies every tool action without one, so this is the one `fail`), then
  * whether the package is installed, then the pinned version, then this
  * harness's own gate wiring, then the launcher file the gate actually runs,
- * then whether Rig's generated config has been edited since, and finally
- * the literal-scope advisory for supported nested worktrees.
+ * then the literal-scope advisory for supported nested worktrees, and finally
+ * whether Rig's generated config has been edited since. The bounded scope
+ * advisory takes priority because it identifies the concrete supported path
+ * that the legacy literal scope misses.
  * Never spawns the Probity launcher and never calls a model.
  * `configHash`, when given, is the declaration entry's own recorded hash —
  * threaded in by the caller rather than read here, since only `doctor.ts`
@@ -284,12 +286,12 @@ export async function inspectProbity(
   if (version.state === 'drift') return outcome('warn', 'version-drift');
   if (!(await hasGateWiring(repoDir, harness))) return outcome('warn', 'wiring-missing');
   if (!(await hasProbityLauncherBin(repoDir))) return outcome('warn', 'launcher-missing');
-  if (configHash !== undefined && (await probityConfigDrifted(repoDir, configHash)))
-    return outcome('warn', 'config-drift');
   if (
     (await hasAnchoredNestedWorktreeScope(repoDir, config.rel)) &&
     (await hasSupportedNestedWorktree(repoDir))
   )
     return outcome('warn', 'nested-worktree-scope');
+  if (configHash !== undefined && (await probityConfigDrifted(repoDir, configHash)))
+    return outcome('warn', 'config-drift');
   return outcome('pass', 'wired');
 }

@@ -20,7 +20,7 @@ export async function packageVersion(): Promise<string> {
  * implements. Independent of the package version: many releases ship against
  * one contract, and a consumer compares this field's major alone.
  */
-export const RIG_CONTRACT_VERSION = '1.0';
+export const RIG_CONTRACT_VERSION = '1.1';
 
 export type RigHandshake = {
   schemaVersion: 1;
