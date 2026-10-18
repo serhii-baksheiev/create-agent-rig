@@ -26,7 +26,7 @@ blockers.
      not permission to launch reviewers and not a consumed round. The atomic
      admission immediately before fan-out below is still required. See
      `test/template/gate-round-evidence.test.ts` (absent in a generated rig) ›
-     "reserves an unspent slot with an opaque token without regranting it to a shared run".
+     "keeps --check read-only so another run can reserve the final available slot".
    - **2** — the rounds are spent. Return `HOLD` with one blocker whose `rule`
      is *gate rounds exhausted*, quoting the round count in its `note`. Do not
      run the fan-out. Under a delegated run authority this is the loop's
@@ -356,6 +356,9 @@ blockers.
    until the actual work is reconciled; missing evidence cannot prove that
    nobody started. Historical tokenless fan-outs use explicit `--reconcile`
    in their original run, which accounts for recorded work and admits no launch.
+   See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
+   › "refuses to release a reservation once its token-bound fan-out was launched"
+   and › "reconciles every tokenless historic fan-out at one head exactly once without creating a new admission".
 
    With a fresh admission, run the selected reviewers as subagents in parallel
    (see `.claude/rules/workflow.md`, "Review-context isolation").
@@ -413,6 +416,7 @@ blockers.
    catch trace exhaustion and proceed as though the fan-out was recorded.
    See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
    › "refuses a post-launch call without the durable fan-out bound to its reservation"
+   and › "acknowledges a replayed consumed reservation token without recounting its fan-out"
    and `test/template/delegated-rounds.test.ts` (absent in a generated rig)
    › "counts a reserved delegated fan-out after a reviewer verdict makes a new admission ineligible".
 

@@ -1,5 +1,5 @@
 /**
- * How many times a branch has entered the review gate.
+ * Per-branch review budget: retained legacy counts and evidence-bound fan-outs.
  *
  * 🔴 **Its own file, and that is the whole design.** The item that asked for this
  * named `queue.state.json` — the file holding `lastCompletedTier` — as the place to
