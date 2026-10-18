@@ -51,6 +51,7 @@
 //     dispatchGroups: [{
 //       key, run, controller, harness, ticket, agentType,
 //       model, modelSource, effort, effortSource,
+//       cumulativeUsageRepeated?: boolean,
 //       dispatches: { ended: number, noEndObserved: number },
 //       usage: {
 //         claude: null | { evidenceSource, requests, inputTokens, outputTokens,
@@ -207,6 +208,7 @@ interface DispatchGroup {
   modelSource: 'declared' | 'unknown';
   effort: string;
   effortSource: 'declared' | 'unknown';
+  cumulativeUsageRepeated?: boolean;
   dispatches: { ended: number; noEndObserved: number };
   usage: { claude: ClaudeUsage | null; codex: CodexUsage | null };
 }
@@ -2000,6 +2002,7 @@ describe('token-report.mjs usage summing within a dispatch group', () => {
     const group = data.dispatchGroups[0]!;
     expect(group.dispatches).toEqual({ ended: 2, noEndObserved: 0 });
     expect(group.usage.claude?.inputTokens).toBe(1100);
+    expect(group.cumulativeUsageRepeated).toBeUndefined();
   });
 
   it('a counter present on one usage-bearing dispatch and absent on another in the same group is null, never partially summed', async () => {
