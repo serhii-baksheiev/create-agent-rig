@@ -354,6 +354,13 @@ describe('block-no-verify R1 literal prose and Git option boundaries (RP-522)', 
     expect.soft(cleared.code, cleared.stderr).toBe(0);
   });
 
+  it('stops env assignments at the command instead of reading a commit message as one', async () => {
+    const message = await inspect('env git commit -m HUSKY=0');
+    expect.soft(message.code, message.stderr).toBe(0);
+    const prefix = await inspect('env HUSKY=0 git commit -m x');
+    expect.soft(prefix.code, prefix.stderr).toBe(2);
+  });
+
   it('documents and retains the depth-16 literal shell inspection limit', async () => {
     const source = await readFile(hook, 'utf8');
     expect(source).toMatch(/depth 16|depth > 16/i);

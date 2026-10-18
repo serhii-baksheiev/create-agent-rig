@@ -23,6 +23,7 @@
 // "keeps single-quoted export prose out of later substitution state";
 // "does not apply a post-header export before an unquoted heredoc body expands".
 // Ordered env operations: see › "applies env unsets and assignments to Git in their literal order".
+// Prefix boundary: see › "stops env assignments at the command instead of reading a commit message as one".
 import { execFileSync } from 'node:child_process';
 import { accessSync, constants, statSync } from 'node:fs';
 import { resolve } from 'node:path';
@@ -115,8 +116,10 @@ const huskyAssignment = (segment, command) => {
 
 const envHusky = (segment) => {
   if (segment[0]?.value.split('/').pop() !== 'env') return null;
+  const command = commandOf(segment);
+  const end = command.name ? segment.length - command.args.length - 1 : segment.length;
   let value = null;
-  for (let index = 1; index < segment.length; index += 1) {
+  for (let index = 1; index < end; index += 1) {
     if (segment[index].value === '-u' && segment[index + 1]?.value === 'HUSKY') {
       value = false;
       index += 1;
