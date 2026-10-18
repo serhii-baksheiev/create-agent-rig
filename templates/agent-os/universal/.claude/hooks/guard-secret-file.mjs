@@ -106,6 +106,10 @@ const strictlyWithin = (root, candidate) =>
  * not match the credential vocabulary. Resolve a missing target through its
  * deepest existing local ancestor; UNC/device and reparse-point inputs are
  * refused before native resolution.
+ * See test/template/guard-secret-file.test.ts (absent in a generated rig) ›
+ * "refuses nested missing descendants through a credential alias while allowing an ordinary alias",
+ * › "refuses a missing leaf through a junction to an outside credential-directory alias", and
+ * › "rejects reparse, outside, UNC, device, and drive-relative aliases while allowing an absent ordinary Add".
  */
 function canonicalWindowsAlias(filePath, projectDir, directEditCwd) {
   if (process.platform !== 'win32' || projectDir === '') {
