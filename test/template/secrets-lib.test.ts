@@ -264,6 +264,32 @@ describe('a path alone is enough to know it is a credential', () => {
     await expect(isCredentialPath(file)).resolves.toBe(true);
   });
 
+  it('applies Win32 trailing ASCII dot and space normalization to credential basenames and directories', async () => {
+    const credentialSpellings = [
+      'id_rsa.',
+      'id_rsa..',
+      'id_rsa ',
+      'id_rsa  ',
+      'config/secrets./anything.txt',
+      'config/secrets../anything.txt',
+      'config/secrets /anything.txt',
+      'config/secrets  /anything.txt',
+    ];
+    const preservedNonCredentials = [
+      'auth.ts.',
+      'auth.ts  ',
+      '.env.example.',
+      'test/template/secrets-lib.test.ts ',
+      'id_rsa\u00a0',
+      'config/secrets\u00a0/anything.txt',
+    ];
+
+    for (const file of credentialSpellings)
+      await expect(isCredentialPath(file), file).resolves.toBe(true);
+    for (const file of preservedNonCredentials)
+      await expect(isCredentialPath(file), file).resolves.toBe(false);
+  });
+
   it.each([
     'notes.md',
     'README.md',
