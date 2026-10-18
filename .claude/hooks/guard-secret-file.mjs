@@ -103,8 +103,9 @@ const strictlyWithin = (root, candidate) =>
 
 /**
  * A literal 8.3 name can refer to a credential file whose short spelling does
- * not match the credential vocabulary. Resolve only existing local targets:
- * UNC/device and reparse-point inputs are refused before native resolution.
+ * not match the credential vocabulary. Resolve a missing target through its
+ * deepest existing local ancestor; UNC/device and reparse-point inputs are
+ * refused before native resolution.
  */
 function canonicalWindowsAlias(filePath, projectDir, directEditCwd) {
   if (process.platform !== 'win32' || projectDir === '') {
@@ -139,34 +140,47 @@ function canonicalWindowsAlias(filePath, projectDir, directEditCwd) {
   const inspectExistingLocalPath = (value) => {
     const parsed = path.parse(value);
     let cursor = parsed.root;
-    for (const component of path.relative(parsed.root, value).split(path.sep)) {
+    const components = path.relative(parsed.root, value).split(path.sep).filter(Boolean);
+    for (let index = 0; index < components.length; index += 1) {
+      const component = components[index];
       if (component === '') continue;
       cursor = path.join(cursor, component);
       try {
         const entry = lstatSync(cursor);
         if (!entry.isSymbolicLink()) continue;
         readlinkSync(cursor);
-        return 'unsafe';
+        return { kind: 'unsafe' };
       } catch (error) {
-        return error?.code === 'ENOENT' ? 'missing' : 'unsafe';
+        return error?.code === 'ENOENT'
+          ? { kind: 'missing', ancestor: path.dirname(cursor), suffix: components.slice(index) }
+          : { kind: 'unsafe' };
       }
     }
-    return 'existing';
+    return { kind: 'existing' };
   };
 
   const rootState = inspectExistingLocalPath(root);
   const resolutionDirState = inspectExistingLocalPath(resolutionDir);
-  if (rootState === 'missing') return { kind: 'not-applicable' };
-  if (rootState !== 'existing' || resolutionDirState !== 'existing') return { kind: 'unsafe' };
+  if (rootState.kind === 'missing') return { kind: 'not-applicable' };
+  if (rootState.kind !== 'existing' || resolutionDirState.kind !== 'existing') {
+    return { kind: 'unsafe' };
+  }
 
   try {
     const canonicalRoot = realpathSync.native(root);
     const canonicalResolutionDir = realpathSync.native(resolutionDir);
     if (!strictlyWithin(canonicalRoot, canonicalResolutionDir)) return { kind: 'unsafe' };
     const candidateState = inspectExistingLocalPath(candidate);
-    if (candidateState === 'missing') return { kind: 'not-applicable' };
-    if (candidateState !== 'existing') return { kind: 'unsafe' };
-    const canonicalCandidate = realpathSync.native(candidate);
+    let canonicalCandidate;
+    if (candidateState.kind === 'missing') {
+      const canonicalAncestor = realpathSync.native(candidateState.ancestor);
+      if (!strictlyWithin(canonicalRoot, canonicalAncestor)) return { kind: 'unsafe' };
+      canonicalCandidate = path.join(canonicalAncestor, ...candidateState.suffix);
+    } else if (candidateState.kind === 'existing') {
+      canonicalCandidate = realpathSync.native(candidate);
+    } else {
+      return { kind: 'unsafe' };
+    }
     if (!strictlyWithin(canonicalRoot, canonicalCandidate)) return { kind: 'unsafe' };
     return {
       kind: 'resolved',
