@@ -221,7 +221,7 @@ const compactShellValueCount = (value) =>
     ? [...value].filter((flag) => flag === 'o' || flag === 'O').length
     : 0;
 
-const shellScript = (args) => {
+export const shellScript = (args) => {
   let commandFlag = -1;
   for (let index = 0; index < args.length; index += 1) {
     const value = args[index].value;
@@ -626,6 +626,68 @@ export const tokenize = (raw) => {
   }
   endSegment();
   return segments;
+};
+
+/**
+ * Command substitutions the shell evaluates directly in a command string.
+ *
+ * This supplements `tokenize` for a consumer that needs to inspect the command
+ * inside `$()` without changing `guard-bash`'s existing segment traversal.
+ * Single-quoted text and quoted heredoc bodies are literal; double-quoted text
+ * and unquoted heredoc bodies still evaluate substitutions. It intentionally
+ * does not execute or expand the captured text.
+ */
+export const evaluatedSubstitutions = (raw) => {
+  const scripts = [];
+  let quote = null;
+  for (let index = 0; index < raw.length; index += 1) {
+    if (raw[index] === '\\') {
+      index += 1;
+      continue;
+    }
+    if (quote) {
+      if (raw[index] === quote) quote = null;
+      if (quote !== '"' || raw[index] !== '$') continue;
+    }
+    if (raw[index] === "'" || raw[index] === '"') {
+      quote = raw[index];
+      continue;
+    }
+    if (!quote && raw[index] === '<' && raw[index + 1] === '<') {
+      const marker = /^<<(-?)[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2(?=[\s;|&<>()`]|$)/.exec(
+        raw.slice(index, index + 64),
+      );
+      if (marker?.[2]) {
+        const bodyStart = raw.indexOf('\n', index);
+        const terminator = new RegExp(`(?:^|\\n)${marker[1] === '-' ? '\\t*' : ''}${marker[3]}(?=\\n|$)`);
+        const found = bodyStart === -1 ? null : terminator.exec(raw.slice(bodyStart + 1));
+        if (found) index = bodyStart + 1 + found.index + found[0].length - 1;
+      }
+      continue;
+    }
+    if (raw[index] !== '$' || raw[index + 1] !== '(') continue;
+    let nesting = 1;
+    let end = index + 2;
+    let innerQuote = null;
+    for (; end < raw.length && nesting > 0; end += 1) {
+      if (raw[end] === '\\') {
+        end += 1;
+      } else if (innerQuote) {
+        if (raw[end] === innerQuote) innerQuote = null;
+      } else if (raw[end] === "'" || raw[end] === '"') {
+        innerQuote = raw[end];
+      } else if (raw[end] === '(') {
+        nesting += 1;
+      } else if (raw[end] === ')') {
+        nesting -= 1;
+      }
+    }
+    if (nesting === 0) {
+      scripts.push(raw.slice(index + 2, end - 1));
+      index = end - 1;
+    }
+  }
+  return scripts;
 };
 
 /**

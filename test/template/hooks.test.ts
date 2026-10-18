@@ -110,7 +110,7 @@ describe('block-no-verify hook', () => {
   // Round 5: `git commit -nm "msg"` bypassed the gate outright — the one thing
   // this hook exists to stop, in the spelling people actually type.
   it('blocks -n bundled into a combined short-flag cluster', async () => {
-    const bundled = ['-nm "combined"', '-qn -m x', '-amn "x"', '-n -m x'];
+    const bundled = ['-nm "combined"', '-qn -m x', '-anm "x"', '-n -m x'];
     for (const flags of bundled) {
       const command = `git commit ${flags}`;
       expect((await runHook('block-no-verify.mjs', bash(command))).code, command).toBe(2);
