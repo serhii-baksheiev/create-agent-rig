@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { mkdtemp, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -373,6 +373,86 @@ describe('`findings` compares exactly two already-journaled review decisions', (
       expect(result.stderr).toMatch(/not a reviewer decision|reviewer.*vocabulary/i);
       expect(result.stderr).not.toMatch(/TypeError|at reviewedDecision|at isReviewerGate/i);
     }
+  });
+
+  it('compares findings from a project-defined reviewer role already journaled by the fan-out', async () => {
+    const run = await newRun();
+    const original = finding({ id: 'stack-finding', note: 'The stack review found this.' });
+    const before = await run.decide({
+      gate: 'stack-infrastructure-reviewer',
+      verdict: 'HOLD',
+      blockers: [original],
+      headSha: HEAD_A,
+    });
+    const after = await run.decide({
+      gate: 'stack-infrastructure-reviewer',
+      verdict: 'SHIP',
+      blockers: [],
+      headSha: HEAD_B,
+    });
+
+    const result = await runCli(['findings', String(before.seq), String(after.seq)], run.runDir);
+    expect(result.code, result.out).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      before: { gate: 'stack-infrastructure-reviewer' },
+      after: { gate: 'stack-infrastructure-reviewer' },
+      resolved: [original],
+      unresolved: [],
+      new: [],
+    });
+  });
+
+  it('reports a concise findings-output failure when a stdout consumer closes early', async () => {
+    const run = await newRun();
+    const blockers = Array.from({ length: 1000 }, (_, index) =>
+      finding({ id: `closed-pipe-${index}`, rule: `rule ${index}`, note: 'x'.repeat(2048) }),
+    );
+    const before = await run.decide({
+      gate: 'code-reviewer',
+      verdict: 'HOLD',
+      blockers,
+      headSha: HEAD_A,
+    });
+    const after = await run.decide({
+      gate: 'code-reviewer',
+      verdict: 'SHIP',
+      blockers: [],
+      headSha: HEAD_B,
+    });
+
+    const result = await new Promise<CliResult>((resolve, reject) => {
+      const env = { ...process.env, RIG_RUN_DIR: run.runDir };
+      const child = spawn(
+        process.execPath,
+        [cliPath, 'findings', String(before.seq), String(after.seq)],
+        {
+          cwd: repoRoot,
+          env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        },
+      );
+      let stdout = '';
+      let stderr = '';
+      let closedConsumer = false;
+      child.stdout.on('data', (chunk: Buffer) => {
+        stdout += String(chunk);
+        if (!closedConsumer) {
+          closedConsumer = true;
+          child.stdout.destroy();
+        }
+      });
+      child.stderr.on('data', (chunk: Buffer) => {
+        stderr += String(chunk);
+      });
+      child.once('error', reject);
+      child.once('close', (code) => {
+        resolve({ code: code ?? 1, stdout, stderr, out: stdout + stderr });
+      });
+    });
+
+    expect(result.code, result.out).not.toBe(0);
+    expect(result.stderr).toMatch(/findings[- ]output|could not write findings/i);
+    expect(result.stderr).not.toMatch(/TypeError|node:internal|file:\/\/.*create-agent-rig/i);
   });
 
   it('writes the complete findings JSON before reporting success for a large resolved set', async () => {

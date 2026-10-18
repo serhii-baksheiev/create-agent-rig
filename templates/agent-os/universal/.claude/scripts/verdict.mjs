@@ -97,10 +97,26 @@ const refuse = (message) => {
 
 const writeStandardOutput = (text) =>
   new Promise((resolve, reject) => {
-    process.stdout.write(text, (error) => {
-      if (error) reject(error);
-      else resolve();
-    });
+    let settled = false;
+    const finish = (error) => {
+      if (settled) return;
+      settled = true;
+      if (error) {
+        // Node can invoke the write callback with EPIPE and then emit the same
+        // error. Keep the listener through the failure path to consume it.
+        reject(error);
+      } else {
+        process.stdout.removeListener('error', onError);
+        resolve();
+      }
+    };
+    const onError = (error) => finish(error);
+    process.stdout.once('error', onError);
+    try {
+      process.stdout.write(text, finish);
+    } catch (error) {
+      finish(error);
+    }
   });
 
 const readReport = (source) => {
@@ -123,15 +139,16 @@ const [subcommand, source, expectedGate] = args;
 const isPlainObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const isText = (value) => typeof value === 'string' && value.trim() !== '';
 
-// The reviewing roles derive from the shared gate vocabulary. pr-ship makes a
-// SHIP/HOLD decision too, but it consumes reviewer verdicts rather than being
-// a reviewer whose findings can be compared.
+// Known gates derive their roles from the shared vocabulary. Unknown names are
+// project-defined reviewers, which parseVerdict already supports; inherited
+// object property names are neither kind of gate.
 const isReviewerGate = (gate) => {
-  if (typeof gate !== 'string' || gate === 'pr-ship' || !Object.hasOwn(GATE_VOCABULARY, gate)) {
-    return false;
+  if (typeof gate !== 'string' || Object.hasOwn(Object.prototype, gate)) return false;
+  if (!Object.hasOwn(GATE_VOCABULARY, gate)) {
+    return true;
   }
   const words = GATE_VOCABULARY[gate];
-  return words.includes('SHIP') && words.includes('HOLD');
+  return gate !== 'pr-ship' && words.includes('SHIP') && words.includes('HOLD');
 };
 
 const sequence = (value, position) => {
@@ -405,7 +422,11 @@ if (subcommand === 'findings') {
   if (args.length !== 3) {
     refuse(`verdict: \`findings\` needs exactly a before and an after sequence.\n${USAGE}`);
   }
-  await findings(source, expectedGate);
+  try {
+    await findings(source, expectedGate);
+  } catch {
+    refuse('verdict: findings output could not be written; no successful result was reported.\n');
+  }
   process.exit(0);
 }
 
