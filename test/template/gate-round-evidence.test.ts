@@ -304,6 +304,38 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     expect(await counterAt(value.configPath, value.branch)).toBe(1);
   });
 
+  it('accounts for a later fan-out under a completed reservation token before refusing reuse', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-completed-late-fanout-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['security-scanner'],
+      why: `gate-round reservation: ${token}`,
+    });
+    const late = await run([...args, '--reservation', token], env);
+
+    expect(late.code).toBe(1);
+    expect(late.stderr).toMatch(/fan-out|evidence|reservation|reuse/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+    const replay = await run([...args, '--reservation', token], env);
+    expect(replay.code).toBe(1);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
   it('acknowledges concurrent consumption of one reservation token without recounting its fan-out', async () => {
     const value = await newFixture();
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-reservation-concurrent-replay-'));

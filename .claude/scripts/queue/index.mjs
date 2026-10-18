@@ -637,14 +637,10 @@ if (invokedDirectly()) {
           if (completed.runDir !== runDir) {
             throw new Error('the completed gate-round reservation does not belong to this declared run.');
           }
-          if (completed.fanOuts > 1) {
-            throw new Error('the reservation covered multiple reviewer fan-outs; no further use is permitted.');
-          }
-          process.stdout.write(`gate round reservation ${args.reservation} was already consumed as round ${spent}.\n`);
-          process.exit(0);
         }
-        const evidence = fanOutsForReservation(reservation);
-        if (reservation === null || evidence.length === 0) {
+        const binding = reservation ?? completed;
+        const evidence = fanOutsForReservation(binding);
+        if (binding === null || evidence.length === 0) {
           throw new Error('the reservation has no matching post-reservation reviewer fan-out evidence.');
         }
         const consumed = consumeReservedEvidenceGateRound({
@@ -653,10 +649,15 @@ if (invokedDirectly()) {
           token: args.reservation,
           evidenceIdentities: evidence.map((decision) => JSON.stringify([runDir, decision.seq])),
         });
-        if (evidence.length > 1) {
+        const fanOuts = consumed.completed?.fanOuts ?? evidence.length;
+        if (fanOuts > 1) {
           throw new Error(
             'the reservation covered one launch but has multiple matching reviewer fan-outs; reconcile the extra evidence before continuing.',
           );
+        }
+        if (consumed.completed !== null) {
+          process.stdout.write(`gate round reservation ${args.reservation} was already consumed as round ${consumed.rounds}.\n`);
+          process.exit(0);
         }
         const max =
           reservation.ticket !== null && reservation.authorizationHead !== null

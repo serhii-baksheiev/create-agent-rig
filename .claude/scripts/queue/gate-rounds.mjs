@@ -459,11 +459,32 @@ export const consumeReservedEvidenceGateRound = ({
   const key = requireBranch(branch);
   const file = roundsPath ?? gateRoundsPathFor(projectRoot);
   return withCounterLock(file, () => {
-    const { rounds, reservations, completedReservations } = readRoundState(file);
+    const { rounds, receipts, reservations, completedReservations } = readRoundState(file);
     const reservation = reservations.find((existing) => existing.branch === key && existing.token === token);
     if (!reservation) {
       const completed = completedReservations.find((existing) => existing.branch === key && existing.token === token);
-      if (completed) return { rounds: rounds[key] ?? 0, completed };
+      if (completed) {
+        const seen = receipts[key] ?? [];
+        const unrecorded = evidenceIdentities.filter((identity) => !seen.includes(identity));
+        if (unrecorded.length === 0) return { rounds: rounds[key] ?? 0, completed, recorded: 0 };
+        const next = (rounds[key] ?? 0) + unrecorded.length;
+        rounds[key] = next;
+        for (const identity of unrecorded) rounds[receiptKeyFor(key, identity)] = 1;
+        delete rounds[completed.key];
+        const updated = { ...completed, fanOuts: completed.fanOuts + unrecorded.length };
+        rounds[completedReservationKeyFor([
+          updated.branch,
+          updated.head,
+          updated.runDir,
+          updated.seqFloor,
+          updated.token,
+          updated.ticket,
+          updated.authorizationHead,
+          updated.fanOuts,
+        ])] = 1;
+        writeRoundState(file, rounds);
+        return { rounds: next, completed: updated, recorded: unrecorded.length };
+      }
       throw new Error('the gate-round reservation is no longer active.');
     }
     const next = (rounds[key] ?? 0) + evidenceIdentities.length;
