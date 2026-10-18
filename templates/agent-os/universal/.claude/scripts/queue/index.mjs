@@ -215,7 +215,7 @@ const parseArgs = (argv) => {
   const args = {
     command: argv[0] ?? 'next', json: false, config: null, branch: null, name: null,
     source: null, target: null, tasksPath: null, dryRun: false, unknownOptions: [],
-    ticket: null, authorized: false,
+    ticket: null, authorized: false, check: false,
   };
   for (let i = 1; i < argv.length; i += 1) {
     if (argv[i] === '--json') args.json = true;
@@ -223,6 +223,7 @@ const parseArgs = (argv) => {
     else if (argv[i] === '--branch') args.branch = argv[++i];
     else if (argv[i] === '--ticket') args.ticket = argv[++i];
     else if (argv[i] === '--authorized') args.authorized = true;
+    else if (argv[i] === '--check') args.check = true;
     else if (argv[i] === '--to') args.target = argv[++i];
     else if (argv[i] === '--tasks') args.tasksPath = argv[++i];
     else if (argv[i] === '--dry-run') args.dryRun = true;
@@ -402,7 +403,8 @@ if (invokedDirectly()) {
       // exact lesson about `resolveAdapter` fifty lines below; the reason it
       // repeated is that the lesson was written as prose and not as a test.
       const { gateRoundVerdict } = await import('./core.mjs');
-      const { recordGateRound, gateRoundsPathFor } = await import('./gate-rounds.mjs');
+      const { recordEvidenceGateRound, gateRoundEvidenceRecorded, gateRoundsPathFor } =
+        await import('./gate-rounds.mjs');
 
       const configPath = args.config ?? join(projectRoot, '.claude', 'queue.json');
       const config = loadConfig(configPath);
@@ -431,12 +433,65 @@ if (invokedDirectly()) {
       const shippable = checkoutIsShippable(gitRoot);
       if (!shippable.ok) throw new Error(`${shippable.why} (nothing was counted)`);
 
+      const head = execFileSync('git', ['rev-parse', 'HEAD'], {
+        cwd: gitRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: withoutGitLocation(),
+      }).trim();
+      let evidenceIdentities = [];
+      if (process.env.RIG_RUN_DIR) {
+        const runDir = realpathSync(process.env.RIG_RUN_DIR);
+        const { readRun } = await import('../run-journal.mjs');
+        const { decisions } = readRun({ runDir });
+        evidenceIdentities = decisions
+          .filter(
+            (decision) =>
+              decision.gate === 'reviewer-fan-out' &&
+              decision.verdict === 'launched' &&
+              decision.headSha === head &&
+              Array.isArray(decision.reviewers) &&
+              decision.reviewers.length > 0 &&
+              decision.reviewers.every((reviewer) => typeof reviewer === 'string' && reviewer.trim() !== ''),
+          )
+          .map((decision) => JSON.stringify([runDir, decision.seq]));
+      }
+
       // RP-442: past the base cap, `--authorized` buys exactly one round, and
       // only for a durable extra-gate-round authorization bound to this ticket,
       // branch and head that no reviewer has answered yet. Refused without
       // counting, like an exhausted cap.
       const { gateRoundsFor } = await import('./gate-rounds.mjs');
       const spent = gateRoundsFor({ branch: args.branch, roundsPath });
+      const pendingEvidence = evidenceIdentities.filter(
+        (identity) =>
+          !gateRoundEvidenceRecorded({ branch: args.branch, roundsPath, evidenceIdentity: identity }),
+      );
+      if (spent < verdictFor(0).max && pendingEvidence.length > 1) {
+        throw new Error(
+          `the run has ${pendingEvidence.length} uncounted reviewer fan-outs for this head; ` +
+            'refusing to choose one and leave another uncounted.',
+        );
+      }
+      const evidenceIdentity = pendingEvidence[0] ?? null;
+      if (args.check && spent < verdictFor(0).max) {
+        process.stdout.write(
+          `gate round precheck on ${args.branch}: ${spent} of ${verdictFor(0).max} spent.\n`,
+        );
+        process.exit(0);
+      }
+      if (!args.check && evidenceIdentities.length > 0 && evidenceIdentity === null) {
+        process.stdout.write(
+          `gate round evidence on ${args.branch} was already counted; ${spent} of ${verdictFor(0).max} spent.\n`,
+        );
+        process.exit(0);
+      }
+      if (evidenceIdentity === null && spent < verdictFor(0).max) {
+        process.stdout.write(
+          `gate round precheck on ${args.branch}: ${spent} of ${verdictFor(0).max} spent; no reviewer fan-out was recorded.\n`,
+        );
+        process.exit(0);
+      }
       if (args.authorized) {
         if (spent >= verdictFor(0).max) {
           const { authorizedRoundFor, delegatedRoundBudget } = await import(
@@ -462,9 +517,28 @@ if (invokedDirectly()) {
             );
             process.exit(2);
           }
-          const { rounds } = recordGateRound({ branch: args.branch, roundsPath });
+          if (args.check || evidenceIdentity === null) {
+            process.stdout.write(
+              `gate round precheck on ${args.branch}: ${spent} of ${total} spent; no reviewer fan-out was recorded.\n`,
+            );
+            process.exit(0);
+          }
+          const recorded = recordEvidenceGateRound({
+            branch: args.branch,
+            roundsPath,
+            evidenceIdentity,
+            max: total,
+          });
+          if (recorded.exhausted) {
+            process.stderr.write(
+              `DELEGATED ROUND REFUSED — ${args.branch} has spent ${recorded.spent} gate rounds, ` +
+                `the cap of ${total} (maxGateRounds plus maxDelegatedRounds). Nothing was counted; ` +
+                'the stop belongs to the owner.\n',
+            );
+            process.exit(2);
+          }
           process.stdout.write(
-            `delegated gate round on ${args.branch}: round ${rounds}, authorized for ` +
+            `delegated gate round on ${args.branch}: round ${recorded.rounds}, authorized for ` +
               `${args.ticket} at ${authorization.head}.\n`,
           );
           process.exit(0);
@@ -474,7 +548,14 @@ if (invokedDirectly()) {
       const { rounds } =
         spent >= verdictFor(0).max
           ? { rounds: spent + 1 }
-          : recordGateRound({ branch: args.branch, roundsPath });
+          : evidenceIdentity === null
+            ? { rounds: spent }
+            : recordEvidenceGateRound({
+                branch: args.branch,
+                roundsPath,
+                evidenceIdentity,
+                max: verdictFor(0).max,
+              });
       const verdict = verdictFor(rounds);
 
       if (!verdict.exceeded) {

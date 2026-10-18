@@ -21,6 +21,28 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const { withoutGitLocation } = (await import(
   pathToFileURL(path.join(repoRoot, '.claude/scripts/git-env.mjs')).href
 )) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
+const { recordDecision } = (await import(
+  pathToFileURL(
+    path.join(
+      repoRoot,
+      'templates',
+      'agent-os',
+      'universal',
+      '.claude',
+      'scripts',
+      'run-journal.mjs',
+    ),
+  ).href
+)) as {
+  recordDecision: (input: {
+    runDir: string;
+    gate: string;
+    verdict: string;
+    headSha: string;
+    reviewers: string[];
+    now: string;
+  }) => unknown;
+};
 const queueDir = path.join(
   repoRoot,
   'templates',
@@ -169,6 +191,7 @@ describe('the verdict on a round count is pure, so the rule is one implementatio
 });
 
 describe('the CLI is what pr-ship calls, so the two failures have different exit codes', () => {
+  let fanOutSequence = 0;
   // 🔴 Every case passes `--config`. `projectRoot` comes from the SCRIPT's location,
   // not the cwd, so an earlier version of these tests that set `cwd` to a temp
   // directory silently counted rounds into this repository's own state — visible
@@ -176,6 +199,7 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   const run = (
     args: string[],
     stages?: Stages,
+    env: NodeJS.ProcessEnv = process.env,
   ): Promise<{ code: number; stdout: string; stderr: string }> => {
     let onExit!: () => void;
     const exited = new Promise<void>((resolve) => {
@@ -185,7 +209,7 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
       const child = execFile(
         process.execPath,
         [path.join(queueDir, 'index.mjs'), ...args],
-        {},
+        { env },
         (e, out, err) => {
           resolve({
             code: e && typeof e.code === 'number' ? e.code : 0,
@@ -308,6 +332,29 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
 
   const countsFile = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');
 
+  /** Record the non-empty, exact-head fan-out a CLI call is about. */
+  const runRecordedGateRound = async (
+    args: string[],
+    cfg: string,
+    stages?: Stages,
+  ): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const root = path.join(path.dirname(cfg), '..');
+    const runDir = await mkdtemp(path.join(tmpdir(), `gate-round-evidence-${fanOutSequence++}-`));
+    try {
+      recordDecision({
+        runDir,
+        gate: 'reviewer-fan-out',
+        verdict: 'launched',
+        headSha: gitIn(root, ['rev-parse', 'HEAD']),
+        reviewers: ['code-reviewer'],
+        now: '2026-10-18T00:00:00.000Z',
+      });
+      return await run(args, stages, { ...process.env, RIG_RUN_DIR: runDir });
+    } finally {
+      await removeFixture(runDir);
+    }
+  };
+
   // AR-141: a round names a head; a head that is not committed and pushed is
   // not one the reviewers or CI will ever see.
   describe('refuses to count on a checkout that cannot ship', () => {
@@ -356,7 +403,11 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
         await stages.run('pushed-branch-push', async () => {
           gitIn(dir, ['push', '-q', '-u', 'origin', 'fix/a']);
         });
-        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg], stages);
+        const result = await runRecordedGateRound(
+          ['gate-round', '--branch', 'fix/a', '--config', cfg],
+          cfg,
+          stages,
+        );
         expect(result.code, result.stderr).toBe(0);
         expect(result.stdout).toMatch(/round 1 of 3/);
       } finally {
@@ -379,7 +430,10 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
         const dir = path.join(path.dirname(cfg), '..');
         await mkdir(path.join(dir, 'journal'), { recursive: true });
         await writeFile(path.join(dir, 'journal', '2026-10.md'), '## stop entry\n');
-        const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+        const result = await runRecordedGateRound(
+          ['gate-round', '--branch', 'fix/a', '--config', cfg],
+          cfg,
+        );
         expect(result.code, result.stderr).toBe(0);
         expect(result.stdout).toMatch(/round 1 of 3/);
       });
@@ -523,17 +577,26 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
 
   it('counts a round and exits 0 while inside the cap', async () => {
     const cfg = await config();
-    const first = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    const first = await runRecordedGateRound(
+      ['gate-round', '--branch', 'fix/a', '--config', cfg],
+      cfg,
+    );
     expect(first.code, first.stderr).toBe(0);
     expect(first.stdout).toMatch(/round 1 of 3/);
     expect(first.stdout).not.toMatch(/last round this branch gets/);
 
-    const second = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    const second = await runRecordedGateRound(
+      ['gate-round', '--branch', 'fix/a', '--config', cfg],
+      cfg,
+    );
     expect(second.code, second.stderr).toBe(0);
     expect(second.stdout).toMatch(/round 2 of 3/);
     expect(second.stdout).not.toMatch(/last round this branch gets/);
 
-    const third = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    const third = await runRecordedGateRound(
+      ['gate-round', '--branch', 'fix/a', '--config', cfg],
+      cfg,
+    );
     expect(third.code, third.stderr).toBe(0);
     expect(third.stdout).toMatch(/round 3 of 3/);
     expect(third.stdout).toMatch(/last round this branch gets/);
@@ -544,9 +607,9 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   // which is what the first version of this skill's prose told the reader to do.
   it('exits 2 — and only 2 — when the rounds are spent', async () => {
     const cfg = await config();
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
 
     const fourth = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     expect(fourth.code).toBe(2);
@@ -560,9 +623,9 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   // are not converging" argued against the round that paid, having measured nothing.
   it('states the round count and the cap, and passes no judgement on convergence', async () => {
     const cfg = await config();
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
 
     const fourth = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
     expect(fourth.code).toBe(2);
@@ -580,17 +643,18 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   // exactly where the cap left it, however many times it is repeated.
   it('a fourth plain call exits 2 and never moves the counter, however many times it is repeated', async () => {
     const cfg = await config();
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
-    expect(JSON.parse(await readFile(countsFile(cfg), 'utf8'))).toEqual({ 'fix/a': 3 });
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
+    const exhaustedSnapshot = JSON.parse(await readFile(countsFile(cfg), 'utf8'));
+    expect(exhaustedSnapshot['fix/a']).toBe(3);
 
     for (let attempt = 0; attempt < 3; attempt += 1) {
       const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
       expect(result.code, `attempt ${attempt}`).toBe(2);
-      expect(JSON.parse(await readFile(countsFile(cfg), 'utf8')), `attempt ${attempt}`).toEqual({
-        'fix/a': 3,
-      });
+      expect(JSON.parse(await readFile(countsFile(cfg), 'utf8')), `attempt ${attempt}`).toEqual(
+        exhaustedSnapshot,
+      );
     }
   });
 
@@ -648,7 +712,10 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
 
   it('takes maxGateRounds from the queue config', async () => {
     const cfg = await config({ adapter: 'plan-md', options: { maxGateRounds: 1 } });
-    const first = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    const first = await runRecordedGateRound(
+      ['gate-round', '--branch', 'fix/a', '--config', cfg],
+      cfg,
+    );
     expect(first.code, first.stderr).toBe(0);
     expect(first.stdout).toMatch(/round 1 of 1/);
     expect((await run(['gate-round', '--branch', 'fix/a', '--config', cfg])).code).toBe(2);
@@ -663,7 +730,7 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     const statePath = cfg.replace(/queue\.json$/, 'queue.state.json');
     await writeFile(statePath, JSON.stringify({ lastCompletedTier: 'elevated-mechanism' }));
 
-    await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    await runRecordedGateRound(['gate-round', '--branch', 'fix/a', '--config', cfg], cfg);
 
     expect(JSON.parse(await readFile(statePath, 'utf8'))).toEqual({
       lastCompletedTier: 'elevated-mechanism',
@@ -675,7 +742,10 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     // one must not care: a tracker outage that stopped the counter would hand the run
     // unlimited rounds.
     const cfg = await config({ adapter: 'jira', options: { project: 'NOPE' } });
-    const result = await run(['gate-round', '--branch', 'fix/a', '--config', cfg]);
+    const result = await runRecordedGateRound(
+      ['gate-round', '--branch', 'fix/a', '--config', cfg],
+      cfg,
+    );
     expect(result.code, result.stderr).toBe(0);
     expect(result.stdout).toMatch(/round 1 of 3/);
   });

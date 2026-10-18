@@ -16,18 +16,16 @@
  * goes back to owning its file outright — so a lost round is now the worst this
  * mechanism can do, where before it could lose the tier.
  *
- * ⚠ **What that does NOT fix, measured rather than reasoned:** `recordGateRound` is
- * read-modify-write with no lock. Eight concurrent calls on one counter recorded
- * **four** rounds — the file is shared across every worktree of a repo by design
- * (`gateRoundsPathFor`), so this is reachable whenever two loops run in one
- * repository at once, not only in one directory. Each lost increment buys one extra
- * allowed round. A lock is not worth it for that: the loop is sequential per task,
- * and the failure is bounded and in the generous direction. What was worth fixing is
- * the crash it came with — a fixed temp filename made the losers of that race fail
- * with `ENOENT` on rename, reporting "could not run" for a condition nothing named.
- * Pinned by the generator's `test/template/concurrent-sessions.test.ts`
- * (absent in a generated rig) › "eight concurrent recordGateRound calls all exit 0
- * and leave one parseable counter between one and eight".
+ * Evidence-backed writes take a short exclusive counter lock. That makes the receipt
+ * and increment one operation: two processes cannot both consume the final slot or
+ * the same fan-out. Pinned by the generator's
+ * `test/template/gate-round-evidence.test.ts` (absent in a generated rig) ›
+ * "lets only one concurrent distinct fan-out spend the final base-cap slot" and ›
+ * "records concurrent attempts to consume the same fan-out exactly once".
+ * `recordGateRound` remains deliberately unlocked for direct legacy callers, so
+ * mixed legacy writers retain the pre-existing lost-increment race, pinned by
+ * `test/template/concurrent-sessions.test.ts` (absent in a generated rig) ›
+ * "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight".
  *
  * ⚠ **And a second crash, Windows-only, measured on the same race (RP-120):** a
  * rename over a file another process holds open is refused there with `EPERM`, for
@@ -44,7 +42,7 @@
  * and › "gives up past its budget, removes its temp file, keeps the old count, and names the code and the file".
  */
 
-import { renameSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, openSync, renameSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { mainCheckoutRoot } from './checkout.mjs';
@@ -67,12 +65,34 @@ export const gateRoundsPathFor = (projectRoot) =>
  * hands the branch a full cap again, and it does so at the exact moment something is
  * already wrong with the file.
  */
-const readRounds = (file) => {
+// Git ref names cannot contain NUL, so numeric receipt entries under this prefix
+// cannot collide with a CLI branch and survive older numeric-only writers.
+const RECEIPTS_KEY = '\u0000rig:gate-round-evidence';
+const RECEIPT_PREFIX = `${RECEIPTS_KEY}:`;
+
+const receiptKeyFor = (branch, identity) => `${RECEIPT_PREFIX}${JSON.stringify([branch, identity])}`;
+
+const receiptFromKey = (key) => {
+  if (!key.startsWith(RECEIPT_PREFIX)) return null;
+  try {
+    const parsed = JSON.parse(key.slice(RECEIPT_PREFIX.length));
+    return Array.isArray(parsed) && parsed.length === 2 && typeof parsed[0] === 'string' &&
+      typeof parsed[1] === 'string'
+      ? parsed
+      : null;
+  } catch {
+    return null;
+  }
+};
+
+const readRoundState = (file) => {
   let raw;
   try {
     raw = readFileSync(file, 'utf8');
   } catch (error) {
-    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return Object.create(null);
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') {
+      return { rounds: Object.create(null), receipts: Object.create(null) };
+    }
     throw new Error(
       `${file} exists but could not be read (${error?.code ?? 'unknown error'}), so the ` +
         'gate rounds for this branch are unknown. Refusing rather than starting the ' +
@@ -109,11 +129,33 @@ const readRounds = (file) => {
   // the cap answers `false`, i.e. unlimited rounds. Absurd branch name, real class of
   // defect, and the failure was silent.
   const clean = Object.create(null);
+  const receipts = Object.create(null);
   for (const [branch, count] of Object.entries(parsed)) {
-    if (Number.isInteger(count) && count > 0) clean[branch] = count;
+    if (branch.startsWith(RECEIPT_PREFIX)) {
+      const receipt = receiptFromKey(branch);
+      if (receipt === null || count !== 1) {
+        throw new Error(
+          `${file} has invalid gate-round evidence receipts, so duplicate evidence cannot be detected.`,
+        );
+      }
+      clean[branch] = count;
+      const [receiptBranch, identity] = receipt;
+      receipts[receiptBranch] = [...(receipts[receiptBranch] ?? []), identity];
+      continue;
+    }
+    if (!Number.isInteger(count) || count <= 0) continue;
+    clean[branch] = count;
   }
-  return clean;
+  const stored = parsed[RECEIPTS_KEY];
+  if (stored !== undefined) {
+    throw new Error(
+      `${file} has unsupported gate-round evidence receipts, so duplicate evidence cannot be detected.`,
+    );
+  }
+  return { rounds: clean, receipts };
 };
+
+const readRounds = (file) => readRoundState(file).rounds;
 
 /**
  * The branch a count belongs to.
@@ -145,6 +187,45 @@ const requireBranch = (branch) => {
 export const gateRoundsFor = ({ branch, projectRoot, roundsPath } = {}) =>
   readRounds(roundsPath ?? gateRoundsPathFor(projectRoot))[requireBranch(branch)] ?? 0;
 
+/** Whether this branch already consumed one durable reviewer-fan-out record. */
+export const gateRoundEvidenceRecorded = ({ branch, projectRoot, roundsPath, evidenceIdentity } = {}) => {
+  if (typeof evidenceIdentity !== 'string' || evidenceIdentity === '') return false;
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  return (readRoundState(file).receipts[requireBranch(branch)] ?? []).includes(evidenceIdentity);
+};
+
+const writeRoundState = (file, rounds) => {
+  const updated = Object.assign(Object.create(null), rounds);
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(updated, null, 2)}\n`);
+  replaceWithRetry(temp, file);
+};
+
+const COUNTER_LOCK_ATTEMPTS = 200;
+const COUNTER_LOCK_BACKOFF_MS = 10;
+
+const withCounterLock = (file, work) => {
+  const lock = `${file}.lock`;
+  let held = false;
+  for (let attempt = 1; attempt <= COUNTER_LOCK_ATTEMPTS; attempt += 1) {
+    try {
+      const fd = openSync(lock, 'wx');
+      closeSync(fd);
+      held = true;
+      break;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+      if (attempt < COUNTER_LOCK_ATTEMPTS) pause(COUNTER_LOCK_BACKOFF_MS);
+    }
+  }
+  if (!held) throw new Error(`${lock} remained held while recording a gate round; nothing was counted.`);
+  try {
+    return work();
+  } finally {
+    rmSync(lock, { force: true });
+  }
+};
+
 /**
  * Count one round for this branch and return the new total.
  *
@@ -162,18 +243,41 @@ export const gateRoundsFor = ({ branch, projectRoot, roundsPath } = {}) =>
 export const recordGateRound = ({ branch, projectRoot, roundsPath } = {}) => {
   const key = requireBranch(branch);
   const file = roundsPath ?? gateRoundsPathFor(projectRoot);
-  const rounds = readRounds(file);
+  const { rounds } = readRoundState(file);
   const next = (rounds[key] ?? 0) + 1;
-
-  // Spread into a null-prototype object for the same reason `readRounds` builds one:
-  // `{ ...rounds }` would give the result a prototype again, and `JSON.stringify`
-  // then writes a `__proto__` key that the next read cannot see as its own.
-  const updated = Object.assign(Object.create(null), rounds, { [key]: next });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(updated, null, 2)}\n`);
-  replaceWithRetry(temp, file);
+  rounds[key] = next;
+  writeRoundState(file, rounds);
 
   return { rounds: next };
+};
+
+/** Count one durable reviewer-fan-out decision at most once. */
+export const recordEvidenceGateRound = ({
+  branch,
+  projectRoot,
+  roundsPath,
+  evidenceIdentity,
+  max,
+} = {}) => {
+  const key = requireBranch(branch);
+  const file = roundsPath ?? gateRoundsPathFor(projectRoot);
+  if (typeof evidenceIdentity !== 'string' || evidenceIdentity === '') {
+    throw new Error('a gate-round evidence identity is required before a round can be counted.');
+  }
+  return withCounterLock(file, () => {
+    const { rounds, receipts } = readRoundState(file);
+    const spent = rounds[key] ?? 0;
+    const seen = receipts[key] ?? [];
+    if (seen.includes(evidenceIdentity)) return { rounds: spent, recorded: false };
+    if (Number.isInteger(max) && spent >= max) {
+      return { rounds: spent + 1, spent, recorded: false, exhausted: true };
+    }
+    const next = spent + 1;
+    rounds[key] = next;
+    rounds[receiptKeyFor(key, evidenceIdentity)] = 1;
+    writeRoundState(file, rounds);
+    return { rounds: next, recorded: true };
+  });
 };
 
 // How many times the rename is tried, and how long each retry waits.

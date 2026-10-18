@@ -11,24 +11,30 @@ blockers.
 
 ## Steps
 
-0. **Count this round before you spend on it.** Run it on the branch **under
+0. **Precheck the budget before you spend on it.** Run it on the branch **under
    review** — if the PR is not checked out, do that first (step 2's warning covers
    why); on a detached checkout the command refuses rather than counting under
    `HEAD`:
 
    ```sh
-   node .claude/scripts/queue/index.mjs gate-round --branch "$(git rev-parse --abbrev-ref HEAD)"
+   node .claude/scripts/queue/index.mjs gate-round --check --branch "$(git rev-parse --abbrev-ref HEAD)"
    ```
 
    **Read the exit code, not just its sign.**
 
-   - **0** — proceed to step 1.
+   - **0** — proceed to step 1. This `--check` precheck does not consume a round: only a
+     later call that reads this run's recorded, non-empty `reviewer-fan-out` for
+     the exact current head can do so. See
+     `test/template/gate-round-evidence.test.ts` (absent in a generated rig) ›
+     "lets --check pass below the cap without consuming a valid pending fan-out", ›
+     "does not consume a round when the declared run has no reviewer fan-out record"
+     and › "consumes one recorded non-empty fan-out once when a resumed invocation sees the same evidence again".
    - **2** — the rounds are spent. Return `HOLD` with one blocker whose `rule`
      is *gate rounds exhausted*, quoting the round count in its `note`. Do not
      run the fan-out. Under a delegated run authority this is the loop's
      `gate-round-cap` stop: when it records an `extra-gate-round` authorization
      (loop §6.0), commit `.rig/decisions/<item-id>.jsonl` alone, push, and run
-     step 0 again with `--ticket <item-id> --authorized`, passing the run's
+     step 0 again with `--check --ticket <item-id> --authorized`, passing the run's
      own directory on that same command line
      (`RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/queue/index.mjs gate-round …`):
      the round is refused unless the calling run's journalled authority is
@@ -55,6 +61,13 @@ blockers.
    `queue.json` is composed means changing what composes it, not editing the file.
    Rounds are counted per branch in `.claude/gate-rounds.json`, so the count outlives
    the session that spent them.
+
+   **Before launching a non-empty fan-out, declare a fresh writable
+   `RIG_RUN_DIR` as loop §1 does.** This also applies to an attended invocation:
+   its exit-0 precheck with no run directory proves only that it spent nothing; it
+   does not authorize an unrecorded review launch. See
+   `test/template/gate-round-evidence.test.ts` (absent in a generated rig) ›
+   "does not consume a round when no run directory is declared" for that no-run behavior.
 
    ⚠ **Nothing forces this call.** No hook launches the gate, so step 0 holds
    because it is written here — the same standing as every other step. What it
@@ -360,6 +373,20 @@ blockers.
    quoted string arrives as one reviewer whose name is both of theirs joined by
    a space, and `recordDecision` accepts it: it checks for a list of strings and
    nothing about what a name is.
+
+   **After recording a non-empty fan-out, run the gate-round command again without
+   `--check`.** On a base-budget round it needs only `--branch`; on a delegated
+   round it also needs the same `--ticket <item-id> --authorized` arguments that
+   admitted its precheck. That
+   call consumes this recorded evidence once; a replay of the same run evidence
+   does not consume another round, while a later fan-out for the same head does.
+   An empty set launched no reviewer and therefore spends no round. See
+   `test/template/gate-round-evidence.test.ts` (absent in a generated rig) ›
+   "consumes a separately recorded later fan-out for the same head as another round"
+   and › "does not consume a round for an empty fan-out that launched no reviewer".
+   The delegated precheck is also non-consuming; see
+   `test/template/delegated-rounds.test.ts` (absent in a generated rig) ›
+   "lets --check --authorized pass at the base cap without consuming the delegated round".
 
    **Launched is not answered, and the difference is the point.** The records
    below are written per verdict that *parsed* — so a reviewer whose report came
