@@ -1618,6 +1618,9 @@ export const tokenReportOf = ({ runs, since, wiring }) => {
             } else {
               raws.cumulativeChildRefs.add(start.data.agentRef);
             }
+            if (repeatedChildRefs[harness].has(start.data?.agentRef)) {
+              group.cumulativeUsageRepeated = true;
+            }
           }
           const partial = partialCountersInfoOf(usageRaw.partialCounters, harness);
           if (partial.incomplete) group.partialCountersIncomplete = true;
@@ -1886,10 +1889,12 @@ export const render = (report) => {
     const usage = usageParts.length > 0 ? usageParts.join(' ') : 'usage=none';
     const withUsage =
       group.dispatches.withUsage === undefined ? '' : ` withUsage=${group.dispatches.withUsage}`;
+    const repeatedUsage =
+      group.cumulativeUsageRepeated === true ? ' cumulativeUsageRepeated=true' : '';
     lines.push(
       `  ${group.run} ${group.controller}/${group.harness} ${group.ticket} ${group.agentType} ` +
         `model=${group.model}(${group.modelSource}) effort=${group.effort}(${group.effortSource}) ` +
-        `ended=${group.dispatches.ended} noEndObserved=${group.dispatches.noEndObserved}${withUsage} ${usage}`,
+        `ended=${group.dispatches.ended} noEndObserved=${group.dispatches.noEndObserved}${withUsage}${repeatedUsage} ${usage}`,
     );
   }
 
