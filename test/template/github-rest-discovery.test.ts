@@ -425,8 +425,19 @@ describe('detect-missed-gate REST discovery', () => {
     await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('refuses calendar-invalid ISO --since values before acquiring REST pull data', async () => {
-    for (const since of ['2026-02-31', '2025-02-29', '2026-02-31T00:00:00Z']) {
+  it('refuses calendar-invalid --since values before acquiring REST pull data', async () => {
+    for (const since of [
+      '2026-02-31',
+      '2025-02-29',
+      '2026-02-31T00:00:00Z',
+      '2026-02-31 00:00:00Z',
+      ' 2026-02-31 00:00:00Z',
+      '2026-02-31 00:00:00Z ',
+      '2026-02-31t00:00:00Z',
+      '2026-2-31 00:00:00Z',
+      '2026-02-31Z',
+      '2026-02-31junk',
+    ]) {
       const dir = await installedDetector();
       const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-calendar-invalid-'));
       const calls = path.join(bin, 'calls.jsonl');
@@ -453,7 +464,17 @@ describe('detect-missed-gate REST discovery', () => {
   });
 
   it('continues to acquire REST pull data for valid leap-day, offset, and flexible --since values', async () => {
-    for (const since of ['2024-02-29', '2024-02-29T23:30:00-02:00', 'February 29, 2024']) {
+    for (const since of [
+      '2024-02-29',
+      '2024-02-29T23:30:00-02:00',
+      'February 29, 2024',
+      '2024-02-29 00:00:00Z',
+      ' 2024-02-29 00:00:00Z',
+      '2024-02-29 00:00:00Z ',
+      '2024-02-29t00:00:00Z',
+      '2024-2-29 00:00:00Z',
+      '2024-02-29Z',
+    ]) {
       const dir = await installedDetector();
       const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-calendar-valid-'));
       const calls = path.join(bin, 'calls.jsonl');

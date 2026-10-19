@@ -484,7 +484,7 @@ const parseArgs = (argv) => {
 const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
 
 const hasValidIsoCalendarDate = (value) => {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})(?=\D|$)/.exec(value.trim());
   if (!match) return true;
   const [, yearText, monthText, dayText] = match;
   const year = Number(yearText);
