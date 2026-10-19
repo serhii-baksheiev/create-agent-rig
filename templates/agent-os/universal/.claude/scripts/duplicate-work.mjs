@@ -14,10 +14,9 @@
 //
 //   1. remote branches — `git ls-remote --heads origin` (one call, capped at
 //      MAX_REFS refs read, fail-closed past the cap — see Limits);
-//   2. open PRs — `gh pr list --state open --search "<id>" --json
-//      number,title,headRefName,url,isCrossRepository --limit 101`, filtered
-//      CLIENT-SIDE by the same token rule. GitHub's `--search` is fuzzy; the
-//      filter, not the search, is the authority —
+//   2. open PRs — GitHub REST's paginated `pulls?state=open`, capped at
+//      MAX_PRS, filtered CLIENT-SIDE by the same token rule. The filter, not
+//      remote search semantics, is the authority —
 //      `test/template/duplicate-work.test.ts` (absent in a generated rig) ›
 //      "exit 0 — gh's fuzzy search returns a PR whose title/head do not carry
 //      the exact token, filtered out client-side".
@@ -72,9 +71,9 @@
 // --- Limits -----------------------------------------------------------
 //
 // - A cap hit fails CLOSED, never a silent slice: more than MAX_REFS branch
-//   refs, or a PR listing that still fills `--limit 101`, reports that
-//   source `unavailable` rather than reading (and matching against) only the
-//   first page — `test/template/duplicate-work.test.ts` (absent in a
+//   refs, or more than MAX_PRS open PRs, reports that source `unavailable`
+//   rather than reading (and matching against) only the first page —
+//   `test/template/duplicate-work.test.ts` (absent in a
 //   generated rig) › "exit 3, verdict unverifiable — branch source hits the
 //   ref cap and fails closed, never a silent slice" and › "exit 3 — 101 open
 //   PRs is the cap: pr source unavailable, never a silent read of the first
@@ -152,9 +151,8 @@ const ID_SHAPE = /^[A-Za-z][A-Za-z0-9_]*-\d+$/;
 const BARE_NUMBER_SHAPE = /^\d+$/;
 const MAX_REFS = 5000;
 const MAX_PRS = 100;
-const PR_REQUEST_LIMIT = MAX_PRS + 1;
 const MAX_BUFFER = 16 * 1024 * 1024;
-const PR_FIELDS = 'number,title,headRefName,url,isCrossRepository';
+const REST_PAGE_SIZE = 100;
 // `git remote get-url origin`'s own exit code for "no such remote" — the
 // ONLY git failure either source reads as "no origin". See `originStatus`.
 const NO_ORIGIN_EXIT_CODE = 2;
@@ -344,10 +342,9 @@ const remoteBranches = (cwd, origin) => {
  * applicability is decided by what `gh` itself answers, never by the
  * origin URL's spelling (round 3 retires that heuristic — a GHE alias or a
  * non-`github.com` hostname mapped in `gh`'s own config is exactly the case
- * it got wrong): one `gh pr list` call, asked for `MAX_PRS + 1` rows.
- * Getting that many back means there may be more than `MAX_PRS` open PRs
- * matching the search, so the source reports `unavailable` (cap) rather than
- * reading only the first page. A `gh` failure is read from what it reports:
+ * it got wrong): two GitHub REST pages selected by `gh`'s own repository
+ * placeholders. More than `MAX_PRS` open PRs makes the source `unavailable`
+ * rather than reading only its first page. A `gh` failure is read from what it reports:
  * `gh` missing entirely (a spawn error, no stderr to read) is `unavailable`;
  * `gh` failing with stderr saying it found no known GitHub host among the
  * configured remotes is `not-applicable` — gh's own answer that no remote
@@ -357,39 +354,43 @@ const remoteBranches = (cwd, origin) => {
 const openPrs = (ticket, cwd, origin) => {
   if (origin.noOrigin) return { status: 'not-applicable', items: [] };
   try {
-    const raw = execFileSync(
-      'gh',
-      [
-        'pr',
-        'list',
-        '--state',
-        'open',
-        '--search',
-        ticket,
-        '--json',
-        PR_FIELDS,
-        '--limit',
-        String(PR_REQUEST_LIMIT),
-      ],
-      {
-        cwd,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env: withoutGitLocation(),
-        maxBuffer: MAX_BUFFER,
-      },
-    );
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return { status: 'unavailable', items: [] };
-    if (parsed.length > MAX_PRS) return { status: 'unavailable', items: [] };
+    const parsed = [];
+    for (let page = 1; page <= 2; page += 1) {
+      const raw = execFileSync(
+        'gh',
+        ['api', `repos/{owner}/{repo}/pulls?state=open&per_page=${REST_PAGE_SIZE}&page=${page}`],
+        {
+          cwd,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+          env: withoutGitLocation(),
+          maxBuffer: MAX_BUFFER,
+        },
+      );
+      const response = JSON.parse(raw);
+      const rows = Array.isArray(response) && response.length === 1 && Array.isArray(response[0]) ? response[0] : response;
+      if (
+        !Array.isArray(rows) ||
+        rows.some((row) => !row || typeof row.title !== 'string' || typeof row.head?.ref !== 'string')
+      ) {
+        return { status: 'unavailable', items: [] };
+      }
+      parsed.push(...rows);
+      if (parsed.length > MAX_PRS) return { status: 'unavailable', items: [] };
+    }
     return {
       status: 'read',
       items: parsed.map((row) => ({
         number: row?.number,
         title: typeof row?.title === 'string' ? row.title : '',
-        headRefName: typeof row?.headRefName === 'string' ? row.headRefName : '',
-        url: typeof row?.url === 'string' ? row.url : undefined,
-        isCrossRepository: row?.isCrossRepository === true,
+        headRefName: row.head.ref,
+        url: typeof row?.html_url === 'string' ? row.html_url : undefined,
+        isCrossRepository:
+          row.head?.repo?.id === undefined ||
+          row.head.repo.id === null ||
+          row.base?.repo?.id === undefined ||
+          row.base.repo.id === null ||
+          row.head.repo.id !== row.base.repo.id,
       })),
     };
   } catch (error) {

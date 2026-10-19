@@ -319,12 +319,11 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
   // A file list that is absent is NOT an empty one. `files: null` used to read as
   // "touched nothing elevated" and pass silently — so a schema change, a truncated
   // response or a hand-exported fixture turned the sweep into a rubber stamp.
-  // `gh pr list --json files` uses GraphQL `files(first: 100)` and silently
-  // returns only the first 100, with no truncation marker. A PR padded past that
-  // hides its elevated file OUTSIDE the window, and the sweep reads the empty
-  // result as "touched nothing elevated" — the silent variant of the failure this
-  // file exists to prevent. `changedFiles` comes back on the same call and is the
-  // ground truth.
+  // A REST file listing is paginated. A PR padded past the pages this sweep read
+  // could hide its elevated file OUTSIDE the window, and the sweep would read the
+  // empty result as "touched nothing elevated" — the silent variant of the
+  // failure this file exists to prevent. `changedFiles` is the ground truth for
+  // whether the acquired pages are complete.
   const truncated =
     Array.isArray(pr.files) &&
     typeof pr.changedFiles === 'number' &&
@@ -484,6 +483,81 @@ const parseArgs = (argv) => {
 
 const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
 
+const MAX_PRS = 100;
+const MAX_CHANGED_FILES = 3000;
+const REST_PAGE_SIZE = 100;
+
+const restJson = (endpoint) =>
+  JSON.parse(
+    execFileSync('gh', ['api', endpoint], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }),
+  );
+
+const listPulls = (sinceAt) => {
+  const pulls = [];
+  for (let page = 1; page <= 2; page += 1) {
+    const response = restJson(
+      `repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${REST_PAGE_SIZE}&page=${page}`,
+    );
+    const rows = Array.isArray(response) && response.length === 1 && Array.isArray(response[0]) ? response[0] : response;
+    if (rows.length === 0) return pulls;
+    for (const row of rows) {
+      const updatedAt = new Date(row.updated_at).getTime();
+      if (typeof row.updated_at === 'string' && !Number.isNaN(updatedAt) && updatedAt < sinceAt) return pulls;
+      pulls.push(row);
+      if (pulls.length > MAX_PRS) throw new Error(`GitHub REST pull list exceeded the ${MAX_PRS}-pull cap`);
+    }
+  }
+  return pulls;
+};
+
+const filesFor = (number, changedFiles) => {
+  if (!Number.isInteger(changedFiles) || changedFiles < 0 || changedFiles > MAX_CHANGED_FILES) return undefined;
+  if (changedFiles === 0) return [];
+
+  const files = [];
+  for (let page = 1; page <= changedFiles; page += 1) {
+    const rows = restJson(`repos/{owner}/{repo}/pulls/${number}/files?per_page=${REST_PAGE_SIZE}&page=${page}`);
+    if (
+      !Array.isArray(rows) ||
+      rows.length === 0 ||
+      rows.length > REST_PAGE_SIZE ||
+      rows.some((row) => !row || typeof row.filename !== 'string')
+    ) {
+      return undefined;
+    }
+    files.push(...rows.map((row) => row.filename));
+    if (files.length === changedFiles) return files;
+    if (files.length > changedFiles) return undefined;
+  }
+  return undefined;
+};
+
+const restPull = (number) => {
+  const pr = restJson(`repos/{owner}/{repo}/pulls/${number}`);
+  if (!pr || typeof pr !== 'object' || pr.number !== number || typeof pr.merged_at === 'undefined') {
+    throw new Error(`GitHub REST pull #${number} was malformed`);
+  }
+  if (pr.merged_at === null) return null;
+  if (typeof pr.merged_at !== 'string' || Number.isNaN(new Date(pr.merged_at).getTime())) {
+    throw new Error(`GitHub REST pull #${number} had an invalid merged_at timestamp`);
+  }
+  const changedFiles = pr.changed_files;
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body,
+    headRefName: pr.head?.ref,
+    mergedAt: pr.merged_at,
+    url: pr.html_url,
+    labels: pr.labels,
+    changedFiles,
+    files: filesFor(number, changedFiles),
+  };
+};
+
 /**
  * Findings are the output, not the status — but that cuts both ways: a sweep that
  * could not reach the API must be unmistakably different from a clean sweep. So
@@ -492,24 +566,10 @@ const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice
  */
 const fetchMergedPrs = (since) => {
   try {
-    return JSON.parse(
-      execFileSync(
-        'gh',
-        [
-          'pr',
-          'list',
-          '--state',
-          'merged',
-          '--limit',
-          '100',
-          '--search',
-          `merged:>=${since}`,
-          '--json',
-          'number,title,body,headRefName,mergedAt,url,labels,files,changedFiles',
-        ],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      ),
-    );
+    const sinceAt = new Date(since);
+    return listPulls(sinceAt.getTime())
+      .map((row) => restPull(row.number))
+      .filter((pr) => pr && new Date(pr.mergedAt) >= sinceAt);
   } catch (error) {
     process.stderr.write(
       'missed-gate sweep: could not list merged PRs — the `gh` CLI is missing, ' +
