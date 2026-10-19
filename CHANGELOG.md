@@ -15,6 +15,21 @@ and this paragraph deliberately does not restate them — a numbering rule with
 two copies of its exceptions is the shape 0.8.0 exists to remove. 1.2.1 is the
 third, recorded the same way.
 
+## 1.7.2 (unreleased)
+
+### Documentation corrections
+
+- **1.7.1 usage-reporting disclosure.** The opt-in workflow layer first shipped
+  `record-session-usage` on Claude `Stop`/`SessionEnd`, with the corresponding
+  Codex hook projection, in 1.7.1. That release also introduced
+  `schemaVersion: 2` in token-report JSON; 1.7.0 emitted no schema-version field.
+  This entry corrects the omitted names in the 1.7.1 release notes.
+- **Reproducible candidate identity.** The
+  [source-archive recipe](docs/release-candidate-identity.md) records the exact
+  commit, tree, Git version, archive format, prefix and command alongside the
+  digest. The later 1.7.1 freeze decision's archive digest retains its unknown
+  original recipe; the frozen candidate commit and tree remain unchanged.
+
 ## 1.7.1 (release candidate)
 
 **1.7.1 follows the owner's release plan for published 1.7.0.** This patch
