@@ -25,6 +25,12 @@ that is a conditional example, not a diagnosis made here. A demonstrated wrong
 result attributable to product code follows the product-defect row: reproducing
 test, correction and normal exact-head verification, with no unchanged retry.
 
+The three historical failure observations were appended to the existing
+[RP-518 umbrella, comment 24693](https://sbaksheiev.atlassian.net/browse/RP-518?focusedCommentId=24693)
+and independently read back on 2026-10-19. This aggregation preserves the
+INCONCLUSIVE classification, historical fifth-round HOLD and existing status;
+it records no new diagnostic attempt or rerun authorization.
+
 ## Release and attempt boundaries
 
 At most one evidence-backed rerun is permitted per exact head and logical job

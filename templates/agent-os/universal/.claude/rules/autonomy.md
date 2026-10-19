@@ -152,8 +152,8 @@ these lines is the failure mode:
   attempts, no progress) → stop and report, don't grind.
 - **Flaky ≠ retry.** A test that passes on re-run without a code change is a
   defect. Never loop reruns to reach green; investigate or file it with
-  evidence and stop. The sole exception is one evidence-backed rerun of the
-  same exact head and logical job for **confirmed** external runner instability,
+  evidence and stop. For Windows CI only, the sole exception is one evidence-backed
+  rerun of the same exact head and logical job for **confirmed** external runner instability,
   as bounded by [the Windows CI convergence decision](../../docs/decisions/windows-ci-convergence.md);
   otherwise HOLD.
 - **Invariant conflict.** Two rules in this repo genuinely collide → stop and

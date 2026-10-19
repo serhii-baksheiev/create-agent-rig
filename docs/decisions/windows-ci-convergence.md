@@ -1,8 +1,9 @@
 # Bounded Windows CI failure convergence
 
 This is a session procedure, not an automated classifier or a retry service.
-The same evidence standard applies on other operating systems. A red check
-remains a HOLD until the required check actually succeeds on the candidate's
+This decision applies only to Windows CI failures. Other operating systems
+retain the ordinary flaky-test stop rule. A red check remains a HOLD until
+the required check actually succeeds on the candidate's
 exact head; this procedure never waives a required check.
 
 ## Classify before acting
