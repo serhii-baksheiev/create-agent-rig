@@ -501,7 +501,10 @@ const listPulls = (sinceAt) => {
     const response = restJson(
       `repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${REST_PAGE_SIZE}&page=${page}`,
     );
-    const rows = Array.isArray(response) && response.length === 1 && Array.isArray(response[0]) ? response[0] : response;
+    if (!Array.isArray(response) || response.some(Array.isArray)) {
+      throw new Error('GitHub REST pull list was malformed');
+    }
+    const rows = response;
     if (rows.length === 0) return pulls;
     for (const row of rows) {
       const updatedAt = new Date(row.updated_at).getTime();

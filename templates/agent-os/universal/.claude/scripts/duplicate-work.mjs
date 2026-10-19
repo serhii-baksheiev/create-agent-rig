@@ -368,9 +368,10 @@ const openPrs = (ticket, cwd, origin) => {
         },
       );
       const response = JSON.parse(raw);
-      const rows = Array.isArray(response) && response.length === 1 && Array.isArray(response[0]) ? response[0] : response;
+      const rows = response;
       if (
         !Array.isArray(rows) ||
+        rows.some(Array.isArray) ||
         rows.some((row) => !row || typeof row.title !== 'string' || typeof row.head?.ref !== 'string')
       ) {
         return { status: 'unavailable', items: [] };

@@ -288,9 +288,10 @@ describe('detect-missed-gate REST discovery', () => {
       [
         "if (args[0] !== 'api') return { exitCode: 2 };",
         "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+        "const page = Number(new URL(endpoint || '/', 'https://fixture.invalid').searchParams.get('page') || 1);",
         "if (/\\/pulls\\/10(?:\\?|$)/.test(endpoint)) return { stdout: JSON.stringify({ number: 10, title: 'malformed file row', body: '', merged_at: '2026-10-18T12:00:00Z', html_url: 'https://example.invalid/10', labels: [], head: { ref: 'fix/rp-524', repo: { id: 10 } }, base: { repo: { id: 10 } }, changed_files: 1 }) + '\\n' };",
         "if (endpoint.includes('/files')) return { stdout: JSON.stringify([{}]) + '\\n' };",
-        "return { stdout: JSON.stringify([[{ number: 10, merged_at: '2026-10-18T12:00:00Z' }]]) + '\\n' };",
+        "return { stdout: JSON.stringify(page === 1 ? [{ number: 10, merged_at: '2026-10-18T12:00:00Z' }] : []) + '\\n' };",
       ].join('\n'),
     );
     stubs.push(gh);
@@ -314,8 +315,38 @@ describe('detect-missed-gate REST discovery', () => {
       [
         "if (args[0] !== 'api') return { exitCode: 2 };",
         "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+        "const page = Number(new URL(endpoint || '/', 'https://fixture.invalid').searchParams.get('page') || 1);",
         "if (/\\/pulls\\/11(?:\\?|$)/.test(endpoint)) return { stdout: JSON.stringify({ title: 'incomplete detail schema', body: '', html_url: 'https://example.invalid/11', labels: [], head: { ref: 'fix/rp-524', repo: { id: 10 } }, base: { repo: { id: 10 } }, changed_files: 0 }) + '\\n' };",
-        "return { stdout: JSON.stringify([[{ number: 11, merged_at: '2026-10-18T12:00:00Z' }]]) + '\\n' };",
+        "return { stdout: JSON.stringify(page === 1 ? [{ number: 11, merged_at: '2026-10-18T12:00:00Z' }] : []) + '\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run(
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+      ['--since', '2026-10-01', '--json'],
+      dir,
+    );
+    const parsed =
+      result.code === 0
+        ? (JSON.parse(result.stdout) as { findings: Array<{ kind: string }> })
+        : null;
+    expect(
+      result.code !== 0 ||
+        parsed?.findings.some((finding) => finding.kind === 'unknown-file-list') === true,
+      result.out,
+    ).toBe(true);
+  });
+
+  it('does not report a nested REST pull-list response as a clean sweep', async () => {
+    const dir = await installedDetector();
+    const gh = await stubCommand(
+      'gh',
+      [
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+        'if (!/pulls\\?/.test(endpoint)) return { exitCode: 2 };',
+        "return { stdout: JSON.stringify([[]]) + '\\n' };",
       ].join('\n'),
     );
     stubs.push(gh);
@@ -540,6 +571,62 @@ describe('duplicate-work REST discovery', () => {
     ).toBe(true);
   });
 
+  it('marks a nested REST open-PR response unavailable instead of reading it as empty', async () => {
+    const checkout = await mkdtemp(path.join(tmpdir(), 'rp524-nested-open-'));
+    const origin = await mkdtemp(path.join(tmpdir(), 'rp524-nested-open-origin-'));
+    const runGit = (args: string[]) =>
+      new Promise<Run>((resolve) => {
+        execFile('git', args, { cwd: checkout }, (error, stdout, stderr) => {
+          resolve({
+            code: error ? ((error as { code?: number }).code ?? 1) : 0,
+            stdout,
+            out: stdout + stderr,
+          });
+        });
+      });
+    expect((await runGit(['init', '-q', '--bare', origin])).code).toBe(0);
+    expect((await runGit(['init', '-q', '-b', 'master'])).code).toBe(0);
+    await writeFile(path.join(checkout, 'README.md'), 'fixture\n');
+    expect((await runGit(['add', 'README.md'])).code).toBe(0);
+    expect(
+      (
+        await runGit([
+          '-c',
+          'user.email=t@example.invalid',
+          '-c',
+          'user.name=t',
+          'commit',
+          '-q',
+          '-m',
+          'fixture',
+        ])
+      ).code,
+    ).toBe(0);
+    expect((await runGit(['remote', 'add', 'origin', origin])).code).toBe(0);
+    expect((await runGit(['push', '-q', '-u', 'origin', 'master'])).code).toBe(0);
+
+    const gh = await stubCommand(
+      'gh',
+      [
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+        'if (!/pulls\\?/.test(endpoint)) return { exitCode: 2 };',
+        "return { stdout: JSON.stringify([[]]) + '\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run('duplicate-work.mjs', ['--ticket', 'RP-524', '--json'], checkout);
+    const parsed = JSON.parse(result.stdout) as {
+      verdict: string;
+      sources: Array<{ name: string; status: string }>;
+    };
+    expect(parsed.sources).toContainEqual({ name: 'branch', status: 'read' });
+    expect(parsed.sources).toContainEqual({ name: 'pr', status: 'unavailable' });
+    expect(parsed.verdict).toBe('unverifiable');
+    expect(result.code, result.out).toBe(3);
+  });
+
   it('does not exclude an own-branch REST PR when both repository identities are missing', async () => {
     const checkout = await mkdtemp(path.join(tmpdir(), 'rp524-uncertain-identity-'));
     const runGit = (args: string[]) =>
@@ -578,7 +665,9 @@ describe('duplicate-work REST discovery', () => {
       'gh',
       [
         "if (args[0] !== 'api') return { exitCode: 2 };",
-        "return { stdout: JSON.stringify([[{ number: 9, title: 'fix RP-524 elsewhere', html_url: 'https://example.invalid/9', head: { ref: 'fix/rp-524-own-work', repo: {} }, base: { repo: {} } }]]) + '\\n' };",
+        "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+        "const page = Number(new URL(endpoint || '/', 'https://fixture.invalid').searchParams.get('page') || 1);",
+        "return { stdout: JSON.stringify(page === 1 ? [{ number: 9, title: 'fix RP-524 elsewhere', html_url: 'https://example.invalid/9', head: { ref: 'fix/rp-524-own-work', repo: {} }, base: { repo: {} } }] : []) + '\\n' };",
       ].join('\n'),
     );
     stubs.push(gh);
