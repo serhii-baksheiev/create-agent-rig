@@ -483,6 +483,17 @@ const parseArgs = (argv) => {
 
 const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
 
+const hasValidIsoCalendarDate = (value) => {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T|$)/.exec(value);
+  if (!match) return true;
+  const [, yearText, monthText, dayText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const daysInMonth = [31, year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1];
+};
+
 const MAX_PRS = 100;
 const MAX_CHANGED_FILES = 3000;
 const REST_PAGE_SIZE = 100;
@@ -570,7 +581,9 @@ const restPull = (number) => {
 const fetchMergedPrs = (since) => {
   try {
     const sinceAt = new Date(since);
-    if (Number.isNaN(sinceAt.getTime())) throw new Error('invalid --since date bound');
+    if (Number.isNaN(sinceAt.getTime()) || !hasValidIsoCalendarDate(since)) {
+      throw new Error('invalid --since date bound');
+    }
     return listPulls(sinceAt.getTime())
       .map((row) => restPull(row.number))
       .filter((pr) => pr && new Date(pr.mergedAt) >= sinceAt);

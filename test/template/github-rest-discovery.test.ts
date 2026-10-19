@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -43,12 +43,12 @@ const mergedPull = (number: number, over: Pull = {}): Pull => ({
   ...over,
 });
 
-const installedDetector = async (): Promise<string> => {
+const installedDetector = async (mutate = (source: string) => source): Promise<string> => {
   const dir = await mkdtemp(path.join(tmpdir(), 'rp524-detector-'));
   await mkdir(path.join(dir, '.claude', 'scripts'), { recursive: true });
-  await copyFile(
-    scriptPath('detect-missed-gate.mjs'),
+  await writeFile(
     path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+    mutate(await readFile(scriptPath('detect-missed-gate.mjs'), 'utf8')),
   );
   await writeFile(path.join(dir, 'AGENTS.md'), '```elevated-paths\ninfra/\n```\n');
   return dir;
@@ -425,6 +425,59 @@ describe('detect-missed-gate REST discovery', () => {
     await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('refuses calendar-invalid ISO --since values before acquiring REST pull data', async () => {
+    for (const since of ['2026-02-31', '2025-02-29', '2026-02-31T00:00:00Z']) {
+      const dir = await installedDetector();
+      const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-calendar-invalid-'));
+      const calls = path.join(bin, 'calls.jsonl');
+      const gh = await stubCommand(
+        'gh',
+        [
+          `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+          "if (args[0] !== 'api') return { exitCode: 2 };",
+          "return { stdout: '[]\\n' };",
+        ].join('\n'),
+      );
+      stubs.push(gh);
+
+      const result = await run(
+        path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+        ['--since', since, '--json'],
+        dir,
+      );
+      expect(result.code, `${since}: ${result.out}`).toBe(1);
+      expect(result.out).toMatch(/invalid.*--since|--since.*invalid|invalid.*date/i);
+      await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      stubs.pop()!.restore();
+    }
+  });
+
+  it('continues to acquire REST pull data for valid leap-day, offset, and flexible --since values', async () => {
+    for (const since of ['2024-02-29', '2024-02-29T23:30:00-02:00', 'February 29, 2024']) {
+      const dir = await installedDetector();
+      const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-calendar-valid-'));
+      const calls = path.join(bin, 'calls.jsonl');
+      const gh = await stubCommand(
+        'gh',
+        [
+          `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+          "if (args[0] !== 'api') return { exitCode: 2 };",
+          "return { stdout: '[]\\n' };",
+        ].join('\n'),
+      );
+      stubs.push(gh);
+
+      const result = await run(
+        path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+        ['--since', since, '--json'],
+        dir,
+      );
+      expect(result.code, `${since}: ${result.out}`).toBe(0);
+      expect((await readFile(calls, 'utf8')).trim()).not.toBe('');
+      stubs.pop()!.restore();
+    }
+  });
+
   it('bounds merged-PR acquisition with two explicit REST pages and refuses the overflow', async () => {
     const dir = await installedDetector();
     const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-cap-'));
@@ -479,6 +532,7 @@ describe('detect-missed-gate REST discovery', () => {
       ...oldRows,
     ];
     const secondPage = [{ number: 999, updated_at: '2026-08-01T00:00:00Z', merged_at: null }];
+    const staleFirstPage = [oldRows[0], firstPage[0], ...oldRows.slice(1)];
     const gh = await stubCommand(
       'gh',
       [
@@ -490,8 +544,10 @@ describe('detect-missed-gate REST discovery', () => {
         "if (/\\/pulls\\/12(?:\\?|$)/.test(endpoint)) return { stdout: JSON.stringify({ number: 12, title: 'recent elevated merge', body: '', merged_at: '2026-10-18T12:00:00Z', html_url: 'https://example.invalid/12', labels: [], head: { ref: 'fix/rp-524', repo: { id: 10 } }, base: { repo: { id: 10 } }, changed_files: 1 }) + '\\n' };",
         "if (endpoint.includes('/files')) return { stdout: JSON.stringify([{ filename: 'infra/recent.ts' }]) + '\\n' };",
         "if (args.includes('--paginate') && args.includes('--slurp')) return { stdout: JSON.stringify([firstPage, secondPage]) + '\\n' };",
+        "const query = new URL(endpoint || '/', 'https://fixture.invalid').searchParams;",
+        "const orderedByMostRecentlyUpdated = query.get('sort') === 'updated' && query.get('direction') === 'desc';",
         "const page = Number(new URL(endpoint || '/', 'https://fixture.invalid').searchParams.get('page') || 0);",
-        "if (page === 1) return { stdout: JSON.stringify(firstPage) + '\\n' };",
+        `if (page === 1) return { stdout: JSON.stringify(orderedByMostRecentlyUpdated ? firstPage : ${JSON.stringify(staleFirstPage)}) + '\\n' };`,
         "if (page === 2) return { stdout: JSON.stringify(secondPage) + '\\n' };",
         "process.stderr.write('unexpected history page\\n'); return { exitCode: 2 };",
       ].join('\n'),
@@ -508,14 +564,44 @@ describe('detect-missed-gate REST discovery', () => {
     expect(parsed.findings).toContainEqual(
       expect.objectContaining({ kind: 'missed-gate', pr: 12 }),
     );
-    const listPages = (await readFile(calls, 'utf8'))
+    const listEndpoints = (await readFile(calls, 'utf8'))
       .split('\n')
       .filter(Boolean)
       .map((line) => JSON.parse(line) as string[])
       .map((args) => args.find((arg) => /repos\/.+\/pulls\?state=closed/.test(arg)) ?? '')
-      .filter(Boolean)
-      .map((endpoint) => new URL(endpoint, 'https://fixture.invalid').searchParams.get('page'));
-    expect(listPages).toEqual(['1']);
+      .filter(Boolean);
+    expect(
+      listEndpoints.map((endpoint) =>
+        new URL(endpoint, 'https://fixture.invalid').searchParams.get('page'),
+      ),
+    ).toEqual(['1']);
+    expect(
+      new URL(listEndpoints[0] ?? '', 'https://fixture.invalid').searchParams.get('sort'),
+    ).toBe('updated');
+    expect(
+      new URL(listEndpoints[0] ?? '', 'https://fixture.invalid').searchParams.get('direction'),
+    ).toBe('desc');
+
+    for (const parameter of ['&sort=updated', '&direction=desc']) {
+      const mutantDir = await installedDetector((source) => {
+        const mutant = source.replace(parameter, '');
+        if (mutant === source)
+          throw new Error(`could not omit ${parameter} from temporary detector`);
+        return mutant;
+      });
+      const mutantResult = await run(
+        path.join(mutantDir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+        ['--since', '2026-10-01', '--json'],
+        mutantDir,
+      );
+      expect(mutantResult.code, `${parameter}: ${mutantResult.out}`).toBe(0);
+      const mutant = JSON.parse(mutantResult.stdout) as {
+        findings: Array<{ kind: string; pr: number }>;
+      };
+      expect(mutant.findings).not.toContainEqual(
+        expect.objectContaining({ kind: 'missed-gate', pr: 12 }),
+      );
+    }
   });
 });
 
