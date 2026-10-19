@@ -570,6 +570,7 @@ const restPull = (number) => {
 const fetchMergedPrs = (since) => {
   try {
     const sinceAt = new Date(since);
+    if (Number.isNaN(sinceAt.getTime())) throw new Error('invalid --since date bound');
     return listPulls(sinceAt.getTime())
       .map((row) => restPull(row.number))
       .filter((pr) => pr && new Date(pr.mergedAt) >= sinceAt);

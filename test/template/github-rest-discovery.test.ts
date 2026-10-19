@@ -398,6 +398,33 @@ describe('detect-missed-gate REST discovery', () => {
     ).toBe(true);
   });
 
+  it('refuses an invalid --since bound before acquiring REST pull data', async () => {
+    const dir = await installedDetector();
+    const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-invalid-since-'));
+    const calls = path.join(bin, 'calls.jsonl');
+    const gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+        "if (/\\/pulls\\/14(?:\\?|$)/.test(endpoint)) return { stdout: JSON.stringify({ number: 14, title: 'valid fallback detail', body: '', merged_at: '2026-10-18T12:00:00Z', html_url: 'https://example.invalid/14', labels: [], head: { ref: 'fix/rp-524', repo: { id: 10 } }, base: { repo: { id: 10 } }, changed_files: 0 }) + '\\n' };",
+        "if (endpoint.includes('/files')) return { stdout: '[]\\n' };",
+        "return { stdout: JSON.stringify([{ number: 14, updated_at: '2026-10-18T12:00:00Z', merged_at: '2026-10-18T12:00:00Z' }]) + '\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run(
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+      ['--since', 'not-a-date', '--json'],
+      dir,
+    );
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/invalid.*--since|--since.*invalid|invalid.*date/i);
+    await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('bounds merged-PR acquisition with two explicit REST pages and refuses the overflow', async () => {
     const dir = await installedDetector();
     const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-cap-'));
