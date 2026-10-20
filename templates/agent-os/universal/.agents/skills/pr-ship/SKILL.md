@@ -500,6 +500,28 @@ blockers.
    exhausted trace must cost this round its record and nothing else. A round is
    counted and capped, so a crash here spends one on a journal that was never
    the thing under review.
+
+   **Display finding changes when both reports are available.** Choose the
+   explicit journal sequence numbers for an earlier and later verdict from the
+   same reviewer, then run:
+
+   ```sh
+   node .claude/scripts/verdict.mjs findings <before-seq> <after-seq>
+   ```
+
+   The read-only comparison reports the selected sequence, role and head for
+   each side, plus `resolved` (reported only before), `unresolved` (reported on
+   both sides) and `new` (reported only after). Optional blocker ids match the
+   same finding despite a changed line or note; without ids the complete
+   file/line/rule/note tuple must match, with absent locations kept absent. See
+   `test/template/review-findings.test.ts` (absent in a generated rig) ›
+   "classifies mixed stable-id and legacy findings from the requested records without writing the journal".
+   A missing report is not an empty blocker list: leave the comparison
+   unavailable rather than inventing a prior round. Do not rewrite journalled
+   verdicts or create a finding ledger. `resolved` describes absence in the
+   selected later report, not proof of a fix, acceptance or merge eligibility.
+   Review all new correctness and security findings, and still require the
+   actual verdicts, coverage, round budget and checks below.
 5. 🔴 **Coverage — check your own fan-out before you believe it.** You recorded
    what the route asked for, what you launched and what came back; this is the
    step that compares them, and it is the only one that does — nothing else in

@@ -20,10 +20,10 @@ roles a skill names by name exist.
   restating them.** A skill that copies a rule's wording is a second copy
   that goes stale the day the rule changes; link to `.claude/rules/` or a
   script instead.
-- **Every sentence describing how a mechanism behaves either points at the
-  test that proves it, or is deleted.** `.claude/rules/invariants.md`,
-  "State the limits — and test them", is the norm; the form is `see <file>
-  (absent in a generated rig) › "<exact test name>"`.
+- **Apply claim-typed evidence requirements**, not a pointer on every
+  descriptive sentence. `.claude/rules/invariants.md`, "State the limits —
+  and test them", defines the normative/security/refusal/limit/cost classes,
+  examples and evidence form. Descriptive text must still be correct.
 - **A mention of a workflow-layer skill or script in a Core document is
   qualified "opt-in workflow layer"** — `loop` and `pr-ship` are examples,
   not this skill's own concern.

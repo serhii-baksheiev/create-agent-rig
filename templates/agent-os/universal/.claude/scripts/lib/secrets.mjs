@@ -214,7 +214,13 @@ export const isCredentialPath = (relativePath) => {
       // a whole-path `C:relative` spelling is unwrapped. An ADS may name a
       // file or directory; strip it before credential-segment comparisons.
       const streamSeparator = process.platform === 'win32' ? segment.indexOf(':') : -1;
-      return (streamSeparator < 0 ? segment : segment.slice(0, streamSeparator)).toLowerCase();
+      const fileName = streamSeparator < 0 ? segment : segment.slice(0, streamSeparator);
+      // This is a conservative lexical Win32 ordinary-name policy, not proof
+      // of native NTFS resolution: only trailing ASCII dots and spaces fold to
+      // their ordinary spelling. Other whitespace remains significant.
+      // See test/template/secrets-lib.test.ts (absent in a generated rig) ›
+      // "applies Win32 trailing ASCII dot and space normalization to credential basenames and directories".
+      return fileName.replace(/[. ]+$/, '').toLowerCase();
     });
   if (segments.length === 0) return false;
 

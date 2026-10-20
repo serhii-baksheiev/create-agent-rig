@@ -108,6 +108,7 @@ interface HarnessTotals {
 interface DispatchGroup {
   harness: string;
   controller: string;
+  cumulativeUsageRepeated?: boolean;
   dispatches: { ended: number; noEndObserved: number; withUsage?: number };
   usage: { claude: Counters | null; codex: Counters | null };
   partialCounters: string[];
@@ -410,7 +411,138 @@ const add = (...parts: Array<Record<string, number>>): Record<string, number> =>
   return out;
 };
 
+const cumulativeChildTicketGroups = (
+  runDir: string,
+  harness: 'claude' | 'codex',
+  usage: Record<string, number>,
+  observations: Array<{ ticket: string; agentRef: string }>,
+): void => {
+  const evidenceSource =
+    harness === 'claude' ? 'claude-subagent-transcript' : 'codex-subagent-rollout';
+  const harnessVersion = harness === 'claude' ? CLAUDE_VERSION : CODEX_VERSION;
+
+  for (const [index, { ticket, agentRef }] of observations.entries()) {
+    const n = 1 + index * 3;
+    const base = {
+      harness,
+      ...(harness === 'claude' ? { controller: CTRL } : {}),
+      agentType: 'code-reviewer',
+      agentRef,
+    };
+    taken(runDir, n, ticket);
+    journal.recordEvent({
+      runDir,
+      kind: 'dispatch-start',
+      data: { schema: 1, ...base },
+      now: at(n + 1),
+    });
+    journal.recordEvent({
+      runDir,
+      kind: 'dispatch-end',
+      data: { schema: 1, ...base, harnessVersion, usage: { evidenceSource, ...usage } },
+      now: at(n + 2),
+    });
+  }
+};
+
 describe('token-report.mjs — controller usage (RP-511)', () => {
+  it('marks every Claude ticket group when its cumulative child ref repeats in the run', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    const child = subUsage();
+    cumulativeChildTicketGroups(dir, 'claude', child, [
+      { ticket: 'TICKET-A', agentRef: 'same-child' },
+      { ticket: 'TICKET-B', agentRef: 'same-child' },
+    ]);
+    snapshot(dir, 7);
+
+    const data = report(root, ['run-a']);
+    expect(data.totals.claude.combined).toBeNull();
+    expect(data.totals.claude.combinedUnavailable).toBe('subagent-cumulative-identity-repeated');
+    expect(data.dispatchGroups).toHaveLength(2);
+    expect(data.dispatchGroups.map((group) => group.cumulativeUsageRepeated)).toEqual([true, true]);
+    expect(data.dispatchGroups).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ agentRef: 'same-child' })]),
+    );
+
+    const distinctDir = await mkrun(root, 'distinct');
+    cumulativeChildTicketGroups(distinctDir, 'claude', child, [
+      { ticket: 'TICKET-A', agentRef: 'child-a' },
+      { ticket: 'TICKET-B', agentRef: 'child-b' },
+    ]);
+    snapshot(distinctDir, 7);
+    expect(report(root, ['distinct']).dispatchGroups).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ cumulativeUsageRepeated: true })]),
+    );
+
+    const otherA = await mkrun(root, 'other-a');
+    const otherB = await mkrun(root, 'other-b');
+    cumulativeChildTicketGroups(otherA, 'claude', child, [
+      { ticket: 'TICKET-A', agentRef: 'same-child' },
+    ]);
+    cumulativeChildTicketGroups(otherB, 'claude', child, [
+      { ticket: 'TICKET-B', agentRef: 'same-child' },
+    ]);
+    snapshot(otherA, 4);
+    snapshot(otherB, 4);
+    expect(report(root, ['other-a', 'other-b']).dispatchGroups).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ cumulativeUsageRepeated: true })]),
+    );
+  });
+
+  it('renders the repeated cumulative marker on every affected Claude ticket group', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    cumulativeChildTicketGroups(dir, 'claude', subUsage(), [
+      { ticket: 'TICKET-A', agentRef: 'same-child' },
+      { ticket: 'TICKET-B', agentRef: 'same-child' },
+    ]);
+    snapshot(dir, 7);
+
+    const groupLines = reportModule
+      .render(report(root, ['run-a']))
+      .split('\n')
+      .filter((line) => line.startsWith('  run-a ') && line.includes(' TICKET-'));
+    expect(groupLines).toEqual([
+      expect.stringContaining('cumulativeUsageRepeated=true'),
+      expect.stringContaining('cumulativeUsageRepeated=true'),
+    ]);
+  });
+
+  it('marks every Codex ticket group when its cumulative child ref repeats in the run', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    cumulativeChildTicketGroups(dir, 'codex', codexCounters(), [
+      { ticket: 'TICKET-A', agentRef: 'same-child' },
+      { ticket: 'TICKET-B', agentRef: 'same-child' },
+    ]);
+    codexSnapshot(dir, 7);
+
+    const data = report(root, ['run-a']);
+    expect(data.totals.codex.combined).toBeNull();
+    expect(data.dispatchGroups).toHaveLength(2);
+    expect(data.dispatchGroups.map((group) => group.cumulativeUsageRepeated)).toEqual([true, true]);
+  });
+
+  it('renders the repeated cumulative marker on every affected Codex ticket group', async () => {
+    const root = await runsRoot();
+    const dir = await mkrun(root, 'run-a');
+    cumulativeChildTicketGroups(dir, 'codex', codexCounters(), [
+      { ticket: 'TICKET-A', agentRef: 'same-child' },
+      { ticket: 'TICKET-B', agentRef: 'same-child' },
+    ]);
+    codexSnapshot(dir, 7);
+
+    const groupLines = reportModule
+      .render(report(root, ['run-a']))
+      .split('\n')
+      .filter((line) => line.startsWith('  run-a ') && line.includes(' TICKET-'));
+    expect(groupLines).toEqual([
+      expect.stringContaining('cumulativeUsageRepeated=true'),
+      expect.stringContaining('cumulativeUsageRepeated=true'),
+    ]);
+  });
+
   it('reports schemaVersion 2, an accountingBasis that calls combined non-authoritative, and keeps money as exactly {line, estimate}', async () => {
     const root = await runsRoot();
     const dir = await mkrun(root, 'run-a');

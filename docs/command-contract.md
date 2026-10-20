@@ -1,4 +1,4 @@
-# Command contract v1.0
+# Command contract v1.1
 
 Language: English
 
@@ -8,6 +8,10 @@ five entries this document carried and what closed each. RP-18 built the memory
 shim against it in claude-config, and RP-19 built the rig bin's handshake and
 its `memory` consumer surface against it here; `## Conformance today` records
 what of it this repository now implements, row by row.
+
+Contract 1.1 adds the Probity doctor reason `nested-worktree-scope` (RP-545).
+The Rig handshake advertises this additive contract revision independently
+of the package version; consumers continue comparing contract majors alone.
 
 ## Scope
 
@@ -388,10 +392,18 @@ model to answer any of these:
 
 - `config-missing` — no recognised `probity.config.{ts,mts,js,mjs}` file
   exists at the repository root; `fail`.
-- `config-drift` — every check below passes, but the declaration entry's
+- `config-drift` — no operational or nested-scope warning applies, but the declaration entry's
   recorded `configHash` no longer matches `probity.config.mjs`'s own bytes
-  on disk (hand-edited since Rig generated it); `warn`. `setup add probity
---adopt` keeps the edit and drops the hash.
+  on disk (hand-edited since Rig generated it); `warn`.
+  `setup add probity --adopt` keeps the edit and drops the hash.
+- `nested-worktree-scope` — the config contains a recognized literal anchored
+  `src/**` scope and a direct directory under `.claude/worktrees/` has a
+  regular `.git` file; `warn`. This bounded read-only shape/syntax diagnostic
+  never evaluates the config or rewrites it, and does not prove coverage for
+  arbitrary dynamic configs. It follows the operational checks and precedes
+  generic `config-drift`, so an edited legacy config gets the specific scope
+  remedy. Manually update to recursive source/test globs with dependency
+  exclusion, then retain the edit with `setup add probity --adopt`.
 - `launcher-missing` — either `@nizos/probity` is not installed at all, or
   `node_modules/@nizos/probity/dist/bin.js` — the file the gate hook actually
   spawns — is absent even though the package's own `package.json` is
@@ -851,7 +863,8 @@ wants it re-measured.
 
 What is covered: subcommand names, documented flags, exit codes, the JSON keys
 named in this document, and the **value domains** this document closes — the
-exit-3 `result` set, the doctor `status` set, the lifecycle states,
+exit-3 `result` set, the doctor `status` set and explicitly closed
+per-integration `reason` sets, the lifecycle states,
 `degradation[]`'s members, and the load budget's allowed range. A closed value
 set belongs on the surface for the same reason a key does: a caller writes code
 against it, and a caller broken by a change cannot be told the change was
@@ -923,7 +936,7 @@ records a fact, not a fault.
 
 - **The rig bin declares a `--json` flag and answers `--version --json` with
   the handshake object** (RP-19): `{"schemaVersion":1,"name":"create-agent-rig",
-"version":<package version>,"contractVersion":"1.0"}`. That it is one line and
+"version":<package version>,"contractVersion":"1.1"}`. That it is one line and
   nothing else on stdout is pinned by `packages/cli/test/cli-version.test.ts` ›
   "writes exactly one handshake JSON line to stdout and exits 0", not by this
   row's test. `--json` is read on `--version` only; `memory` answers its own
@@ -1816,8 +1829,9 @@ Executable evidence:
 Probity is neither upstream-managed like Spec Kit nor an MCP server — it
 never reaches `.mcp.json` or `.codex/config.toml`, even once a `codex`
 harness is selected for it. `setup add probity --yes` writes a local,
-Rig-generated `probity.config.mjs` (`enforceTdd()`, scoped to `src/**`,
-`lib/**`, `test/**`, `tests/**`) and records its SHA-256 as `configHash` on
+Rig-generated `probity.config.mjs` (`enforceTdd()`, scoped to `**/src/**`,
+`**/lib/**`, `**/test/**`, `**/tests/**`, with `!**/node_modules/**`
+excluded) and records its SHA-256 as `configHash` on
 the declaration entry — the version defaults to the Rig-tested `1.10.1`, and
 `--version` records a different exact release as the repository's override
 (`packages/cli/test/probity-command.test.ts` › "declares an exact version
@@ -1876,7 +1890,7 @@ The version handshake:
   "schemaVersion": 1,
   "name": "create-agent-rig",
   "version": "0.9.0",
-  "contractVersion": "1.0"
+  "contractVersion": "1.1"
 }
 ```
 

@@ -320,6 +320,13 @@ const checkBlocker = (blocker, index, problems) => {
     problems.push(`${where} names no \`note\`: what is wrong, in the author's terms.`);
   }
 
+  if (Object.hasOwn(blocker, 'id') && !isText(blocker.id)) {
+    problems.push(
+      `${where} has an \`id\` that is not a non-blank string. It is optional, but when ` +
+        'present it identifies this finding across review decisions.',
+    );
+  }
+
   const hasFile = blocker.file !== undefined && blocker.file !== null;
   const hasLine = blocker.line !== undefined && blocker.line !== null;
 

@@ -115,6 +115,22 @@ counter path resolves to the main checkout for linked worktrees and to a separat
 path for an independent clone — see `test/template/gate-round-evidence.test.ts`
 (absent in a generated rig) › "shares the default counter path across linked worktrees but not independent clones".
 
+Evidence-backed transitions take the counter lock before the relevant run-journal
+locks and retain both through the evidence check and counter persistence. Admission
+checks only this branch's active, completed and released token bindings. One active
+slot covers one recorded fan-out; excess or late unaccounted evidence holds new
+admission. Release retains a marker in the existing counter rather than forgetting
+the token. Explicit consumption of late evidence for a released token counts it
+once and returns HOLD, including on replay, while retaining the journal records.
+The generator's `test/template/gate-round-evidence.test.ts` (absent in a generated
+rig) exercises this boundary in "serializes a fan-out append through the final
+counter write during %s" and "does not grant a different declared run after a
+released token receives late fan-out evidence".
+
+The generic journal preserves evidence; it does not control external reviewer
+processes. Launching without admission or after release violates the procedure.
+These accounting checks do not claim to prevent an unrecorded external launch.
+
 The run's authority is self-declared. In the opt-in workflow layer,
 `run-state.mjs authority` journals each declaration with the value before and after it —
 `test/template/run-state-authority.test.ts` (absent in a generated rig) ›

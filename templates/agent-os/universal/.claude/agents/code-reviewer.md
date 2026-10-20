@@ -55,6 +55,12 @@ do not block on them.
 - Quote the checklist item a blocking finding violates. If nothing blocks, say
   so explicitly — "no blocking findings" is a valid, useful verdict.
 - Do not request rewrites of working, tested code for style alone.
+- Report every instance of a confirmed blocker class across the diff in this
+  round, with evidence for each location. Follow `.claude/rules/workflow.md`,
+  "Review findings", for complete reporting and optional finding identities;
+  do not suppress new correctness or security findings in subsequent rounds.
+- For rulebook claims, use the claim-typed evidence requirements in
+  `.claude/rules/invariants.md`, "State the limits — and test them".
 
 ## The verdict block
 
@@ -70,6 +76,7 @@ reads; a report that never writes one is read as whatever the caller expected.
     {
       "file": "packages/core/src/note.ts",
       "line": 42,
+      "id": "packages/core/src/note.ts|test-integrity|deleted failing case",
       "rule": "checklist item 2 — test integrity",
       "note": "the failing case was deleted rather than fixed"
     }

@@ -2176,18 +2176,24 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // RP-511 PR B adds the controller-session usage hook
   // (`.claude/hooks/record-session-usage.mjs`), WORKFLOW-only (125→126); the
   // core-only figure stays 69.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 126 manifest entries to 69', async () => {
+  // RP-526 adds the Windows CI convergence decision to the PROCESS layer, so
+  // both figures move by one (126→127, 69→70): reducing the manifest must
+  // retain this Core decision while still pruning workflow-only paths.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 127 manifest entries to 70', async () => {
+    const WINDOWS_CI_CONVERGENCE = 'docs/decisions/windows-ci-convergence.md';
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(126);
+    expect(Object.keys(before!.files).length).toBe(127);
+    expect(before!.files).toHaveProperty(WINDOWS_CI_CONVERGENCE);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
     await applyUpgrade(repo, plan);
 
     const after = await readManifest(repo);
-    expect(Object.keys(after!.files).length).toBe(69);
+    expect(Object.keys(after!.files).length).toBe(70);
+    expect(after!.files).toHaveProperty(WINDOWS_CI_CONVERGENCE);
   });
 });
 

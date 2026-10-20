@@ -64,7 +64,8 @@
     "docs/decisions/session-start-wire-format.md",
     "docs/decisions/agents-md-canonical.md",
     "docs/decisions/unattended-posture.md",
-    "docs/decisions/decision-authority.md"
+    "docs/decisions/decision-authority.md",
+    "docs/decisions/windows-ci-convergence.md"
   ],
   "workflow": [
     ".claude/skills/pr-ship/SKILL.md",

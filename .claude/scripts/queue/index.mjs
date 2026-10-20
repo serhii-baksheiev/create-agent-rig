@@ -419,7 +419,6 @@ if (invokedDirectly()) {
       const { gateRoundVerdict } = await import('./core.mjs');
       const {
         reconcileEvidenceGateRounds,
-        completedGateRoundReservationFor,
         consumeReservedEvidenceGateRound,
         gateRoundReservationFor,
         gateRoundsPathFor,
@@ -464,9 +463,11 @@ if (invokedDirectly()) {
       let runDir = null;
       let decisions = [];
       let runSeqFloor = 0;
+      let readRun;
+      let withRunJournalLocks;
       if (process.env.RIG_RUN_DIR) {
         runDir = realpathSync(process.env.RIG_RUN_DIR);
-        const { readRun } = await import('../run-journal.mjs');
+        ({ readRun, withRunJournalLocks } = await import('../run-journal.mjs'));
         ({ decisions } = readRun({ runDir }));
         runSeqFloor = Math.max(0, ...decisions.map((decision) => decision.seq));
       }
@@ -477,15 +478,35 @@ if (invokedDirectly()) {
         Array.isArray(decision.reviewers) &&
         decision.reviewers.length > 0 &&
         decision.reviewers.every((reviewer) => typeof reviewer === 'string' && reviewer.trim() !== '');
-      const fanOutsForReservation = (reservation) =>
-        reservation !== null && reservation.runDir === runDir
-          ? decisions.filter(
+      const fanOutsForReservation = (reservation, records = decisions) =>
+        reservation !== null
+          ? records.filter(
               (decision) =>
                 isValidReviewerFanOut(decision, reservation.head) &&
                 decision.seq > reservation.seqFloor &&
                 decision.why === `gate-round reservation: ${reservation.token}`,
             )
           : [];
+      const evidenceIdentitiesForReservation = (reservation, records) =>
+        fanOutsForReservation(reservation, records).map((decision) =>
+          JSON.stringify([reservation.runDir, decision.seq]),
+        );
+      const hasUnaccountedReservationEvidence = ({
+        receipts = {},
+        reservations = [],
+        completedReservations = [],
+        releasedReservations = [],
+      }) => {
+        const bindings = [...reservations, ...completedReservations, ...releasedReservations]
+          .filter((reservation) => reservation.branch === args.branch);
+        return bindings.some((reservation) => {
+          const { decisions: freshDecisions } = readRun({ runDir: reservation.runDir });
+          const unrecorded = evidenceIdentitiesForReservation(reservation, freshDecisions)
+            .filter((identity) => !(receipts[args.branch] ?? []).includes(identity));
+          const allowance = reservations.includes(reservation) ? 1 : 0;
+          return unrecorded.length > allowance;
+        });
+      };
 
       // RP-442: past the base cap, `--authorized` buys exactly one round, and
       // only for a durable extra-gate-round authorization bound to this ticket,
@@ -565,6 +586,12 @@ if (invokedDirectly()) {
           roundsPath,
           reservation,
           max,
+          hasUnaccountedEvidence: hasUnaccountedReservationEvidence,
+          withEvidenceLock: ({ reservations, completedReservations, releasedReservations }, transition) => {
+            const bindings = [...reservations, ...completedReservations, ...releasedReservations]
+              .filter((candidate) => candidate.branch === args.branch);
+            return withRunJournalLocks(bindings.map((candidate) => candidate.runDir), transition);
+          },
         });
         if (reserved.exhausted) {
           process.stderr.write(
@@ -575,6 +602,11 @@ if (invokedDirectly()) {
         }
         if (reserved.pending) {
           throw new Error('this run already holds a gate-round reservation.');
+        }
+        if (reserved.pendingEvidence) {
+          throw new Error(
+            'a prior gate-round reservation has unaccounted reviewer fan-out evidence; consume it before admitting another launch.',
+          );
         }
         if (reserved.authorizationUsed) {
           process.stderr.write(
@@ -594,14 +626,20 @@ if (invokedDirectly()) {
         if (reservation === null || reservation.runDir !== runDir) {
           throw new Error('the gate-round reservation does not belong to this declared run.');
         }
-        if (fanOutsForReservation(reservation).length > 0) {
-          throw new Error('the reservation already has matching reviewer fan-out evidence and cannot be released.');
-        }
-        releaseGateRoundReservation({
+        const released = releaseGateRoundReservation({
           branch: args.branch,
           roundsPath,
           token: args.reservation,
+          hasEvidenceForReservation: (binding) => {
+            const { decisions: freshDecisions } = readRun({ runDir: binding.runDir });
+            return fanOutsForReservation(binding, freshDecisions).length > 0;
+          },
+          withEvidenceLock: (binding, transition) =>
+            withRunJournalLocks([binding.runDir], transition),
         });
+        if (released.pendingEvidence) {
+          throw new Error('the reservation already has matching reviewer fan-out evidence and cannot be released.');
+        }
         process.stdout.write(`gate round reservation ${args.reservation} released.\n`);
         process.exit(0);
       }
@@ -625,46 +663,42 @@ if (invokedDirectly()) {
       }
       if (args.reservation !== null) {
         if (!runDir) throw new Error('--reservation needs the declared run that holds it.');
-        const reservation = gateRoundReservationFor({
-          branch: args.branch,
-          roundsPath,
-          token: args.reservation,
-        });
-        const completed = reservation === null
-          ? completedGateRoundReservationFor({
-              branch: args.branch,
-              roundsPath,
-              token: args.reservation,
-            })
-          : null;
-        if (completed !== null) {
-          if (completed.runDir !== runDir) {
-            throw new Error('the completed gate-round reservation does not belong to this declared run.');
-          }
-        }
-        const binding = reservation ?? completed;
-        const evidence = fanOutsForReservation(binding);
-        if (binding === null || evidence.length === 0) {
-          throw new Error('the reservation has no matching post-reservation reviewer fan-out evidence.');
-        }
+        let binding = null;
+        let fanOuts = 0;
         const consumed = consumeReservedEvidenceGateRound({
           branch: args.branch,
           roundsPath,
           token: args.reservation,
-          evidenceIdentities: evidence.map((decision) => JSON.stringify([runDir, decision.seq])),
+          evidenceForReservation: (candidate) => {
+            if (candidate.runDir !== runDir) {
+              throw new Error('the gate-round reservation does not belong to this declared run.');
+            }
+            binding = candidate;
+            const { decisions: freshDecisions } = readRun({ runDir: candidate.runDir });
+            const evidence = evidenceIdentitiesForReservation(candidate, freshDecisions);
+            fanOuts = evidence.length;
+            return evidence;
+          },
+          withEvidenceLock: (candidate, transition) =>
+            withRunJournalLocks([candidate.runDir], transition),
         });
-        const fanOuts = consumed.completed?.fanOuts ?? evidence.length;
+        fanOuts = consumed.completed?.fanOuts ?? consumed.fanOuts ?? fanOuts;
         if (fanOuts > 1) {
           throw new Error(
             'the reservation covered one launch but has multiple matching reviewer fan-outs; reconcile the extra evidence before continuing.',
           );
         }
-        if (consumed.completed !== null) {
+        if (consumed.completed) {
           process.stdout.write(`gate round reservation ${args.reservation} was already consumed as round ${consumed.rounds}.\n`);
           process.exit(0);
         }
+        if (consumed.released) {
+          throw new Error(
+            'the released reservation received reviewer fan-out evidence; it was counted but remains a canceled launch.',
+          );
+        }
         const max =
-          reservation.ticket !== null && reservation.authorizationHead !== null
+          binding.ticket !== null && binding.authorizationHead !== null
             ? verdictFor(0).max + (await import('../delegated-decision.mjs')).delegatedRoundBudget(config)
             : verdictFor(0).max;
         const verdict = gateRoundVerdict(consumed.rounds, max);

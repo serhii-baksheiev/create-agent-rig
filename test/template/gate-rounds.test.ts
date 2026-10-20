@@ -5,7 +5,7 @@ import { cp, mkdir, mkdtemp, readFile, readdir, writeFile } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { onlyOnWindows, skipUnless } from '../helpers/env.js';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
@@ -193,6 +193,7 @@ describe('the verdict on a round count is pure, so the rule is one implementatio
 
 describe('the CLI is what pr-ship calls, so the two failures have different exit codes', () => {
   let fanOutSequence = 0;
+  const recordedGateRoundRunDirs = new Set<string>();
   // 🔴 Every case passes `--config`. `projectRoot` comes from the SCRIPT's location,
   // not the cwd, so an earlier version of these tests that set `cwd` to a temp
   // directory silently counted rounds into this repository's own state — visible
@@ -308,6 +309,13 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
     await defaultConfigTemplate;
   });
 
+  // Later attempts must be able to read every earlier same-branch journal.
+  // The test owns these temporary journals until its fixture has finished.
+  afterEach(async () => {
+    await Promise.all([...recordedGateRoundRunDirs].map((runDir) => removeFixture(runDir)));
+    recordedGateRoundRunDirs.clear();
+  });
+
   const config = async (
     contents: unknown = defaultQueueConfig,
     roots?: string[],
@@ -341,28 +349,23 @@ describe('the CLI is what pr-ship calls, so the two failures have different exit
   ): Promise<{ code: number; stdout: string; stderr: string }> => {
     const root = path.join(path.dirname(cfg), '..');
     const runDir = await mkdtemp(path.join(tmpdir(), `gate-round-evidence-${fanOutSequence++}-`));
-    try {
-      const env = { ...process.env, RIG_RUN_DIR: runDir };
-      const reserved = await run([...args, '--reserve'], stages, env);
-      if (reserved.code !== 0) return reserved;
-      const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
-      if (!token)
-        throw new Error(
-          `gate-round --reserve did not emit a reservation token: ${reserved.stdout}`,
-        );
-      recordDecision({
-        runDir,
-        gate: 'reviewer-fan-out',
-        verdict: 'launched',
-        headSha: gitIn(root, ['rev-parse', 'HEAD']),
-        reviewers: ['code-reviewer'],
-        why: `gate-round reservation: ${token}`,
-        now: '2026-10-18T00:00:00.000Z',
-      });
-      return await run([...args, '--reservation', token], stages, env);
-    } finally {
-      await removeFixture(runDir);
-    }
+    recordedGateRoundRunDirs.add(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const reserved = await run([...args, '--reserve'], stages, env);
+    if (reserved.code !== 0) return reserved;
+    const token = reserved.stdout.match(/\breservation\s+([^\s]+)/i)?.[1];
+    if (!token)
+      throw new Error(`gate-round --reserve did not emit a reservation token: ${reserved.stdout}`);
+    recordDecision({
+      runDir,
+      gate: 'reviewer-fan-out',
+      verdict: 'launched',
+      headSha: gitIn(root, ['rev-parse', 'HEAD']),
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+      now: '2026-10-18T00:00:00.000Z',
+    });
+    return run([...args, '--reservation', token], stages, env);
   };
 
   // AR-141: a round names a head; a head that is not committed and pushed is

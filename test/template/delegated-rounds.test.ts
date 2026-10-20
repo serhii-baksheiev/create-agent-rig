@@ -77,7 +77,7 @@ import { cp, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { removeFixture } from '../helpers/remove-fixture.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -246,12 +246,15 @@ const delegatedRunDir = async (): Promise<string> => {
  * RP-426 did for `revalidate.test.ts`. Each case still gets its own fully
  * independent copy: `newPushedProject` copies the template and repoints
  * `origin`. Never written to directly — only copied from — and left for the
- * OS to reclaim, as RP-426's template is.
+ * suite teardown to remove after every dependent fixture has finished.
  */
+const fixtureRoots = new Set<string>();
+const baseCapRunDirs = new Set<string>();
 let pushedTemplateRoot: Promise<string> | null = null;
 
 const buildPushedTemplate = async (initialQueueConfig?: unknown): Promise<string> => {
   const root = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-template-'));
+  fixtureRoots.add(root);
   const dir = path.join(root, 'repo');
   const remote = path.join(root, 'remote');
   await mkdir(dir);
@@ -307,12 +310,9 @@ const branchAndPush = async (dir: string, branch: string): Promise<void> => {
 const exhaustBaseCap = async (dir: string, branch: string, cfg: string): Promise<void> => {
   for (let i = 0; i < 3; i += 1) {
     const runDir = await newRunDir();
-    try {
-      const result = await runGateRound(['--branch', branch, '--config', cfg], dir, envFor(runDir));
-      expect(result.code, result.out).toBe(0);
-    } finally {
-      await removeFixture(runDir);
-    }
+    baseCapRunDirs.add(runDir);
+    const result = await runGateRound(['--branch', branch, '--config', cfg], dir, envFor(runDir));
+    expect(result.code, result.out).toBe(0);
   }
 };
 
@@ -362,6 +362,14 @@ beforeAll(async () => {
     preparedBudgetTwoTemplateRoot = buildPreparedBudgetTwoTemplate();
   }
   await preparedBudgetTwoTemplateRoot;
+});
+
+// The prepared fixture's three journalled rounds are evidence for the later
+// authorized calls. Keep every helper-created run until the shared fixture ends.
+afterAll(async () => {
+  await Promise.all([...baseCapRunDirs, ...fixtureRoots].map((root) => removeFixture(root)));
+  baseCapRunDirs.clear();
+  fixtureRoots.clear();
 });
 
 const roundsFileFor = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');

@@ -38,6 +38,13 @@ blocking findings stop the PR until resolved.
   suspected pattern is (or is not) systemic.
 - Every finding: severity, file:line, the concrete attack or leak scenario, and
   the smallest fix. No theoretical lectures without a code path.
+- Report every instance of a confirmed blocker class across the diff in this
+  round, with a concrete scenario for each location. Follow
+  `.claude/rules/workflow.md`, "Review findings", for complete reporting and
+  optional finding identities. Continue discovering new security or
+  correctness defects in later rounds.
+- Claims about protection, refusals, limits or cost need the direct evidence
+  required by `.claude/rules/invariants.md`, "State the limits — and test them".
 - If the change is outside your triggers, say so and return quickly — a clean
   "not security-relevant" is a valid verdict.
 
@@ -55,6 +62,7 @@ the human who has to fix the finding.
     {
       "file": "services/api/src/handlers/upload.ts",
       "line": 31,
+      "id": "services/api/src/handlers/upload.ts|unvalidated-input|shell filename",
       "rule": "unvalidated input",
       "note": "the filename reaches the shell unescaped — attacker-controlled"
     }

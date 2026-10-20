@@ -617,6 +617,31 @@ const releaseLock = ({ lockPath, fd, token }) => {
 };
 
 /**
+ * Take several run-journal locks in one stable order. A branch can retain
+ * completed or released tokens from more than one run; admission reads all of
+ * them before it creates another token. Sorting makes competing admissions
+ * take those locks in the same order. `work` is synchronous: the locks leave
+ * their `finally` block as soon as its callback returns.
+ */
+export const withRunJournalLocks = (runDirs, work) => {
+  if (!Array.isArray(runDirs) || typeof work !== 'function') {
+    throw new TypeError('journal-locked transitions need run directories and a callback.');
+  }
+  const dirs = [...new Set(runDirs)].sort();
+  const locks = [];
+  try {
+    for (const runDir of dirs) {
+      requireRunDir(runDir);
+      requireRunDirExists(runDir);
+      locks.push(acquireLock(runDir));
+    }
+    return work();
+  } finally {
+    for (const lock of locks.reverse()) releaseLock(lock);
+  }
+};
+
+/**
  * Append one record, after the two questions every write has to answer first:
  * is this run already over, and what number is this record.
  *

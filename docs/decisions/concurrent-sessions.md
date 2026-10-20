@@ -101,7 +101,15 @@ design**:
   (`test/template/gate-rounds.test.ts` › "refuses a counts file it cannot
   parse, rather than starting the count over", whose comment records it).
 - **`gate-rounds.json`** — rounds per branch. Same location, same reason: the
-  count must outlive the worktree the branch is gated in. `recordGateRound` is
+  count must outlive the worktree the branch is gated in. Evidence-backed queue
+  transitions take the counter lock, then the relevant journal locks, retaining
+  them through fresh evidence checks and persistence. Active, completed and
+  released bindings are checked for this branch; late evidence for a canceled
+  token can still be counted and returns HOLD rather than granting another launch.
+  The counter-write interleavings are exercised by
+  `test/template/gate-round-evidence.test.ts` › "serializes a fan-out append
+  through the final counter write during %s".
+  The separate legacy `recordGateRound` API is
   read-modify-write with no lock; eight concurrent calls on one counter were
   measured recording four, and the module's header accepts that as bounded
   loss in the generous direction (each lost increment buys one extra allowed
@@ -198,7 +206,7 @@ its boundary: where the honest answer is "unsupported same-repo", say so.
 
 ## What this record deliberately does not claim
 
-- It does not claim a lock-free counter is correct. It claims the loss is
+- It does not claim the legacy lock-free `recordGateRound` API is correct. Its loss is
   bounded, in the generous direction, and cheaper than a lock — and pins the
   bound rather than the figure.
 - It does not claim the same-directory shape is detected before harm. It

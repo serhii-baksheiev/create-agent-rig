@@ -389,6 +389,58 @@ describe('probity-gate: declared and selected, launcher present — the forwarde
     expect(recorded.argv).toContain('codex');
     expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
   });
+
+  it('forwards nested-worktree Claude and Codex write payload bytes unchanged to the selected launcher', async () => {
+    const root = await makeFixture({
+      integrations: declaration(['claude-code', 'codex'], true),
+      launcherScript: relayLauncherScript('{"decision":"block","reason":"RP-545 sentinel"}'),
+    });
+    roots.push(root);
+    const nested = path.join(root, '.claude', 'worktrees', 'nested');
+    await mkdir(nested, { recursive: true });
+
+    const cases: Array<{ harness: 'claude' | 'codex'; payload: string }> = [
+      {
+        harness: 'claude',
+        payload: JSON.stringify(claudeWrite(path.join(nested, 'src', 'nested.ts'))),
+      },
+      {
+        harness: 'codex',
+        payload: JSON.stringify({
+          hook_event_name: 'PreToolUse',
+          tool_name: 'apply_patch',
+          tool_input: {
+            command: [
+              '*** Begin Patch',
+              '*** Add File: src/nested.ts',
+              '+unsafe',
+              '*** End Patch',
+            ].join('\n'),
+          },
+          cwd: nested,
+        }),
+      },
+    ];
+    for (const { harness, payload } of cases) {
+      const markerFile = path.join(root, `.probity-nested-${harness}.json`);
+      const result = await runGate([`--harness=${harness}`], payload, {
+        CLAUDE_PROJECT_DIR: root,
+        [MARKER_ENV]: markerFile,
+      });
+
+      expect(result.code, result.stderr).toBe(0);
+      expect(result.stdout).toBe('{"decision":"block","reason":"RP-545 sentinel"}');
+      const recorded = JSON.parse(await readFile(markerFile, 'utf8')) as {
+        argv: string[];
+        stdinBase64: string;
+      };
+      expect(recorded.argv.slice(-2)).toEqual([
+        '--agent',
+        harness === 'claude' ? 'claude-code' : 'codex',
+      ]);
+      expect(Buffer.from(recorded.stdinBase64, 'base64').toString('utf8')).toBe(payload);
+    }
+  });
 });
 
 describe('probity-gate: every forwarded tool reaches the launcher with its harness agent', () => {
