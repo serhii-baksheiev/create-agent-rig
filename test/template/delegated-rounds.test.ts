@@ -2728,7 +2728,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
     }
   });
 
-  it('the repository-composed budget admits the H2 grant for R5, then refuses a third grant and R6 without counting it', async () => {
+  it('the repository-composed budget admits the H3 grant for R6, then refuses a fourth grant and R7 without counting it', async () => {
     const roots: string[] = [];
     try {
       // This is the real composed queue this repository runs, copied into an
@@ -2808,6 +2808,12 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round5.code, round5.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(5);
 
+      // A third authorization must be bound to a real new source head, not
+      // the prior authorization-only child that consumed R5.
+      await writeFile(path.join(dir, 'fix-third.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix-third'], dir);
+      await git(['push', '-q'], dir);
       const h3 = await head(dir);
       const thirdRecord = await runDelegated(
         [
@@ -2824,16 +2830,48 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         dir,
         envFor(delegated),
       );
-      expect(thirdRecord.code, thirdRecord.out).not.toBe(0);
-      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
+      expect(thirdRecord.code, thirdRecord.out).toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(3);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-3'], dir);
+      await git(['push', '-q'], dir);
 
       const round6 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
         envFor(delegated),
       );
-      expect(round6.code, round6.out).toBe(2);
-      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+      expect(round6.code, round6.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(6);
+
+      const h4 = await head(dir);
+      const fourthRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'fourth repository-composed grant',
+          '--head',
+          h4,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(fourthRecord.code, fourthRecord.out).not.toBe(0);
+      expect(fourthRecord.out).toMatch(/delegated gate-round budget is spent.*3 of 3/i);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(3);
+
+      const round7 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round7.code, round7.out).toBe(2);
+      expect(round7.out).toMatch(/spent 6 gate rounds, the cap of 6/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(6);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
