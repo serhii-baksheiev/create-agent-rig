@@ -555,8 +555,8 @@ const recordOnlyChain = (projectRoot, from, to) => {
   return null;
 };
 
-/** Every `decisions.jsonl` this checkout's runs hold, bounded; throws when one cannot be read. */
-const journalDecisionTexts = (projectRoot, runDir) => {
+/** Candidate run directories for the existing bounded eligibility scan. */
+export const journalDecisionRunDirs = (projectRoot, runDir) => {
   const dirs = new Set();
   const runsRoot = join(mainCheckoutRoot(projectRoot), '.claude', 'runs');
   let names = [];
@@ -572,8 +572,12 @@ const journalDecisionTexts = (projectRoot, runDir) => {
   // delegated rounds for good once it has accumulated many runs.
   for (const name of names.sort().reverse().slice(0, MAX_RUN_DIRS)) dirs.add(join(runsRoot, name));
   if (typeof runDir === 'string' && runDir !== '') dirs.add(runDir);
+  return [...dirs];
+};
+
+const journalDecisionTexts = (projectRoot, runDir, journalDirs = journalDecisionRunDirs(projectRoot, runDir)) => {
   const texts = [];
-  for (const dir of dirs) {
+  for (const dir of journalDirs) {
     const file = join(dir, 'decisions.jsonl');
     let size;
     try {
@@ -593,13 +597,13 @@ const journalDecisionTexts = (projectRoot, runDir) => {
  * (RP-442): a durable, COMMITTED `extra-gate-round` authorization for this
  * ticket and branch whose head is HEAD, or HEAD's record-only descendant,
  * and no review verdict yet on any head that authorization covers. That
- * verdict set is the only consumption fact — there is no consumed-state
- * file. The authorization is read only from HEAD's own committed tree
+ * verdict set controls new admission; an admitted fan-out records its
+ * consumption receipt in the gate-round counter. The authorization is read only from HEAD's own committed tree
  * (`committedExtraGateRoundsFor`/`committedExtraGateRoundsOnBranch`, above)
  * — never the working tree — so a record that was never committed can never
  * be honoured (RP-442, security-scanner).
  *
- * The CONSUMING call needs its own authority too, checked BEFORE any
+ * The ADMISSION call needs its own authority too, checked BEFORE any
  * decision record is even read: `runDir` (`RIG_RUN_DIR`) must be set, and
  * that run's declared authority must be exactly `delegated` AND journalled
  * as such — the same two checks `record` itself runs
@@ -611,7 +615,7 @@ const journalDecisionTexts = (projectRoot, runDir) => {
  * `committedExtraGateRoundsFor` above closes for the RECORD side and this
  * closes for the CONSUMING side (RP-442, security-scanner).
  */
-export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
+export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir, journalDirs } = {}) => {
   if (typeof ticket !== 'string' || ticket === '') {
     return { ok: false, why: '--authorized needs --ticket <id>, the item the authorization was recorded for.' };
   }
@@ -643,13 +647,15 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
   if (!head) return { ok: false, why: 'HEAD could not be read.' };
   let records;
   let texts;
+  let currentJournalDirs;
   let onBranch;
   let budget;
   try {
     records = committedExtraGateRoundsFor({ projectRoot, ticket, branch });
     onBranch = committedExtraGateRoundsOnBranch({ projectRoot, branch }).length;
     budget = delegatedRoundBudget(loadConfig(join(projectRoot, '.claude', 'queue.json')));
-    texts = journalDecisionTexts(projectRoot, runDir);
+    currentJournalDirs = journalDirs ?? journalDecisionRunDirs(projectRoot, runDir);
+    texts = journalDecisionTexts(projectRoot, runDir, currentJournalDirs);
   } catch (error) {
     return { ok: false, why: `the authorization or its consumption could not be read — ${error.message}` };
   }

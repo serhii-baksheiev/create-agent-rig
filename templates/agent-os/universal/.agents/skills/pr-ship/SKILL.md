@@ -11,24 +11,28 @@ blockers.
 
 ## Steps
 
-0. **Count this round before you spend on it.** Run it on the branch **under
+0. **Precheck the budget before you spend on it.** Run it on the branch **under
    review** — if the PR is not checked out, do that first (step 2's warning covers
    why); on a detached checkout the command refuses rather than counting under
    `HEAD`:
 
    ```sh
-   node .claude/scripts/queue/index.mjs gate-round --branch "$(git rev-parse --abbrev-ref HEAD)"
+   node .claude/scripts/queue/index.mjs gate-round --check --branch "$(git rev-parse --abbrev-ref HEAD)"
    ```
 
    **Read the exit code, not just its sign.**
 
-   - **0** — proceed to step 1.
+   - **0** — proceed to step 1. This `--check` is read-only availability,
+     not permission to launch reviewers and not a consumed round. The atomic
+     admission immediately before fan-out below is still required. See
+     `test/template/gate-round-evidence.test.ts` (absent in a generated rig) ›
+     "keeps --check read-only so another run can reserve the final available slot".
    - **2** — the rounds are spent. Return `HOLD` with one blocker whose `rule`
      is *gate rounds exhausted*, quoting the round count in its `note`. Do not
      run the fan-out. Under a delegated run authority this is the loop's
      `gate-round-cap` stop: when it records an `extra-gate-round` authorization
      (loop §6.0), commit `.rig/decisions/<item-id>.jsonl` alone, push, and run
-     step 0 again with `--ticket <item-id> --authorized`, passing the run's
+     step 0 again with `--check --ticket <item-id> --authorized`, passing the run's
      own directory on that same command line
      (`RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/queue/index.mjs gate-round …`):
      the round is refused unless the calling run's journalled authority is
@@ -55,6 +59,12 @@ blockers.
    `queue.json` is composed means changing what composes it, not editing the file.
    Rounds are counted per branch in `.claude/gate-rounds.json`, so the count outlives
    the session that spent them.
+
+   **A non-empty fan-out needs a writable `RIG_RUN_DIR`, including attended
+   invocations.** An exit-0 precheck never authorizes an unrecorded launch.
+   Missing durable evidence after launch is a HOLD, not a successful gate.
+   See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
+   › "refuses a post-launch call when no run directory is declared".
 
    ⚠ **Nothing forces this call.** No hook launches the gate, so step 0 holds
    because it is written here — the same standing as every other step. What it
@@ -157,9 +167,8 @@ blockers.
    `node .claude/scripts/revalidate.mjs outcome --point BEFORE_PR --ticket
    <item-id> --action-changed false --note 'same id/sources as <earlier
    note>; re-confirmed, no re-read needed'` — and continue this same gate run
-   from step 2. Do not go back through step 0 for it: that counts another
-   gate round for drift already answered, and re-entering re-detects the same
-   id, so the loop would end only when the rounds run out.
+   from step 2. A repeated detection needs its own typed outcome; restarting
+   the non-consuming step-0 precheck does not resolve that detection.
    Any NEW id or a NEW source set is still a fresh HOLD with a full re-read;
    the shortcut is only in what an already-matched repeat's own outcome has
    to redo, never in whether it gets recorded at all. This is frozen
@@ -321,22 +330,59 @@ blockers.
    - an infrastructure review when it touches infrastructure (the stack layer
      names the agent).
 
-   Run them as subagents, in parallel — a fresh context reviews better than the
-   session that wrote the code (see `.claude/rules/workflow.md`,
-   "Review-context isolation").
+   **Before launching a non-empty reviewer set, atomically reserve capacity:**
+
+   ```sh
+   RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/queue/index.mjs gate-round --reserve --branch "$(git rev-parse --abbrev-ref HEAD)"
+   ```
+
+   For a delegated round add `--ticket <item-id> --authorized`. Require exit 0
+   and export the returned token as `RIG_GATE_RESERVATION` before launching
+   reviewers (`export RIG_GATE_RESERVATION='<token>'`).
+   A reservation holds capacity without spending it. It belongs to this exact
+   branch, head and canonical run directory; a bare repeat does not grant the
+   same attempt again. See `test/template/gate-round-evidence.test.ts` (absent
+   in a generated rig) › "reserves an unspent slot with an opaque token without regranting it to a shared run"
+   and › "admits only one simultaneous final-slot reservation across declared runs".
+   A refusal naming held reservations is not proof those rounds were spent:
+   reconcile the pending attempts rather than issuing extra authorization to
+   route around them. Never release another controller's attempt.
+
+   On continuation, inspect that attempt and resume its existing reviewers;
+   do not launch them again. Use `--reserve --reservation "$RIG_GATE_RESERVATION"`
+   only to inspect an admission that has not launched. If launch was abandoned
+   before any reviewer started, explicitly `--release --reservation <token>`.
+   After any launch or failed journal write, retain the reservation and HOLD
+   until the actual work is reconciled; missing evidence cannot prove that
+   nobody started. Historical tokenless fan-outs use explicit `--reconcile`
+   in their original run. For ambiguous numeric-only history, retain HOLD without
+   changing the count; see `test/template/gate-round-evidence.test.ts` ›
+   "refuses ambiguous numeric-only legacy reconciliation without recounting its tokenless fan-out".
+   See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
+   › "refuses to release a reservation once its token-bound fan-out was launched"
+   and › "reconciles every tokenless historic fan-out at one head exactly once without creating a new admission".
+
+   With a fresh admission, run the selected reviewers as subagents in parallel
+   (see `.claude/rules/workflow.md`, "Review-context isolation").
 
    🔴 **Record the set you launched, as you launch it.** The router journals the
    set it *routed*; the triggers above may only add, so what you actually
-   launched is a different list and this is the only place that knows it:
-   **Record the fan-out even when the launched set is empty.**
+   launched is a different list and this is the only place that knows it.
+   **Record the fan-out even when the launched set is empty.** A partial launch
+   records the actual subset and retains its accounting obligation.
 
    ```sh
    node --input-type=module -e '
      const runDir = process.env.RIG_RUN_DIR;
-     if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+     const reviewers = process.argv.slice(2);
+     const reservation = process.env.RIG_GATE_RESERVATION;
+     if (!runDir) {
+       if (reviewers.length > 0) throw new Error("launched reviewers require a durable run journal");
+       process.exit(0);
+     }
+     if (reviewers.length > 0 && !reservation) throw new Error("launched reviewers require their admission token");
      const journal = await import("./.claude/scripts/run-journal.mjs");
-     try {
-       console.log(journal.recordDecision({
+     console.log(journal.recordDecision({
          runDir,
          gate:      "reviewer-fan-out",
          verdict:   "launched",
@@ -344,13 +390,10 @@ blockers.
          // node binary itself, and reading it here would record that path as
          // the commit and shift every reviewer along by one.
          headSha:   process.argv[1],
-         reviewers: process.argv.slice(2),   // every reviewer you just started
+         reviewers: reviewers,              // every reviewer you just started
+         why: reservation ? `gate-round reservation: ${reservation}` : null,
          now:       new Date().toISOString(),
-       }));
-     } catch (error) {
-       if (!journal.isTraceExhausted?.(error)) throw error;
-       process.stderr.write(`run journal: ${error.message}\n  the fan-out above was NOT recorded.\n`);
-     }
+     }));
    ' "$(git rev-parse HEAD)" <reviewer> <reviewer> …
    ```
 
@@ -360,6 +403,24 @@ blockers.
    quoted string arrives as one reviewer whose name is both of theirs joined by
    a space, and `recordDecision` accepts it: it checks for a list of strings and
    nothing about what a name is.
+
+   **After recording a non-empty fan-out, consume its reservation:**
+
+   ```sh
+   RIG_RUN_DIR="$RIG_RUN_DIR" node .claude/scripts/queue/index.mjs gate-round --branch "$(git rev-parse --abbrev-ref HEAD)" --reservation "$RIG_GATE_RESERVATION"
+   ```
+
+   Retain the delegated `--ticket <item-id> --authorized` arguments when applicable.
+   Require exit 0 before proceeding. This counts one matching fan-out record once, even
+   if a fast reviewer already answered; replaying the same consumed token does
+   not buy a new launch. Empty sets spend no round and need no reservation.
+   Any missing journal, token or matching durable evidence is a HOLD. Never
+   catch trace exhaustion and proceed as though the fan-out was recorded.
+   See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
+   › "refuses a post-launch call without the durable fan-out bound to its reservation"
+   and › "acknowledges a replayed consumed reservation token without recounting its fan-out"
+   and `test/template/delegated-rounds.test.ts` (absent in a generated rig)
+   › "counts a reserved delegated fan-out after a reviewer verdict makes a new admission ineligible".
 
    **Launched is not answered, and the difference is the point.** The records
    below are written per verdict that *parsed* — so a reviewer whose report came
@@ -406,7 +467,13 @@ blockers.
    ```sh
    node --input-type=module -e '
      const runDir = process.env.RIG_RUN_DIR;
-     if (!runDir) process.exit(0);          // an undeclared run has no trace to write
+     const reviewers = process.argv.slice(2);
+     const reservation = process.env.RIG_GATE_RESERVATION;
+     if (!runDir) {
+       if (reviewers.length > 0) throw new Error("launched reviewers require a durable run journal");
+       process.exit(0);
+     }
+     if (reviewers.length > 0 && !reservation) throw new Error("launched reviewers require their admission token");
      // `check` prints nothing when it refuses, and a refused report is not a
      // verdict to record — parse only what it actually printed.
      if (!process.argv[1]) process.exit(0);
@@ -504,10 +571,10 @@ blockers.
   resolved, not argued with. After a reviewer-fix for a prose HOLD, run `check-premises` on the
   fix's own prose delta before returning to **step 0**. Search the whole branch
   diff for sibling copies of the same claim and correct every stale sibling
-  copy before the gate runs again from **step 0** —
-  which counts the new round and is what makes "again" finite. Re-entering at
-  step 1 skips the counter, and the unbounded rounds this gate measured are
-  exactly what that produces.
+  copy before the gate runs again from **step 0**. That precheck spends no
+  round. Reserve capacity before the next actual fan-out, then consume its
+  recorded evidence as step 4 requires; restarting a procedure alone is never
+  evidence that reviewers ran.
 
 Your own answer is a verdict like any other, so it ends the same way: prose for
 the author, then **exactly one** fenced `json` block, and nothing after it.
