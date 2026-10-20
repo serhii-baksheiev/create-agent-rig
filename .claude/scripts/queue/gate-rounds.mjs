@@ -491,7 +491,14 @@ export const reserveGateRound = ({
       }
       rounds[reservationKey] = 1;
       writeRoundState(file, rounds);
-      const postPersist = afterPersist?.();
+      let postPersist;
+      try {
+        postPersist = afterPersist?.();
+      } catch (error) {
+        delete rounds[reservationKey];
+        writeRoundState(file, rounds);
+        throw error;
+      }
       if (postPersist?.refused) {
         delete rounds[reservationKey];
         writeRoundState(file, rounds);

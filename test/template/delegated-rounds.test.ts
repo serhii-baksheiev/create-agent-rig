@@ -73,7 +73,7 @@
 // rule) — never by calling the thing being tested and comparing it to
 // itself.
 import { execFile } from 'node:child_process';
-import { cp, mkdir, mkdtemp, readFile, realpath, stat, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -1729,6 +1729,111 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
     }
   });
 
+  it('rolls back a post-persistence journal failure before returning an authorized reservation', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+      const authorizationHead = await head(dir);
+      const delegated = await delegatedRunDir();
+      roots.push(delegated);
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'post-persist journal failure',
+          '--head',
+          authorizationHead,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(record.code, record.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      // The root run appears only after the reservation's first counter write.
+      // Its real fresh journal lock makes `afterPersist` fail after persistence.
+      const lateRun = path.join(dir, '.claude', 'runs', 'r6-late-journal-lock');
+      const lock = path.join(lateRun, '.journal.lock');
+      const rounds = roundsFileFor(cfg);
+      const trace = path.join(delegated, 'post-persist-journal-lock.trace');
+      const preload = path.join(delegated, 'fail-after-reservation-persist.mjs');
+      await writeFile(
+        preload,
+        [
+          "import fs from 'node:fs';",
+          "import { syncBuiltinESMExports } from 'node:module';",
+          'const original = fs.renameSync;',
+          'let injected = false;',
+          'fs.renameSync = function(source, destination, ...args) {',
+          `  if (!injected && String(destination) === ${JSON.stringify(rounds)}) {`,
+          '    injected = true;',
+          '    fs.mkdirSync(process.env.RP521_LATE_RUN, { recursive: true });',
+          `    fs.writeFileSync(${JSON.stringify(lock)}, 'held\\n');`,
+          `    fs.writeFileSync(${JSON.stringify(trace)}, 'locked\\n');`,
+          '  }',
+          '  return original.call(this, source, destination, ...args);',
+          '};',
+          'syncBuiltinESMExports();',
+        ].join('\n'),
+      );
+      const args = ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg];
+      const beforeCounter = await readFile(rounds, 'utf8');
+      const failed = await run(
+        process.execPath,
+        [
+          '--import',
+          pathToFileURL(preload).href,
+          queueIndexScript,
+          'gate-round',
+          ...args,
+          '--reserve',
+        ],
+        dir,
+        { ...envFor(delegated), RP521_LATE_RUN: lateRun },
+      );
+
+      expect(await readFile(trace, 'utf8')).toBe('locked\n');
+      expect(failed.code, failed.out).not.toBe(0);
+      expect(failed.stdout).not.toMatch(/\breservation\s+/i);
+      expect(await readFile(rounds, 'utf8')).toBe(beforeCounter);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+
+      // Remove only the fixture fault. A new, ordinary admission must now
+      // succeed once, while a replay for the same run and head stays pending.
+      await rm(lock);
+      const fresh = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(delegated),
+      );
+      expect(fresh.code, fresh.out).toBe(0);
+      expect(fresh.stdout).toMatch(/\breservation\s+[^\s]+/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+
+      const replay = await run(
+        process.execPath,
+        [queueIndexScript, 'gate-round', ...args, '--reserve'],
+        dir,
+        envFor(delegated),
+      );
+      expect(replay.code, replay.out).not.toBe(0);
+      expect(replay.stdout).not.toMatch(/\breservation\s+/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
   it('counts a reserved delegated fan-out after a reviewer verdict makes a new admission ineligible', async () => {
     const roots: string[] = [];
     try {
@@ -3132,7 +3237,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
     }
   });
 
-  it('the repository-composed budget admits the H4 grant for R7, then refuses a fifth grant and R8 without counting it', async () => {
+  it('the repository-composed budget admits the H5 grant for R8, then refuses a sixth grant and R9 without counting it', async () => {
     const roots: string[] = [];
     try {
       // This is the real composed queue this repository runs, copied into an
@@ -3284,6 +3389,12 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round7.code, round7.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(7);
 
+      // The fifth grant also starts from an ordinary source commit, never an
+      // authorization-only child from the preceding delegated round.
+      await writeFile(path.join(dir, 'fix-fifth.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix-fifth'], dir);
+      await git(['push', '-q'], dir);
       const h5 = await head(dir);
       const fifthRecord = await runDelegated(
         [
@@ -3300,18 +3411,48 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         dir,
         envFor(delegated),
       );
-      expect(fifthRecord.code, fifthRecord.out).not.toBe(0);
-      expect(fifthRecord.out).toMatch(/delegated gate-round budget is spent.*4 of 4/i);
-      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(4);
+      expect(fifthRecord.code, fifthRecord.out).toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(5);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-5'], dir);
+      await git(['push', '-q'], dir);
 
       const round8 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
         envFor(delegated),
       );
-      expect(round8.code, round8.out).toBe(2);
-      expect(round8.out).toMatch(/spent 7 gate rounds, the cap of 7/i);
-      expect(await roundsFor(cfg, 'fix/a')).toBe(7);
+      expect(round8.code, round8.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(8);
+
+      const h6 = await head(dir);
+      const sixthRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'sixth repository-composed grant',
+          '--head',
+          h6,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(sixthRecord.code, sixthRecord.out).not.toBe(0);
+      expect(sixthRecord.out).toMatch(/delegated gate-round budget is spent.*5 of 5/i);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(5);
+
+      const round9 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round9.code, round9.out).toBe(2);
+      expect(round9.out).toMatch(/spent 8 gate rounds, the cap of 8/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(8);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
