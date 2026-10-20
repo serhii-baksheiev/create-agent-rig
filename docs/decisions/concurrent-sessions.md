@@ -109,6 +109,14 @@ design**:
   The counter-write interleavings are exercised by
   `test/template/gate-round-evidence.test.ts` › "serializes a fan-out append
   through the final counter write during %s".
+  Journal lock ownership checks require writers on one host in one PID namespace;
+  they do not establish liveness across hosts or PID namespaces. Within that scope,
+  lock age alone does not permit reclaim: a canonical owner PID must be confirmed
+  absent; live or unverifiable owners remain busy. See
+  `test/template/run-journal-writers.test.ts` › "is not reclaimed when its
+  canonical owner remains alive", "reclaims the canonical lock of a
+  confirmed-dead owner and leaves no lock file behind", and "fails closed
+  without deleting the ambiguous lock or appending an event".
   The separate legacy `recordGateRound` API is
   read-modify-write with no lock; eight concurrent calls on one counter were
   measured recording four, and the module's header accepts that as bounded

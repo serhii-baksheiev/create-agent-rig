@@ -127,6 +127,15 @@ rig) exercises this boundary in "serializes a fan-out append through the final
 counter write during %s" and "does not grant a different declared run after a
 released token receives late fan-out evidence".
 
+Journal lock ownership checks require writers on one host in one PID namespace;
+they do not establish liveness across hosts or PID namespaces. Within that scope,
+age alone does not reclaim a journal lock: its canonical owner PID must be
+confirmed absent. Live or unverifiable ownership remains busy. The generator's
+`test/template/run-journal-writers.test.ts` (absent in a generated rig) pins this
+in "is not reclaimed when its canonical owner remains alive", "reclaims the
+canonical lock of a confirmed-dead owner and leaves no lock file behind", and
+"fails closed without deleting the ambiguous lock or appending an event".
+
 Delegated verdict eligibility also uses the bounded current/root journal set;
 see `test/template/delegated-rounds.test.ts` (absent in a generated rig) › "serializes an unbound root-journal
 reviewer verdict written at the authorized counter-lock boundary" and

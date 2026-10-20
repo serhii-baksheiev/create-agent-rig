@@ -49,9 +49,9 @@
  * **The lock has an owner, not just a name on disk.** Its creator writes a
  * random token (`pid:hex`) into it before doing anything else; releasing it
  * removes the file only if its content is still that same token. A lock
- * reclaimed out from under a slow-but-alive writer therefore does not vanish
- * a second time when that writer finally calls `releaseLock` — it finds
- * somebody else's token there and leaves the file alone.
+ * that later replaces an earlier one therefore does not vanish when the
+ * earlier writer finally calls `releaseLock` — it finds somebody else's token
+ * there and leaves the file alone.
  *
  * **The wait is step-counted, never clock-read.** `acquireLock` makes at most
  * `LOCK_WAIT_MS / LOCK_STEP_MS` open attempts, sleeping one `LOCK_STEP_MS`
@@ -66,26 +66,36 @@
  * (absent in a generated rig) › "names no clock of its own anywhere in the
  * module" for the exact forbidden spellings, none of which appear anywhere in
  * this file, including the locking code below. Staleness is judged FS-clock
- * against FS-clock instead: a lock older than ~10s is a crashed writer's, and
- * "older" is read by comparing the lock file's own `mtime` against the
- * `mtime` of a marker file this call just created — never against a value
- * this process read from a system clock.
+ * against FS-clock instead: an old lock is eligible for reclaim only when its
+ * canonical `pid:hex` owner is confirmed absent in this host's PID namespace.
+ * This ownership check requires writers to share one host and PID namespace;
+ * it does not establish owner liveness across hosts or PID namespaces. Within
+ * that scope, a live or unparseable owner is never reclaimed, regardless of
+ * age. "Older" is read by comparing the lock
+ * file's own `mtime` against the `mtime` of a marker file this call just
+ * created — never against a value this process read from a system clock.
+ * See `test/template/run-journal-writers.test.ts` (absent in a generated rig)
+ * › "is not reclaimed when its canonical owner remains alive" and
+ * › "fails closed without deleting the ambiguous lock or appending an event".
+ * Its "does not reclaim a canonical lock when liveness returns EPERM" control
+ * runs when the host's PID probe actually supplies that permission denial.
  *
  * **Reclaim is itself serialised, by a second exclusive marker.** Two writers
  * that both see the same stale lock cannot both act on it: each first has to
  * `openSync('<runDir>/.journal.lock.reclaim', 'wx')`, and only one of them
  * can. The winner re-reads the main lock *after* it holds the marker, confirms
  * it is still the same lock it judged stale (same token content, still stale
- * by the marker's own `mtime`), removes it, then removes the marker. A writer
- * that fails to create the marker does not retry for it — it just keeps
- * waiting its normal steps, so at most one reclaim attempt happens per
+ * by the marker's own `mtime`, and a canonical owner absent in this PID namespace), removes
+ * it, then removes the marker. A writer that fails to create the marker does
+ * not retry for it — it just keeps waiting its normal steps, so at most one
+ * reclaim attempt happens per
  * `acquireLock` call and reclaim can never turn into a retry loop. This closes
  * the gap a stat-then-rm reclaim left open: two writers each seeing the lock
  * as stale, each removing what the other had just (re)created, both believing
  * they held the one lock `append()` promises. See
  * `test/template/run-journal-writers.test.ts` (absent in a generated rig) ›
- * "writes the record and leaves no lock file behind, once the existing lock is
- * old enough to be stale" (the ordinary case), and
+ * "reclaims the canonical lock of a confirmed-dead owner and leaves no lock
+ * file behind" (the reclaim case), and
  * `test/template/run-journal-writers.test.ts` (absent in a generated rig) ›
  * "runs the eight-writer race against a pre-planted stale lock repeatedly, and
  * readRun never breaks" (the race the marker exists to close). A reclaim
@@ -166,7 +176,7 @@ const LOCK_WAIT_MS = 2000;
 const LOCK_STEP_MS = 25;
 /** The bounded number of open attempts `acquireLock` makes — never a clock-read deadline. */
 export const LOCK_MAX_ATTEMPTS = Math.ceil(LOCK_WAIT_MS / LOCK_STEP_MS);
-/** A lock older than this is a crashed writer's, not a live one's. */
+/** A lock older than this may be reclaimed only after its owner is confirmed dead. */
 const STALE_LOCK_MS = 10000;
 
 /**
@@ -415,6 +425,27 @@ const sleepSync = (ms) => {
 const newToken = () => `${process.pid}:${randomBytes(8).toString('hex')}`;
 
 /**
+ * A reclaim must prove that a stale lock's canonical owner is gone. A malformed
+ * token, a PID the host will not let us inspect, or any other uncertainty is
+ * deliberately not proof: the bounded caller reports `busy` and leaves the
+ * lock untouched.
+ */
+const ownerIsConfirmedDead = (token) => {
+  const match = /^(0|[1-9]\d*):[\da-f]{16}$/.exec(token);
+  if (!match) return false;
+
+  const pid = Number(match[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return error?.code === 'ESRCH';
+  }
+};
+
+/**
  * Can `runDir` still accept a brand-new file right now? Used only when an
  * `EACCES`/`EPERM` on the lock path itself cannot be attributed to a visible
  * file (see `isLockContention`) — a uniquely named probe never collides with
@@ -478,9 +509,10 @@ const isLockContention = (error, path, runDir) => {
 };
 
 /**
- * At most one attempt, per `acquireLock` call, to reclaim a lock that looks
- * stale — serialised across processes by a second exclusive marker so two
- * writers can never both act on the same stale lock (see the module header).
+ * At most one attempt, per `acquireLock` call, to reclaim a stale lock whose
+ * canonical owner is confirmed dead — serialised across processes by a second
+ * exclusive marker so two writers can never both act on the same lock (see the
+ * module header).
  *
  * Every filesystem call here is a single, non-looping step: one marker
  * creation, up to two stats, up to two reads, up to two removals. Failing to
@@ -517,12 +549,12 @@ const tryReclaimStaleLock = (runDir, lockPath) => {
 
     // Re-read immediately before removing: only remove the lock if it is
     // STILL the exact one just judged stale — same token content, still
-    // stale by the same marker mtime. A lock a live writer has taken over in
-    // the meantime fails this check and is left alone.
+    // stale by the same marker mtime, and confirmed to belong to a dead
+    // owner. Any live or unverifiable owner is left alone.
     try {
       const currentToken = readFileSync(lockPath, 'utf8');
       const stillStale = markerMtimeMs - statSync(lockPath).mtimeMs > STALE_LOCK_MS;
-      if (currentToken === judgedToken && stillStale) {
+      if (currentToken === judgedToken && stillStale && ownerIsConfirmedDead(currentToken)) {
         rmSync(lockPath, { force: true });
       }
     } catch {
@@ -598,9 +630,8 @@ const acquireLock = (runDir) => {
 /**
  * Release in the order the lock was taken in: close the handle, then remove
  * the file — but only if it still carries THIS call's own token. A lock
- * reclaimed out from under a slow-but-alive writer, and re-created by whoever
- * reclaimed it, must not be deleted a second time by the writer that no
- * longer owns it.
+ * replaced after the original owner has gone away must not be deleted a second
+ * time by the writer that no longer owns it.
  */
 const releaseLock = ({ lockPath, fd, token }) => {
   try {

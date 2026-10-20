@@ -3237,7 +3237,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
     }
   });
 
-  it('the repository-composed budget admits the H5 grant for R8, then refuses a sixth grant and R9 without counting it', async () => {
+  it('the repository-composed budget admits the H6 grant for R9, then refuses a seventh grant and R10 without counting it', async () => {
     const roots: string[] = [];
     try {
       // This is the real composed queue this repository runs, copied into an
@@ -3425,6 +3425,12 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round8.code, round8.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(8);
 
+      // The sixth grant must also start at a fresh ordinary source commit,
+      // never at the authorization-only child that consumed R8.
+      await writeFile(path.join(dir, 'fix-sixth.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix-sixth'], dir);
+      await git(['push', '-q'], dir);
       const h6 = await head(dir);
       const sixthRecord = await runDelegated(
         [
@@ -3441,18 +3447,54 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         dir,
         envFor(delegated),
       );
-      expect(sixthRecord.code, sixthRecord.out).not.toBe(0);
-      expect(sixthRecord.out).toMatch(/delegated gate-round budget is spent.*5 of 5/i);
-      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(5);
+      expect(sixthRecord.code, sixthRecord.out).toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(6);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-6'], dir);
+      await git(['push', '-q'], dir);
 
       const round9 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
         envFor(delegated),
       );
-      expect(round9.code, round9.out).toBe(2);
-      expect(round9.out).toMatch(/spent 8 gate rounds, the cap of 8/i);
-      expect(await roundsFor(cfg, 'fix/a')).toBe(8);
+      expect(round9.code, round9.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(9);
+
+      // The seventh grant has its own new source head, so a later refusal
+      // can only be the repository budget rather than a stale-head check.
+      await writeFile(path.join(dir, 'fix-seventh.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix-seventh'], dir);
+      await git(['push', '-q'], dir);
+      const h7 = await head(dir);
+      const seventhRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'seventh repository-composed grant',
+          '--head',
+          h7,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(seventhRecord.code, seventhRecord.out).not.toBe(0);
+      expect(seventhRecord.out).toMatch(/delegated gate-round budget is spent.*6 of 6/i);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(6);
+
+      const round10 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round10.code, round10.out).toBe(2);
+      expect(round10.out).toMatch(/spent 9 gate rounds, the cap of 9/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(9);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
