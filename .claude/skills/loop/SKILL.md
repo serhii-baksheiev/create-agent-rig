@@ -994,7 +994,7 @@ and › "consumes one recorded non-empty fan-out once when a resumed invocation 
 the escalation:** the counter holds totals, admission and consumption receipts;
 reviewer findings remain in run journals. The count is **per branch, in the main
 checkout, across runs**, while a verdict is journalled into **this run's**
-directory. `decisions.jsonl` records this run's actual launches and parsed answers,
+directory. `decisions.jsonl` holds this run's supplied fan-out records and parsed answers,
 not every review on the branch. Earlier findings remain in the directories those
 runs declared and may be unavailable here.
 

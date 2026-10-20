@@ -409,7 +409,7 @@ blockers.
    ```
 
    Retain the delegated `--ticket <item-id> --authorized` arguments when applicable.
-   Require exit 0 before proceeding. This records one actual fan-out once, even
+   Require exit 0 before proceeding. This counts one matching fan-out record once, even
    if a fast reviewer already answered; replaying the same consumed token does
    not buy a new launch. Empty sets spend no round and need no reservation.
    Any missing journal, token or matching durable evidence is a HOLD. Never

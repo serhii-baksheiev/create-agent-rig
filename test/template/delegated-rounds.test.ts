@@ -2727,6 +2727,117 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
   });
+
+  it('the repository-composed budget admits the H2 grant for R5, then refuses a third grant and R6 without counting it', async () => {
+    const roots: string[] = [];
+    try {
+      // This is the real composed queue this repository runs, copied into an
+      // otherwise independent pushed Git fixture. It is deliberately not a
+      // hand-written maxDelegatedRounds: 2 test configuration.
+      const repositoryQueue = JSON.parse(
+        await readFile(path.join(repoRoot, '.claude', 'queue.json'), 'utf8'),
+      ) as unknown;
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, repositoryQueue);
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const delegated = await delegatedRunDir();
+      roots.push(delegated);
+      const h1 = await head(dir);
+      const firstRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'first repository-composed grant',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(firstRecord.code, firstRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      const round4 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round4.code, round4.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      await writeFile(path.join(dir, 'fix.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix'], dir);
+      await git(['push', '-q'], dir);
+      const h2 = await head(dir);
+
+      const secondRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'second repository-composed grant',
+          '--head',
+          h2,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(secondRecord.code, secondRecord.out).toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-2'], dir);
+      await git(['push', '-q'], dir);
+
+      const round5 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round5.code, round5.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+
+      const h3 = await head(dir);
+      const thirdRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'third repository-composed grant',
+          '--head',
+          h3,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(thirdRecord.code, thirdRecord.out).not.toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
+
+      const round6 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round6.code, round6.out).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
 });
 
 // --- the consuming call's own commit and authority requirements -----------

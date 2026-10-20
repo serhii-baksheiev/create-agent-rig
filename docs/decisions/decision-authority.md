@@ -101,8 +101,8 @@ the branch, only a record committed at HEAD counts, and admission for the
 launch must run under a journalled delegated authority — › "gate-round
 --authorized refuses a bypass of the committed-record and consuming-authority
 rules (RP-442, security-scanner)". Admission for a new delegated fan-out requires
-that no reviewer has answered on the covered head. Consumption records the actual
-non-empty fan-out once in the existing gate counter; a reviewer answer that arrives
+that no reviewer has answered on the covered head. Consumption counts each matching
+recorded non-empty fan-out once in the existing gate counter; a reviewer answer that arrives
 after valid admission does not erase that launched work — › "counts a reserved delegated fan-out after a reviewer verdict makes a new admission ineligible".
 Reviewer verdicts still prevent a fresh admission on the answered authorization.
 A new head earns nothing on
