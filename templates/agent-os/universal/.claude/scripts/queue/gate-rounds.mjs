@@ -410,7 +410,21 @@ export const reconcileEvidenceGateRounds = ({
     const seen = receipts[key] ?? [];
     const unrecorded = evidenceIdentities.filter((identity) => !seen.includes(identity));
     if (unrecorded.length === 0) return { rounds: rounds[key] ?? 0, recorded: 0 };
-    const next = (rounds[key] ?? 0) + unrecorded.length;
+    const spent = rounds[key] ?? 0;
+    // Numeric-only writers predate evidence receipts. Once such a count and an
+    // unreceipted historic fan-out meet, there is no durable way to tell whether
+    // the event is the round already in `spent` or a later one. Refuse before
+    // mutation rather than silently recounting it.
+    // See test/template/gate-round-evidence.test.ts (absent in a generated rig):
+    // "refuses ambiguous numeric-only legacy reconciliation without recounting its tokenless fan-out".
+    // Pinned by `test/template/gate-round-evidence.test.ts` › "refuses ambiguous
+    // numeric-only legacy reconciliation without recounting its tokenless fan-out".
+    if (spent !== seen.length) {
+      throw new Error(
+        'legacy numeric-only gate-round state cannot be reconciled with unreceipted reviewer fan-out evidence: the association is ambiguous.',
+      );
+    }
+    const next = spent + unrecorded.length;
     rounds[key] = next;
     for (const identity of unrecorded) rounds[receiptKeyFor(key, identity)] = 1;
     writeRoundState(file, rounds);
@@ -426,6 +440,7 @@ export const reserveGateRound = ({
   max,
   hasUnaccountedEvidence,
   withEvidenceLock,
+  afterPersist,
 } = {}) => {
   const key = requireBranch(branch);
   const file = roundsPath ?? gateRoundsPathFor(projectRoot);
@@ -476,6 +491,12 @@ export const reserveGateRound = ({
       }
       rounds[reservationKey] = 1;
       writeRoundState(file, rounds);
+      const postPersist = afterPersist?.();
+      if (postPersist?.refused) {
+        delete rounds[reservationKey];
+        writeRoundState(file, rounds);
+        return { reserved: false, authorizationRefused: true, why: postPersist.why, spent, held };
+      }
       return { reserved: true, reservation, spent, held };
     };
     return withEvidenceLock

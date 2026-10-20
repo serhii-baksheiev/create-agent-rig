@@ -555,8 +555,8 @@ const recordOnlyChain = (projectRoot, from, to) => {
   return null;
 };
 
-/** Every `decisions.jsonl` this checkout's runs hold, bounded; throws when one cannot be read. */
-const journalDecisionTexts = (projectRoot, runDir) => {
+/** Candidate run directories for the existing bounded eligibility scan. */
+export const journalDecisionRunDirs = (projectRoot, runDir) => {
   const dirs = new Set();
   const runsRoot = join(mainCheckoutRoot(projectRoot), '.claude', 'runs');
   let names = [];
@@ -572,8 +572,12 @@ const journalDecisionTexts = (projectRoot, runDir) => {
   // delegated rounds for good once it has accumulated many runs.
   for (const name of names.sort().reverse().slice(0, MAX_RUN_DIRS)) dirs.add(join(runsRoot, name));
   if (typeof runDir === 'string' && runDir !== '') dirs.add(runDir);
+  return [...dirs];
+};
+
+const journalDecisionTexts = (projectRoot, runDir, journalDirs = journalDecisionRunDirs(projectRoot, runDir)) => {
   const texts = [];
-  for (const dir of dirs) {
+  for (const dir of journalDirs) {
     const file = join(dir, 'decisions.jsonl');
     let size;
     try {
@@ -611,7 +615,7 @@ const journalDecisionTexts = (projectRoot, runDir) => {
  * `committedExtraGateRoundsFor` above closes for the RECORD side and this
  * closes for the CONSUMING side (RP-442, security-scanner).
  */
-export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
+export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir, journalDirs } = {}) => {
   if (typeof ticket !== 'string' || ticket === '') {
     return { ok: false, why: '--authorized needs --ticket <id>, the item the authorization was recorded for.' };
   }
@@ -643,13 +647,15 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir }) => {
   if (!head) return { ok: false, why: 'HEAD could not be read.' };
   let records;
   let texts;
+  let currentJournalDirs;
   let onBranch;
   let budget;
   try {
     records = committedExtraGateRoundsFor({ projectRoot, ticket, branch });
     onBranch = committedExtraGateRoundsOnBranch({ projectRoot, branch }).length;
     budget = delegatedRoundBudget(loadConfig(join(projectRoot, '.claude', 'queue.json')));
-    texts = journalDecisionTexts(projectRoot, runDir);
+    currentJournalDirs = journalDirs ?? journalDecisionRunDirs(projectRoot, runDir);
+    texts = journalDecisionTexts(projectRoot, runDir, currentJournalDirs);
   } catch (error) {
     return { ok: false, why: `the authorization or its consumption could not be read — ${error.message}` };
   }

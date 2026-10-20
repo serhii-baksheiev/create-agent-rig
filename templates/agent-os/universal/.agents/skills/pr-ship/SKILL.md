@@ -355,7 +355,9 @@ blockers.
    After any launch or failed journal write, retain the reservation and HOLD
    until the actual work is reconciled; missing evidence cannot prove that
    nobody started. Historical tokenless fan-outs use explicit `--reconcile`
-   in their original run, which accounts for recorded work and admits no launch.
+   in their original run. For ambiguous numeric-only history, retain HOLD without
+   changing the count; see `test/template/gate-round-evidence.test.ts` ›
+   "refuses ambiguous numeric-only legacy reconciliation without recounting its tokenless fan-out".
    See `test/template/gate-round-evidence.test.ts` (absent in a generated rig)
    › "refuses to release a reservation once its token-bound fan-out was launched"
    and › "reconciles every tokenless historic fan-out at one head exactly once without creating a new admission".

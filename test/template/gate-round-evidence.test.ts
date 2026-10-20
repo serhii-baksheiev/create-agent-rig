@@ -1078,6 +1078,68 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     expect(await counterAt(value.configPath, value.branch)).toBe(2);
   });
 
+  it('refuses ambiguous numeric-only legacy reconciliation without recounting its tokenless fan-out', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-legacy-continuity-'));
+    roots.push(runDir);
+    const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
+    const args = [
+      'gate-round',
+      '--reconcile',
+      '--branch',
+      value.branch,
+      '--config',
+      value.configPath,
+    ];
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+
+    // The pre-evidence CLI persisted only this numeric count. Its journal then
+    // recorded the same completed fan-out without a reservation token.
+    await writeFile(counterPath, JSON.stringify({ [value.branch]: 1 }));
+    await fanOut({ runDir, headSha: value.head, reviewers: ['code-reviewer'] });
+    const before = await readFile(counterPath, 'utf8');
+
+    const first = await run(args, env);
+
+    expect(first.code).toBe(1);
+    expect(first.stderr).toMatch(/ambiguous|legacy|reconcile|evidence|receipt/i);
+    expect(await readFile(counterPath, 'utf8')).toBe(before);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+
+    const replay = await run(args, env);
+
+    expect(replay.code).toBe(1);
+    expect(replay.stderr).toMatch(/ambiguous|legacy|reconcile|evidence|receipt/i);
+    expect(await readFile(counterPath, 'utf8')).toBe(before);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
+
+  it('reconciles a new tokenless fan-out after a fully receipted modern round', async () => {
+    const value = await newFixture();
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-modern-continuity-'));
+    roots.push(runDir);
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+
+    await fanOut({ runDir, headSha: value.head, reviewers: ['security-scanner'] });
+    const reconciled = await run([...args, '--reconcile'], env);
+
+    expect(reconciled.code, reconciled.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+    const replay = await run([...args, '--reconcile'], env);
+    expect(replay.code, replay.stderr).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
   it('reconciles every over-cap tokenless historic fan-out before refusing further rounds', async () => {
     const value = await newFixture();
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-over-cap-reconcile-'));

@@ -117,7 +117,7 @@ path for an independent clone — see `test/template/gate-round-evidence.test.ts
 
 Evidence-backed transitions take the counter lock before the relevant run-journal
 locks and retain both through the evidence check and counter persistence. Admission
-checks only this branch's active, completed and released token bindings. One active
+checks this branch's active, completed and released token bindings. One active
 slot covers one recorded fan-out; excess or late unaccounted evidence holds new
 admission. Release retains a marker in the existing counter rather than forgetting
 the token. Explicit consumption of late evidence for a released token counts it
@@ -126,6 +126,11 @@ The generator's `test/template/gate-round-evidence.test.ts` (absent in a generat
 rig) exercises this boundary in "serializes a fan-out append through the final
 counter write during %s" and "does not grant a different declared run after a
 released token receives late fan-out evidence".
+
+Delegated verdict eligibility also uses the bounded current/root journal set;
+see `test/template/delegated-rounds.test.ts` (absent in a generated rig) › "serializes an unbound root-journal
+reviewer verdict written at the authorized counter-lock boundary" and
+› "refuses a covered-head verdict from a root journal created at final counter persistence".
 
 The generic journal preserves evidence; it does not control external reviewer
 processes. Launching without admission or after release violates the procedure.

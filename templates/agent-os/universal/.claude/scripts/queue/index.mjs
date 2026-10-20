@@ -527,7 +527,7 @@ if (invokedDirectly()) {
                 projectRoot: gitRoot,
                 ticket: args.ticket,
                 branch: args.branch,
-                runDir: process.env.RIG_RUN_DIR,
+                runDir,
               });
         if (!authorization.ok) {
           process.stderr.write(`DELEGATED ROUND REFUSED — ${authorization.why} Nothing was counted.\n`);
@@ -553,8 +553,12 @@ if (invokedDirectly()) {
         let max = verdictFor(0).max;
         let ticket = null;
         let authorizationHead = null;
+        let authorizationJournalDirsFor = null;
+        let authorizationFor = null;
+        let lockedAuthorizationJournalDirs = [];
         if (spent >= max && args.authorized) {
-          const { authorizedRoundFor, delegatedRoundBudget } = await import('../delegated-decision.mjs');
+          const { authorizedRoundFor, delegatedRoundBudget, journalDecisionRunDirs } =
+            await import('../delegated-decision.mjs');
           max += delegatedRoundBudget(config);
           const authorization =
             spent >= max
@@ -563,7 +567,7 @@ if (invokedDirectly()) {
                   projectRoot: gitRoot,
                   ticket: args.ticket,
                   branch: args.branch,
-                  runDir: process.env.RIG_RUN_DIR,
+                  runDir,
                 });
           if (!authorization.ok) {
             process.stderr.write(`DELEGATED ROUND REFUSED — ${authorization.why} Nothing was counted.\n`);
@@ -571,6 +575,8 @@ if (invokedDirectly()) {
           }
           ticket = args.ticket;
           authorizationHead = authorization.head;
+          authorizationJournalDirsFor = journalDecisionRunDirs;
+          authorizationFor = authorizedRoundFor;
         }
         const reservation = {
           branch: args.branch,
@@ -590,7 +596,63 @@ if (invokedDirectly()) {
           withEvidenceLock: ({ reservations, completedReservations, releasedReservations }, transition) => {
             const bindings = [...reservations, ...completedReservations, ...releasedReservations]
               .filter((candidate) => candidate.branch === args.branch);
-            return withRunJournalLocks(bindings.map((candidate) => candidate.runDir), transition);
+            const authorizationJournalDirs =
+              authorizationHead === null ? [] : authorizationJournalDirsFor(gitRoot, runDir);
+            lockedAuthorizationJournalDirs = authorizationJournalDirs;
+            return withRunJournalLocks(
+              [
+                ...bindings.map((candidate) => candidate.runDir),
+                ...authorizationJournalDirs,
+              ],
+              () => {
+                if (authorizationHead !== null) {
+                  const fresh = authorizationFor({
+                    projectRoot: gitRoot,
+                    ticket: args.ticket,
+                    branch: args.branch,
+                    runDir,
+                    journalDirs: authorizationJournalDirs,
+                  });
+                  if (!fresh.ok || fresh.head !== authorizationHead) {
+                    return {
+                      reserved: false,
+                      authorizationRefused: true,
+                      why: fresh.ok
+                        ? 'the authorization changed while its journal boundary was held.'
+                        : fresh.why,
+                    };
+                  }
+                }
+                return transition();
+              },
+            );
+          },
+          afterPersist: () => {
+            if (authorizationHead === null) return null;
+            const currentJournalDirs = authorizationJournalDirsFor(gitRoot, runDir);
+            const lockedJournalDirs = new Set(lockedAuthorizationJournalDirs);
+            const addedJournalDirs = currentJournalDirs.filter((dir) => !lockedJournalDirs.has(dir));
+            const validate = () => {
+              const fresh = authorizationFor({
+                projectRoot: gitRoot,
+                ticket: args.ticket,
+                branch: args.branch,
+                runDir,
+                journalDirs: currentJournalDirs,
+              });
+              if (!fresh.ok || fresh.head !== authorizationHead) {
+                return {
+                  refused: true,
+                  why: fresh.ok
+                    ? 'the authorization changed after reservation persistence.'
+                    : fresh.why,
+                };
+              }
+              return null;
+            };
+            return addedJournalDirs.length > 0
+              ? withRunJournalLocks(addedJournalDirs, validate)
+              : validate();
           },
         });
         if (reserved.exhausted) {
@@ -612,6 +674,10 @@ if (invokedDirectly()) {
           process.stderr.write(
             'DELEGATED ROUND REFUSED — this committed authorization already admitted a reservation. Nothing was counted.\n',
           );
+          process.exit(2);
+        }
+        if (reserved.authorizationRefused) {
+          process.stderr.write(`DELEGATED ROUND REFUSED — ${reserved.why} Nothing was counted.\n`);
           process.exit(2);
         }
         process.stdout.write(`gate round reservation ${reservation.token} created.\n`);
