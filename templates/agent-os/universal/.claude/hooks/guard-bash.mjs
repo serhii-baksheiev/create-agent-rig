@@ -475,6 +475,14 @@ const literalHeredoc = (raw, index) => {
       cursor = end + 1;
       continue;
     }
+    if (ch === '$' && raw[cursor + 1] === "'") {
+      const end = raw.indexOf("'", cursor + 2);
+      if (end === -1 || raw.slice(cursor + 2, end).includes('\\')) return null;
+      word += raw.slice(cursor + 2, end);
+      quoted = true;
+      cursor = end + 1;
+      continue;
+    }
     if (ch === '"') {
       quoted = true;
       cursor += 1;

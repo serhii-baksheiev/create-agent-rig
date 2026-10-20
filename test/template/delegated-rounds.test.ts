@@ -314,12 +314,55 @@ const newPreparedBudgetTwoProject = async (
   return { dir, cfg: path.join(dir, '.claude', 'queue.json') };
 };
 
+/**
+ * The repository's queue is a composed artifact, not a template fixture.  This
+ * keeps the admission contract attached to the configuration this repository
+ * actually runs: after a canonical composer change and outward sync, the
+ * copied real-Git project receives that committed artifact unchanged.
+ */
+let preparedRepositoryComposedTemplateRoot: Promise<string> | null = null;
+
+const buildPreparedRepositoryComposedTemplate = async (): Promise<string> => {
+  const repositoryQueue = JSON.parse(
+    await readFile(path.join(repoRoot, '.claude', 'queue.json'), 'utf8'),
+  ) as unknown;
+  const root = await buildPushedTemplate(repositoryQueue);
+  const dir = path.join(root, 'repo');
+  const cfg = path.join(dir, '.claude', 'queue.json');
+  await branchAndPush(dir, 'fix/a');
+  await exhaustBaseCap(dir, 'fix/a', cfg);
+  return root;
+};
+
+const newPreparedRepositoryComposedProject = async (
+  roots: string[],
+): Promise<{ dir: string; cfg: string }> => {
+  if (!preparedRepositoryComposedTemplateRoot) {
+    preparedRepositoryComposedTemplateRoot = buildPreparedRepositoryComposedTemplate();
+  }
+  const template = await preparedRepositoryComposedTemplateRoot;
+  const root = await realpath(
+    await mkdtemp(path.join(tmpdir(), 'delegated-rounds-repository-composed-')),
+  );
+  roots.push(root);
+  await cp(template, root, { recursive: true });
+
+  const dir = path.join(root, 'repo');
+  const remote = path.join(root, 'remote');
+  await git(['remote', 'set-url', 'origin', remote], dir);
+  return { dir, cfg: path.join(dir, '.claude', 'queue.json') };
+};
+
 beforeAll(async () => {
   fixtureGitEnv = await discoverFixtureGitEnv();
   if (!preparedBudgetTwoTemplateRoot) {
     preparedBudgetTwoTemplateRoot = buildPreparedBudgetTwoTemplate();
   }
   await preparedBudgetTwoTemplateRoot;
+  if (!preparedRepositoryComposedTemplateRoot) {
+    preparedRepositoryComposedTemplateRoot = buildPreparedRepositoryComposedTemplate();
+  }
+  await preparedRepositoryComposedTemplateRoot;
 });
 
 const roundsFileFor = (cfg: string) => cfg.replace(/(\.json)?$/, '.gate-rounds.json');
@@ -2208,6 +2251,107 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       );
       expect(furtherAuthorized.code).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('the repository-composed budget admits the H2 grant for R5, then refuses a third grant and R6 without counting it', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir, cfg } = await newPreparedRepositoryComposedProject(roots);
+
+      const h1 = await head(dir);
+      const delegated = await delegatedRunDir();
+      const firstRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'first repository-composed grant',
+          '--head',
+          h1,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(firstRecord.code, firstRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization'], dir);
+      await git(['push', '-q'], dir);
+
+      const round4 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round4.code, round4.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(4);
+
+      await writeFile(path.join(dir, 'fix.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix'], dir);
+      await git(['push', '-q'], dir);
+      const h2 = await head(dir);
+
+      const secondRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'second repository-composed grant',
+          '--head',
+          h2,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(secondRecord.code, secondRecord.out).toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-2'], dir);
+      await git(['push', '-q'], dir);
+
+      const round5 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round5.code, round5.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+
+      const h3 = await head(dir);
+      const thirdRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'third repository-composed grant',
+          '--head',
+          h3,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(thirdRecord.code, thirdRecord.out).not.toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(2);
+
+      const round6 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round6.code, round6.out).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
     } finally {
       await Promise.all(roots.map((root) => removeFixture(root)));
     }

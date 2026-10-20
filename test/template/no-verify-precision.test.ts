@@ -195,11 +195,138 @@ describe('block-no-verify R1 literal prose and Git option boundaries (RP-522)', 
     expect(result.code, result.stderr).toBe(0);
   });
 
-  it('tracks exported HUSKY=0 through Git spellings and literal shell process scopes', async () => {
+  it('allows an ANSI-C quoted heredoc delimiter whose body is literal prose', async () => {
+    const result = await inspect("cat <<$'DOC'\ngit commit --no-verify -m prose\nDOC");
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('continues refusing a bypass after an ANSI-C quoted heredoc terminator', async () => {
+    const result = await inspect("cat <<$'DOC'\nprose\nDOC\ngit commit --no-verify -m x");
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses an ANSI-C delimiter with an escape before a later live bypass', async () => {
+    const result = await inspect("cat <<$'DOC\\x41'\nprose\nDOCA\ngit commit --no-verify -m x");
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('proves standalone HUSKY assignments are absent from clean child environments', async () => {
+    const printHusky = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+      "process.stdout.write(process.env.HUSKY ?? 'absent')",
+    )}`;
+    for (const command of [
+      `HUSKY=0; ${printHusky}`,
+      `HUSKY=0 && ${printHusky}`,
+      `export HUSKY=0; command env -u HUSKY ${printHusky}`,
+    ]) {
+      const result = await shell(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+      expect.soft(result.stdout, `${command}: ${result.stderr}`).toBe('absent');
+    }
+  });
+
+  it('allows standalone unexported HUSKY assignments before later Git commits', async () => {
+    for (const command of ['HUSKY=0; git commit -m x', 'HUSKY=0 && git commit -m x']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('keeps an unexported HUSKY=0 assignment out of child shells and substitutions', async () => {
+    for (const command of [
+      "HUSKY=0; bash -c 'git commit -m x'",
+      `HUSKY=0; printf '%s' "$(git commit -m x)"`,
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('retains an existing HUSKY export through a later standalone zero assignment', async () => {
+    for (const command of [
+      "export HUSKY=1; HUSKY=0; bash -c 'git commit -m x'",
+      `export HUSKY=1; HUSKY=0; printf '%s' "$(git commit -m x)"`,
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('proves the export attribute into a child survives a standalone zero assignment', async () => {
+    const printHusky = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+      "process.stdout.write(process.env.HUSKY ?? 'absent')",
+    )}`;
+    const result = await shell(
+      `export HUSKY=1; bash -c ${JSON.stringify(`HUSKY=0; ${printHusky}`)}`,
+    );
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout, result.stderr).toBe('0');
+  });
+
+  it('refuses an export attribute into child standalone zero assignments', async () => {
+    for (const command of [
+      "export HUSKY=1; bash -c 'HUSKY=0; git commit -m x'",
+      `export HUSKY=1; printf '%s' "$(HUSKY=0; git commit -m x)"`,
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('clears exported HUSKY through supported multioperand and -v unset forms', async () => {
+    for (const command of [
+      'export HUSKY=0; unset OTHER HUSKY; git commit -m x',
+      'export HUSKY=0; unset -v HUSKY; git commit -m x',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('proves function-only unset leaves exported HUSKY in a child environment', async () => {
+    const printHusky = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+      "process.stdout.write(process.env.HUSKY ?? 'absent')",
+    )}`;
+    const result = await shell(`export HUSKY=0; unset -f HUSKY; ${printHusky}`);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout, result.stderr).toBe('0');
+  });
+
+  it('refuses a function-only unset before a Git commit', async () => {
+    const result = await inspect('export HUSKY=0; unset -f HUSKY; git commit -m x');
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('retains exported HUSKY when unset does not name it', async () => {
+    const result = await inspect('export HUSKY=0; unset OTHER; git commit -m x');
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('clears exported HUSKY through a command env -u wrapper', async () => {
+    const result = await inspect('export HUSKY=0; command env -u HUSKY git commit -m x');
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('keeps a command env -u child unexported before its standalone zero assignment', async () => {
+    const result = await inspect(
+      "export HUSKY=0; command env -u HUSKY bash -c 'HUSKY=0; git commit -m x'",
+    );
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('refuses a command env wrapper that assigns HUSKY=0', async () => {
+    const result = await inspect('command env HUSKY=0 git commit -m x');
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses a command env wrapper that reassigns HUSKY=0 after clearing it', async () => {
+    const result = await inspect('command env -u HUSKY HUSKY=0 git commit -m x');
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses direct, prefix, and exported HUSKY=0 Git bypasses', async () => {
     for (const command of [
       'HUSKY=0 git.exe commit -m x',
-      'HUSKY=0; git commit -m x',
-      'HUSKY=0 && git commit -m x',
       'HUSKY="0" git commit -m x',
       "env HUSKY='0' git commit -m x",
       'export HUSKY=0; git commit -m x',
@@ -354,6 +481,33 @@ describe('block-no-verify R1 literal prose and Git option boundaries (RP-522)', 
     expect.soft(cleared.code, cleared.stderr).toBe(0);
   });
 
+  it('proves unrelated env unsets preserve ordered child HUSKY values', async () => {
+    const printHusky = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
+      "process.stdout.write(process.env.HUSKY ?? 'absent')",
+    )}`;
+    for (const [command, expected] of [
+      [`env -u HUSKY -u OTHER HUSKY=0 ${printHusky}`, '0'],
+      [`command env -u HUSKY -u OTHER HUSKY=0 ${printHusky}`, '0'],
+      [`export HUSKY=0; command env -u OTHER -u HUSKY ${printHusky}`, 'absent'],
+    ] as const) {
+      const result = await shell(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+      expect.soft(result.stdout, `${command}: ${result.stderr}`).toBe(expected);
+    }
+  });
+
+  it('applies unrelated env unsets before later HUSKY operations', async () => {
+    for (const command of [
+      'env -u HUSKY -u OTHER HUSKY=0 git commit -m x',
+      'command env -u HUSKY -u OTHER HUSKY=0 git commit -m x',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+    const cleared = await inspect('export HUSKY=0; command env -u OTHER -u HUSKY git commit -m x');
+    expect(cleared.code, cleared.stderr).toBe(0);
+  });
+
   it('stops env assignments at the command instead of reading a commit message as one', async () => {
     const message = await inspect('env git commit -m HUSKY=0');
     expect.soft(message.code, message.stderr).toBe(0);
@@ -422,6 +576,24 @@ const inspect = (command: string, cwd?: string) =>
   runNodeTimed(hook, { input: JSON.stringify(bash(command)), cwd, env: gitEnv(), timeout: 10_000 });
 
 type CommandResult = { code: number; stdout: string; stderr: string };
+
+const shell = (command: string): Promise<CommandResult> =>
+  new Promise((resolve) => {
+    const environment = gitEnv();
+    delete environment.HUSKY;
+    execFile(
+      'sh',
+      ['-c', command],
+      { env: environment, timeout: GIT_FIXTURE_TIMEOUT_MS, maxBuffer: GIT_FIXTURE_MAX_BUFFER },
+      (error, stdout, stderr) => {
+        resolve({
+          code: error ? ((error as { code?: number }).code ?? 1) : 0,
+          stdout,
+          stderr,
+        });
+      },
+    );
+  });
 
 const git = (args: string[], cwd: string): Promise<CommandResult> =>
   new Promise((resolve) => {

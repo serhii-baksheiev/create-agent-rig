@@ -115,19 +115,42 @@ const huskyAssignment = (segment, command) => {
 };
 
 const envHusky = (segment) => {
-  if (segment[0]?.value.split('/').pop() !== 'env') return null;
-  const command = commandOf(segment);
-  const end = command.name ? segment.length - command.args.length - 1 : segment.length;
-  let value = null;
-  for (let index = 1; index < end; index += 1) {
-    if (segment[index].value === '-u' && segment[index + 1]?.value === 'HUSKY') {
-      value = false;
+  let index = 0;
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[index]?.value ?? '')) index += 1;
+  while (segment[index]?.value === 'command') index += 1;
+  if (segment[index]?.value.split('/').pop() !== 'env') return null;
+  index += 1;
+  let state = null;
+  for (; index < segment.length; index += 1) {
+    if (segment[index].value === '-u' && segment[index + 1]) {
+      if (segment[index + 1].value === 'HUSKY') state = { exported: false, value: false };
       index += 1;
     } else if (/^HUSKY=([01])$/.test(segment[index].value)) {
-      value = segment[index].value === 'HUSKY=0';
+      state = { exported: true, value: segment[index].value === 'HUSKY=0' };
+    } else if (!segment[index].value.startsWith('-')) {
+      break;
     }
   }
-  return value;
+  return state;
+};
+
+const unsetsHusky = (args) => {
+  let index = 0;
+  let functionOnly = false;
+  while (args[index]?.value.startsWith('-')) {
+    const option = args[index].value;
+    if (option === '-v') {
+      index += 1;
+      continue;
+    }
+    if (option === '-f') {
+      functionOnly = true;
+      index += 1;
+      continue;
+    }
+    return false;
+  }
+  return !functionOnly && args.slice(index).some(({ value }) => value === 'HUSKY');
 };
 
 const configuredHooksAreUsable = (context) => {
@@ -157,19 +180,20 @@ const configuredHooksAreUsable = (context) => {
   return null;
 };
 
-const inspect = (raw, depth = 0, inheritedHusky = false) => {
+const inspect = (raw, depth = 0, inheritedHusky = { exported: false, value: false }) => {
   if (depth > 16) return null;
-  const states = new Map([[0, { exported: inheritedHusky, value: inheritedHusky }]]);
+  const states = new Map([[0, { ...inheritedHusky }]]);
   const snapshots = [];
   for (const segment of tokenize(raw, { literalHeredocs: true, scopes: true })) {
     const scope = segment.subshellScope;
     if (!states.has(scope)) states.set(scope, { ...(states.get(segment.subshellParent) ?? states.get(0)) });
     const state = states.get(scope);
     // Expansions see the owning command's state before that command changes it.
-    snapshots.push({ start: segment.start, husky: state.exported && state.value });
+    snapshots.push({ start: segment.start, husky: { ...state } });
     let command = commandOf(segment);
     if (command.name === 'if') command = commandOf(command.args);
-    const localHusky = envHusky(segment) ?? huskyAssignment(segment, command);
+    const environmentHusky = envHusky(segment);
+    const assignmentHusky = huskyAssignment(segment, command);
     if (command.name === 'export') {
       for (const { value } of command.args) {
         if (/^HUSKY=([01])$/.test(value)) state.value = value === 'HUSKY=0';
@@ -177,19 +201,26 @@ const inspect = (raw, depth = 0, inheritedHusky = false) => {
       }
       continue;
     }
-    if (command.name === 'unset' && command.args[0]?.value === 'HUSKY') {
+    if (command.name === 'unset' && unsetsHusky(command.args)) {
       state.value = false;
       state.exported = false;
       continue;
     }
-    if (!command.name && localHusky !== null && segment[0]?.value !== 'env') {
-      state.value = localHusky;
+    if (!command.name && assignmentHusky !== null && segment[0]?.value !== 'env') {
+      state.value = assignmentHusky;
       continue;
     }
     if (['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(command.name)) {
       const script = shellScript(command.args);
       if (script) {
-        const nested = inspect(script, depth + 1, localHusky ?? (state.exported ? state.value : false));
+        const nested = inspect(
+          script,
+          depth + 1,
+          environmentHusky ??
+            (assignmentHusky === null
+              ? (state.exported ? { ...state } : { exported: false, value: false })
+              : { exported: true, value: assignmentHusky }),
+        );
         if (nested) return nested;
       }
       continue;
@@ -197,7 +228,11 @@ const inspect = (raw, depth = 0, inheritedHusky = false) => {
     if (command.name !== 'git' && command.name !== 'git.exe') continue;
     const operation = operationOf(command.args);
     if (!operation) continue;
-    if ((localHusky ?? state.value) || hasInlineHooksPath(command.args, operation) || bypassesOperation(command.args, operation)) {
+    if (
+      (environmentHusky?.value ?? assignmentHusky ?? (state.exported && state.value)) ||
+      hasInlineHooksPath(command.args, operation) ||
+      bypassesOperation(command.args, operation)
+    ) {
       return refusal;
     }
     if (operation.value === 'commit') {
