@@ -138,6 +138,71 @@ const spawnWriter = (
   });
 };
 
+/**
+ * A real process holding the journal's public multi-run lock API until the
+ * parent releases it. The ready file proves the lock exists before the parent
+ * alters its mtime; no clock-based guess is used to arrange the overlap.
+ */
+const holdJournalLock = (
+  runDir: string,
+  readyPath: string,
+  releasePath: string,
+): { done: Promise<{ code: number; out: string }> } => {
+  const program = [
+    "import { existsSync, writeFileSync } from 'node:fs';",
+    `const { withRunJournalLocks } = await import(${JSON.stringify(moduleUrl)});`,
+    `withRunJournalLocks([${JSON.stringify(runDir)}], () => {`,
+    `  writeFileSync(${JSON.stringify(readyPath)}, 'ready\\n');`,
+    `  while (!existsSync(${JSON.stringify(releasePath)})) {`,
+    '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);',
+    '  }',
+    '});',
+  ].join('\n');
+  const child = execFile(process.execPath, ['--input-type=module', '--eval', program], {
+    env: process.env,
+  });
+  let out = '';
+  child.stdout?.on('data', (chunk: Buffer | string) => {
+    out += chunk.toString();
+  });
+  child.stderr?.on('data', (chunk: Buffer | string) => {
+    out += chunk.toString();
+  });
+
+  return {
+    done: new Promise((resolve, reject) => {
+      child.once('error', reject);
+      child.once('close', (code) => resolve({ code: code ?? 1, out }));
+    }),
+  };
+};
+
+/** A real process ID whose owner is confirmed to have exited. */
+const confirmedDeadPid = (): Promise<string> =>
+  new Promise((resolve, reject) => {
+    execFile(
+      process.execPath,
+      ['--eval', 'process.stdout.write(String(process.pid))'],
+      (error, stdout) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve(stdout);
+      },
+    );
+  });
+
+/** Whether this host can prove the public EPERM liveness boundary with PID 1. */
+const pidOneProbeIsDenied = (): boolean => {
+  try {
+    process.kill(1, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+};
+
 /** Polls until every path in `paths` exists, or gives up after `timeoutMs`. */
 const waitForAll = async (paths: string[], timeoutMs: number): Promise<void> => {
   const { existsSync } = await import('node:fs');
@@ -204,12 +269,14 @@ describe('the journal accepts more than one writer in the same run directory', (
 });
 
 describe('a stale lock is reclaimed rather than honoured forever', () => {
-  it('writes the record and leaves no lock file behind, once the existing lock is old enough to be stale', async () => {
+  it('reclaims the canonical lock of a confirmed-dead owner and leaves no lock file behind', async () => {
     const runDir = await newRunDir();
     const lockPath = lockPathFor(runDir);
-    // A lock a crashed writer left behind: present, but far older than any
-    // bounded wait this module could reasonably hold a live writer to.
-    await writeFile(lockPath, '');
+    const ownerPid = await confirmedDeadPid();
+    // The child has already exited when execFile invokes its callback. The
+    // fixture uses the actual lock-token grammar, not an empty placeholder,
+    // so a reclaim may distinguish a dead owner from a malformed record.
+    await writeFile(lockPath, `${ownerPid}:${'dead'.repeat(4)}`);
     const staleMtime = new Date(Date.now() - 60_000);
     await utimes(lockPath, staleMtime, staleMtime);
 
@@ -221,6 +288,79 @@ describe('a stale lock is reclaimed rather than honoured forever', () => {
     const after = await readdir(runDir);
     expect(after).not.toContain('.journal.lock');
   });
+});
+
+describe('an old journal lock still owned by a live process', () => {
+  it('is not reclaimed when its canonical owner remains alive', async () => {
+    const runDir = await newRunDir();
+    const lockPath = lockPathFor(runDir);
+    const readyPath = path.join(runDir, '.live-owner-ready');
+    const releasePath = path.join(runDir, '.release-live-owner');
+    const holder = holdJournalLock(runDir, readyPath, releasePath);
+
+    try {
+      await waitForAll([readyPath], 5_000);
+      const before = await readFile(lockPath, 'utf8');
+      const [owner, nonce] = before.split(':');
+      expect(Number(owner)).toBeGreaterThan(0);
+      expect(nonce).toMatch(/^[\da-f]+$/);
+      expect(nonce).toHaveLength(16);
+      const staleMtime = new Date(Date.now() - 60_000);
+      await utimes(lockPath, staleMtime, staleMtime);
+
+      const { recordEvent } = await load();
+      const error = await refusalFrom(() =>
+        recordEvent({ runDir, kind: 'must-not-steal', now: T0 }),
+      );
+
+      expect(error.failure).toBe('busy');
+      expect(await readFile(lockPath, 'utf8')).toBe(before);
+      expect(await linesIn(runDir, 'events.jsonl')).toEqual([]);
+    } finally {
+      await writeFile(releasePath, 'release\n');
+      await expect(holder.done).resolves.toMatchObject({ code: 0 });
+    }
+  });
+});
+
+describe('an old journal lock whose ownership cannot be established', () => {
+  it('fails closed without deleting the ambiguous lock or appending an event', async () => {
+    const runDir = await newRunDir();
+    const lockPath = lockPathFor(runDir);
+    await writeFile(lockPath, 'unattributable-owner');
+    const staleMtime = new Date(Date.now() - 60_000);
+    await utimes(lockPath, staleMtime, staleMtime);
+
+    const { recordEvent } = await load();
+    const error = await refusalFrom(() =>
+      recordEvent({ runDir, kind: 'ambiguous-owner', now: T0 }),
+    );
+
+    expect(error.failure).toBe('busy');
+    expect(await readFile(lockPath, 'utf8')).toBe('unattributable-owner');
+    expect(await linesIn(runDir, 'events.jsonl')).toEqual([]);
+  });
+});
+
+describe('an old journal lock whose PID probe is permission denied', () => {
+  it.runIf(pidOneProbeIsDenied())(
+    'does not reclaim a canonical lock when liveness returns EPERM',
+    async () => {
+      const runDir = await newRunDir();
+      const lockPath = lockPathFor(runDir);
+      const preserved = `1:${'cafe'.repeat(4)}`;
+      await writeFile(lockPath, preserved);
+      const staleMtime = new Date(Date.now() - 60_000);
+      await utimes(lockPath, staleMtime, staleMtime);
+
+      const { recordEvent } = await load();
+      const error = await refusalFrom(() => recordEvent({ runDir, kind: 'denied-owner', now: T0 }));
+
+      expect(error.failure).toBe('busy');
+      expect(await readFile(lockPath, 'utf8')).toBe(preserved);
+      expect(await linesIn(runDir, 'events.jsonl')).toEqual([]);
+    },
+  );
 });
 
 // code-reviewer r1 (fa745a0): "stat-then-rm reclaim and path-only release: two
@@ -256,11 +396,12 @@ describe('a stale lock reclaimed by two writers at once must not double-admit', 
     // not the budget.
     const iterations = 10;
     const failures: string[] = [];
+    const ownerPid = await confirmedDeadPid();
 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
       const runDir = await newRunDir();
       const lockPath = lockPathFor(runDir);
-      await writeFile(lockPath, '');
+      await writeFile(lockPath, `${ownerPid}:${'dead'.repeat(4)}`);
       const staleMtime = new Date(Date.now() - 60_000);
       await utimes(lockPath, staleMtime, staleMtime);
 

@@ -36,8 +36,16 @@ rows below are the contract a later `doctor` (RP-21) can report against.
 | surface | what is shared between the sessions | how the shared part is protected | evidence | status |
 | --- | --- | --- | --- | --- |
 | `concurrent-sessions/cross-repository` | the kill switch `~/.claude/create-agent-rig-loop-STOP` (by design — it must stop every session on the machine) and the `~/.claude/` directory the flag files live in | each checkout's unattended flag is named by the sha256 of its own real path, so two repositories never arm one file; nothing else in the table below crosses a repository boundary | `test/template/unattended-flag.test.ts` › "scopes on/off to --root so concurrent checkout CLIs do not share a flag" | `SUPPORTED` |
-| `concurrent-sessions/linked-worktree` | `.claude/queue.state.json` (the spacing ration), `.claude/gate-rounds.json` (the per-branch round counter), the kill switch, and the one `.git` object store | both files resolve to the **main** checkout on purpose (`mainCheckoutRoot`); the state reader refuses a torn or mis-shaped file, but selection snapshots a valid tier before listing candidates and has no arbitration with a concurrent close — so a selection already in flight can use the pre-close tier and take an elevated item after another session closes one; the counter is written through a per-pid temp file and a rename, with no lock — racing gates lose increments in the generous direction and never the file; on Windows a rename over a counter another process holds open is refused with `EPERM`, so the rename is retried within a fixed budget, and a loser past it removes its temp file and reports the code | `test/template/queue.test.ts` › "records a close made inside a worktree into the main checkout"; `test/template/queue.test.ts` › "refuses a state file holding %s"; `test/template/queue.test.ts` › "a selector holding a pre-close snapshot can still take an elevated item after another worktree closes one"; `test/template/concurrent-sessions.test.ts` › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight"; `test/template/gate-rounds.test.ts` › "retries the rename while another process holds the counter open, and still counts the round" | `DEGRADED` |
+| `concurrent-sessions/linked-worktree` | `.claude/queue.state.json` (the spacing ration), `.claude/gate-rounds.json` (the per-branch round counter), the kill switch, and the one `.git` object store | both files resolve to the **main** checkout on purpose (`mainCheckoutRoot`); the state reader refuses a torn or mis-shaped file, but selection snapshots a valid tier before listing candidates and has no arbitration with a concurrent close — so a selection already in flight can use the pre-close tier and take an elevated item after another session closes one; the evidence-backed counter writer serializes admission and consumption with an exclusive counter lock, then persists through a per-pid temp file and rename; the direct legacy `recordGateRound` API remains unlocked, so mixed legacy writers retain the measured lost-increment race; on Windows a rename over a counter another process holds open is refused with `EPERM`, so the rename is retried within a fixed budget, and a loser past it removes its temp file and reports the code | `test/template/queue.test.ts` › "records a close made inside a worktree into the main checkout"; `test/template/queue.test.ts` › "refuses a state file holding %s"; `test/template/queue.test.ts` › "a selector holding a pre-close snapshot can still take an elevated item after another worktree closes one"; `test/template/gate-round-evidence.test.ts` › "admits only one simultaneous final-slot reservation across declared runs" and › "records concurrent attempts to consume the same fan-out exactly once"; `test/template/concurrent-sessions.test.ts` › "eight concurrent recordGateRound calls all exit 0 and leave one parseable counter between one and eight"; `test/template/gate-rounds.test.ts` › "retries the rename while another process holds the counter open, and still counts the round" | `DEGRADED` |
 | `concurrent-sessions/same-directory` | the working tree, the unattended flag, the board selector `.claude/queue.board`, and — if the sessions declare the same run directory — the run journal | nothing between sessions: the second `on` replaces the first session's item and allow-list without refusal, and one `off` disarms both; `verify` detects the mismatch after the fact; two runs whose appends claim the same journal `seq` are refused rather than merged — interleaved appends are not what that check sees | `test/template/concurrent-sessions.test.ts` › "a second `on` in the same checkout replaces the first item, verify for the first item then refuses, and one `off` disarms both"; `test/template/run-journal.test.ts` › "prints the item but refuses baseline creation when the run directory holds a broken sequence" | `UNSUPPORTED` |
+
+With a pre-existing counter lock, admission fails without removing the lock or
+changing the rounds — see `test/template/gate-round-evidence.test.ts`
+› "refuses a pre-existing counter lock without removing it or changing rounds".
+The bounded investigation of recovery after writer termination is
+[RP-544](https://sbaksheiev.atlassian.net/browse/RP-544).
+This limit does not justify deleting another live writer's lock or resetting
+the branch's rounds.
 
 The rows are also declared as `EvidenceRow` literals in
 `test/template/concurrent-sessions.test.ts` — the capability-contract shape
@@ -93,7 +101,23 @@ design**:
   (`test/template/gate-rounds.test.ts` › "refuses a counts file it cannot
   parse, rather than starting the count over", whose comment records it).
 - **`gate-rounds.json`** — rounds per branch. Same location, same reason: the
-  count must outlive the worktree the branch is gated in. `recordGateRound` is
+  count must outlive the worktree the branch is gated in. Evidence-backed queue
+  transitions take the counter lock, then the relevant journal locks, retaining
+  them through fresh evidence checks and persistence. Active, completed and
+  released bindings are checked for this branch; late evidence for a canceled
+  token can still be counted and returns HOLD rather than granting another launch.
+  The counter-write interleavings are exercised by
+  `test/template/gate-round-evidence.test.ts` › "serializes a fan-out append
+  through the final counter write during %s".
+  Journal lock ownership checks require writers on one host in one PID namespace;
+  they do not establish liveness across hosts or PID namespaces. Within that scope,
+  lock age alone does not permit reclaim: a canonical owner PID must be confirmed
+  absent; live or unverifiable owners remain busy. See
+  `test/template/run-journal-writers.test.ts` › "is not reclaimed when its
+  canonical owner remains alive", "reclaims the canonical lock of a
+  confirmed-dead owner and leaves no lock file behind", and "fails closed
+  without deleting the ambiguous lock or appending an event".
+  The separate legacy `recordGateRound` API is
   read-modify-write with no lock; eight concurrent calls on one counter were
   measured recording four, and the module's header accepts that as bounded
   loss in the generous direction (each lost increment buys one extra allowed
@@ -190,7 +214,7 @@ its boundary: where the honest answer is "unsupported same-repo", say so.
 
 ## What this record deliberately does not claim
 
-- It does not claim a lock-free counter is correct. It claims the loss is
+- It does not claim the legacy lock-free `recordGateRound` API is correct. Its loss is
   bounded, in the generous direction, and cheaper than a lock — and pins the
   bound rather than the figure.
 - It does not claim the same-directory shape is detected before harm. It

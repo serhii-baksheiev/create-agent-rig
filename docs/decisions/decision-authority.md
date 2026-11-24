@@ -97,20 +97,53 @@ enlarge it by recording decisions — the generator's
 `test/template/delegated-rounds.test.ts` (absent in a generated rig) ›
 "absent maxDelegatedRounds defaults to 1: a first record succeeds, a second
 for the same ticket+branch is refused". The authorization is committed with
-the branch, only a record committed at HEAD counts, and the consuming call
-must itself run under a journalled delegated authority — › "gate-round
+the branch, only a record committed at HEAD counts, and admission for the
+launch must run under a journalled delegated authority — › "gate-round
 --authorized refuses a bypass of the committed-record and consuming-authority
-rules (RP-442, security-scanner)". `gate-round --authorized` counts the round only while no review
-verdict exists on the head it covers, and that verdict is the only record that
-the round was spent — › "exits 2 on a second --authorized call at the same
-head once a reviewer verdict is recorded for it". A new head earns nothing on
+rules (RP-442, security-scanner)". Admission for a new delegated fan-out requires
+that no reviewer has answered on the covered head. Consumption counts each matching
+recorded non-empty fan-out once in the existing gate counter; a reviewer answer that arrives
+after valid admission does not erase that launched work — › "counts a reserved delegated fan-out after a reviewer verdict makes a new admission ineligible".
+Reviewer verdicts still prevent a fresh admission on the answered authorization.
+A new head earns nothing on
 its own — › "exits 2 on a fix commit past the default budget — no second
 authorization exists to match". With the default budget a run therefore stops
 at the owner after three base rounds and one delegated round, however the
 records are edited — › "an in-place rewrite of the single counted record to a
-new, unverdicted head cannot buy a round past the total cap (probe 3)". Consumption is
-read from this checkout's run journals; a second clone with no verdicts of its
-own does not see it spent.
+new, unverdicted head cannot buy a round past the total cap (probe 3)". The default
+counter path resolves to the main checkout for linked worktrees and to a separate
+path for an independent clone — see `test/template/gate-round-evidence.test.ts`
+(absent in a generated rig) › "shares the default counter path across linked worktrees but not independent clones".
+
+Evidence-backed transitions take the counter lock before the relevant run-journal
+locks and retain both through the evidence check and counter persistence. Admission
+checks this branch's active, completed and released token bindings. One active
+slot covers one recorded fan-out; excess or late unaccounted evidence holds new
+admission. Release retains a marker in the existing counter rather than forgetting
+the token. Explicit consumption of late evidence for a released token counts it
+once and returns HOLD, including on replay, while retaining the journal records.
+The generator's `test/template/gate-round-evidence.test.ts` (absent in a generated
+rig) exercises this boundary in "serializes a fan-out append through the final
+counter write during %s" and "does not grant a different declared run after a
+released token receives late fan-out evidence".
+
+Journal lock ownership checks require writers on one host in one PID namespace;
+they do not establish liveness across hosts or PID namespaces. Within that scope,
+age alone does not reclaim a journal lock: its canonical owner PID must be
+confirmed absent. Live or unverifiable ownership remains busy. The generator's
+`test/template/run-journal-writers.test.ts` (absent in a generated rig) pins this
+in "is not reclaimed when its canonical owner remains alive", "reclaims the
+canonical lock of a confirmed-dead owner and leaves no lock file behind", and
+"fails closed without deleting the ambiguous lock or appending an event".
+
+Delegated verdict eligibility also uses the bounded current/root journal set;
+see `test/template/delegated-rounds.test.ts` (absent in a generated rig) › "serializes an unbound root-journal
+reviewer verdict written at the authorized counter-lock boundary" and
+› "refuses a covered-head verdict from a root journal created at final counter persistence".
+
+The generic journal preserves evidence; it does not control external reviewer
+processes. Launching without admission or after release violates the procedure.
+These accounting checks do not claim to prevent an unrecorded external launch.
 
 The run's authority is self-declared. In the opt-in workflow layer,
 `run-state.mjs authority` journals each declaration with the value before and after it —
