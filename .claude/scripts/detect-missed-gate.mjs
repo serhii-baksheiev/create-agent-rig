@@ -15,6 +15,14 @@
 //   node .claude/scripts/detect-missed-gate.mjs --input prs.json    # offline
 //   node .claude/scripts/detect-missed-gate.mjs --epoch 2026-07-01  # ignore older merges
 //
+// `--since` accepts numeric year-month-day (including signed or extended
+// years), full English month-day-year, and year-first slash dates. A numeric
+// year-month-day may carry its usual time or offset suffix. The written local
+// calendar date is validated before `Date` converts its instant: JavaScript
+// otherwise normalizes impossible dates such as February 31. The published
+// examples are ISO-shaped; the flexible forms below are retained because the
+// detector's tests already establish them as compatible input.
+//
 // 🔴 **Never invoke it as a step inside a run.** A check the run performs on
 // itself is a check the run in a hurry skips — running it inside would give back
 // exactly the property that makes it worth having. A scheduled job, a weekly
@@ -483,15 +491,55 @@ const parseArgs = (argv) => {
 
 const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
 
-const hasValidIsoCalendarDate = (value) => {
-  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})(?=\D|$)/.exec(value.trim());
-  if (!match) return true;
-  const [, yearText, monthText, dayText] = match;
+const monthNumbers = new Map([
+  ['january', 1],
+  ['february', 2],
+  ['march', 3],
+  ['april', 4],
+  ['may', 5],
+  ['june', 6],
+  ['july', 7],
+  ['august', 8],
+  ['september', 9],
+  ['october', 10],
+  ['november', 11],
+  ['december', 12],
+]);
+
+const writtenCalendarDate = (value) => {
+  const source = value.trim();
+  const numeric = /^([+-]?\d{4,})-(\d+)-(\d+)(?=$|[TtZ\s])/.exec(source);
+  if (numeric) {
+    const [, yearText, monthText, dayText] = numeric;
+    return { yearText, monthText, dayText };
+  }
+  const english = /^([A-Za-z]+)\s+(\d+),\s*([+-]?\d+)$/.exec(source);
+  if (english) {
+    const [, name, dayText, yearText] = english;
+    const month = monthNumbers.get(name.toLowerCase());
+    return month === undefined ? null : { yearText, monthText: String(month), dayText };
+  }
+  const slash = /^([+-]?\d{4,})\/(\d+)\/(\d+)$/.exec(source);
+  if (slash) {
+    const [, yearText, monthText, dayText] = slash;
+    return { yearText, monthText, dayText };
+  }
+  return null;
+};
+
+const hasValidGregorianCalendarDate = ({ yearText, monthText, dayText }) => {
+  if (monthText.length > 2 || dayText.length > 2) return false;
   const year = Number(yearText);
   const month = Number(monthText);
   const day = Number(dayText);
+  if (!Number.isSafeInteger(year)) return false;
   const daysInMonth = [31, year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
   return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1];
+};
+
+const hasValidSinceCalendarDate = (value) => {
+  const written = writtenCalendarDate(value);
+  return written !== null && hasValidGregorianCalendarDate(written);
 };
 
 const MAX_PRS = 100;
@@ -581,7 +629,7 @@ const restPull = (number) => {
 const fetchMergedPrs = (since) => {
   try {
     const sinceAt = new Date(since);
-    if (Number.isNaN(sinceAt.getTime()) || !hasValidIsoCalendarDate(since)) {
+    if (Number.isNaN(sinceAt.getTime()) || !hasValidSinceCalendarDate(since)) {
       throw new Error('invalid --since date bound');
     }
     return listPulls(sinceAt.getTime())

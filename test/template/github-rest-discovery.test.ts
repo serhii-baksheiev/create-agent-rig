@@ -428,6 +428,8 @@ describe('detect-missed-gate REST discovery', () => {
   it('refuses calendar-invalid --since values before acquiring REST pull data', async () => {
     for (const since of [
       '2026-02-31',
+      '2026-02-031',
+      '2026-002-31',
       '2025-02-29',
       '2026-02-31T00:00:00Z',
       '2026-02-31 00:00:00Z',
@@ -461,6 +463,106 @@ describe('detect-missed-gate REST discovery', () => {
       await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
       stubs.pop()!.restore();
     }
+  });
+
+  it.each(['02026-02-31', '+002026-02-31', '-002026-02-31', 'February 31, 2026', '2026/02/31'])(
+    'refuses a normalized calendar-invalid --since value (%s) before acquiring REST pull data',
+    async (since) => {
+      const dir = await installedDetector();
+      const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-normalized-invalid-'));
+      const calls = path.join(bin, 'calls.jsonl');
+      const gh = await stubCommand(
+        'gh',
+        [
+          `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+          "if (args[0] !== 'api') return { exitCode: 2 };",
+          "return { stdout: '[]\\n' };",
+        ].join('\n'),
+      );
+      stubs.push(gh);
+
+      const result = await run(
+        path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+        ['--since', since, '--json'],
+        dir,
+      );
+      expect(result.code, `${since}: ${result.out}`).toBe(1);
+      expect(result.out).toMatch(/invalid.*--since|--since.*invalid|invalid.*date/i);
+      await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+      stubs.pop()!.restore();
+    },
+  );
+
+  it('refuses a locale-ambiguous numeric --since value before acquiring REST pull data', async () => {
+    const dir = await installedDetector();
+    const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-ambiguous-numeric-'));
+    const calls = path.join(bin, 'calls.jsonl');
+    const gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "return { stdout: '[]\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run(
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+      ['--since', '03/04/2026', '--json'],
+      dir,
+    );
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/invalid.*--since|--since.*invalid|invalid.*date/i);
+    await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses a short numeric-year hyphenated --since value before acquiring REST pull data', async () => {
+    const dir = await installedDetector();
+    const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-short-year-hyphen-'));
+    const calls = path.join(bin, 'calls.jsonl');
+    const gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "return { stdout: '[]\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run(
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+      ['--since', '03-04-26', '--json'],
+      dir,
+    );
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/invalid.*--since|--since.*invalid|invalid.*date/i);
+    await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses a short numeric-year slash --since value before acquiring REST pull data', async () => {
+    const dir = await installedDetector();
+    const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-short-year-slash-'));
+    const calls = path.join(bin, 'calls.jsonl');
+    const gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "return { stdout: '[]\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run(
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+      ['--since', '03/04/26', '--json'],
+      dir,
+    );
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/invalid.*--since|--since.*invalid|invalid.*date/i);
+    await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('continues to acquire REST pull data for valid leap-day, offset, and flexible --since values', async () => {
@@ -498,6 +600,33 @@ describe('detect-missed-gate REST discovery', () => {
       stubs.pop()!.restore();
     }
   });
+
+  it.each(['02026-02-28', '+002026-02-28', '-002026-02-28', 'February 28, 2026', '2026/02/28'])(
+    'continues to acquire REST pull data for a flexible valid --since value (%s)',
+    async (since) => {
+      const dir = await installedDetector();
+      const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-normalized-valid-'));
+      const calls = path.join(bin, 'calls.jsonl');
+      const gh = await stubCommand(
+        'gh',
+        [
+          `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+          "if (args[0] !== 'api') return { exitCode: 2 };",
+          "return { stdout: '[]\\n' };",
+        ].join('\n'),
+      );
+      stubs.push(gh);
+
+      const result = await run(
+        path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+        ['--since', since, '--json'],
+        dir,
+      );
+      expect(result.code, `${since}: ${result.out}`).toBe(0);
+      expect((await readFile(calls, 'utf8')).trim()).not.toBe('');
+      stubs.pop()!.restore();
+    },
+  );
 
   it('bounds merged-PR acquisition with two explicit REST pages and refuses the overflow', async () => {
     const dir = await installedDetector();
