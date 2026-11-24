@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "ticket": "RP-563",
+  "fingerprints": {
+    "scope": {
+      "algorithm": "sha256",
+      "value": "ce1244ee5925cc540c33233b3959c2ff2a54d9abf27b00f42a119ab91cde1665",
+      "targetSha": "3caf2ab5e8b4815aaa9d188bbb09344a5081da7e"
+    },
+    "commentary": {
+      "algorithm": "sha256",
+      "value": "d245a60394fdac7eab8b284ef55f0a500162e492a108dfd6d4b26be5b9894c89",
+      "count": 1
+    }
+  }
+}
