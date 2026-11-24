@@ -14,7 +14,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { dirname, resolve } from 'node:path';
+import { dirname, relative, resolve } from 'node:path';
 
 // The sanitiser is IMPORTED, never re-derived. This repo had already ruled on
 // which git variables to strip, exported the answer with its stated limit, and
@@ -91,12 +91,31 @@ export const mainCheckoutRoot = (startDir) => {
 };
 
 /**
- * An untracked journal entry (`journal/YYYY-MM.md`) is the one dirt that does
- * not refuse — `gate-rounds.test.ts` (absent in
+ * An untracked journal entry (`journal/YYYY-MM.md`) does not refuse —
+ * `gate-rounds.test.ts` (absent in
  * a generated rig) › "passes gate-round on an untracked journal/YYYY-MM.md, and
  * counts the round" (RP-450).
+ *
+ * A second gate-round process can briefly leave the current counter's lock or
+ * decimal-PID write temp untracked. Those are counter state, not source dirt;
+ * `gate-round-evidence.test.ts` (absent in a generated rig) › "treats the
+ * counter lock held by another reservation as internal state, while still
+ * refusing source dirt" and › "treats the current counter temp write as
+ * internal state, while refusing other dirty paths" (RP-521) pin the exact
+ * exception. A tracked change, another counter's lock, or any other untracked
+ * path still refuses the round.
  */
 const JOURNAL_ENTRY = /^\?\? journal\/\d{4}-\d{2}\.md$/;
+
+const currentCounterArtifact = (root, counterPath) => {
+  if (typeof counterPath !== 'string' || counterPath === '') return null;
+  const withinRoot = relative(root, counterPath).replaceAll('\\', '/');
+  if (withinRoot === '' || withinRoot === '..' || withinRoot.startsWith('../')) return null;
+  const prefix = `?? ${withinRoot}.`;
+  return (line) =>
+    line === `${prefix}lock` ||
+    (line.startsWith(prefix) && /^[1-9]\d*\.tmp$/.test(line.slice(prefix.length)));
+};
 
 /**
  * Is this checkout in a state a gate round may be counted against (AR-141)?
@@ -105,16 +124,18 @@ const JOURNAL_ENTRY = /^\?\? journal\/\d{4}-\d{2}\.md$/;
  * branch two rounds were counted before a commit that pre-commit then refused,
  * so the counter and the records named a head that never shipped. The three
  * states that make a head unshippable are decidable from git alone: a dirty
- * working tree (tracked or untracked, bar that journal entry), a branch with no
+ * working tree (tracked or untracked, bar that journal entry and the current
+ * counter's internal artifacts), a branch with no
  * upstream, and commits the upstream has not seen. `{ ok: true }` otherwise; a git that cannot answer
  * is reported as such, never as clean.
  *
  * Bounded: two git calls, each with a timeout, and the porcelain output is
- * read only for lines other than that entry. The upstream question has one catch for three
+ * read only for lines other than that entry or an explicitly supplied current
+ * counter's lock or decimal-PID temp. The upstream question has one catch for three
  * states — a detached HEAD, a branch with no upstream, an upstream that is
  * gone — and names none of them apart; the refusal is right for all three.
  */
-export const checkoutIsShippable = (root) => {
+export const checkoutIsShippable = (root, { counterPath } = {}) => {
   const git = (args) =>
     execFileSync('git', args, {
       cwd: root,
@@ -129,7 +150,12 @@ export const checkoutIsShippable = (root) => {
   } catch (error) {
     return { ok: false, why: `git could not read the working tree at ${root}: ${error.message}` };
   }
-  const dirty = status.split('\n').filter((line) => line !== '' && !JOURNAL_ENTRY.test(line));
+  const isCurrentCounterArtifact = currentCounterArtifact(root, counterPath);
+  const dirty = status
+    .split('\n')
+    .filter(
+      (line) => line !== '' && !JOURNAL_ENTRY.test(line) && !isCurrentCounterArtifact?.(line),
+    );
   if (dirty.length > 0) {
     return {
       ok: false,
