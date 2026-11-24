@@ -476,11 +476,21 @@ const literalHeredoc = (raw, index) => {
       continue;
     }
     if (ch === '$' && raw[cursor + 1] === "'") {
-      const end = raw.indexOf("'", cursor + 2);
-      if (end === -1 || raw.slice(cursor + 2, end).includes('\\')) return null;
-      word += raw.slice(cursor + 2, end);
+      cursor += 2;
+      while (cursor < raw.length && raw[cursor] !== "'") {
+        if (raw[cursor] !== '\\') {
+          word += raw[cursor];
+          cursor += 1;
+          continue;
+        }
+        if (raw[cursor + 1] !== 'x' || !/^[0-9a-fA-F]{1,2}/.test(raw.slice(cursor + 2))) return null;
+        const digits = /^[0-9a-fA-F]{1,2}/.exec(raw.slice(cursor + 2))[0];
+        word += String.fromCharCode(Number.parseInt(digits, 16));
+        cursor += digits.length + 2;
+      }
+      if (raw[cursor] !== "'") return null;
       quoted = true;
-      cursor = end + 1;
+      cursor += 1;
       continue;
     }
     if (ch === '"') {
@@ -777,7 +787,7 @@ export const evaluatedSubstitutions = (raw, heredocBody = false, positions = fal
     }
     if (!heredocBody && quote) {
       if (raw[index] === quote) quote = null;
-      if (quote !== '"' || raw[index] !== '$') continue;
+      if (quote !== '"' || (raw[index] !== '$' && raw[index] !== '`')) continue;
     }
     if (!heredocBody && (raw[index] === "'" || raw[index] === '"')) {
       quote = raw[index];
@@ -788,6 +798,19 @@ export const evaluatedSubstitutions = (raw, heredocBody = false, positions = fal
       if (marker) {
         pendingHeredocs.push({ ...marker, position: offset + index });
         index += marker.length - 1;
+      }
+      continue;
+    }
+    if (raw[index] === '`') {
+      let end = index + 1;
+      while (end < raw.length && raw[end] !== '`') end += raw[end] === '\\' ? 2 : 1;
+      if (raw[end] === '`') {
+        scripts.push(
+          positions
+            ? { index: offset + index, script: raw.slice(index + 1, end) }
+            : raw.slice(index + 1, end),
+        );
+        index = end;
       }
       continue;
     }

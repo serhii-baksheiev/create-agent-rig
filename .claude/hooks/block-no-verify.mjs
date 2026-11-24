@@ -78,7 +78,7 @@ const bypassesOperation = (args, operation) => {
     const value = args[index].value;
     if (value === '--') return false;
     if (value === '--no-verify') return true;
-    if (value === '-m' || value === '--message') {
+    if (value === '-m' || value === '--message' || value === '-F' || value === '--file') {
       index += 1;
       continue;
     }
@@ -87,6 +87,27 @@ const bypassesOperation = (args, operation) => {
       if (flag === 'm') break;
       if (flag === 'n') return true;
     }
+  }
+  return false;
+};
+
+const hasCommandLocalHooksPath = (segment, command) => {
+  const commandIndex = segment.findIndex(({ value }) => value.split('/').pop() === command.name);
+  if (commandIndex === -1) return false;
+  const assignments = new Map();
+  for (const { value } of segment.slice(0, commandIndex)) {
+    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(value);
+    if (match) assignments.set(match[1], match[2]);
+  }
+  const count = assignments.get('GIT_CONFIG_COUNT');
+  if (!/^\d+$/.test(count ?? '')) return false;
+  const declared = Number(count);
+  if (!Number.isSafeInteger(declared) || declared > assignments.size) return true;
+  for (let index = 0; index < declared; index += 1) {
+    if (
+      assignments.get(`GIT_CONFIG_KEY_${index}`)?.toLowerCase() === 'core.hookspath' &&
+      assignments.has(`GIT_CONFIG_VALUE_${index}`)
+    ) return true;
   }
   return false;
 };
@@ -122,6 +143,10 @@ const envHusky = (segment) => {
   index += 1;
   let state = null;
   for (; index < segment.length; index += 1) {
+    if (segment[index].value === '-i' || segment[index].value === '--ignore-environment') {
+      state = { exported: false, value: false };
+      continue;
+    }
     if (segment[index].value === '-u' && segment[index + 1]) {
       if (segment[index + 1].value === 'HUSKY') state = { exported: false, value: false };
       index += 1;
@@ -230,6 +255,7 @@ const inspect = (raw, depth = 0, inheritedHusky = { exported: false, value: fals
     if (!operation) continue;
     if (
       (environmentHusky?.value ?? assignmentHusky ?? (state.exported && state.value)) ||
+      hasCommandLocalHooksPath(segment, command) ||
       hasInlineHooksPath(command.args, operation) ||
       bypassesOperation(command.args, operation)
     ) {

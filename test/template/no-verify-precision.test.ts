@@ -210,6 +210,11 @@ describe('block-no-verify R1 literal prose and Git option boundaries (RP-522)', 
     expect(result.code, result.stderr).toBe(2);
   });
 
+  it('allows an ANSI-C escaped heredoc delimiter whose body is literal prose', async () => {
+    const result = await inspect("cat <<$'DOC\\x41'\ngit commit --no-verify -m prose\nDOCA");
+    expect(result.code, result.stderr).toBe(0);
+  });
+
   it('proves standalone HUSKY assignments are absent from clean child environments', async () => {
     const printHusky = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(
       "process.stdout.write(process.env.HUSKY ?? 'absent')",
@@ -682,6 +687,53 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     expect(result.code, result.stderr).toBe(2);
   });
 
+  it('refuses a command-local GIT_CONFIG hooksPath override before git commit', async () => {
+    for (const command of [
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x',
+      'env GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git commit -m x',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+    const ordinary = await inspect('git commit -m x');
+    expect(ordinary.code, ordinary.stderr).toBe(0);
+  });
+
+  it.each(['999999999999999999999999999999999999999', '1000000000'])(
+    'refuses an excessive command-local Git configuration count of %s without timing out',
+    async (count) => {
+      const result = await runNodeTimed(hook, {
+        input: JSON.stringify(
+          bash(
+            `GIT_CONFIG_COUNT=${count} GIT_CONFIG_KEY_0=core.editor GIT_CONFIG_VALUE_0=cat git commit -m x`,
+          ),
+        ),
+        env: gitEnv(),
+        timeout: 1_500,
+      });
+      expect(result.code).not.toBe('TIMEOUT');
+      expect(result.code, result.stderr).toBe(2);
+    },
+  );
+
+  it('allows no-verify-looking message-file operands while refusing real bypass flags', async () => {
+    for (const command of ['git commit -F --no-verify', 'git commit --file -n']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+    for (const command of ['git commit -F --no-verify --no-verify', 'git commit --file -n -n']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('lets env -i clear inherited HUSKY while refusing an explicit replacement', async () => {
+    const cleared = await inspect('HUSKY=0 env -i git commit -m x');
+    expect.soft(cleared.code, cleared.stderr).toBe(0);
+    const explicit = await inspect('HUSKY=0 env -i HUSKY=0 git commit -m x');
+    expect(explicit.code, explicit.stderr).toBe(2);
+  });
+
   it('refuses an actual bypass nested in bash -c', async () => {
     const result = await inspect("bash -c 'git commit --no-verify -m x'");
     expect(result.code, result.stderr).toBe(2);
@@ -867,6 +919,11 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     expect(result.code, result.stderr).toBe(0);
   });
 
+  it('refuses a bypass evaluated by backticks inside double quotes', async () => {
+    const result = await inspect('printf "%s" "`git commit --no-verify -m x`"');
+    expect(result.code, result.stderr).toBe(2);
+  });
+
   it('continues refusing a bypass evaluated in a condition', async () => {
     const result = await inspect('if git commit -n -m x; then printf committed; fi');
     expect(result.code, result.stderr).toBe(2);
@@ -894,6 +951,11 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
 
   it('refuses a bypass evaluated by an unquoted heredoc body', async () => {
     const expanded = await inspect('cat <<DOC\n$(git commit --no-verify -m x)\nDOC');
+    expect(expanded.code, expanded.stderr).toBe(2);
+  });
+
+  it('refuses a bypass evaluated by backticks in an unquoted heredoc body', async () => {
+    const expanded = await inspect('cat <<DOC\n`git commit --no-verify -m x`\nDOC');
     expect(expanded.code, expanded.stderr).toBe(2);
   });
 
