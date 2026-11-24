@@ -1,6 +1,6 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, mkdtemp, readFile, realpath, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, realpath, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -49,6 +49,34 @@ const run = (args: string[], env: NodeJS.ProcessEnv): Promise<Exit> =>
       });
     });
   });
+
+const runUntilExit = (args: string[], env: NodeJS.ProcessEnv): Promise<Exit> =>
+  new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [queueCli, ...args], {
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk);
+    });
+    child.once('error', reject);
+    child.once('close', (code) => {
+      resolve({ code: code ?? 1, stdout, stderr });
+    });
+  });
+
+const waitForFile = async (file: string) => {
+  const deadline = Date.now() + 5_000;
+  while (!existsSync(file)) {
+    if (Date.now() >= deadline) throw new Error(`timed out waiting for ${file}`);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+};
 
 const counterAt = async (configPath: string, branch: string) => {
   const pathForCounter = configPath.replace(/(\.json)?$/, '.gate-rounds.json');
@@ -504,6 +532,247 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
       1,
     );
     expect(await counterAt(value.configPath, value.branch)).toBe(2);
+  });
+
+  it('treats the counter lock held by another reservation as internal state, while still refusing source dirt', async () => {
+    const value = await newFixture();
+    const firstRun = await mkdtemp(path.join(tmpdir(), 'rp521-lock-holder-first-'));
+    const secondRun = await mkdtemp(path.join(tmpdir(), 'rp521-lock-holder-second-'));
+    const dirtyRun = await mkdtemp(path.join(tmpdir(), 'rp521-lock-holder-dirty-'));
+    roots.push(firstRun, secondRun, dirtyRun);
+    const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
+    const lockPath = `${counterPath}.lock`;
+    const preload = path.join(value.root, 'hold-gate-round-lock.cjs');
+    const observerPreload = path.join(value.root, 'observe-git-status.cjs');
+    const marker = path.join(value.root, 'gate-round-lock-held');
+    const observedStatus = path.join(value.root, 'git-status-observed');
+    const release = path.join(value.root, 'release-gate-round-lock');
+    await writeFile(counterPath, JSON.stringify({ [value.branch]: 2 }));
+    await writeFile(
+      preload,
+      [
+        "const fs = require('node:fs');",
+        "const { syncBuiltinESMExports } = require('node:module');",
+        'const openSync = fs.openSync;',
+        'fs.openSync = (file, flags, ...rest) => {',
+        '  const descriptor = openSync(file, flags, ...rest);',
+        "  if (file === process.env.RP521_LOCK_PATH && flags === 'wx') {",
+        "    fs.writeFileSync(process.env.RP521_LOCK_MARKER, 'held\\n');",
+        '    const started = Date.now();',
+        '    while (!fs.existsSync(process.env.RP521_LOCK_RELEASE)) {',
+        "      if (Date.now() - started > 5_000) throw new Error('timed out holding the gate-round lock');",
+        '      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);',
+        '    }',
+        '  }',
+        '  return descriptor;',
+        '};',
+        'syncBuiltinESMExports();',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      observerPreload,
+      [
+        "const childProcess = require('node:child_process');",
+        "const fs = require('node:fs');",
+        "const { syncBuiltinESMExports } = require('node:module');",
+        'const execFileSync = childProcess.execFileSync;',
+        'childProcess.execFileSync = (command, args, ...rest) => {',
+        '  const output = execFileSync(command, args, ...rest);',
+        "  if (command === 'git' && Array.isArray(args) && args[0] === 'status') {",
+        "    fs.writeFileSync(process.env.RP521_STATUS_MARKER, 'observed\\n');",
+        '  }',
+        '  return output;',
+        '};',
+        'syncBuiltinESMExports();',
+        '',
+      ].join('\n'),
+    );
+    const args = [
+      'gate-round',
+      '--branch',
+      value.branch,
+      '--config',
+      value.configPath,
+      '--reserve',
+    ];
+    const first = runUntilExit(args, {
+      ...process.env,
+      NODE_OPTIONS: `--require=${preload}`,
+      RIG_RUN_DIR: firstRun,
+      RP521_LOCK_PATH: lockPath,
+      RP521_LOCK_MARKER: marker,
+      RP521_LOCK_RELEASE: release,
+    });
+    await waitForFile(marker);
+    expect(
+      git(path.dirname(path.dirname(value.configPath)), [
+        'status',
+        '--porcelain',
+        '--untracked-files=all',
+      ]),
+    ).toBe('?? .claude/queue.gate-rounds.json.lock');
+
+    let firstResult: Exit;
+    let secondResult: Exit;
+    try {
+      const second = runUntilExit(args, {
+        ...process.env,
+        NODE_OPTIONS: `--require=${observerPreload}`,
+        RIG_RUN_DIR: secondRun,
+        RP521_STATUS_MARKER: observedStatus,
+      });
+      await waitForFile(observedStatus);
+      await writeFile(release, 'release\n');
+      [firstResult, secondResult] = await Promise.all([first, second]);
+    } finally {
+      if (!existsSync(release)) await writeFile(release, 'release\n');
+      await first;
+    }
+
+    expect(firstResult.code, firstResult.stderr).toBe(0);
+    expect(secondResult.code, secondResult.stderr).toBe(2);
+    expect(secondResult.stderr).not.toMatch(/working tree is dirty/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+
+    await writeFile(
+      path.join(path.dirname(path.dirname(value.configPath)), 'README.md'),
+      'changed\n',
+    );
+    const dirty = await run(args, { ...process.env, RIG_RUN_DIR: dirtyRun });
+    expect(dirty.code).toBe(1);
+    expect(dirty.stderr).toMatch(/working tree is dirty/i);
+  });
+
+  it('treats the current counter temp write as internal state, while refusing other dirty paths', async () => {
+    const value = await newFixture();
+    const firstRun = await mkdtemp(path.join(tmpdir(), 'rp521-temp-holder-first-'));
+    const secondRun = await mkdtemp(path.join(tmpdir(), 'rp521-temp-holder-second-'));
+    const dirtyRun = await mkdtemp(path.join(tmpdir(), 'rp521-temp-holder-dirty-'));
+    roots.push(firstRun, secondRun, dirtyRun);
+    const repo = path.dirname(path.dirname(value.configPath));
+    const counterPath = value.configPath.replace(/(\.json)?$/, '.gate-rounds.json');
+    const lockPath = `${counterPath}.lock`;
+    const otherLockPath = path.join(repo, '.claude', 'other.gate-rounds.json.lock');
+    const preload = path.join(value.root, 'hold-gate-round-temp.cjs');
+    const observerPreload = path.join(value.root, 'observe-git-status.cjs');
+    const marker = path.join(value.root, 'gate-round-temp-written');
+    const observedStatus = path.join(value.root, 'git-status-observed');
+    const release = path.join(value.root, 'release-gate-round-temp');
+    await writeFile(counterPath, JSON.stringify({ [value.branch]: 2 }));
+    await writeFile(
+      preload,
+      [
+        "const fs = require('node:fs');",
+        "const { syncBuiltinESMExports } = require('node:module');",
+        'const writeFileSync = fs.writeFileSync;',
+        'fs.writeFileSync = (file, ...rest) => {',
+        '  const result = writeFileSync(file, ...rest);',
+        "  if (file.startsWith(`${process.env.RP521_COUNTER_PATH}.`) && file.endsWith('.tmp')) {",
+        "    fs.writeFileSync(process.env.RP521_TEMP_MARKER, 'written\\n');",
+        '    const started = Date.now();',
+        '    while (!fs.existsSync(process.env.RP521_TEMP_RELEASE)) {',
+        "      if (Date.now() - started > 5_000) throw new Error('timed out holding the gate-round temp');",
+        '      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);',
+        '    }',
+        '  }',
+        '  return result;',
+        '};',
+        'syncBuiltinESMExports();',
+        '',
+      ].join('\n'),
+    );
+    await writeFile(
+      observerPreload,
+      [
+        "const childProcess = require('node:child_process');",
+        "const fs = require('node:fs');",
+        "const { syncBuiltinESMExports } = require('node:module');",
+        'const execFileSync = childProcess.execFileSync;',
+        'childProcess.execFileSync = (command, args, ...rest) => {',
+        '  const output = execFileSync(command, args, ...rest);',
+        "  if (command === 'git' && Array.isArray(args) && args[0] === 'status') {",
+        "    fs.writeFileSync(process.env.RP521_STATUS_MARKER, 'observed\\n');",
+        '  }',
+        '  return output;',
+        '};',
+        'syncBuiltinESMExports();',
+        '',
+      ].join('\n'),
+    );
+    const args = [
+      'gate-round',
+      '--branch',
+      value.branch,
+      '--config',
+      value.configPath,
+      '--reserve',
+    ];
+    const first = runUntilExit(args, {
+      ...process.env,
+      NODE_OPTIONS: `--require=${preload}`,
+      RIG_RUN_DIR: firstRun,
+      RP521_COUNTER_PATH: counterPath,
+      RP521_TEMP_MARKER: marker,
+      RP521_TEMP_RELEASE: release,
+    });
+    await waitForFile(marker);
+    const status = git(repo, ['status', '--porcelain', '--untracked-files=all']);
+    expect(status).toContain('?? .claude/queue.gate-rounds.json.lock');
+    expect(status).toMatch(/\?\? \.claude\/queue\.gate-rounds\.json\.\d+\.tmp/);
+
+    let firstResult: Exit;
+    let secondResult: Exit;
+    try {
+      const second = runUntilExit(args, {
+        ...process.env,
+        NODE_OPTIONS: `--require=${observerPreload}`,
+        RIG_RUN_DIR: secondRun,
+        RP521_STATUS_MARKER: observedStatus,
+      });
+      await waitForFile(observedStatus);
+      await writeFile(release, 'release\n');
+      [firstResult, secondResult] = await Promise.all([first, second]);
+    } finally {
+      if (!existsSync(release)) await writeFile(release, 'release\n');
+      await first;
+    }
+
+    expect(firstResult.code, firstResult.stderr).toBe(0);
+    expect(secondResult.code, secondResult.stderr).toBe(2);
+    expect(secondResult.stderr).not.toMatch(/working tree is dirty/i);
+    expect(await counterAt(value.configPath, value.branch)).toBe(2);
+
+    await writeFile(lockPath, 'tracked lock\n');
+    git(repo, ['add', lockPath]);
+    git(repo, ['commit', '-q', '-m', 'track current counter lock']);
+    git(repo, ['push', '-q']);
+    await writeFile(lockPath, 'changed tracked lock\n');
+    const trackedLock = await run(args, { ...process.env, RIG_RUN_DIR: dirtyRun });
+    expect(trackedLock.code).toBe(1);
+    expect(trackedLock.stderr).toMatch(/working tree is dirty/i);
+
+    await writeFile(lockPath, 'tracked lock\n');
+    await writeFile(otherLockPath, 'other lock\n');
+    const otherLock = await run(args, { ...process.env, RIG_RUN_DIR: dirtyRun });
+    expect(otherLock.code).toBe(1);
+    expect(otherLock.stderr).toMatch(/working tree is dirty/i);
+
+    await unlink(otherLockPath);
+    await writeFile(path.join(repo, 'unrelated-source.txt'), 'source dirt\n');
+    const arbitraryDirt = await run(args, { ...process.env, RIG_RUN_DIR: dirtyRun });
+    expect(arbitraryDirt.code).toBe(1);
+    expect(arbitraryDirt.stderr).toMatch(/working tree is dirty/i);
+    await unlink(path.join(repo, 'unrelated-source.txt'));
+
+    for (const invalidPid of ['0', '01']) {
+      const invalidTemp = `${counterPath}.${invalidPid}.tmp`;
+      await writeFile(invalidTemp, 'not a process temp\n');
+      const invalidPidTemp = await run(args, { ...process.env, RIG_RUN_DIR: dirtyRun });
+      expect(invalidPidTemp.code).toBe(1);
+      expect(invalidPidTemp.stderr).toMatch(/working tree is dirty/i);
+      await unlink(invalidTemp);
+    }
   });
 
   it('refuses to resume a reservation token from a different declared run', async () => {

@@ -451,7 +451,7 @@ if (invokedDirectly()) {
       // counted ahead of a commit pre-commit then refused. Thrown, so it lands
       // in the exit-1 path below: not an exhausted cap, nothing counted.
       const gitRoot = projectRootOfConfig(configPath) ?? projectRoot;
-      const shippable = checkoutIsShippable(gitRoot);
+      const shippable = checkoutIsShippable(gitRoot, { counterPath: roundsPath });
       if (!shippable.ok) throw new Error(`${shippable.why} (nothing was counted)`);
 
       const head = execFileSync('git', ['rev-parse', 'HEAD'], {
