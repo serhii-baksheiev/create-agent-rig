@@ -448,8 +448,9 @@ describe('createProject', { timeout: 60_000 }, () => {
   // below stands in for `git`: it reads the subcommand name off argv and, for
   // exactly the one step named by RP252_HANG_STEP, `exec`s into `sleep 30`
   // (so killing the child kills the sleeper, never leaving an orphaned shell
-  // for `afterEach`'s `removeFixture` to race) — every other step, and every
-  // other invocation, exits 0 immediately. Real git is never invoked, which
+  // for `afterEach`'s `removeFixture` to race) — every non-hanging parsed git
+  // step delays 600 ms before exiting 0, so the override below distinguishes
+  // bounded setup from the 30 s stall. Real git is never invoked, which
   // is fine: this test only checks that the hang is bounded and named, never
   // that a real repository results.
   it('names the git step and its bound when a git child hangs, instead of hanging create', async (context) => {
@@ -477,6 +478,9 @@ describe('createProject', { timeout: 60_000 }, () => {
         'if [ "$step" = "$RP252_HANG_STEP" ] && [ -n "$step" ]; then\n' +
         '  exec sleep 30\n' +
         'fi\n' +
+        'if [ -n "$step" ]; then\n' +
+        '  sleep 0.6\n' +
+        'fi\n' +
         'exit 0\n',
     );
     await chmod(git, 0o755);
@@ -490,7 +494,7 @@ describe('createProject', { timeout: 60_000 }, () => {
         const started = performance.now();
         let caught: unknown;
         try {
-          await createProject(`hangs-on-git-${step}`, { cwd: work, gitTimeoutMs: 400 });
+          await createProject(`hangs-on-git-${step}`, { cwd: work, gitTimeoutMs: 2_000 });
         } catch (error) {
           caught = error;
         }
@@ -498,7 +502,7 @@ describe('createProject', { timeout: 60_000 }, () => {
 
         expect(caught).toBeInstanceOf(CreateError);
         expect((caught as Error).message).toContain(`git ${step}`);
-        expect((caught as Error).message).toContain('400 ms');
+        expect((caught as Error).message).toContain('2000 ms');
         expect(elapsed).toBeLessThan(10_000); // well under the 30 s hang
       }
     } finally {
