@@ -425,6 +425,54 @@ describe('detect-missed-gate REST discovery', () => {
     await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('refuses a native-only timezone suffix on --since before acquiring REST pull data', async () => {
+    const dir = await installedDetector();
+    const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-native-suffix-'));
+    const calls = path.join(bin, 'calls.jsonl');
+    const gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "return { stdout: '[]\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run(
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+      ['--since', '2026-02-28 EST', '--json'],
+      dir,
+    );
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/invalid.*--since|--since.*invalid|invalid.*date/i);
+    await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('refuses a missing --since value before acquiring REST pull data', async () => {
+    const dir = await installedDetector();
+    const bin = await mkdtemp(path.join(tmpdir(), 'rp524-detector-missing-since-'));
+    const calls = path.join(bin, 'calls.jsonl');
+    const gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(calls)}, JSON.stringify(args) + '\\n');`,
+        "if (args[0] !== 'api') return { exitCode: 2 };",
+        "return { stdout: '[]\\n' };",
+      ].join('\n'),
+    );
+    stubs.push(gh);
+
+    const result = await run(
+      path.join(dir, '.claude', 'scripts', 'detect-missed-gate.mjs'),
+      ['--since'],
+      dir,
+    );
+    expect(result.code, result.out).toBe(1);
+    expect(result.out).toMatch(/missing.*--since|--since.*missing/i);
+    await expect(readFile(calls, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('refuses calendar-invalid --since values before acquiring REST pull data', async () => {
     for (const since of [
       '2026-02-31',

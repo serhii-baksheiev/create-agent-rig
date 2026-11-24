@@ -16,12 +16,22 @@
 //   node .claude/scripts/detect-missed-gate.mjs --epoch 2026-07-01  # ignore older merges
 //
 // `--since` accepts numeric year-month-day (including signed or extended
-// years), full English month-day-year, and year-first slash dates. A numeric
-// year-month-day may carry its usual time or offset suffix. The written local
-// calendar date is validated before `Date` converts its instant: JavaScript
-// otherwise normalizes impossible dates such as February 31. The published
-// examples are ISO-shaped; the flexible forms below are retained because the
-// detector's tests already establish them as compatible input.
+// years), full English month-day-year, and year-first slash dates. Numeric
+// dates allow a date-only literal Z, or a T/t/space clock time (HH:MM:SS)
+// followed by a literal Z or numeric UTC offset. The written local calendar
+// date is validated before `Date` converts its instant: JavaScript otherwise
+// normalizes impossible dates such as February 31. `--since` needs an explicit
+// value; unrecognized or ambiguous syntax is refused rather than passed to
+// `Date`'s native parser. The published examples are ISO-shaped; the flexible
+// forms below are retained because the detector's tests establish them as
+// compatible input. See test/template/github-rest-discovery.test.ts (absent in
+// a generated rig) > "continues to acquire REST pull data for valid leap-day,
+// offset, and flexible --since values", "continues to acquire REST pull data for
+// a flexible valid --since value (%s)", "refuses calendar-invalid --since values
+// before acquiring REST pull data", "refuses a locale-ambiguous numeric --since
+// value before acquiring REST pull data", "refuses a native-only timezone suffix
+// on --since before acquiring REST pull data", and "refuses a missing --since
+// value before acquiring REST pull data".
 //
 // 🔴 **Never invoke it as a step inside a run.** A check the run performs on
 // itself is a check the run in a hurry skips — running it inside would give back
@@ -351,8 +361,7 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
           'this sweep could not see the whole diff. That is an unknown, not a pass — ' +
           'check this PR by hand.'
         : 'the merged PR carries no file list, so this sweep could not tell whether ' +
-          'it crossed an elevated path. That is an unknown, not a pass — re-fetch it ' +
-          'with `--json files` or check the PR by hand.',
+          'it crossed an elevated path. That is an unknown, not a pass — check the PR by hand.',
     };
   }
 
@@ -478,11 +487,15 @@ const readInput = (file, label) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { json: false, since: null, epoch: null, input: null };
+  const args = { json: false, since: null, sinceMissing: false, epoch: null, input: null };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === '--json') args.json = true;
-    else if (flag === '--since') args.since = argv[++i];
+    else if (flag === '--since') {
+      const value = argv[i + 1];
+      if (value === undefined) args.sinceMissing = true;
+      else args.since = argv[++i];
+    }
     else if (flag === '--epoch') args.epoch = argv[++i];
     else if (flag === '--input') args.input = argv[++i];
   }
@@ -508,7 +521,9 @@ const monthNumbers = new Map([
 
 const writtenCalendarDate = (value) => {
   const source = value.trim();
-  const numeric = /^([+-]?\d{4,})-(\d+)-(\d+)(?=$|[TtZ\s])/.exec(source);
+  const numeric = /^([+-]?\d{4,})-(\d+)-(\d+)(?:Z|[Tt ]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))?$/.exec(
+    source,
+  );
   if (numeric) {
     const [, yearText, monthText, dayText] = numeric;
     return { yearText, monthText, dayText };
@@ -696,6 +711,10 @@ const invokedDirectly = () => {
 
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
+  if (args.sinceMissing) {
+    process.stderr.write('missed-gate sweep: missing --since value — nothing was checked.\n');
+    process.exit(1);
+  }
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const prs = args.input
     ? readInput(args.input, 'missed-gate sweep')
