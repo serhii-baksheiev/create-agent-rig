@@ -132,9 +132,12 @@
  * `outcome` may additionally carry `--detection <opaque-id>` to answer one
  * unresolved blocking observation in this declared run. It matches the stated
  * mode and point/checkpoint as well as that id; the default with no selector
- * remains the latest matching observation. The selector is not a resolve-all:
- * malformed, foreign, nonblocking, or already-resolved observations refuse
- * before any outcome or state write. Pinned in the generator's
+ * remains the latest matching observation. A selected ticketed observation
+ * must carry a string ticket equal to the CLI ticket; an owner-directed one
+ * instead carries the explicit owner-directed mode. The selector also requires
+ * its id and point/checkpoint, a blocking result, and no timestamp-aware typed
+ * resolution; a failure of any of those checks refuses before an outcome or
+ * state write. Pinned in the generator's
  * `test/template/revalidation-evidence.test.ts` (absent in a generated rig) ›
  * "selects the older UNVERIFIABLE hold after a later CURRENT re-read, preserves
  * prior evidence, and lets the queue select again", › "keeps the default
@@ -143,7 +146,9 @@
  * already-resolved selectors without writing an outcome or state", › "refuses
  * a trailing selector without its operand, including after a valid selector,
  * without falling back to the latest event", and › "answers and clears a
- * point-only blocking observation that the shared reader already holds".
+ * point-only blocking observation that the shared reader already holds", ›
+ * "refuses ticketed selectors whose literal CLI subject only string-coerces a
+ * reader-ineligible observation".
  *
  * ⚠ It reads `<base>` as it is in this checkout and never updates the remote
  * ref itself; `pr-ship` step 1 does that before calling this. A stale ref
@@ -586,6 +591,8 @@ if (invokedDirectly()) {
                 event.data?.point !== args.point ||
                 (event.data?.checkpoint ?? event.data?.point) !== args.point ||
                 !matchesSubject(event) ||
+                (!args.ownerDirected &&
+                  (typeof event.data?.ticket !== 'string' || event.data.ticket !== args.ticket)) ||
                 !['CHANGED', 'CONFLICT', 'UNVERIFIABLE'].includes(event.data?.result)
               ) {
                 return false;

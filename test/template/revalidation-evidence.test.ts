@@ -857,6 +857,18 @@ describe('B2. `revalidate.mjs outcome --detection` (RP-549)', () => {
         subject: ['--point', 'BEFORE_PR', '--ticket', 'AR-1'],
       },
       {
+        name: 'owner-directed mode with a matching string ticket',
+        selector: 'opaque:owner-mode-string-ticket',
+        event: {
+          id: 'opaque:owner-mode-string-ticket',
+          ticket: 'AR-1',
+          point: 'BEFORE_PR',
+          checkpoint: 'BEFORE_PR',
+          mode: 'owner-directed',
+        },
+        subject: ['--point', 'BEFORE_PR', '--ticket', 'AR-1'],
+      },
+      {
         name: 'nonblocking',
         selector: B_ID,
         event: { id: B_ID, result: 'CURRENT', changed: false, source: [], action: 'continue' },
@@ -996,6 +1008,50 @@ describe('B2. `revalidate.mjs outcome --detection` (RP-549)', () => {
     expect(
       JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8')),
     ).not.toHaveProperty('revalidationHold');
+  });
+
+  it('refuses ticketed selectors whose literal CLI subject only string-coerces a reader-ineligible observation', async () => {
+    type InvalidTicketSubject = null | number | boolean | readonly string[];
+    const cases: ReadonlyArray<{
+      name: string;
+      eventTicket: InvalidTicketSubject;
+      cliTicket: string;
+    }> = [
+      { name: 'null', eventTicket: null, cliTicket: 'null' },
+      { name: 'number', eventTicket: 123, cliTicket: '123' },
+      { name: 'boolean', eventTicket: true, cliTicket: 'true' },
+      { name: 'array', eventTicket: ['DEMO-1'], cliTicket: 'DEMO-1' },
+    ];
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    for (const testCase of cases) {
+      const p = await project({ updated: T1 });
+      detection(p.runDir, { id: A_ID, ticket: testCase.eventTicket });
+      const state = JSON.stringify({ sentinel: 'must not be rewritten' });
+      await writeFile(path.join(p.runDir, 'state.json'), state);
+      const before = await rawEvents(p.runDir);
+      expect(
+        unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+      ).toBeNull();
+
+      const result = await outcome(p, [
+        '--point',
+        'SELECT',
+        '--ticket',
+        testCase.cliTicket,
+        '--detection',
+        A_ID,
+        '--action-changed',
+        'false',
+      ]);
+      expect(result.code, `${testCase.name}: ${result.out}`).toBe(1);
+      expect(await rawEvents(p.runDir), testCase.name).toEqual(before);
+      expect(await readFile(path.join(p.runDir, 'state.json'), 'utf8'), testCase.name).toBe(state);
+    }
   });
 });
 
