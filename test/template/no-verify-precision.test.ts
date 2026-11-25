@@ -738,6 +738,67 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     expect(unset.code, unset.stderr).toBe(0);
   });
 
+  it('lets command-local environment clearing restore a checked commit while retaining persistent hook overrides', async () => {
+    const fixture = await newGitFixture();
+    const inherited = {
+      ...gitEnv(),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/dev/null',
+    };
+    const hooks = path.join(fixture, '.git', 'hooks');
+    const witness = path.join(fixture, '.git', 'rp522-cleared-config-witness');
+    await writeFile(
+      path.join(hooks, 'pre-commit'),
+      '#!/bin/sh\nprintf witness > .git/rp522-cleared-config-witness\n',
+    );
+    await chmod(path.join(hooks, 'pre-commit'), 0o755);
+    await writeFile(path.join(fixture, 'tracked.txt'), 'cleared configuration\n');
+    await gitMustSucceed(['add', 'tracked.txt'], fixture);
+
+    const clearedLookup = await git(['config', '--get', 'core.hooksPath'], fixture, gitEnv());
+    expect(clearedLookup.code, clearedLookup.stderr).toBe(1);
+    const checkedCommit = await git(['commit', '-m', 'checked after clear'], fixture, gitEnv());
+    expect(checkedCommit.code, checkedCommit.stderr).toBe(0);
+    await expect(readFile(witness, 'utf8')).resolves.toBe('witness');
+
+    for (const command of [
+      'env -i git commit -m x',
+      'env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 git commit -m x',
+    ]) {
+      const result = await inspectWithEnv(command, inherited, fixture);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+
+    await gitMustSucceed(['config', 'core.hooksPath', '.disabled-hooks'], fixture);
+    const persistent = await inspectWithEnv('env -i git commit -m x', inherited, fixture);
+    expect(persistent.code, persistent.stderr).toBe(2);
+  });
+
+  it('treats env --ignore-environment as clearing an inherited Git configuration triad', async () => {
+    const fixture = await newGitFixture();
+    const inherited = {
+      ...gitEnv(),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/dev/null',
+    };
+    const cleared = await inspectWithEnv(
+      'env --ignore-environment git commit -m x',
+      inherited,
+      fixture,
+    );
+    expect(cleared.code, cleared.stderr).toBe(0);
+
+    await gitMustSucceed(['config', 'core.hooksPath', '.disabled-hooks'], fixture);
+    const persistent = await inspectWithEnv(
+      'env --ignore-environment git commit -m x',
+      inherited,
+      fixture,
+    );
+    expect(persistent.code, persistent.stderr).toBe(2);
+  });
+
   it('allows a local Git config key after env clears the inherited configuration triad', async () => {
     const fixture = await newGitFixture();
     const inherited = {
@@ -789,6 +850,45 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
       fixture,
     );
     expect(benign.code, benign.stderr).toBe(0);
+  });
+
+  it('refuses separately quoted GIT_CONFIG_PARAMETERS hooksPath overrides while allowing quoted benign parameters', async () => {
+    const fixture = await newGitFixture();
+    const disabledParameters = "'core.hooksPath'='/dev/null'";
+    const witness = await git(['config', '--get', 'core.hooksPath'], fixture, {
+      ...gitEnv(),
+      GIT_CONFIG_PARAMETERS: disabledParameters,
+    });
+    expect(witness.code, witness.stderr).toBe(0);
+    expect(witness.stdout).toBe('/dev/null\n');
+
+    const bypass = await inspect(
+      "GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" git commit -m x",
+      fixture,
+    );
+    expect(bypass.code, bypass.stderr).toBe(2);
+    const benign = await inspect(
+      "GIT_CONFIG_PARAMETERS=\"'core.editor'='cat'\" git commit -m x",
+      fixture,
+    );
+    expect(benign.code, benign.stderr).toBe(0);
+  });
+
+  it('refuses a separately quoted hooksPath override after an unrelated assignment whose value names git', async () => {
+    const fixture = await newGitFixture();
+    const disabledParameters = "'core.hooksPath'='/dev/null'";
+    const witness = await git(['config', '--get', 'core.hooksPath'], fixture, {
+      ...gitEnv(),
+      GIT_CONFIG_PARAMETERS: disabledParameters,
+    });
+    expect(witness.code, witness.stderr).toBe(0);
+    expect(witness.stdout).toBe('/dev/null\n');
+
+    const bypass = await inspect(
+      "TOOL=/usr/bin/git GIT_CONFIG_PARAMETERS=\"'core.hooksPath'='/dev/null'\" /usr/bin/git commit -m x",
+      fixture,
+    );
+    expect(bypass.code, bypass.stderr).toBe(2);
   });
 
   it.each(['999999999999999999999999999999999999999', '1000000000'])(
@@ -919,6 +1019,33 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     expect.soft(cleared.code, cleared.stderr).toBe(0);
     const explicit = await inspect('HUSKY=0 env -i HUSKY=0 git commit -m x');
     expect(explicit.code, explicit.stderr).toBe(2);
+  });
+
+  it('refuses inherited HUSKY=0 while allowing environment-cleared commits and ordinary prose', async () => {
+    const fixture = await newGitFixture();
+    const hooks = path.join(fixture, '.git', 'hooks');
+    const witness = path.join(fixture, '.git', 'rp522-inherited-husky-witness');
+    await writeFile(
+      path.join(hooks, 'pre-commit'),
+      '#!/bin/sh\nif [ "${HUSKY:-}" = 0 ]; then exit 0; fi\nprintf witness > .git/rp522-inherited-husky-witness\n',
+    );
+    await chmod(path.join(hooks, 'pre-commit'), 0o755);
+    await writeFile(path.join(fixture, 'tracked.txt'), 'husky inheritance\n');
+    await gitMustSucceed(['add', 'tracked.txt'], fixture);
+
+    const inherited = { ...gitEnv(), HUSKY: '0' };
+    const bypass = await inspectWithEnv('git commit -m x', inherited, fixture);
+    expect(bypass.code, bypass.stderr).toBe(2);
+    const actualBypass = await git(['commit', '-m', 'husky bypass'], fixture, inherited);
+    expect(actualBypass.code, actualBypass.stderr).toBe(0);
+    await expect(readFile(witness, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+
+    for (const command of ['env -i git commit -m x', 'env -u HUSKY git commit -m x']) {
+      const cleared = await inspectWithEnv(command, inherited, fixture);
+      expect.soft(cleared.code, `${command}: ${cleared.stderr}`).toBe(0);
+    }
+    const prose = await inspectWithEnv('printf %s HUSKY=0', inherited, fixture);
+    expect(prose.code, prose.stderr).toBe(0);
   });
 
   it('refuses an actual bypass nested in bash -c', async () => {

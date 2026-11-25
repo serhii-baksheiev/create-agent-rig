@@ -116,10 +116,15 @@ const bypassesOperation = (args, operation) => {
   return false;
 };
 
-const hasCommandLocalHooksPath = (segment, command) => {
-  const commandIndex = segment.findIndex(({ value }) => value.split('/').pop() === command.name);
-  if (commandIndex === -1) return false;
-  const assignments = new Map(Object.entries(process.env));
+const commandEnvironmentOf = (segment, command) => {
+  // `commandOf` preserves the original token objects in `args`, so the token
+  // immediately before its first argument is the executable it actually chose.
+  // Matching a basename in the whole segment mistakes `TOOL=/usr/bin/git` for
+  // that executable and drops later assignments from the child environment.
+  const commandIndex = segment.indexOf(command.args[0]) - 1;
+  if (commandIndex === -1) return null;
+  const effectiveEnv = { ...process.env };
+  const baselineEnv = { ...process.env };
   let hasLocalGitConfiguration = false;
   let envCommand = false;
   for (let index = 0; index < commandIndex; index += 1) {
@@ -128,36 +133,28 @@ const hasCommandLocalHooksPath = (segment, command) => {
       envCommand = true;
       continue;
     }
-    if (envCommand && value === '-i') {
-      assignments.clear();
+    if (envCommand && (value === '-i' || value === '--ignore-environment')) {
+      for (const key of Object.keys(effectiveEnv)) delete effectiveEnv[key];
+      for (const key of Object.keys(baselineEnv)) delete baselineEnv[key];
       continue;
     }
     if (envCommand && value === '-u' && segment[index + 1]) {
-      assignments.delete(segment[index + 1].value);
+      delete effectiveEnv[segment[index + 1].value];
+      delete baselineEnv[segment[index + 1].value];
       index += 1;
       continue;
     }
     const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(value);
     if (match) {
-      assignments.set(match[1], match[2]);
-      if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$/.test(match[1]))
+      effectiveEnv[match[1]] = match[2];
+      if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$/.test(match[1])) {
         hasLocalGitConfiguration = true;
+      } else {
+        baselineEnv[match[1]] = match[2];
+      }
     }
   }
-  if (!hasLocalGitConfiguration) return false;
-  const count = assignments.get('GIT_CONFIG_COUNT');
-  const parameters = assignments.get('GIT_CONFIG_PARAMETERS');
-  if (/(?:^|['\s])core\.hookspath=/i.test(parameters ?? '')) return true;
-  if (!/^\d+$/.test(count ?? '')) return false;
-  const declared = Number(count);
-  if (!Number.isSafeInteger(declared) || declared > assignments.size) return true;
-  for (let index = 0; index < declared; index += 1) {
-    if (
-      assignments.get(`GIT_CONFIG_KEY_${index}`)?.toLowerCase() === 'core.hookspath' &&
-      assignments.has(`GIT_CONFIG_VALUE_${index}`)
-    ) return true;
-  }
-  return false;
+  return { effectiveEnv, baselineEnv, hasLocalGitConfiguration };
 };
 
 const hasInlineHooksPath = (args, operation) => {
@@ -226,22 +223,43 @@ const unsetsHusky = (args) => {
   return !functionOnly && args.slice(index).some(({ value }) => value === 'HUSKY');
 };
 
-const configuredHooksAreUsable = (context) => {
+const hooksPathOf = (context, env) => {
   const gitOptions = {
-    env: withoutGitLocation(),
+    env: withoutGitLocation(env),
     encoding: 'utf8',
     timeout: 2_000,
     maxBuffer: 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
   };
-  let hooksPath;
   try {
-    hooksPath = execFileSync('git', [...context, 'config', '--get', 'core.hooksPath'], gitOptions).replace(/\r?\n$/, '');
+    return {
+      kind: 'value',
+      value: execFileSync('git', [...context, 'config', '--get', 'core.hooksPath'], gitOptions).replace(/\r?\n$/, ''),
+    };
   } catch (error) {
-    if (error.status === 1) return null;
-    return 'BLOCKED — Git hook configuration could not be read safely.';
+    if (error.status === 1) return { kind: 'missing' };
+    return { kind: 'unreadable' };
   }
+};
+
+const configuredHooksAreUsable = (context, { effectiveEnv, baselineEnv, hasLocalGitConfiguration }) => {
+  const effective = hooksPathOf(context, effectiveEnv);
+  if (effective.kind === 'unreadable') return 'BLOCKED — Git hook configuration could not be read safely.';
+  if (hasLocalGitConfiguration) {
+    const baseline = hooksPathOf(context, baselineEnv);
+    if (baseline.kind === 'unreadable') return 'BLOCKED — Git hook configuration could not be read safely.';
+    if (effective.kind !== baseline.kind || effective.value !== baseline.value) return refusal;
+  }
+  if (effective.kind === 'missing') return null;
+  const gitOptions = {
+    env: withoutGitLocation(effectiveEnv),
+    encoding: 'utf8',
+    timeout: 2_000,
+    maxBuffer: 1024 * 1024,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  };
   try {
+    const hooksPath = effective.value;
     if (!hooksPath) throw new Error('empty hooks path');
     const root = execFileSync('git', [...context, 'rev-parse', '--show-toplevel'], gitOptions).replace(/\r?\n$/, '');
     const preCommit = resolve(root, hooksPath, 'pre-commit');
@@ -253,7 +271,11 @@ const configuredHooksAreUsable = (context) => {
   return null;
 };
 
-const inspect = (raw, depth = 0, inheritedHusky = { exported: false, value: false }) => {
+const inspect = (
+  raw,
+  depth = 0,
+  inheritedHusky = { exported: Object.hasOwn(process.env, 'HUSKY'), value: process.env.HUSKY === '0' },
+) => {
   if (depth > 16) return null;
   const states = new Map([[0, { ...inheritedHusky }]]);
   const snapshots = [];
@@ -301,16 +323,16 @@ const inspect = (raw, depth = 0, inheritedHusky = { exported: false, value: fals
     if (command.name !== 'git' && command.name !== 'git.exe') continue;
     const operation = operationOf(command.args);
     if (!operation) continue;
+    const environment = commandEnvironmentOf(segment, command);
     if (
       (environmentHusky?.value ?? assignmentHusky ?? (state.exported && state.value)) ||
-      hasCommandLocalHooksPath(segment, command) ||
       hasInlineHooksPath(command.args, operation) ||
       bypassesOperation(command.args, operation)
     ) {
       return refusal;
     }
     if (operation.value === 'commit') {
-      const configuration = configuredHooksAreUsable(contextOptions(command.args, operation));
+      const configuration = configuredHooksAreUsable(contextOptions(command.args, operation), environment);
       if (configuration) return configuration;
     }
   }
