@@ -168,6 +168,7 @@ const commandEnvironmentOf = (segment, command, inheritedConfiguration) => {
   };
   const baselineEnv = { ...effectiveEnv };
   const configuration = childGitConfig(inheritedConfiguration);
+  const context = [];
   let hasLocalGitConfiguration = false;
   let envCommand = false;
   for (let index = 0; index < commandIndex; index += 1) {
@@ -190,6 +191,18 @@ const commandEnvironmentOf = (segment, command, inheritedConfiguration) => {
       index += 1;
       continue;
     }
+    if (envCommand && value.startsWith('-u') && value.length > 2) {
+      const key = value.slice(2);
+      delete effectiveEnv[key];
+      delete baselineEnv[key];
+      if (isGitConfigEnvironmentKey(key)) delete configuration[key];
+      continue;
+    }
+    if (envCommand && value === '-C' && segment[index + 1]) {
+      context.push('-C', segment[index + 1].value);
+      index += 1;
+      continue;
+    }
     const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(value);
     if (match) {
       effectiveEnv[match[1]] = match[2];
@@ -201,7 +214,7 @@ const commandEnvironmentOf = (segment, command, inheritedConfiguration) => {
       }
     }
   }
-  return { effectiveEnv, baselineEnv, hasLocalGitConfiguration, configuration };
+  return { effectiveEnv, baselineEnv, hasLocalGitConfiguration, configuration, context };
 };
 
 const hasInlineHooksPath = (args, operation) => {
@@ -242,6 +255,8 @@ const envHusky = (segment) => {
     if (segment[index].value === '-u' && segment[index + 1]) {
       if (segment[index + 1].value === 'HUSKY') state = { exported: false, value: false };
       index += 1;
+    } else if (segment[index].value === '-uHUSKY') {
+      state = { exported: false, value: false };
     } else if (/^HUSKY=([01])$/.test(segment[index].value)) {
       state = { exported: true, value: segment[index].value === 'HUSKY=0' };
     } else if (!segment[index].value.startsWith('-')) {
@@ -250,6 +265,11 @@ const envHusky = (segment) => {
   }
   return state;
 };
+
+const envSplitScript = (segment) =>
+  segment[0]?.value.split('/').pop() === 'env' && segment[1]?.value === '-S'
+    ? segment[2]?.value ?? null
+    : null;
 
 const unsetNames = (args) => {
   let index = 0;
@@ -327,11 +347,16 @@ const inspect = (
   },
 ) => {
   if (depth > 16) return null;
+  const substitutions = evaluatedSubstitutions(raw, false, true);
+  const substitutionRanges = substitutions
+    .filter(({ index }) => raw[index] === '$' || raw[index] === '`')
+    .map(({ index, script }) => [index, index + script.length + (raw[index] === '$' ? 3 : 2)]);
   const states = new Map([
     [0, { husky: { ...inheritedState.husky }, configuration: cloneGitConfig(inheritedState.configuration) }],
   ]);
   const snapshots = [];
   for (const segment of tokenize(raw, { literalHeredocs: true, scopes: true })) {
+    if (substitutionRanges.some(([start, end]) => segment.start >= start && segment.start < end)) continue;
     const scope = segment.subshellScope;
     if (!states.has(scope)) {
       const parent = states.get(segment.subshellParent) ?? states.get(0);
@@ -346,6 +371,15 @@ const inspect = (
     });
     let command = commandOf(segment);
     if (command.name === 'if') command = commandOf(command.args);
+    const split = envSplitScript(segment);
+    if (split) {
+      const nested = inspect(split, depth + 1, {
+        husky: state.husky.exported ? { ...state.husky } : { exported: false, value: false },
+        configuration: childGitConfig(state.configuration),
+      });
+      if (nested) return nested;
+      continue;
+    }
     const environmentHusky = envHusky(segment);
     const assignmentHusky = huskyAssignment(segment, command);
     if (command.name === 'export') {
@@ -411,11 +445,14 @@ const inspect = (
       return refusal;
     }
     if (operation.value === 'commit') {
-      const configuration = configuredHooksAreUsable(contextOptions(command.args, operation), environment);
+      const configuration = configuredHooksAreUsable(
+        [...environment.context, ...contextOptions(command.args, operation)],
+        environment,
+      );
       if (configuration) return configuration;
     }
   }
-  for (const { index, script } of evaluatedSubstitutions(raw, false, true)) {
+  for (const { index, script } of substitutions) {
     let low = 0;
     let high = snapshots.length;
     while (low < high) {

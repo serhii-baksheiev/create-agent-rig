@@ -956,6 +956,156 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     }
   });
 
+  it.each([
+    ['dollar substitution', '$(unset HUSKY)'],
+    ['backtick substitution', '`unset HUSKY`'],
+  ])('retains inherited HUSKY after a child-local unset in an unquoted %s', async (_, child) => {
+    const inherited = { ...gitEnv(), HUSKY: '0' };
+    const result = await inspectWithEnv(`printf %s ${child}; git commit -m x`, inherited);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it.each([
+    ['dollar substitution', '$(export HUSKY=0)'],
+    ['backtick substitution', '`export HUSKY=0`'],
+  ])(
+    'does not leak a child-local HUSKY export from an unquoted %s to a later commit',
+    async (_, child) => {
+      const result = await inspect(`printf %s ${child}; git commit -m x`);
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it.each([
+    [
+      'GIT_CONFIG_PARAMETERS',
+      { ...gitEnv(), GIT_CONFIG_PARAMETERS: "'core.hooksPath'='/dev/null'" },
+      'unset GIT_CONFIG_PARAMETERS',
+    ],
+    [
+      'the Git configuration triad',
+      {
+        ...gitEnv(),
+        GIT_CONFIG_COUNT: '1',
+        GIT_CONFIG_KEY_0: 'core.hooksPath',
+        GIT_CONFIG_VALUE_0: '/dev/null',
+      },
+      'unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0',
+    ],
+  ])(
+    'retains inherited %s after its child-local unset in unquoted substitutions',
+    async (_, inherited, unset) => {
+      for (const child of [`$(${unset})`, `\`${unset}\``]) {
+        const command = `printf %s ${child}; git commit -m x`;
+        const result = await inspectWithEnv(command, inherited);
+        expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+      }
+    },
+  );
+
+  it.each([
+    ['dollar substitution', '$(export HUSKY=0)', '$(git commit -m x)'],
+    ['backtick substitution', '`export HUSKY=0`', '`git commit -m x`'],
+  ])(
+    'keeps sibling unquoted %s state independent after a child-only export',
+    async (_, exportChild, commitChild) => {
+      const result = await inspect(`printf %s ${exportChild}; printf %s ${commitChild}`);
+      expect(result.code, result.stderr).toBe(0);
+    },
+  );
+
+  it('refuses literal env -S split strings that execute a commit bypass', async () => {
+    for (const command of [
+      "env -S 'git commit --no-verify -m x'",
+      "env -S 'HUSKY=0 git commit -m x'",
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('allows literal env -S split strings that do not invoke a commit', async () => {
+    const result = await inspect("env -S 'git status --short'");
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('preflights the repository selected by literal env -C before a commit', async () => {
+    const disabled = await newGitFixture();
+    await gitMustSucceed(['config', 'core.hooksPath', '.disabled-hooks'], disabled);
+    const lookup = await shell(
+      `env -C ${JSON.stringify(disabled)} git config --get core.hooksPath`,
+    );
+    expect(lookup.code, lookup.stderr).toBe(0);
+    expect(lookup.stdout, lookup.stderr).toBe('.disabled-hooks\n');
+
+    const result = await inspect(`env -C ${JSON.stringify(disabled)} git commit -m x`);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('allows literal env -C commands that do not invoke a commit', async () => {
+    const fixture = await newGitFixture();
+    const result = await inspect(`env -C ${JSON.stringify(fixture)} git status --short`);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('accepts attached env -uHUSKY clearing an inherited disabled Husky environment', async () => {
+    const inherited = { ...gitEnv(), HUSKY: '0' };
+    const result = await inspectWithEnv('env -uHUSKY git commit -m x', inherited);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('accepts attached env -u Git configuration clears in their literal order', async () => {
+    const fixture = await newGitFixture();
+    const inherited = {
+      ...gitEnv(),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/dev/null',
+    };
+    const cleared: Record<string, string> = { ...inherited };
+    delete cleared.GIT_CONFIG_COUNT;
+    delete cleared.GIT_CONFIG_KEY_0;
+    delete cleared.GIT_CONFIG_VALUE_0;
+    const lookup = await git(['config', '--get', 'core.hooksPath'], fixture, cleared);
+    expect(lookup.code, lookup.stderr).toBe(1);
+
+    const command =
+      'env -uGIT_CONFIG_COUNT -uGIT_CONFIG_KEY_0 -uGIT_CONFIG_VALUE_0 git commit -m x';
+    const result = await inspectWithEnv(command, inherited, fixture);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('does not leak child-local exported Git configuration into a later parent commit', async () => {
+    for (const exportChild of [
+      `export GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'"`,
+      'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null',
+    ]) {
+      for (const child of [`$(${exportChild})`, `\`${exportChild}\``]) {
+        const command = `printf %s ${child}; git commit -m x`;
+        const result = await inspect(command);
+        expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+      }
+    }
+  });
+
+  it('distinguishes exported and unexported child Git configuration at the inner commit', async () => {
+    for (const [configuration, expected] of [
+      [`GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'"`, 0],
+      [`export GIT_CONFIG_PARAMETERS="'core.hooksPath'='/dev/null'"`, 2],
+      ['GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null', 0],
+      ['export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null', 2],
+    ] as const) {
+      const command = `printf %s $(${configuration}; git commit -m x)`;
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(expected);
+    }
+  });
+
+  it('restores parent state after a nested unquoted child export before a later commit', async () => {
+    const result = await inspect('printf %s $(printf %s $(export HUSKY=0)); git commit -m x');
+    expect(result.code, result.stderr).toBe(0);
+  });
+
   it('refuses a separately quoted hooksPath override after an unrelated assignment whose value names git', async () => {
     const fixture = await newGitFixture();
     const disabledParameters = "'core.hooksPath'='/dev/null'";
