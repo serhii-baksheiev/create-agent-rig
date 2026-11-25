@@ -172,6 +172,77 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     return value;
   };
 
+  const startCounterWriteBarrier = async ({
+    value,
+    actionArgs,
+    env,
+    inactivityDeadlineMs,
+    maxJournalWaits,
+  }: {
+    value: Fixture;
+    actionArgs: string[];
+    env: NodeJS.ProcessEnv;
+    inactivityDeadlineMs: number;
+    maxJournalWaits: number;
+  }) => {
+    const marker = path.join(value.root, 'counter-write-paused');
+    const resume = path.join(value.root, 'counter-write-resume');
+    const progress = path.join(value.root, 'journal-lock-progress');
+    const preload = path.join(value.root, 'pause-counter-write.mjs');
+    await writeFile(
+      preload,
+      `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const original = fs.writeFileSync;
+let paused = false;
+fs.writeFileSync = function(file, ...args) {
+  if (!paused && String(file).startsWith(process.env.RP521_ROUNDS + '.') && String(file).endsWith('.tmp')) {
+    paused = true;
+    original.call(this, process.env.RP521_MARKER, 'before counter persistence');
+    const progress = process.env.RP521_PROGRESS;
+    const maxJournalWaits = Number(process.env.RP521_MAX_JOURNAL_WAITS ?? '0');
+    let observedJournalWaits = 0;
+    let deadline = Date.now() + ${inactivityDeadlineMs};
+    while (!fs.existsSync(process.env.RP521_RESUME) && Date.now() < deadline) {
+      const journalWaits = progress && fs.existsSync(progress) ? Number(fs.readFileSync(progress, 'utf8')) : 0;
+      if (Number.isSafeInteger(journalWaits) && journalWaits > observedJournalWaits) {
+        if (maxJournalWaits === 0 || journalWaits > maxJournalWaits) {
+          throw new Error('counter write barrier exceeded journal lock bound');
+        }
+        observedJournalWaits = journalWaits;
+        deadline = Date.now() + ${inactivityDeadlineMs};
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+    if (!fs.existsSync(process.env.RP521_RESUME)) throw new Error('counter write barrier timed out');
+  }
+  return original.call(this, file, ...args);
+};
+syncBuiltinESMExports();
+`,
+    );
+    const child = spawn(
+      process.execPath,
+      ['--import', pathToFileURL(preload).href, queueCli, ...actionArgs],
+      {
+        cwd: path.join(value.root, 'repo'),
+        env: {
+          ...env,
+          RP521_ROUNDS: value.configPath.replace(/(\.json)?$/, '.gate-rounds.json'),
+          RP521_MARKER: marker,
+          RP521_RESUME: resume,
+          RP521_PROGRESS: progress,
+          RP521_MAX_JOURNAL_WAITS: String(maxJournalWaits),
+        },
+      },
+    );
+    const stderr: string[] = [];
+    child.stderr.on('data', (chunk) => stderr.push(String(chunk)));
+    const exit = new Promise<number | null>((resolve) => child.once('close', resolve));
+
+    return { marker, progress, resume, stderr, exit };
+  };
+
   it('does not consume a round when the declared run has no reviewer fan-out record', async () => {
     const value = await newFixture();
     const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-no-fanout-'));
@@ -1900,13 +1971,13 @@ syncBuiltinESMExports();
   });
 
   it.each([
-    ['consumption', 'consumption', false],
-    ['release', 'release', false],
-    ['admission', 'admission', false],
-    ['admission after a bounded slow journal refusal', 'admission', true],
+    ['consumption', 'consumption', 8_000, false],
+    ['release', 'release', 8_000, false],
+    ['admission', 'admission', 8_000, false],
+    ['admission after a bounded journal refusal', 'admission', 1_000, true],
   ] as const)(
     'serializes a fan-out append through the final counter write during %s',
-    async (_title, mode, slowJournal) => {
+    async (_title, mode, inactivityDeadlineMs, boundedInactivityWindow) => {
       const value = await newFixture(2);
       const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-counter-write-'));
       roots.push(runDir);
@@ -1933,81 +2004,19 @@ syncBuiltinESMExports();
           ? [...args, '--reserve']
           : [...args, ...(mode === 'release' ? ['--release'] : []), '--reservation', token];
       const evidenceBefore = await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8');
-      const marker = path.join(value.root, 'counter-write-paused');
-      const resume = path.join(value.root, 'counter-write-resume');
-      const progress = path.join(value.root, 'journal-lock-progress');
-      const preload = path.join(value.root, 'pause-counter-write.mjs');
       const { LOCK_MAX_ATTEMPTS } = await journal();
-      await writeFile(
-        preload,
-        `import fs from 'node:fs';
-import { syncBuiltinESMExports } from 'node:module';
-const original = fs.writeFileSync;
-let paused = false;
-fs.writeFileSync = function(file, ...args) {
-  if (!paused && String(file).startsWith(process.env.RP521_ROUNDS + '.') && String(file).endsWith('.tmp')) {
-    paused = true;
-    original.call(this, process.env.RP521_MARKER, 'before counter persistence');
-    const progress = process.env.RP521_PROGRESS;
-    const maxJournalWaits = Number(process.env.RP521_MAX_JOURNAL_WAITS ?? '0');
-    let observedJournalWaits = 0;
-    let deadline = Date.now() + 8000;
-    while (!fs.existsSync(process.env.RP521_RESUME) && Date.now() < deadline) {
-      const journalWaits = progress && fs.existsSync(progress) ? Number(fs.readFileSync(progress, 'utf8')) : 0;
-      if (Number.isSafeInteger(journalWaits) && journalWaits > observedJournalWaits) {
-        if (maxJournalWaits === 0 || journalWaits > maxJournalWaits) {
-          throw new Error('counter write barrier exceeded journal lock bound');
-        }
-        observedJournalWaits = journalWaits;
-        deadline = Date.now() + 8000;
-      }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
-    }
-    if (!fs.existsSync(process.env.RP521_RESUME)) throw new Error('counter write barrier timed out');
-  }
-  return original.call(this, file, ...args);
-};
-syncBuiltinESMExports();
-`,
-      );
-      const child = spawn(
-        process.execPath,
-        ['--import', pathToFileURL(preload).href, queueCli, ...actionArgs],
-        {
-          cwd: path.join(value.root, 'repo'),
-          env: {
-            ...env,
-            ...(mode === 'admission' ? { RIG_RUN_DIR: nextRun } : {}),
-            RP521_ROUNDS: value.configPath.replace(/(\.json)?$/, '.gate-rounds.json'),
-            RP521_MARKER: marker,
-            RP521_RESUME: resume,
-            RP521_PROGRESS: progress,
-            RP521_MAX_JOURNAL_WAITS: String(LOCK_MAX_ATTEMPTS),
-          },
-        },
-      );
-      const stderr: string[] = [];
-      child.stderr.on('data', (chunk) => stderr.push(String(chunk)));
-      let observedChildExit: number | null | undefined;
-      const exit = new Promise<number | null>((resolve) =>
-        child.once('close', (code) => {
-          observedChildExit = code;
-          resolve(code);
-        }),
-      );
+      const barrier = await startCounterWriteBarrier({
+        value,
+        actionArgs,
+        env: { ...env, ...(mode === 'admission' ? { RIG_RUN_DIR: nextRun } : {}) },
+        inactivityDeadlineMs,
+        maxJournalWaits: LOCK_MAX_ATTEMPTS,
+      });
       let appendFailure: unknown;
       let slowJournalWaits = 0;
       const originalWait = Atomics.wait;
       try {
-        const deadline = Date.now() + 5000;
-        while (!existsSync(marker) && Date.now() < deadline) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        expect(
-          existsSync(marker),
-          `counter-write preload did not reach ${marker}; child exit: ${observedChildExit ?? 'not observed'}; ` +
-            `stderr: ${stderr.join('')}`,
-        ).toBe(true);
+        await waitForFile(barrier.marker);
         // This is an inert journal probe, not a reviewer launch. A bounded busy
         // refusal must leave the trace unchanged while consumption persists.
         try {
@@ -2015,8 +2024,8 @@ syncBuiltinESMExports();
             const [typedArray, index, value, timeout] = input;
             if (timeout === 25) {
               slowJournalWaits += 1;
-              writeFileSync(progress, String(slowJournalWaits));
-              return originalWait(typedArray, index, value, slowJournal ? 125 : timeout);
+              writeFileSync(barrier.progress, String(slowJournalWaits));
+              return originalWait(typedArray, index, value, timeout);
             }
             return originalWait(...input);
           }) as typeof Atomics.wait;
@@ -2031,21 +2040,21 @@ syncBuiltinESMExports();
         }
       } finally {
         Atomics.wait = originalWait;
-        await writeFile(resume, 'continue');
+        await writeFile(barrier.resume, 'continue');
       }
-      const consumedExit = await exit;
-      expect(stderr.join('')).not.toMatch(/counter write barrier timed out/);
+      const consumedExit = await barrier.exit;
+      expect(barrier.stderr.join('')).not.toMatch(/counter write barrier timed out/);
       expect(
-        existsSync(progress),
-        `journal lock probe did not report progress during ${mode}; stderr: ${stderr.join('')}`,
+        existsSync(barrier.progress),
+        `journal lock probe did not report progress during ${mode}; stderr: ${barrier.stderr.join('')}`,
       ).toBe(true);
-      const observedJournalWaits = Number(await readFile(progress, 'utf8'));
+      const observedJournalWaits = Number(await readFile(barrier.progress, 'utf8'));
       expect(Number.isSafeInteger(observedJournalWaits)).toBe(true);
       expect(observedJournalWaits).toBeGreaterThan(0);
       expect(observedJournalWaits).toBeLessThanOrEqual(LOCK_MAX_ATTEMPTS);
-      if (slowJournal) expect(slowJournalWaits).toBeGreaterThan(0);
+      if (boundedInactivityWindow) expect(slowJournalWaits).toBeGreaterThan(0);
       expect((appendFailure as { failure?: string } | undefined)?.failure).toBe('busy');
-      expect(consumedExit, stderr.join('')).toBe(0);
+      expect(consumedExit, barrier.stderr.join('')).toBe(0);
       expect(await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8')).toBe(evidenceBefore);
       expect(await counterAt(value.configPath, value.branch)).toBe(mode === 'release' ? 0 : 1);
 
@@ -2059,6 +2068,149 @@ syncBuiltinESMExports();
       expect(await counterAt(value.configPath, value.branch)).toBe(mode === 'release' ? 1 : 2);
     },
   );
+
+  it('keeps an admission barrier alive through bounded journal progress beyond its fixture-local inactivity window', async () => {
+    const value = await newFixture(2);
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-short-progress-'));
+    const nextRun = await mkdtemp(path.join(tmpdir(), 'rp521-short-progress-next-'));
+    roots.push(runDir, nextRun);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
+    const evidenceBefore = await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8');
+    const { LOCK_MAX_ATTEMPTS } = await journal();
+    const barrier = await startCounterWriteBarrier({
+      value,
+      actionArgs: [...args, '--reserve'],
+      env: { ...env, RIG_RUN_DIR: nextRun },
+      inactivityDeadlineMs: 1_000,
+      maxJournalWaits: LOCK_MAX_ATTEMPTS,
+    });
+    await waitForFile(barrier.marker);
+
+    const originalWait = Atomics.wait;
+    let journalWaits = 0;
+    let appendFailure: unknown;
+    const startedAt = Date.now();
+    try {
+      Atomics.wait = ((...input: Parameters<typeof Atomics.wait>) => {
+        const [typedArray, index, waitedOn, timeout] = input;
+        if (timeout === 25) {
+          journalWaits += 1;
+          writeFileSync(barrier.progress, String(journalWaits));
+        }
+        return originalWait(typedArray, index, waitedOn, timeout);
+      }) as typeof Atomics.wait;
+      try {
+        await fanOut({
+          runDir,
+          headSha: value.head,
+          reviewers: ['security-scanner'],
+          why: `gate-round reservation: ${token}`,
+        });
+      } catch (error) {
+        appendFailure = error;
+      }
+    } finally {
+      Atomics.wait = originalWait;
+      await writeFile(barrier.resume, 'continue');
+    }
+
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_000);
+    expect(journalWaits).toBeGreaterThan(0);
+    expect(journalWaits).toBeLessThanOrEqual(LOCK_MAX_ATTEMPTS);
+    expect((appendFailure as { failure?: string } | undefined)?.failure).toBe('busy');
+    expect(await barrier.exit, barrier.stderr.join('')).toBe(0);
+    expect(Atomics.wait).toBe(originalWait);
+    expect(await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8')).toBe(evidenceBefore);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
+
+  it('times out without progress or resume and leaves its token and counter lock reusable', async () => {
+    const value = await newFixture(2);
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-counter-inactivity-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    const evidenceBefore = await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8');
+    const { LOCK_MAX_ATTEMPTS } = await journal();
+    const originalWait = Atomics.wait;
+    const barrier = await startCounterWriteBarrier({
+      value,
+      actionArgs: [...args, '--reservation', token],
+      env,
+      inactivityDeadlineMs: 1_000,
+      maxJournalWaits: LOCK_MAX_ATTEMPTS,
+    });
+    await waitForFile(barrier.marker);
+
+    const exited = await barrier.exit;
+
+    expect(exited).toBe(1);
+    expect(barrier.stderr.join('')).toMatch(/counter write barrier timed out/);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+    expect(await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8')).toBe(evidenceBefore);
+    expect(existsSync(`${value.configPath.replace(/(\.json)?$/, '.gate-rounds.json')}.lock`)).toBe(
+      false,
+    );
+    expect(Atomics.wait).toBe(originalWait);
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
+
+  it('rejects a journal progress pulse beyond the lock bound without manufacturing consumption', async () => {
+    const value = await newFixture(2);
+    const runDir = await mkdtemp(path.join(tmpdir(), 'rp521-counter-over-bound-'));
+    roots.push(runDir);
+    const env = { ...process.env, RIG_RUN_DIR: runDir };
+    const args = ['gate-round', '--branch', value.branch, '--config', value.configPath];
+    const token = await reserve(args, env);
+    await fanOut({
+      runDir,
+      headSha: value.head,
+      reviewers: ['code-reviewer'],
+      why: `gate-round reservation: ${token}`,
+    });
+    const evidenceBefore = await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8');
+    const { LOCK_MAX_ATTEMPTS } = await journal();
+    const originalWait = Atomics.wait;
+    const barrier = await startCounterWriteBarrier({
+      value,
+      actionArgs: [...args, '--reservation', token],
+      env,
+      inactivityDeadlineMs: 1_000,
+      maxJournalWaits: LOCK_MAX_ATTEMPTS,
+    });
+    await waitForFile(barrier.marker);
+    await writeFile(barrier.progress, String(LOCK_MAX_ATTEMPTS + 1));
+
+    const exited = await barrier.exit;
+
+    expect(exited).toBe(1);
+    expect(barrier.stderr.join('')).toMatch(/counter write barrier exceeded journal lock bound/);
+    expect(await counterAt(value.configPath, value.branch)).toBe(0);
+    expect(await readFile(path.join(runDir, 'decisions.jsonl'), 'utf8')).toBe(evidenceBefore);
+    expect(existsSync(`${value.configPath.replace(/(\.json)?$/, '.gate-rounds.json')}.lock`)).toBe(
+      false,
+    );
+    expect(Atomics.wait).toBe(originalWait);
+    expect((await run([...args, '--reservation', token], env)).code).toBe(0);
+    expect(await counterAt(value.configPath, value.branch)).toBe(1);
+  });
 
   it('keeps another branch available when this branch has an unconsumed fan-out', async () => {
     const value = await newFixture(1);
