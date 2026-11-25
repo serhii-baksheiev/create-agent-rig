@@ -18,11 +18,11 @@
 // `--since` accepts numeric year-month-day (including signed or extended
 // years), full English month-day-year, and year-first slash dates. Numeric
 // dates allow a date-only literal Z, or a T/t/space clock time (HH:MM:SS)
-// followed by a literal Z or numeric UTC offset. The written local calendar
-// date is validated before `Date` converts its instant: JavaScript otherwise
-// normalizes impossible dates such as February 31. `--since` needs an explicit
-// value; unrecognized or ambiguous syntax is refused rather than passed to
-// `Date`'s native parser. The published examples are ISO-shaped; the flexible
+// followed by a literal Z or numeric UTC offset. Native `Date` parsing constructs
+// the bound first; a separate lexical calendar check rejects normalized dates
+// such as February 31 and unrecognized or ambiguous syntax before any REST
+// request. Both checks must pass, and `--since` needs an explicit value.
+// The published examples are ISO-shaped; the flexible
 // forms below are retained because the detector's tests establish them as
 // compatible input. See test/template/github-rest-discovery.test.ts (absent in
 // a generated rig) > "continues to acquire REST pull data for valid leap-day,
