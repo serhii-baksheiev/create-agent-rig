@@ -50,6 +50,11 @@ export const scoreRevalidationCorpus = (cases: CorpusCase[]) => {
       rejected = true;
     }
 
+    if (corpusCase.kind === 'caught' && !corpusCase.observation.detected) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'caught observation requires detected:true' });
+      rejected = true;
+    }
+
     if (caseIds.has(corpusCase.caseId)) {
       errors.push({ caseId: corpusCase.caseId, rule: 'unique caseId' });
       rejected = true;
