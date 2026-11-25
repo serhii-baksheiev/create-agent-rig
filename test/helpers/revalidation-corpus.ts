@@ -1,0 +1,432 @@
+export const REQUIRED_REVALIDATION_CORPUS_STRATA = [
+  'scope-title',
+  'scope-body',
+  'scope-labels',
+  'scope-links',
+  'scope-workflow',
+  'paired-facts',
+  'select-commentary',
+  'before-pr-commentary',
+  'close-time-commentary',
+  'own-squash',
+  'omitted-merge',
+  'forged-merge',
+  'foreign-or-concurrent-merge',
+  'integrity-unverifiable',
+  'environment-unverifiable',
+  'action-changing-candidate',
+  'unresolved-catch',
+  'material-no-catch-control',
+] as const;
+
+type CorpusCase = {
+  caseId: string;
+  locator: { run: string; seq: number; detectionId: string };
+  checkpoint: 'SELECT' | 'BEFORE_PR' | 'BEFORE_CLOSE';
+  stratum: string;
+  kind: 'caught' | 'no-catch-control';
+  origin: 'historical' | 'synthetic';
+  detectionObligation?: 'required' | 'deferred';
+  observation: { detected: boolean; actionRequired: boolean | null };
+  label: {
+    groundTruth: 'material' | 'benign' | 'indeterminate';
+    evidence: string;
+    adjudication: 'agreed' | 'disagreed';
+  };
+};
+
+type FrozenSource = { version: string; hash: string };
+
+type HistoricalReviewerProof = {
+  reviewerId: string;
+  source: FrozenSource;
+  label: CorpusCase['label'];
+};
+
+type HistoricalEvidenceCase = {
+  caseId: string;
+  source: FrozenSource;
+  checkpoint: CorpusCase['checkpoint'];
+  stratum: CorpusCase['stratum'];
+  kind: CorpusCase['kind'];
+  origin: CorpusCase['origin'];
+  detectionObligation: CorpusCase['detectionObligation'];
+  locator: CorpusCase['locator'];
+  observation: CorpusCase['observation'];
+  label: CorpusCase['label'];
+  reviewerProofs: HistoricalReviewerProof[];
+};
+
+export type HistoricalEligibilityEvidence = {
+  frozenSource: FrozenSource;
+  cases: HistoricalEvidenceCase[];
+};
+
+type CorpusError = { caseId: string; rule: string };
+
+const emptyRate = () => ({ determinateCaught: 0, falseHolds: 0 });
+
+const isNonBlankString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
+const sameSource = (left: FrozenSource, right: FrozenSource) =>
+  left.version === right.version && left.hash === right.hash;
+
+const isNamedSource = (source: FrozenSource) =>
+  isNonBlankString(source.version) && isNonBlankString(source.hash);
+
+const sameLocator = (left: CorpusCase['locator'], right: CorpusCase['locator']) =>
+  left.run === right.run && left.seq === right.seq && left.detectionId === right.detectionId;
+
+const sameObservation = (left: CorpusCase['observation'], right: CorpusCase['observation']) =>
+  left.detected === right.detected && left.actionRequired === right.actionRequired;
+
+const sameLabel = (left: CorpusCase['label'], right: CorpusCase['label']) =>
+  left.groundTruth === right.groundTruth &&
+  left.evidence === right.evidence &&
+  left.adjudication === right.adjudication;
+
+export const scoreRevalidationCorpus = (
+  cases: CorpusCase[],
+  historicalEligibilityEvidence?: HistoricalEligibilityEvidence,
+) => {
+  const errors: CorpusError[] = [];
+  const caseIds = new Set<string>();
+  const accepted: CorpusCase[] = [];
+
+  for (const corpusCase of cases) {
+    let rejected = false;
+
+    if (
+      !isNonBlankString(corpusCase.caseId) ||
+      !isNonBlankString(corpusCase.locator.run) ||
+      !Number.isSafeInteger(corpusCase.locator.seq) ||
+      corpusCase.locator.seq <= 0 ||
+      !isNonBlankString(corpusCase.locator.detectionId)
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'provenance locator' });
+      rejected = true;
+    }
+
+    if (
+      corpusCase.checkpoint !== 'SELECT' &&
+      corpusCase.checkpoint !== 'BEFORE_PR' &&
+      corpusCase.checkpoint !== 'BEFORE_CLOSE'
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'checkpoint enum' });
+      rejected = true;
+    }
+
+    if (corpusCase.origin !== 'historical' && corpusCase.origin !== 'synthetic') {
+      errors.push({ caseId: corpusCase.caseId, rule: 'case origin enum' });
+      rejected = true;
+    }
+
+    if (
+      !REQUIRED_REVALIDATION_CORPUS_STRATA.includes(
+        corpusCase.stratum as (typeof REQUIRED_REVALIDATION_CORPUS_STRATA)[number],
+      ) &&
+      !(corpusCase.origin === 'historical' && corpusCase.stratum === 'unclassified')
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'case stratum enum' });
+      rejected = true;
+    }
+
+    if (
+      typeof corpusCase.observation.detected !== 'boolean' ||
+      (corpusCase.observation.actionRequired !== null &&
+        typeof corpusCase.observation.actionRequired !== 'boolean')
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'observation primitives' });
+      rejected = true;
+    }
+
+    if (
+      corpusCase.label.groundTruth !== 'material' &&
+      corpusCase.label.groundTruth !== 'benign' &&
+      corpusCase.label.groundTruth !== 'indeterminate'
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'ground truth enum' });
+      rejected = true;
+    }
+
+    if (corpusCase.kind !== 'caught' && corpusCase.kind !== 'no-catch-control') {
+      errors.push({ caseId: corpusCase.caseId, rule: 'case kind enum' });
+      rejected = true;
+    }
+
+    if (
+      corpusCase.detectionObligation !== undefined &&
+      corpusCase.detectionObligation !== 'required' &&
+      corpusCase.detectionObligation !== 'deferred'
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'detection obligation enum' });
+      rejected = true;
+    }
+
+    if (corpusCase.kind === 'caught' && !corpusCase.observation.detected) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'caught observation requires detected:true' });
+      rejected = true;
+    }
+
+    if (corpusCase.kind === 'no-catch-control' && corpusCase.observation.detected) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'no-catch control requires detected:false' });
+      rejected = true;
+    }
+
+    if (
+      corpusCase.kind === 'no-catch-control' &&
+      corpusCase.label.groundTruth === 'material' &&
+      !corpusCase.detectionObligation
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'explicit detection obligation' });
+      rejected = true;
+    }
+
+    if (caseIds.has(corpusCase.caseId)) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'unique caseId' });
+      rejected = true;
+    }
+    caseIds.add(corpusCase.caseId);
+
+    if (!isNonBlankString(corpusCase.label.evidence)) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'independent label evidence' });
+      rejected = true;
+    }
+
+    if (
+      corpusCase.label.groundTruth !== 'indeterminate' &&
+      corpusCase.label.adjudication !== 'agreed'
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'independent label adjudication' });
+      rejected = true;
+    }
+
+    if (!rejected) {
+      accepted.push(corpusCase);
+    }
+  }
+
+  const labels = { material: 0, benign: 0, indeterminate: 0 };
+  const observed = { actionChangingOutcomes: 0 };
+  const rates = { historical: emptyRate(), synthetic: emptyRate() };
+  const origins = { historical: { total: 0 }, synthetic: { total: 0 } };
+  const controls = {
+    materialNoCatch: {
+      historical: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+      synthetic: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+    },
+  };
+  const strata = REQUIRED_REVALIDATION_CORPUS_STRATA.map((stratum) => ({ stratum, total: 0 }));
+  const historicalStrata = REQUIRED_REVALIDATION_CORPUS_STRATA.map((stratum) => ({
+    stratum,
+    total: 0,
+  }));
+
+  for (const corpusCase of accepted) {
+    const isHistoricalUnclassified =
+      corpusCase.origin === 'historical' && corpusCase.stratum === 'unclassified';
+
+    labels[corpusCase.label.groundTruth] += 1;
+    origins[corpusCase.origin].total += 1;
+
+    const stratum = strata.find((entry) => entry.stratum === corpusCase.stratum);
+    if (stratum) {
+      stratum.total += 1;
+    }
+
+    if (corpusCase.origin === 'historical') {
+      const historicalStratum = historicalStrata.find(
+        (entry) => entry.stratum === corpusCase.stratum,
+      );
+      if (historicalStratum) {
+        historicalStratum.total += 1;
+      }
+    }
+
+    if (corpusCase.observation.actionRequired === true) {
+      observed.actionChangingOutcomes += 1;
+    }
+
+    if (!isHistoricalUnclassified) {
+      if (corpusCase.kind === 'caught' && corpusCase.label.groundTruth !== 'indeterminate') {
+        rates[corpusCase.origin].determinateCaught += 1;
+        if (corpusCase.label.groundTruth === 'benign') {
+          rates[corpusCase.origin].falseHolds += 1;
+        }
+      }
+
+      if (corpusCase.kind === 'no-catch-control' && corpusCase.label.groundTruth === 'material') {
+        const obligation = corpusCase.detectionObligation ?? 'required';
+        if (obligation === 'required') {
+          const control = controls.materialNoCatch[corpusCase.origin].required;
+          control.total += 1;
+          control.missed += 1;
+        } else {
+          controls.materialNoCatch[corpusCase.origin].deferred.total += 1;
+        }
+      }
+    }
+  }
+
+  const missingStrata = strata.filter((entry) => entry.total === 0).map((entry) => entry.stratum);
+  const missingHistoricalStrata = historicalStrata
+    .filter((entry) => entry.total === 0)
+    .map((entry) => entry.stratum);
+  const missingMaterialControls =
+    controls.materialNoCatch.historical.required.total +
+      controls.materialNoCatch.historical.deferred.total +
+      controls.materialNoCatch.synthetic.required.total +
+      controls.materialNoCatch.synthetic.deferred.total ===
+    0;
+  const missingHistoricalMaterialControls =
+    controls.materialNoCatch.historical.required.total +
+      controls.materialNoCatch.historical.deferred.total ===
+    0;
+  const missingRequiredHistoricalMaterialControls =
+    controls.materialNoCatch.historical.required.total === 0;
+  const indeterminateCases = labels.indeterminate;
+  const missingHistoricalDeterminateCaught = rates.historical.determinateCaught === 0;
+  const unclassifiedHistoricalCases = accepted.filter(
+    (corpusCase) => corpusCase.origin === 'historical' && corpusCase.stratum === 'unclassified',
+  ).length;
+
+  const historicalCases = accepted.filter((corpusCase) => corpusCase.origin === 'historical');
+  let boundCases = 0;
+  let sourceCohortComplete = false;
+
+  if (historicalEligibilityEvidence) {
+    const { frozenSource, cases: evidenceCases } = historicalEligibilityEvidence;
+
+    for (const corpusCase of historicalCases) {
+      const matchingEvidenceCases = evidenceCases.filter(
+        (evidenceCase) => evidenceCase.caseId === corpusCase.caseId,
+      );
+      const evidenceCase = matchingEvidenceCases[0];
+
+      if (
+        matchingEvidenceCases.length !== 1 ||
+        !evidenceCase ||
+        !isNamedSource(frozenSource) ||
+        !sameSource(evidenceCase.source, frozenSource)
+      ) {
+        errors.push({ caseId: corpusCase.caseId, rule: 'historical source membership' });
+        continue;
+      }
+
+      if (!sameLocator(evidenceCase.locator, corpusCase.locator)) {
+        errors.push({ caseId: corpusCase.caseId, rule: 'historical case locator binding' });
+        continue;
+      }
+
+      if (!sameObservation(evidenceCase.observation, corpusCase.observation)) {
+        errors.push({ caseId: corpusCase.caseId, rule: 'historical observation binding' });
+        continue;
+      }
+
+      if (!sameLabel(evidenceCase.label, corpusCase.label)) {
+        errors.push({ caseId: corpusCase.caseId, rule: 'historical label binding' });
+        continue;
+      }
+
+      if (
+        evidenceCase.checkpoint !== corpusCase.checkpoint ||
+        evidenceCase.stratum !== corpusCase.stratum ||
+        evidenceCase.kind !== corpusCase.kind ||
+        evidenceCase.origin !== corpusCase.origin ||
+        evidenceCase.detectionObligation !== corpusCase.detectionObligation
+      ) {
+        errors.push({ caseId: corpusCase.caseId, rule: 'historical scoring field binding' });
+        continue;
+      }
+
+      if (evidenceCase.reviewerProofs.some((proof) => !sameSource(proof.source, frozenSource))) {
+        errors.push({ caseId: corpusCase.caseId, rule: 'historical reviewer source membership' });
+        continue;
+      }
+
+      if (evidenceCase.reviewerProofs.some((proof) => !sameLabel(proof.label, corpusCase.label))) {
+        errors.push({ caseId: corpusCase.caseId, rule: 'historical reviewer label binding' });
+        continue;
+      }
+
+      const reviewerIds = new Set(evidenceCase.reviewerProofs.map((proof) => proof.reviewerId));
+      if (
+        reviewerIds.size < 2 ||
+        evidenceCase.reviewerProofs.some((proof) => !isNonBlankString(proof.reviewerId))
+      ) {
+        errors.push({
+          caseId: corpusCase.caseId,
+          rule: 'independent historical reviewer membership',
+        });
+        continue;
+      }
+
+      boundCases += 1;
+    }
+
+    const scoredCaseIds = new Set(historicalCases.map((corpusCase) => corpusCase.caseId));
+    const unscoredEvidenceCases = evidenceCases.filter(
+      (evidenceCase) => !scoredCaseIds.has(evidenceCase.caseId),
+    );
+    for (const evidenceCase of unscoredEvidenceCases) {
+      errors.push({
+        caseId: evidenceCase.caseId,
+        rule: 'historical source cohort completeness',
+      });
+    }
+    sourceCohortComplete = unscoredEvidenceCases.length === 0;
+  }
+
+  const historicalEvidenceVerified =
+    historicalCases.length > 0 &&
+    historicalEligibilityEvidence !== undefined &&
+    boundCases === historicalCases.length &&
+    sourceCohortComplete;
+
+  return {
+    errors,
+    manifest: {
+      total: cases.length,
+      accepted: accepted.length,
+      rejected: cases.length - accepted.length,
+    },
+    totalCases: accepted.length,
+    labels,
+    observed,
+    rates,
+    origins,
+    controls,
+    strata,
+    unclassifiedHistoricalCases,
+    belowFivePercent: {
+      eligible:
+        errors.length === 0 &&
+        missingStrata.length === 0 &&
+        !missingMaterialControls &&
+        missingHistoricalStrata.length === 0 &&
+        !missingHistoricalMaterialControls &&
+        !missingRequiredHistoricalMaterialControls &&
+        indeterminateCases === 0 &&
+        !missingHistoricalDeterminateCaught &&
+        unclassifiedHistoricalCases === 0 &&
+        historicalEvidenceVerified,
+      missingStrata,
+      missingMaterialControls,
+      missingHistoricalStrata,
+      missingHistoricalMaterialControls,
+      missingRequiredHistoricalMaterialControls,
+      indeterminateCases,
+      missingHistoricalDeterminateCaught,
+      ...(historicalEligibilityEvidence
+        ? {
+            historicalEligibilityEvidence: {
+              verified: historicalEvidenceVerified,
+              source: historicalEligibilityEvidence.frozenSource,
+              boundCases,
+            },
+          }
+        : {}),
+    },
+  };
+};

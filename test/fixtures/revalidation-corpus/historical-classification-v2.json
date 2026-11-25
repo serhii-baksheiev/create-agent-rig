@@ -1,0 +1,1268 @@
+{
+  "schemaVersion": 2,
+  "population": "historical-annotation-v2",
+  "sourceFixtureSha256": "9fec66526223db94383b1dbf6003f4dd164b173ec65fe8496f8d5bbddb1cdb9f",
+  "sourceLabelsSha256": "fc409a067b7ec31572648200da5152307f15fdfd65bb6b7fd23cea54302c7200",
+  "cases": [
+    {
+      "caseId": "20261006-120528-rp281:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-120528-rp281:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-120528-rp281:12",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-120528-rp281:26",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-130118-rp282:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-130118-rp282:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-130118-rp282:12",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-130118-rp282:20",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-140022-rp366:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-140022-rp366:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-140022-rp366:17",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-140022-rp366:25",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-142124-rp321:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-142124-rp321:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-142124-rp321:17",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-142124-rp321:26",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-143951-rp284:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-143951-rp284:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-143951-rp284:11",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-143951-rp284:19",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-153801-rp283:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-153801-rp283:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-153801-rp283:10",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-153801-rp283:17",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-153801-rp283:24",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-170216-rp425:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-170216-rp425:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-170216-rp425:12",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-183145-rp339:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-183145-rp339:8",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-183145-rp339:31",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-190645-rp341:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-190645-rp341:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-190645-rp341:25",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-192308-rp426:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-192308-rp426:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-192308-rp426:8",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-192308-rp426:15",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-202227-rp340:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-202227-rp340:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-202227-rp340:34",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-205716-rp343:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-205716-rp343:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-205716-rp343:28",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-205716-rp343:56",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-234023-rp342:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-234023-rp342:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261006-234023-rp342:34",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-004818-rp344:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-004818-rp344:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-004818-rp344:11",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-004818-rp344:19",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-015118-rp434:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-015118-rp434:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-015118-rp434:12",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-015118-rp434:22",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-025839-rp312:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-025839-rp312:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-025839-rp312:12",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-025839-rp312:22",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-025839-rp312:32",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-025839-rp312:43",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-025839-rp312:53",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-055601-rp435:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-055601-rp435:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-055601-rp435:10",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-060925-rp314:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-060925-rp314:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-060925-rp314:17",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-060925-rp314:27",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-080202-rp313:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-080202-rp313:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-080202-rp313:12",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-080202-rp313:21",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-093827-rp438:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-093827-rp438:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-093827-rp438:10",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-093827-rp438:17",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-095426-rp437:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-095426-rp437:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-095426-rp437:12",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-095426-rp437:17",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-095426-rp437:26",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-102742-rp315:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-102742-rp315:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-102742-rp315:13",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-102742-rp315:23",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-115519-rp316:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-115519-rp316:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-115519-rp316:12",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-115519-rp316:20",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-124347-rp317:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-125622-rp441:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-125622-rp441:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-125622-rp441:13",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-125622-rp441:22",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-135706-rp356:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-135706-rp356:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-135706-rp356:11",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-135706-rp356:22",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-150433-rp355:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-150828-rp448:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-150828-rp448:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-150828-rp448:11",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-151011-rp442:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-151011-rp442:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-151011-rp442:13",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-151011-rp442:19",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-151011-rp442:29",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-151011-rp442:35",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-151011-rp442:41",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-155856-rp443:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-155856-rp443:7",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-155856-rp443:8",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-155856-rp443:13",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-155856-rp443:23",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-165646-rp449:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-165646-rp449:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-165655-rp450:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-165655-rp450:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-165655-rp450:11",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261007-165655-rp450:20",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:3",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:17",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:20",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:23",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:29",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:34",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:47",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:59",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261010-150702-rp479:69",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-075338-rp481:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-075338-rp481:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-075338-rp481:13",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-084336-rp482:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-084336-rp482:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-084336-rp482:20",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-092521-rp484:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-092521-rp484:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-092521-rp484:12",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-095609-rp483:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-095609-rp483:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-095609-rp483:20",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-101918-rp486:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-101918-rp486:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-101918-rp486:10",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-101918-rp486:20",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-114801-rp467:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-114801-rp467:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-114801-rp467:12",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-133528-rp421:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-133528-rp421:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-133528-rp421:8",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-133528-rp421:9",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-133528-rp421:35",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-134858-rp466:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-134858-rp466:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-143317-rp424:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-143317-rp424:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-143317-rp424:11",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-153320-rp488:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-153320-rp488:11",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-153857-rp450:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-154127-rp450b:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-154127-rp450b:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-154127-rp450b:33",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-155927-rp449:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-155927-rp449:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-155927-rp449:14",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-161820-rp442:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-161820-rp442:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-161820-rp442:55",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-161825-rp443:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-161825-rp443:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-161825-rp443:33",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-162941-rp430:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-162941-rp430:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-162941-rp430:4",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-162941-rp430:25",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-173149-rp492:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-173149-rp492:3",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261011-173149-rp492:19",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp357:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp422:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp423:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp428:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp429:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp431:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp433:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp436a:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp445a:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp446:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp447:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp476:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp485:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp487:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp494:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp495:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp499:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp500:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261012-rp502:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261013-rp503:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1157-recovery-rp545:59",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1157-recovery-rp545:77",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1157-recovery-rp545:94",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1313-rp541:3",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1313-rp541:23",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1313-rp541:41",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1313-rp541:56",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1313-rp541:64",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1348-rp542:4",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1348-rp542:7",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1348-rp542:13",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1348-rp542:30",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1348-rp542:49",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1348-rp542:74",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1452-rp520:25",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1452-rp520:43",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1452-rp520:62",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1452-rp520:81",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1637-rp522-b:3",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1819-rp522-b-resume-hold:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1819-rp522-b-resume-hold:94",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1819-rp522-b-resume-hold:192",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1819-rp522-b-resume-hold:194",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1819-rp522-b-resume-hold:230",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-1819-rp522-b-resume-hold:270",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-2203-rp523-merged-260f4f18:4",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-2203-rp523-merged-260f4f18:44",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-2203-rp523-merged-260f4f18:66",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261018-2203-rp523-merged-260f4f18:88",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0005-rp524-parked-r4:4",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0005-rp524-parked-r4:50",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0005-rp524-parked-r4:77",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0005-rp524-parked-r4:82",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0005-rp524-parked-r4:102",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0005-rp524-parked-r4:131",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0005-rp524-parked-r4:164",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0544-rp526-closed:3",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0544-rp526-closed:19",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0544-rp526-closed:35",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0544-rp526-closed:56",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0555-rp522-b-parked-r5:2",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0555-rp522-b-parked-r5:48",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0645-rp543-closed:3",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0645-rp543-closed:5",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0645-rp543-closed:19",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261019-0645-rp543-closed:38",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261020-0841-rp521-parked-authoring:3",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261020-1036-rp550-closed:4",
+      "checkpoint": "SELECT",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261020-1036-rp550-closed:22",
+      "checkpoint": "BEFORE_PR",
+      "semanticStratum": "unclassified"
+    },
+    {
+      "caseId": "20261020-1036-rp550-closed:41",
+      "checkpoint": "BEFORE_CLOSE",
+      "semanticStratum": "unclassified"
+    }
+  ]
+}
