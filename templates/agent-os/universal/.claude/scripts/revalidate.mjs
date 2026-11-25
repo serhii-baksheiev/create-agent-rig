@@ -136,8 +136,10 @@
  * must carry a string ticket equal to the CLI ticket; an owner-directed one
  * instead carries the explicit owner-directed mode. The selector also requires
  * its id and point/checkpoint, a blocking result, and no timestamp-aware typed
- * resolution; a failure of any of those checks refuses before an outcome or
- * state write. Pinned in the generator's
+ * resolution. For an explicit selector, it also builds the prospective outcome
+ * at one captured actual time and requires the shared reader to resolve that
+ * selected observation; a failure of any of those checks refuses before an
+ * outcome or state write. Pinned in the generator's
  * `test/template/revalidation-evidence.test.ts` (absent in a generated rig) ›
  * "selects the older UNVERIFIABLE hold after a later CURRENT re-read, preserves
  * prior evidence, and lets the queue select again", › "keeps the default
@@ -148,7 +150,10 @@
  * without falling back to the latest event", and › "answers and clears a
  * point-only blocking observation that the shared reader already holds", ›
  * "refuses ticketed selectors whose literal CLI subject only string-coerces a
- * reader-ineligible observation".
+ * reader-ineligible observation", › "refuses a selected blocking detection
+ * one hour in the future before changing its journal or latch", and ›
+ * "refuses a selected blocking detection with an invalid timestamp before
+ * changing its journal or latch".
  *
  * ⚠ It reads `<base>` as it is in this checkout and never updates the remote
  * ref itself; `pr-ship` step 1 does that before calling this. A stale ref
@@ -604,24 +609,37 @@ if (invokedDirectly()) {
     }
     const now = new Date().toISOString();
     const actionRequired = args.actionChanged === 'true';
+    const outcome = {
+      detectionId: target.data?.id,
+      action: actionRequired ? 'semantic decision' : 'continue',
+      actionRequired,
+      driftOrigin: 'unknown',
+      resolvedAt: now,
+      // `null`, never a placeholder, for the same reason the detection this
+      // answers carries none.
+      ticket: args.ownerDirected ? null : args.ticket,
+      ...(args.ownerDirected ? { mode: OWNER_DIRECTED } : {}),
+      point: args.point,
+      actionChanged: actionRequired,
+      note: args.note,
+      answers: target.seq,
+    };
+    if (
+      args.detection !== undefined &&
+      !typedResolutionOf(
+        typedResolutionsOf([
+          ...events,
+          { kind: 'revalidation-outcome', at: now, data: outcome },
+        ]),
+        target,
+      )
+    ) {
+      refuse(`the selected revalidation of ${subject} at ${args.point} cannot be resolved by this outcome.`);
+    }
     const record = recordEvent({
       runDir,
       kind: 'revalidation-outcome',
-      data: {
-        detectionId: target.data?.id,
-        action: actionRequired ? 'semantic decision' : 'continue',
-        actionRequired,
-        driftOrigin: 'unknown',
-        resolvedAt: now,
-        // `null`, never a placeholder, for the same reason the detection this
-        // answers carries none.
-        ticket: args.ownerDirected ? null : args.ticket,
-        ...(args.ownerDirected ? { mode: OWNER_DIRECTED } : {}),
-        point: args.point,
-        actionChanged: actionRequired,
-        note: args.note,
-        answers: target.seq,
-      },
+      data: outcome,
       now,
     });
     clearRevalidationHold(runDir, target.data?.id);

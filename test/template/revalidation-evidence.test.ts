@@ -1053,6 +1053,82 @@ describe('B2. `revalidate.mjs outcome --detection` (RP-549)', () => {
       expect(await readFile(path.join(p.runDir, 'state.json'), 'utf8'), testCase.name).toBe(state);
     }
   });
+
+  it('refuses a selected blocking detection one hour in the future before changing its journal or latch', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    const state = latchedState(A_ID);
+    const journalPath = path.join(p.runDir, 'events.jsonl');
+    const statePath = path.join(p.runDir, 'state.json');
+    await writeFile(statePath, state);
+    const journalBytes = await readFile(journalPath, 'utf8');
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+
+    expect(result.code, result.out).toBe(1);
+    expect(await readFile(journalPath, 'utf8')).toBe(journalBytes);
+    expect(await readFile(statePath, 'utf8')).toBe(state);
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+  });
+
+  it('refuses a selected blocking detection with an invalid timestamp before changing its journal or latch', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, 'not-an-ISO-timestamp');
+    const state = latchedState(A_ID);
+    const journalPath = path.join(p.runDir, 'events.jsonl');
+    const statePath = path.join(p.runDir, 'state.json');
+    await writeFile(statePath, state);
+    const journalBytes = await readFile(journalPath, 'utf8');
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+
+    expect(result.code, result.out).toBe(1);
+    expect(await readFile(journalPath, 'utf8')).toBe(journalBytes);
+    expect(await readFile(statePath, 'utf8')).toBe(state);
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+  });
+
+  it('answers a selected blocking detection with a past timestamp and releases its matching latch', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, '2000-01-01T00:00:00.000Z');
+    await writeFile(path.join(p.runDir, 'state.json'), latchedState(A_ID));
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+
+    expect(result.code, result.out).toBe(0);
+    expect(eventsOf(p.runDir, 'revalidation-outcome')).toHaveLength(1);
+    expect(
+      JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8')),
+    ).not.toHaveProperty('revalidationHold');
+    expect(unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events)).toBeNull();
+  });
 });
 
 describe('C. `revalidation-report.mjs --since` counts catches that altered the action', () => {
