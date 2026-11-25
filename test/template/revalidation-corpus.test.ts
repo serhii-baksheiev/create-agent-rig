@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   REQUIRED_REVALIDATION_CORPUS_STRATA,
   scoreRevalidationCorpus,
+  type HistoricalEligibilityEvidence,
 } from '../helpers/revalidation-corpus.js';
 
 type CorpusCase = {
@@ -150,6 +151,11 @@ type SyntheticLabelsFixture = {
   sourceFixtureSha256: string;
   blindedInputSha256: string;
   adjudicationPolicy: string;
+  evidenceSources?: {
+    priorLabelsSha256: string;
+    blindedInputSha256: string;
+    reviewerOutputSha256: Record<string, string>;
+  };
   reviewers: Array<{
     id: string;
     outputSha256: string;
@@ -262,6 +268,9 @@ const constructedLabelsV2Path = fileURLToPath(
 const pressureNativeV2Path = fileURLToPath(
   new URL('../fixtures/revalidation-controls/pressure-native-v2.json', import.meta.url),
 );
+const pressureLabelsV2Path = fileURLToPath(
+  new URL('../fixtures/revalidation-controls/pressure-labels-v2.json', import.meta.url),
+);
 const readHistoricalFixture = (): HistoricalFixture => {
   expect(existsSync(historicalFixturePath)).toBe(true);
   return JSON.parse(readFileSync(historicalFixturePath, 'utf8')) as HistoricalFixture;
@@ -317,6 +326,11 @@ const readConstructedLabelsV2 = (): VersionedSyntheticLabelsFixture => {
 const readPressureNativeV2 = (): VersionedPressureNativeFixture => {
   expect(existsSync(pressureNativeV2Path)).toBe(true);
   return JSON.parse(readFileSync(pressureNativeV2Path, 'utf8')) as VersionedPressureNativeFixture;
+};
+
+const readPressureLabelsV2 = (): SyntheticLabelsFixture => {
+  expect(existsSync(pressureLabelsV2Path)).toBe(true);
+  return JSON.parse(readFileSync(pressureLabelsV2Path, 'utf8')) as SyntheticLabelsFixture;
 };
 
 const recordedActionRequired = (observation: HistoricalObservation): boolean | null =>
@@ -403,6 +417,44 @@ const completeFixtureCorpus = (origin: CorpusCase['origin']): CorpusCase[] =>
     }),
   );
 
+// TESTONLY: this is a constructed contract control. It does not assert natural
+// historical accuracy, nor does it reinterpret the 252 historical observations.
+const testOnlyHistoricalEligibilityEvidence = (
+  cases: CorpusCase[],
+): HistoricalEligibilityEvidence => {
+  const frozenSource = {
+    version: 'testonly-frozen-source-v1',
+    hash: 'testonly-frozen-source-sha256',
+  };
+
+  return {
+    frozenSource,
+    cases: cases.map((corpusCase) => ({
+      caseId: corpusCase.caseId,
+      source: frozenSource,
+      stratum: corpusCase.stratum,
+      kind: corpusCase.kind,
+      origin: corpusCase.origin,
+      detectionObligation: corpusCase.detectionObligation,
+      locator: { ...corpusCase.locator },
+      observation: { ...corpusCase.observation },
+      label: { ...corpusCase.label },
+      reviewerProofs: [
+        {
+          reviewerId: 'testonly-independent-a',
+          source: frozenSource,
+          label: { ...corpusCase.label },
+        },
+        {
+          reviewerId: 'testonly-independent-b',
+          source: frozenSource,
+          label: { ...corpusCase.label },
+        },
+      ],
+    })),
+  };
+};
+
 describe('independently labelled revalidation corpus scoring', () => {
   it('rejects a case that lacks a replayable provenance locator before scoring it', () => {
     const result = scoreRevalidationCorpus([
@@ -462,6 +514,39 @@ describe('independently labelled revalidation corpus scoring', () => {
         },
       ]),
       manifest: { total: 1, accepted: 0, rejected: 1 },
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('rejects a material no-catch whose checkpoint duty is absent instead of manufacturing a required miss', () => {
+    const result = scoreRevalidationCorpus([
+      caseOf({
+        caseId: 'synthetic-material-no-catch-without-duty',
+        kind: 'no-catch-control',
+        origin: 'synthetic',
+        detectionObligation: undefined,
+        observation: { detected: false, actionRequired: null },
+        label: {
+          groundTruth: 'material',
+          evidence: 'review://independent/missing-checkpoint-duty',
+          adjudication: 'agreed',
+        },
+      }),
+    ]);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: 'synthetic-material-no-catch-without-duty',
+          rule: 'explicit detection obligation',
+        },
+      ]),
+      manifest: { total: 1, accepted: 0, rejected: 1 },
+      controls: {
+        materialNoCatch: {
+          synthetic: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+        },
+      },
       belowFivePercent: { eligible: false },
     });
   });
@@ -719,6 +804,300 @@ describe('independently labelled revalidation corpus scoring', () => {
         historical: { determinateCaught: 1 },
         synthetic: { determinateCaught: EXPECTED_STRATA.length - 1 },
       },
+    });
+  });
+
+  it('does not let self-declared historical rows establish target eligibility without frozen source and reviewer membership', () => {
+    const result = scoreRevalidationCorpus(
+      completeFixtureCorpus('historical').map((corpusCase, index) => ({
+        ...corpusCase,
+        caseId: `fabricated-historical-${index}`,
+        locator: {
+          run: `fictitious-run-${index}`,
+          seq: index + 1,
+          detectionId: `fictitious-detection-${index}`,
+        },
+        label: {
+          ...corpusCase.label,
+          evidence: `self-declared://independent-review/${index}`,
+        },
+      })),
+    );
+
+    expect(result).toMatchObject({
+      belowFivePercent: {
+        eligible: false,
+        missingStrata: [],
+        missingMaterialControls: false,
+        missingHistoricalStrata: [],
+        missingHistoricalMaterialControls: false,
+        indeterminateCases: 0,
+        missingHistoricalDeterminateCaught: false,
+      },
+    });
+  });
+
+  it('permits a TESTONLY complete historical cohort only when every case joins one frozen source and two independent reviewer labels', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result.belowFivePercent).toMatchObject({
+      eligible: true,
+      historicalEligibilityEvidence: {
+        verified: true,
+        source: evidence.frozenSource,
+        boundCases: cases.length,
+      },
+    });
+  });
+
+  it('refuses target eligibility when one historical case is absent from the frozen source membership', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const omittedCase = evidence.cases.shift();
+    if (!omittedCase) throw new Error('Expected a test-only evidence case');
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: omittedCase.caseId,
+          rule: 'historical source membership',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when a frozen source hash does not bind a historical case', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    if (!firstEvidenceCase) throw new Error('Expected a test-only evidence case');
+    firstEvidenceCase.source = { ...firstEvidenceCase.source, hash: 'different-source-sha256' };
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: firstEvidenceCase.caseId,
+          rule: 'historical source membership',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when frozen case evidence does not bind the replay locator', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    if (!firstEvidenceCase) throw new Error('Expected a test-only evidence case');
+    firstEvidenceCase.locator = { ...firstEvidenceCase.locator, seq: 999 };
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: firstEvidenceCase.caseId,
+          rule: 'historical case locator binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when frozen case evidence does not bind the observed outcome', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    if (!firstEvidenceCase) throw new Error('Expected a test-only evidence case');
+    firstEvidenceCase.observation = { ...firstEvidenceCase.observation, actionRequired: true };
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: firstEvidenceCase.caseId,
+          rule: 'historical observation binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when frozen case evidence does not bind the adjudicated label', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    if (!firstEvidenceCase) throw new Error('Expected a test-only evidence case');
+    firstEvidenceCase.label = { ...firstEvidenceCase.label, groundTruth: 'benign' };
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: firstEvidenceCase.caseId,
+          rule: 'historical label binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when frozen source evidence does not bind a scoring stratum', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const evidenceCase = evidence.cases[1];
+    if (!evidenceCase) throw new Error('Expected a test-only evidence case');
+    evidenceCase.stratum = 'scope-title';
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: evidenceCase.caseId,
+          rule: 'historical scoring field binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when frozen source evidence does not bind case kind', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const evidenceCase = evidence.cases[1];
+    if (!evidenceCase) throw new Error('Expected a test-only evidence case');
+    evidenceCase.kind = 'no-catch-control';
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: evidenceCase.caseId,
+          rule: 'historical scoring field binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when frozen source evidence does not bind checkpoint duty', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const evidenceCase = evidence.cases[1];
+    if (!evidenceCase) throw new Error('Expected a test-only evidence case');
+    evidenceCase.detectionObligation = 'required';
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: evidenceCase.caseId,
+          rule: 'historical scoring field binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when frozen source evidence does not bind case origin', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const evidenceCase = evidence.cases[1];
+    if (!evidenceCase) throw new Error('Expected a test-only evidence case');
+    evidenceCase.origin = 'synthetic';
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: evidenceCase.caseId,
+          rule: 'historical scoring field binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when a reviewer proof is not bound to the frozen source', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    const firstReviewerProof = firstEvidenceCase?.reviewerProofs[0];
+    if (!firstEvidenceCase || !firstReviewerProof) {
+      throw new Error('Expected a test-only reviewer proof');
+    }
+    firstReviewerProof.source = { ...firstReviewerProof.source, hash: 'different-source-sha256' };
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: firstEvidenceCase.caseId,
+          rule: 'historical reviewer source membership',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when a reviewer proof does not bind the adjudicated label', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    const firstReviewerProof = firstEvidenceCase?.reviewerProofs[0];
+    if (!firstEvidenceCase || !firstReviewerProof) {
+      throw new Error('Expected a test-only reviewer proof');
+    }
+    firstReviewerProof.label = { ...firstReviewerProof.label, groundTruth: 'benign' };
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: firstEvidenceCase.caseId,
+          rule: 'historical reviewer label binding',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('refuses target eligibility when the two required reviewer proofs are not independent', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    const secondReviewerProof = firstEvidenceCase?.reviewerProofs[1];
+    if (!firstEvidenceCase || !secondReviewerProof) {
+      throw new Error('Expected two test-only reviewer proofs');
+    }
+    secondReviewerProof.reviewerId = firstEvidenceCase.reviewerProofs[0]?.reviewerId ?? '';
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: firstEvidenceCase.caseId,
+          rule: 'independent historical reviewer membership',
+        },
+      ]),
+      belowFivePercent: { eligible: false },
     });
   });
 
@@ -1437,6 +1816,89 @@ describe('evidence-bound superseding pressure-v2 capture', () => {
       });
       expect(observation.locator.seq).toBeGreaterThan(0);
     }
+  });
+
+  it('joins every v2 native observation to independent labels and exposes N01 as a deferred material no-catch', () => {
+    const controls = readPressureControlsV2();
+    const native = readPressureNativeV2();
+    const labels = readPressureLabelsV2();
+    const sourceFixtureSha256 = createHash('sha256')
+      .update(readFileSync(pressureControlsV2Path))
+      .digest('hex');
+
+    expect(native.sourceFixtureSha256).toBe(sourceFixtureSha256);
+    expect(labels.sourceFixtureSha256).toBe(sourceFixtureSha256);
+    expect(labels.evidenceSources).toMatchObject({
+      priorLabelsSha256: controls.supersedes.labelsSha256,
+      blindedInputSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      reviewerOutputSha256: {
+        'independent-a': expect.stringMatching(/^[a-f0-9]{64}$/),
+        'independent-b': expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
+    });
+    expect(labels.reviewers).toHaveLength(2);
+    expect(labels.cases.map(({ caseId }) => caseId).sort()).toEqual(['B02', 'B03', 'N01', 'P01']);
+    expect(native.observations.map(({ caseId }) => caseId).sort()).toEqual([
+      'B02',
+      'B03',
+      'N01',
+      'P01',
+    ]);
+
+    const controlsByCase = new Map(controls.controls.map((control) => [control.id, control]));
+    const labelsByCase = new Map(
+      labels.cases.map((labelledCase) => {
+        if (!labelledCase.caseId)
+          throw new Error('pressure labels require source case ids for native join');
+        return [labelledCase.caseId, labelledCase];
+      }),
+    );
+    const strata = {
+      B02: 'scope-body',
+      B03: 'close-time-commentary',
+      N01: 'before-pr-commentary',
+      P01: 'close-time-commentary',
+    };
+    const measurement = scoreRevalidationCorpus(
+      native.observations.map((observation) => {
+        const control = controlsByCase.get(observation.caseId);
+        const label = labelsByCase.get(observation.caseId);
+        if (!control || !label) throw new Error(`missing v2 evidence for ${observation.caseId}`);
+
+        return {
+          caseId: observation.caseId,
+          locator: observation.locator,
+          stratum: strata[observation.caseId],
+          kind:
+            observation.result === 'CURRENT' ? ('no-catch-control' as const) : ('caught' as const),
+          origin: 'synthetic' as const,
+          detectionObligation: control.detectionObligation,
+          observation: { detected: observation.result === 'CHANGED', actionRequired: null },
+          label: {
+            groundTruth: label.adjudication.groundTruth,
+            evidence: label.assessments.map(({ evidence }) => evidence).join('; '),
+            adjudication:
+              label.adjudication.status === 'agreed-determinate'
+                ? ('agreed' as const)
+                : ('disagreed' as const),
+          },
+        };
+      }),
+    );
+
+    expect(measurement).toMatchObject({
+      errors: [],
+      manifest: { total: 4, accepted: 4, rejected: 0 },
+      labels: { material: 2, benign: 2, indeterminate: 0 },
+      rates: { synthetic: { determinateCaught: 3, falseHolds: 2 } },
+      origins: { synthetic: { total: 4 } },
+      controls: {
+        materialNoCatch: {
+          synthetic: { required: { total: 0, missed: 0 }, deferred: { total: 1 } },
+        },
+      },
+      belowFivePercent: { eligible: false, missingHistoricalDeterminateCaught: true },
+    });
   });
 });
 

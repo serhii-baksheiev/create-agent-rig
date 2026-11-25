@@ -2,10 +2,14 @@
 
 Status: v1 fixtures are frozen historical evidence. v2 is their explicit
 successor where R1 found replay-metadata defects; it does not alter v1 bytes or
-raw independent-label outputs. Focused R1 checks pass, but full candidate
-verification and fresh independent pre-merge gates remain pending. This
-document does not claim a false-HOLD rate, a false-negative rate, or the <5%
-target.
+raw independent-label outputs. A source-bound full-suite snapshot exists for
+commit `84db8f0bf10d2f96cf509473d2ab3a1baa35c42f`: receipt `seq:76` at
+`2026-11-25T04:01:52.920Z` records `pnpm test` with exit code 0, and its
+recorded log reports 246 passing files, 7,281 passing tests, and 104 skips
+(489.67 seconds). That snapshot applies only to that commit; later commits and
+uncommitted working-tree changes are not covered by it. Fresh independent
+pre-merge gates remain pending. This document does not claim a false-HOLD rate,
+a false-negative rate, or the <5% target.
 
 ## Populations and boundaries
 
@@ -163,23 +167,33 @@ path; the composite checkout/run/sequence identifies the execution scope. No nat
 identifier or journal event was fabricated. This corrects measurement provenance;
 it does not establish a production claim-recovery defect.
 
-Joining those observations to the independent pressure labels produces three
+The v2 join contains four deliberately selected pressure cases. Three are
 determinate catches: two benign changes held and one material change detected.
-These are deliberately selected pressure cases, not an estimate of production
-frequency. The nineteen broader controls remain a separate population with six
-unresolved reviewer disagreements. Protocol-control materiality is not evidence
-that the original upstream change was a material task violation; those controls
-must not be added to a precision denominator to dilute the pressure findings.
+N01 is a material no-catch at a deferred `BEFORE_PR` checkpoint, and therefore
+contributes zero required misses. These controls are not an estimate of
+production frequency. The nineteen broader controls remain a separate
+population with six unresolved reviewer disagreements. Protocol-control
+materiality is not evidence that the original upstream change was a material
+task violation; those controls must not be added to a precision denominator to
+dilute the pressure findings.
 
-The scorer rejects contradictory `caught` and `no-catch-control` rows before
-they enter denominators. It has no mixed-origin `caught` metric: false-HOLD
-counts remain partitioned in `rates.historical` and `rates.synthetic`.
-Material no-catch controls are partitioned by the same origin and by
-`detectionObligation`. Only `required` no-catches count as misses; `deferred`
-ones remain visible without being called false negatives. Historical coverage
-is independently required for target eligibility, so synthetic strata or
-controls cannot pad a single historical catch into a representative claim.
-Target eligibility remains false.
+The scorer rejects contradictory `caught` and `no-catch-control` rows, and a
+material no-catch without an explicit `detectionObligation`, before they enter
+denominators. It has no mixed-origin `caught` metric: false-HOLD counts remain
+partitioned in `rates.historical` and `rates.synthetic`. Material no-catch
+controls are partitioned by the same origin and by `detectionObligation`. Only
+`required` no-catches count as misses; `deferred` ones remain visible without
+being called false negatives.
+
+Provided frozen-membership evidence is required for historical target
+eligibility: each historical case must bind to one named frozen source with
+matching locator, observation, label, and scoring fields, plus two distinct
+reviewer proofs. This pure scorer validates the consistency of supplied
+evidence only; it does not authenticate referenced files, reviewer identities,
+or reviewer independence. Trusted fixture loading and real independent
+adjudication remain caller responsibilities. Synthetic strata or controls
+cannot pad a historical catch into a representative claim. Target eligibility
+remains false: all 252 historical observations are indeterminate.
 
 After native replay, freeze only the declared pair, checkpoint, native output, source
 test title, and relevant event/outcome evidence. Independent reviewers label the
