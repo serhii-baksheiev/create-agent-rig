@@ -155,66 +155,115 @@ const bypassesOperation = (args, operation) => {
   return false;
 };
 
-const commandEnvironmentOf = (segment, command, inheritedConfiguration) => {
+const literalEnvPrefixOf = (segment) => {
+  let index = 0;
+  const operations = [];
+  while (true) {
+    const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(segment[index]?.value ?? '');
+    if (!assignment) break;
+    operations.push({ kind: 'assignment', key: assignment[1], value: assignment[2] });
+    index += 1;
+  }
+  while (segment[index]?.value === 'command') index += 1;
+  if (segment[index]?.value.split('/').pop() !== 'env') return null;
+  for (index += 1; index < segment.length; index += 1) {
+    const value = segment[index].value;
+    if (value === '-i' || value === '--ignore-environment') {
+      operations.push({ kind: 'clear' });
+      continue;
+    }
+    if (value === '-u' && segment[index + 1]) {
+      operations.push({ kind: 'unset', key: segment[index + 1].value });
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('-u') && value.length > 2) {
+      operations.push({ kind: 'unset', key: value.slice(2) });
+      continue;
+    }
+    if (value === '-C' && segment[index + 1]) {
+      operations.push({ kind: 'chdir', value: segment[index + 1].value });
+      index += 1;
+      continue;
+    }
+    if (value.startsWith('-C') && value.length > 2) {
+      operations.push({ kind: 'chdir', value: value.slice(2) });
+      continue;
+    }
+    if (value === '-S' && segment[index + 1]) {
+      return { operations, split: segment[index + 1].value, trailing: segment.slice(index + 2) };
+    }
+    if (value.startsWith('-S') && value.length > 2) {
+      return { operations, split: value.slice(2), trailing: segment.slice(index + 1) };
+    }
+    const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(value);
+    if (assignment) {
+      operations.push({ kind: 'assignment', key: assignment[1], value: assignment[2] });
+      continue;
+    }
+    return { operations, split: null, trailing: segment.slice(index) };
+  }
+  return { operations, split: null, trailing: [] };
+};
+
+const environmentFromOperations = (operations, inheritedState) => {
+  const effectiveEnv = {
+    ...environmentWithoutGitConfig(process.env),
+    ...exportedGitConfig(inheritedState.configuration),
+  };
+  const baselineEnv = { ...effectiveEnv };
+  const configuration = childGitConfig(inheritedState.configuration);
+  const context = [...inheritedState.context];
+  let hasLocalGitConfiguration = false;
+  for (const operation of operations) {
+    if (operation.kind === 'clear') {
+      for (const key of Object.keys(effectiveEnv)) delete effectiveEnv[key];
+      for (const key of Object.keys(baselineEnv)) delete baselineEnv[key];
+      for (const key of Object.keys(configuration)) delete configuration[key];
+      continue;
+    }
+    if (operation.kind === 'unset') {
+      const { key } = operation;
+      delete effectiveEnv[key];
+      delete baselineEnv[key];
+      if (isGitConfigEnvironmentKey(key)) delete configuration[key];
+      continue;
+    }
+    if (operation.kind === 'chdir') {
+      context.push('-C', operation.value);
+      continue;
+    }
+    if (operation.kind === 'assignment') {
+      effectiveEnv[operation.key] = operation.value;
+      if (isGitConfigEnvironmentKey(operation.key)) {
+        hasLocalGitConfiguration = true;
+        configuration[operation.key] = { exported: true, value: operation.value };
+      } else {
+        baselineEnv[operation.key] = operation.value;
+      }
+    }
+  }
+  return { effectiveEnv, baselineEnv, hasLocalGitConfiguration, configuration, context };
+};
+
+const splitState = (state, environment, husky) => ({
+  husky: husky ?? (state.husky.exported ? { ...state.husky } : { exported: false, value: false }),
+  configuration: environment.configuration,
+  context: environment.context,
+});
+
+const commandEnvironmentOf = (segment, command, inheritedState) => {
   // `commandOf` preserves the original token objects in `args`, so the token
   // immediately before its first argument is the executable it actually chose.
   // Matching a basename in the whole segment mistakes `TOOL=/usr/bin/git` for
   // that executable and drops later assignments from the child environment.
   const commandIndex = segment.indexOf(command.args[0]) - 1;
   if (commandIndex === -1) return null;
-  const effectiveEnv = {
-    ...environmentWithoutGitConfig(process.env),
-    ...exportedGitConfig(inheritedConfiguration),
-  };
-  const baselineEnv = { ...effectiveEnv };
-  const configuration = childGitConfig(inheritedConfiguration);
-  const context = [];
-  let hasLocalGitConfiguration = false;
-  let envCommand = false;
-  for (let index = 0; index < commandIndex; index += 1) {
-    const value = segment[index].value;
-    if (value.split('/').pop() === 'env') {
-      envCommand = true;
-      continue;
-    }
-    if (envCommand && (value === '-i' || value === '--ignore-environment')) {
-      for (const key of Object.keys(effectiveEnv)) delete effectiveEnv[key];
-      for (const key of Object.keys(baselineEnv)) delete baselineEnv[key];
-      for (const key of Object.keys(configuration)) delete configuration[key];
-      continue;
-    }
-    if (envCommand && value === '-u' && segment[index + 1]) {
-      const key = segment[index + 1].value;
-      delete effectiveEnv[key];
-      delete baselineEnv[key];
-      if (isGitConfigEnvironmentKey(key)) delete configuration[key];
-      index += 1;
-      continue;
-    }
-    if (envCommand && value.startsWith('-u') && value.length > 2) {
-      const key = value.slice(2);
-      delete effectiveEnv[key];
-      delete baselineEnv[key];
-      if (isGitConfigEnvironmentKey(key)) delete configuration[key];
-      continue;
-    }
-    if (envCommand && value === '-C' && segment[index + 1]) {
-      context.push('-C', segment[index + 1].value);
-      index += 1;
-      continue;
-    }
-    const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(value);
-    if (match) {
-      effectiveEnv[match[1]] = match[2];
-      if (isGitConfigEnvironmentKey(match[1])) {
-        hasLocalGitConfiguration = true;
-        configuration[match[1]] = { exported: true, value: match[2] };
-      } else {
-        baselineEnv[match[1]] = match[2];
-      }
-    }
-  }
-  return { effectiveEnv, baselineEnv, hasLocalGitConfiguration, configuration, context };
+  const prefix = literalEnvPrefixOf(segment);
+  const operations = prefix
+    ? prefix.operations
+    : assignmentEntries(segment.slice(0, commandIndex)).map(([key, value]) => ({ kind: 'assignment', key, value }));
+  return environmentFromOperations(operations, inheritedState);
 };
 
 const hasInlineHooksPath = (args, operation) => {
@@ -241,35 +290,89 @@ const huskyAssignment = (segment, command) => {
 };
 
 const envHusky = (segment) => {
-  let index = 0;
-  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(segment[index]?.value ?? '')) index += 1;
-  while (segment[index]?.value === 'command') index += 1;
-  if (segment[index]?.value.split('/').pop() !== 'env') return null;
-  index += 1;
+  const prefix = literalEnvPrefixOf(segment);
+  if (!prefix) return null;
   let state = null;
-  for (; index < segment.length; index += 1) {
-    if (segment[index].value === '-i' || segment[index].value === '--ignore-environment') {
+  for (const operation of prefix.operations) {
+    if (operation.kind === 'clear' || (operation.kind === 'unset' && operation.key === 'HUSKY')) {
       state = { exported: false, value: false };
-      continue;
-    }
-    if (segment[index].value === '-u' && segment[index + 1]) {
-      if (segment[index + 1].value === 'HUSKY') state = { exported: false, value: false };
-      index += 1;
-    } else if (segment[index].value === '-uHUSKY') {
-      state = { exported: false, value: false };
-    } else if (/^HUSKY=([01])$/.test(segment[index].value)) {
-      state = { exported: true, value: segment[index].value === 'HUSKY=0' };
-    } else if (!segment[index].value.startsWith('-')) {
-      break;
+    } else if (operation.kind === 'assignment' && operation.key === 'HUSKY' && /^(0|1)$/.test(operation.value)) {
+      state = { exported: true, value: operation.value === '0' };
     }
   }
   return state;
 };
 
-const envSplitScript = (segment) =>
-  segment[0]?.value.split('/').pop() === 'env' && segment[1]?.value === '-S'
-    ? segment[2]?.value ?? null
-    : null;
+const envSplitArguments = (raw) => {
+  const args = [];
+  let value = '';
+  let quote = null;
+  let started = false;
+  const push = () => {
+    if (started) args.push({ value });
+    value = '';
+    started = false;
+  };
+  const escaped = {
+    f: '\f',
+    n: '\n',
+    r: '\r',
+    t: '\t',
+    v: '\v',
+  };
+  const whitespace = new Set([' ', '\t', '\n', '\r', '\v', '\f']);
+  for (let index = 0; index < raw.length; index += 1) {
+    const character = raw[index];
+    if (character === '\\') {
+      const next = raw[index + 1];
+      if (next === undefined) return null;
+      if (quote === "'") {
+        if (next === "'" || next === '\\') {
+          value += next;
+          index += 1;
+        } else {
+          value += '\\';
+        }
+        started = true;
+        continue;
+      }
+      if (next === 'c') {
+        if (quote !== null) return null;
+        push();
+        return args;
+      }
+      if (next === '_') {
+        if (quote === null) push();
+        else {
+          value += ' ';
+          started = true;
+        }
+        index += 1;
+        continue;
+      }
+      if (Object.hasOwn(escaped, next)) value += escaped[next];
+      else if (next === '#' || next === '$' || next === "'" || next === '"' || next === '\\' || whitespace.has(next)) value += next;
+      else return null;
+      started = true;
+      index += 1;
+    } else if (quote === null && whitespace.has(character)) {
+      push();
+    } else if (character === '#' && !started && quote === null) {
+      break;
+    } else if (character === "'" || character === '"') {
+      if (quote === null) quote = character;
+      else if (quote === character) quote = null;
+      else value += character;
+      started = true;
+    } else {
+      value += character;
+      started = true;
+    }
+  }
+  if (quote !== null) return null;
+  push();
+  return args;
+};
 
 const unsetNames = (args) => {
   let index = 0;
@@ -344,6 +447,7 @@ const inspect = (
   inheritedState = {
     husky: { exported: Object.hasOwn(process.env, 'HUSKY'), value: process.env.HUSKY === '0' },
     configuration: inheritedGitConfig(),
+    context: [],
   },
 ) => {
   if (depth > 16) return null;
@@ -352,7 +456,14 @@ const inspect = (
     .filter(({ index }) => raw[index] === '$' || raw[index] === '`')
     .map(({ index, script }) => [index, index + script.length + (raw[index] === '$' ? 3 : 2)]);
   const states = new Map([
-    [0, { husky: { ...inheritedState.husky }, configuration: cloneGitConfig(inheritedState.configuration) }],
+    [
+      0,
+      {
+        husky: { ...inheritedState.husky },
+        configuration: cloneGitConfig(inheritedState.configuration),
+        context: [...inheritedState.context],
+      },
+    ],
   ]);
   const snapshots = [];
   for (const segment of tokenize(raw, { literalHeredocs: true, scopes: true })) {
@@ -360,7 +471,11 @@ const inspect = (
     const scope = segment.subshellScope;
     if (!states.has(scope)) {
       const parent = states.get(segment.subshellParent) ?? states.get(0);
-      states.set(scope, { husky: { ...parent.husky }, configuration: cloneGitConfig(parent.configuration) });
+      states.set(scope, {
+        husky: { ...parent.husky },
+        configuration: cloneGitConfig(parent.configuration),
+        context: [...parent.context],
+      });
     }
     const state = states.get(scope);
     // Expansions see the owning command's state before that command changes it.
@@ -368,21 +483,28 @@ const inspect = (
       start: segment.start,
       husky: { ...state.husky },
       configuration: cloneGitConfig(state.configuration),
+      context: [...state.context],
     });
-    let command = commandOf(segment);
-    if (command.name === 'if') command = commandOf(command.args);
-    const split = envSplitScript(segment);
-    if (split) {
-      const nested = inspect(split, depth + 1, {
-        husky: state.husky.exported ? { ...state.husky } : { exported: false, value: false },
-        configuration: childGitConfig(state.configuration),
-      });
-      if (nested) return nested;
-      continue;
+    let inspectedSegment = segment;
+    let commandState = state;
+    for (let layers = 0; layers < 16; layers += 1) {
+      const prefix = literalEnvPrefixOf(inspectedSegment);
+      if (prefix === null || prefix.split === null) break;
+      const split = envSplitArguments(prefix.split);
+      if (split === null) {
+        inspectedSegment = null;
+        break;
+      }
+      const environment = environmentFromOperations(prefix.operations, commandState);
+      commandState = splitState(commandState, environment, envHusky(inspectedSegment));
+      inspectedSegment = [...split, ...prefix.trailing];
     }
-    const environmentHusky = envHusky(segment);
-    const assignmentHusky = huskyAssignment(segment, command);
-    if (command.name === 'export') {
+    if (inspectedSegment === null) continue;
+    let command = commandOf(inspectedSegment);
+    if (inspectedSegment === segment && command.name === 'if') command = commandOf(command.args);
+    const environmentHusky = envHusky(inspectedSegment);
+    const assignmentHusky = huskyAssignment(inspectedSegment, command);
+    if (inspectedSegment === segment && command.name === 'export') {
       for (const { value } of command.args) {
         if (/^HUSKY=([01])$/.test(value)) state.husky.value = value === 'HUSKY=0';
         if (value === 'HUSKY' || /^HUSKY=/.test(value)) state.husky.exported = true;
@@ -395,7 +517,7 @@ const inspect = (
       }
       continue;
     }
-    if (command.name === 'unset') {
+    if (inspectedSegment === segment && command.name === 'unset') {
       const names = unsetNames(command.args);
       if (names.includes('HUSKY')) {
         state.husky.value = false;
@@ -404,17 +526,17 @@ const inspect = (
       for (const key of names.filter(isGitConfigEnvironmentKey)) delete state.configuration[key];
       continue;
     }
-    if (!command.name && assignmentHusky !== null && segment[0]?.value !== 'env') {
+    if (inspectedSegment === segment && !command.name && assignmentHusky !== null && segment[0]?.value !== 'env') {
       state.husky.value = assignmentHusky;
     }
-    if (!command.name) {
+    if (inspectedSegment === segment && !command.name) {
       for (const [key, value] of assignmentEntries(segment)) {
         if (!isGitConfigEnvironmentKey(key)) continue;
         state.configuration[key] = { exported: state.configuration[key]?.exported ?? false, value };
       }
       continue;
     }
-    const environment = commandEnvironmentOf(segment, command, state.configuration);
+    const environment = commandEnvironmentOf(inspectedSegment, command, commandState);
     if (['bash', 'sh', 'zsh', 'dash', 'ksh'].includes(command.name)) {
       const script = shellScript(command.args);
       if (script) {
@@ -422,12 +544,11 @@ const inspect = (
           script,
           depth + 1,
           {
-            husky:
-              environmentHusky ??
-              (assignmentHusky === null
-                ? (state.husky.exported ? { ...state.husky } : { exported: false, value: false })
-                : { exported: true, value: assignmentHusky }),
-            configuration: environment.configuration,
+            ...splitState(
+              commandState,
+              environment,
+              environmentHusky ?? (assignmentHusky === null ? null : { exported: true, value: assignmentHusky }),
+            ),
           },
         );
         if (nested) return nested;
@@ -438,7 +559,7 @@ const inspect = (
     const operation = operationOf(command.args);
     if (!operation) continue;
     if (
-      (environmentHusky?.value ?? assignmentHusky ?? (state.husky.exported && state.husky.value)) ||
+      (environmentHusky?.value ?? assignmentHusky ?? (commandState.husky.exported && commandState.husky.value)) ||
       hasInlineHooksPath(command.args, operation) ||
       bypassesOperation(command.args, operation)
     ) {

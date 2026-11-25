@@ -1024,8 +1024,159 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     }
   });
 
+  it('retains an empty env -S operand before refusing a commit bypass', async () => {
+    const native = await shell(`env -S '/usr/bin/printf "%s|" "" SAFE'`);
+    expect(native.code, native.stderr).toBe(0);
+    expect(native.stdout, native.stderr).toBe('|SAFE|');
+
+    const result = await inspect(`env -S 'git commit --allow-empty-message -m "" --no-verify'`);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('treats newlines as env -S argument separators before refusing a commit bypass', async () => {
+    const native = await shell(`env -S '/usr/bin/printf "%s|" A
+B'`);
+    expect(native.code, native.stderr).toBe(0);
+    expect(native.stdout, native.stderr).toBe('A|B|');
+
+    const result = await inspect(`env -S 'git
+commit --no-verify -m x'`);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('preserves an opposite-quote character in an env -S Git subcommand', async () => {
+    const native = await shell(`env -S '/usr/bin/printf "%s|" "a'"'"'b"'`);
+    expect(native.code, native.stderr).toBe(0);
+    expect(native.stdout, native.stderr).toBe("a'b|");
+
+    const result = await inspect(`env -S 'git "co'"'"'mmit" --no-verify'`);
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('follows a nested env -S split string before refusing a commit bypass', async () => {
+    const native = await shell(`env -S 'env -S "/usr/bin/printf %s| SAFE"'`);
+    expect(native.code, native.stderr).toBe(0);
+    expect(native.stdout, native.stderr).toBe('SAFE|');
+
+    const result = await inspect(`env -S 'env -S "git commit --no-verify -m x"'`);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('treats escaped underscores as env -S argument separators before refusing a commit bypass', async () => {
+    for (const [nativeCommand, command] of [
+      [`env -S '/usr/bin/printf "%s|" A\\_B'`, `env -S 'git\\_commit\\_--no-verify\\_-m\\_x'`],
+      [`env -S '/usr/bin/printf "%s|" A\\_ B'`, `env -S 'git\\_ commit --no-verify -m x'`],
+      [`env -S '/usr/bin/printf "%s|" A\\_\\_B'`, `env -S 'git\\_\\_commit --no-verify -m x'`],
+    ] as const) {
+      const native = await shell(nativeCommand);
+      expect.soft(native.code, `${nativeCommand}: ${native.stderr}`).toBe(0);
+      expect.soft(native.stdout, `${nativeCommand}: ${native.stderr}`).toBe('A|B|');
+
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('retains literal env -S comment, escape, and non-shell-program rules around static bypass flags', async () => {
+    for (const [command, expectedCode, expectedOutput] of [
+      [`env -S '/usr/bin/printf "%s|" SAFE # ignored'`, 0, 'SAFE|'],
+      [`env -S '/usr/bin/printf "%s|" SAFE \\c ignored'`, 0, 'SAFE|'],
+      [`env -S '/usr/bin/printf "%s|" SAFE \\q'`, 1, ''],
+      [`env -S 'if /usr/bin/printf "%s|" SAFE'`, 1, ''],
+    ] as const) {
+      const native = await shell(command);
+      if (expectedCode === 0) expect.soft(native.code, `${command}: ${native.stderr}`).toBe(0);
+      else expect.soft(native.code, `${command}: ${native.stderr}`).not.toBe(0);
+      expect.soft(native.stdout, `${command}: ${native.stderr}`).toBe(expectedOutput);
+    }
+
+    for (const [command, expected] of [
+      ["env -S 'git commit # --no-verify'", 0],
+      ["env -S 'git commit \\c --no-verify'", 0],
+      ["env -S 'git commit --no-verify \\q'", 0],
+      ["env -S 'if git commit --no-verify'", 0],
+      [`env -S 'git commit --no-verify -m \${MSG}'`, 2],
+      [`env -S 'git commit -m \${MSG} --no-verify'`, 2],
+    ] as const) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(expected);
+    }
+  });
+
+  it('retains lexical exported HUSKY through env -S unless that wrapper clears it', async () => {
+    for (const [command, expected] of [
+      ["export HUSKY=0; env -S 'git commit -m x'", 2],
+      ["export HUSKY=0; env -u HUSKY -S 'git commit -m x'", 0],
+      ["export HUSKY=0; env -i -S 'git commit -m x'", 0],
+    ] as const) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(expected);
+    }
+  });
+
   it('allows literal env -S split strings that do not invoke a commit', async () => {
     const result = await inspect("env -S 'git status --short'");
+    expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('refuses split-string commit bypasses after supported env prefixes', async () => {
+    const fixture = await newGitFixture();
+    for (const command of [
+      "FOO=1 env -S 'git commit --no-verify -m x'",
+      "command env -S 'git commit --no-verify -m x'",
+      "env -i -S 'HUSKY=0 git commit -m x'",
+      "env -u OTHER -S 'git commit -n -m x'",
+      `env -C ${JSON.stringify(fixture)} -S 'git commit --no-verify -m x'`,
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('refuses an attached env -S split string that executes a commit bypass', async () => {
+    const result = await inspect("env -S'git commit --no-verify -m x'");
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('refuses commit bypass arguments that follow a literal env -S split string', async () => {
+    for (const command of [
+      "env -S 'git commit' --no-verify -m x",
+      "env -S 'git commit' -n -m x",
+      "env -S 'HUSKY=0 git commit' -m x",
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('allows env syntax in literal prose and a non-operation trailing argument', async () => {
+    for (const command of [
+      `printf '%s' "env -S 'git commit --no-verify -m x'"`,
+      "env -S 'git' HUSKY=0 commit -m x",
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('proves attached env -S is a native split-string spelling without executing Git', async () => {
+    const result = await shell("env -S'printf attached'");
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout, result.stderr).toBe('attached');
+  });
+
+  it('allows a literal semicolon in env -S argv instead of treating it as a shell command separator', async () => {
+    const command = `env -S 'printf "%s\\n" ; git commit --no-verify'`;
+    const native = await shell(command);
+    expect(native.code, native.stderr).toBe(0);
+    expect(native.stdout.trimEnd().split('\n'), native.stderr).toEqual([
+      ';',
+      'git',
+      'commit',
+      '--no-verify',
+    ]);
+
+    const result = await inspect(command);
     expect(result.code, result.stderr).toBe(0);
   });
 
@@ -1042,6 +1193,32 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     expect(result.code, result.stderr).toBe(2);
   });
 
+  it('preflights the repository selected by literal env -C through env -S before a commit', async () => {
+    const disabled = await newGitFixture();
+    await gitMustSucceed(['config', 'core.hooksPath', '.disabled-hooks'], disabled);
+    const directory = JSON.stringify(disabled);
+
+    const lookup = await shell(`env -C ${directory} git config --get core.hooksPath`);
+    expect(lookup.code, lookup.stderr).toBe(0);
+    expect(lookup.stdout, lookup.stderr).toBe('.disabled-hooks\n');
+
+    const result = await inspect(`env -C ${directory} -S 'git commit -m x'`);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
+  it('preflights the repository selected by an attached env -C directory before a commit', async () => {
+    const disabled = await newGitFixture();
+    await gitMustSucceed(['config', 'core.hooksPath', '.disabled-hooks'], disabled);
+    const command = `env -C${JSON.stringify(disabled)} git commit -m x`;
+
+    const lookup = await shell(`env -C${JSON.stringify(disabled)} git config --get core.hooksPath`);
+    expect(lookup.code, lookup.stderr).toBe(0);
+    expect(lookup.stdout, lookup.stderr).toBe('.disabled-hooks\n');
+
+    const result = await inspect(command);
+    expect(result.code, result.stderr).toBe(2);
+  });
+
   it('allows literal env -C commands that do not invoke a commit', async () => {
     const fixture = await newGitFixture();
     const result = await inspect(`env -C ${JSON.stringify(fixture)} git status --short`);
@@ -1052,6 +1229,29 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     const inherited = { ...gitEnv(), HUSKY: '0' };
     const result = await inspectWithEnv('env -uHUSKY git commit -m x', inherited);
     expect(result.code, result.stderr).toBe(0);
+  });
+
+  it('honors env options after a selected directory when they clear inherited HUSKY', async () => {
+    const fixture = await newGitFixture();
+    const inherited = { ...gitEnv(), HUSKY: '0' };
+    const fixtureJson = JSON.stringify(fixture);
+
+    for (const command of [
+      `env -C ${fixtureJson} -u HUSKY git commit -m x`,
+      `env -C ${fixtureJson} -i git commit -m x`,
+    ]) {
+      const result = await inspectWithEnv(command, inherited, fixture);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+
+    for (const command of [
+      `HUSKY=0 env -C ${fixtureJson} -u HUSKY git rev-parse --show-toplevel`,
+      `HUSKY=0 env -C ${fixtureJson} -i git rev-parse --show-toplevel`,
+    ]) {
+      const result = await shell(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+      expect.soft(result.stdout, `${command}: ${result.stderr}`).toBe(`${fixture}\n`);
+    }
   });
 
   it('accepts attached env -u Git configuration clears in their literal order', async () => {
