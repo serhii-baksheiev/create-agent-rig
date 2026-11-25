@@ -184,6 +184,11 @@ declared enums are rejected before counting; see
 `test/template/revalidation-corpus.test.ts` › "rejects a JSON-derived ground-truth value outside the materiality enum before it enters counts",
 "rejects a JSON-derived case kind outside the scorer enum before it enters cohort coverage",
 and "rejects a JSON-derived detection duty outside the obligation enum before it can be counted deferred".
+Case, run, and detection identifiers must be nonblank strings, and sequence
+numbers must be positive safe integers; see
+`test/template/revalidation-corpus.test.ts` › "rejects JSON-derived invalid provenance primitives before they enter cohort coverage".
+Observed detection must be boolean, and the recorded action outcome must be
+boolean or null; see `test/template/revalidation-corpus.test.ts` › "rejects JSON-derived non-boolean observation fields before they enter counts".
 It has no mixed-origin `caught` metric: false-HOLD counts remain
 partitioned in `rates.historical` and `rates.synthetic`. Material no-catch
 controls are partitioned by the same origin and by `detectionObligation`. Only

@@ -715,6 +715,120 @@ describe('independently labelled revalidation corpus scoring', () => {
     );
   });
 
+  it('rejects JSON-derived non-boolean observation fields before they enter counts', () => {
+    for (const [caseId, observation] of [
+      ['runtime-invalid-detected', { detected: 'false', actionRequired: null }],
+      ['runtime-invalid-action-required', { detected: true, actionRequired: 'false' }],
+    ]) {
+      const cases = completeFixtureCorpus('historical');
+      const materialControlIndex = cases.findIndex(
+        ({ stratum }) => stratum === 'material-no-catch-control',
+      );
+      const materialControl = cases[materialControlIndex];
+      if (!materialControl) throw new Error('Expected a material no-catch control');
+      cases[materialControlIndex] = {
+        ...materialControl,
+        detectionObligation: 'required',
+      };
+      const firstCase = cases[0];
+      if (!firstCase) throw new Error('Expected a caught case');
+      cases[0] = JSON.parse(JSON.stringify({ ...firstCase, caseId, observation })) as CorpusCase;
+      const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+      const result = scoreRevalidationCorpus(cases, evidence);
+
+      expect(result).toMatchObject({
+        manifest: { total: 18, accepted: 17, rejected: 1 },
+        totalCases: 17,
+        labels: { material: 17, benign: 0, indeterminate: 0 },
+        rates: { historical: { determinateCaught: 16, falseHolds: 0 } },
+        belowFivePercent: { eligible: false },
+      });
+      expect(result.errors).not.toEqual([]);
+    }
+  });
+
+  it('rejects JSON-derived invalid provenance primitives before they enter cohort coverage', () => {
+    const malformedCases: Array<[string, (corpusCase: CorpusCase) => unknown]> = [
+      [
+        'blank run',
+        (corpusCase: CorpusCase) => ({
+          ...corpusCase,
+          locator: { ...corpusCase.locator, run: '  ' },
+        }),
+      ],
+      [
+        'non-string run',
+        (corpusCase: CorpusCase) => ({ ...corpusCase, locator: { ...corpusCase.locator, run: 1 } }),
+      ],
+      [
+        'blank detection id',
+        (corpusCase: CorpusCase) => ({
+          ...corpusCase,
+          locator: { ...corpusCase.locator, detectionId: '' },
+        }),
+      ],
+      [
+        'non-string detection id',
+        (corpusCase: CorpusCase) => ({
+          ...corpusCase,
+          locator: { ...corpusCase.locator, detectionId: 1 },
+        }),
+      ],
+      ['blank case id', (corpusCase: CorpusCase) => ({ ...corpusCase, caseId: '  ' })],
+      ['non-string case id', (corpusCase: CorpusCase) => ({ ...corpusCase, caseId: 1 })],
+      [
+        'fractional seq',
+        (corpusCase: CorpusCase) => ({
+          ...corpusCase,
+          locator: { ...corpusCase.locator, seq: 1.5 },
+        }),
+      ],
+      [
+        'unsafe seq',
+        (corpusCase: CorpusCase) => ({
+          ...corpusCase,
+          locator: { ...corpusCase.locator, seq: Number.MAX_SAFE_INTEGER + 1 },
+        }),
+      ],
+      [
+        'non-number seq',
+        (corpusCase: CorpusCase) => ({
+          ...corpusCase,
+          locator: { ...corpusCase.locator, seq: 'not-a-sequence' },
+        }),
+      ],
+    ];
+
+    for (const [description, malformedCase] of malformedCases) {
+      const cases = completeFixtureCorpus('historical');
+      const materialControlIndex = cases.findIndex(
+        ({ stratum }) => stratum === 'material-no-catch-control',
+      );
+      const materialControl = cases[materialControlIndex];
+      if (!materialControl) throw new Error('Expected a material no-catch control');
+      cases[materialControlIndex] = {
+        ...materialControl,
+        detectionObligation: 'required',
+      };
+      const firstCase = cases[0];
+      if (!firstCase) throw new Error('Expected a caught case');
+      cases[0] = JSON.parse(JSON.stringify(malformedCase(firstCase))) as CorpusCase;
+      const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+      const result = scoreRevalidationCorpus(cases, evidence);
+
+      expect(result, description).toMatchObject({
+        manifest: { total: 18, accepted: 17, rejected: 1 },
+        totalCases: 17,
+        labels: { material: 17, benign: 0, indeterminate: 0 },
+        rates: { historical: { determinateCaught: 16, falseHolds: 0 } },
+        belowFivePercent: { eligible: false },
+      });
+      expect(result.errors, description).not.toEqual([]);
+    }
+  });
+
   it('rejects duplicate case IDs instead of silently shrinking the frozen denominator', () => {
     const first = caseOf();
     const duplicate = caseOf({

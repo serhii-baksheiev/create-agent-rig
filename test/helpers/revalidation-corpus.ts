@@ -64,6 +64,9 @@ type CorpusError = { caseId: string; rule: string };
 
 const emptyRate = () => ({ determinateCaught: 0, falseHolds: 0 });
 
+const isNonBlankString = (value: unknown): value is string =>
+  typeof value === 'string' && value.trim().length > 0;
+
 const sameSource = (left: FrozenSource, right: FrozenSource) =>
   left.version === right.version && left.hash === right.hash;
 
@@ -91,8 +94,23 @@ export const scoreRevalidationCorpus = (
   for (const corpusCase of cases) {
     let rejected = false;
 
-    if (!corpusCase.locator.run || corpusCase.locator.seq <= 0 || !corpusCase.locator.detectionId) {
+    if (
+      !isNonBlankString(corpusCase.caseId) ||
+      !isNonBlankString(corpusCase.locator.run) ||
+      !Number.isSafeInteger(corpusCase.locator.seq) ||
+      corpusCase.locator.seq <= 0 ||
+      !isNonBlankString(corpusCase.locator.detectionId)
+    ) {
       errors.push({ caseId: corpusCase.caseId, rule: 'provenance locator' });
+      rejected = true;
+    }
+
+    if (
+      typeof corpusCase.observation.detected !== 'boolean' ||
+      (corpusCase.observation.actionRequired !== null &&
+        typeof corpusCase.observation.actionRequired !== 'boolean')
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'observation primitives' });
       rejected = true;
     }
 
