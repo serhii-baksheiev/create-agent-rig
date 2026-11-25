@@ -74,17 +74,26 @@ const contextOptions = (args, operation) => {
 };
 
 const bypassesOperation = (args, operation) => {
+  const shortValueFlags = new Set(['m', 'F', 'C', 'c', 't']);
   for (let index = operation.index + 1; index < args.length; index += 1) {
     const value = args[index].value;
     if (value === '--') return false;
     if (value === '--no-verify') return true;
-    if (value === '-m' || value === '--message' || value === '-F' || value === '--file') {
+    if (
+      value === '-m' ||
+      value === '--message' ||
+      value === '-F' ||
+      value === '--file' ||
+      value === '-C' ||
+      value === '-c' ||
+      value === '-t'
+    ) {
       index += 1;
       continue;
     }
     if (operation.value !== 'commit' || !/^-[A-Za-z]/.test(value)) continue;
     for (const flag of value.slice(1)) {
-      if (flag === 'm') break;
+      if (shortValueFlags.has(flag)) break;
       if (flag === 'n') return true;
     }
   }
@@ -94,12 +103,35 @@ const bypassesOperation = (args, operation) => {
 const hasCommandLocalHooksPath = (segment, command) => {
   const commandIndex = segment.findIndex(({ value }) => value.split('/').pop() === command.name);
   if (commandIndex === -1) return false;
-  const assignments = new Map();
-  for (const { value } of segment.slice(0, commandIndex)) {
+  const assignments = new Map(Object.entries(process.env));
+  let hasLocalGitConfiguration = false;
+  let envCommand = false;
+  for (let index = 0; index < commandIndex; index += 1) {
+    const value = segment[index].value;
+    if (value.split('/').pop() === 'env') {
+      envCommand = true;
+      continue;
+    }
+    if (envCommand && value === '-i') {
+      assignments.clear();
+      continue;
+    }
+    if (envCommand && value === '-u' && segment[index + 1]) {
+      assignments.delete(segment[index + 1].value);
+      index += 1;
+      continue;
+    }
     const match = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/.exec(value);
-    if (match) assignments.set(match[1], match[2]);
+    if (match) {
+      assignments.set(match[1], match[2]);
+      if (/^GIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+|PARAMETERS)$/.test(match[1]))
+        hasLocalGitConfiguration = true;
+    }
   }
+  if (!hasLocalGitConfiguration) return false;
   const count = assignments.get('GIT_CONFIG_COUNT');
+  const parameters = assignments.get('GIT_CONFIG_PARAMETERS');
+  if (/(?:^|['\s])core\.hookspath=/i.test(parameters ?? '')) return true;
   if (!/^\d+$/.test(count ?? '')) return false;
   const declared = Number(count);
   if (!Number.isSafeInteger(declared) || declared > assignments.size) return true;

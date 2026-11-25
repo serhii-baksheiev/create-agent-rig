@@ -580,6 +580,9 @@ const bash = (command: string) => ({
 const inspect = (command: string, cwd?: string) =>
   runNodeTimed(hook, { input: JSON.stringify(bash(command)), cwd, env: gitEnv(), timeout: 10_000 });
 
+const inspectWithEnv = (command: string, env: NodeJS.ProcessEnv, cwd?: string) =>
+  runNodeTimed(hook, { input: JSON.stringify(bash(command)), cwd, env, timeout: 10_000 });
+
 type CommandResult = { code: number; stdout: string; stderr: string };
 
 const shell = (command: string): Promise<CommandResult> =>
@@ -600,14 +603,14 @@ const shell = (command: string): Promise<CommandResult> =>
     );
   });
 
-const git = (args: string[], cwd: string): Promise<CommandResult> =>
+const git = (args: string[], cwd: string, env = gitEnv()): Promise<CommandResult> =>
   new Promise((resolve) => {
     execFile(
       'git',
       ['-c', 'user.name=RP-522 test', '-c', 'user.email=rp522@example.invalid', ...args],
       {
         cwd,
-        env: gitEnv(),
+        env,
         timeout: GIT_FIXTURE_TIMEOUT_MS,
         maxBuffer: GIT_FIXTURE_MAX_BUFFER,
       },
@@ -699,6 +702,95 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     expect(ordinary.code, ordinary.stderr).toBe(0);
   });
 
+  it('refuses a local GIT_CONFIG key that completes an inherited hooksPath triad', async () => {
+    const fixture = await newGitFixture();
+    const inherited = {
+      ...gitEnv(),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'safe.directory',
+      GIT_CONFIG_VALUE_0: '/dev/null',
+    };
+    const effective = { ...inherited, GIT_CONFIG_KEY_0: 'core.hooksPath' };
+    const witness = await git(['config', '--get', 'core.hooksPath'], fixture, effective);
+    expect(witness.code, witness.stderr).toBe(0);
+    expect(witness.stdout).toBe('/dev/null\n');
+
+    const bypass = await inspectWithEnv(
+      'GIT_CONFIG_KEY_0=core.hooksPath git commit -m x',
+      inherited,
+      fixture,
+    );
+    expect(bypass.code, bypass.stderr).toBe(2);
+
+    const benign = await inspectWithEnv(
+      'GIT_CONFIG_KEY_0=safe.directory git commit -m x',
+      inherited,
+      fixture,
+    );
+    expect(benign.code, benign.stderr).toBe(0);
+    const cleared = await inspectWithEnv('env -i git commit -m x', inherited, fixture);
+    expect(cleared.code, cleared.stderr).toBe(0);
+    const unset = await inspectWithEnv(
+      'env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 git commit -m x',
+      inherited,
+      fixture,
+    );
+    expect(unset.code, unset.stderr).toBe(0);
+  });
+
+  it('allows a local Git config key after env clears the inherited configuration triad', async () => {
+    const fixture = await newGitFixture();
+    const inherited = {
+      ...gitEnv(),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'safe.directory',
+      GIT_CONFIG_VALUE_0: '/dev/null',
+    };
+    const ignored = { ...gitEnv(), GIT_CONFIG_KEY_0: 'core.hooksPath' };
+    const ignoredWitness = await git(['config', '--get', 'core.hooksPath'], fixture, ignored);
+    expect(ignoredWitness.code, ignoredWitness.stderr).toBe(1);
+
+    const ignoredByHook = await inspectWithEnv(
+      'env -i GIT_CONFIG_KEY_0=core.hooksPath git commit -m x',
+      inherited,
+      fixture,
+    );
+    expect.soft(ignoredByHook.code, ignoredByHook.stderr).toBe(0);
+
+    const unset: NodeJS.ProcessEnv = { ...inherited, GIT_CONFIG_KEY_0: 'core.hooksPath' };
+    delete unset.GIT_CONFIG_COUNT;
+    const unsetWitness = await git(['config', '--get', 'core.hooksPath'], fixture, unset);
+    expect(unsetWitness.code, unsetWitness.stderr).toBe(1);
+    const unsetByHook = await inspectWithEnv(
+      'env -u GIT_CONFIG_COUNT GIT_CONFIG_KEY_0=core.hooksPath git commit -m x',
+      inherited,
+      fixture,
+    );
+    expect.soft(unsetByHook.code, unsetByHook.stderr).toBe(0);
+  });
+
+  it('refuses a literal GIT_CONFIG_PARAMETERS hooksPath override while allowing a benign parameter', async () => {
+    const fixture = await newGitFixture();
+    const disabledParameters = "'core.hooksPath=/dev/null'";
+    const witness = await git(['config', '--get', 'core.hooksPath'], fixture, {
+      ...gitEnv(),
+      GIT_CONFIG_PARAMETERS: disabledParameters,
+    });
+    expect(witness.code, witness.stderr).toBe(0);
+    expect(witness.stdout).toBe('/dev/null\n');
+
+    const bypass = await inspect(
+      'GIT_CONFIG_PARAMETERS="\'core.hooksPath=/dev/null\'" git commit -m x',
+      fixture,
+    );
+    expect(bypass.code, bypass.stderr).toBe(2);
+    const benign = await inspect(
+      'GIT_CONFIG_PARAMETERS="\'core.editor=cat\'" git commit -m x',
+      fixture,
+    );
+    expect(benign.code, benign.stderr).toBe(0);
+  });
+
   it.each(['999999999999999999999999999999999999999', '1000000000'])(
     'refuses an excessive command-local Git configuration count of %s without timing out',
     async (count) => {
@@ -722,6 +814,48 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
       expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
     }
     for (const command of ['git commit -F --no-verify --no-verify', 'git commit --file -n -n']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('allows attached -F message-file operands while refusing genuine no-verify flags', async () => {
+    for (const command of ['git commit -Fn', 'git commit -Fno-verify']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+    for (const command of ['git commit -n -Fn', 'git commit -Fn -n']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('allows attached values for Git short options that take a commit, message, or template', async () => {
+    for (const command of [
+      'git commit -mno-verify',
+      'git commit -Cno-verify',
+      'git commit -cno-verify',
+      'git commit -tno-verify',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('allows separated commit-option values while refusing a trailing no-verify flag', async () => {
+    for (const command of [
+      'git commit -C --no-verify',
+      'git commit -c --no-verify',
+      'git commit -t --no-verify',
+    ]) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+    for (const command of [
+      'git commit -C --no-verify -n',
+      'git commit -c --no-verify -n',
+      'git commit -t --no-verify -n',
+    ]) {
       const result = await inspect(command);
       expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
     }
