@@ -73,6 +73,7 @@
 // rule) — never by calling the thing being tested and comparing it to
 // itself.
 import { execFile } from 'node:child_process';
+import { existsSync, realpathSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -1280,9 +1281,9 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
 
       const rounds = roundsFileFor(cfg);
       // `runDir` may use macOS's `/var` spelling while the production
-      // journal resolves it to `/private/var`; the preload observes the
-      // latter, so compare the supported canonical alias.
-      const state = await realpath(path.join(runDir, 'state.json'));
+      // journal resolves it to `/private/var`; native Windows Actions run
+      // 45519854542 / job 138888690294 similarly exposed short/long aliases.
+      const state = realpathSync.native(path.join(runDir, 'state.json'));
       const trace = path.join(runDir, 'racing-write.trace');
       const preload = path.join(runDir, 'fill-final-slot.mjs');
       await writeFile(
@@ -1294,7 +1295,8 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
           'let fired = false;',
           'fs.readFileSync = function(file, ...args) {',
           '  const value = original.call(this, file, ...args);',
-          `  if (!fired && String(file) === ${JSON.stringify(state)}) {`,
+          "  const observedPath = typeof file === 'string' ? fs.realpathSync.native(file) : null;",
+          `  if (!fired && observedPath === ${JSON.stringify(state)}) {`,
           '    fired = true;',
           `    const current = JSON.parse(original.call(this, ${JSON.stringify(rounds)}, 'utf8'));`,
           "    current['fix/a'] = 4;",
@@ -1320,6 +1322,11 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         dir,
         envFor(runDir),
       );
+      expect(
+        existsSync(trace),
+        `racing-write preload did not create ${trace}; expected state path: ${state}; ` +
+          `child exit: ${result.code}; child output: ${result.out}`,
+      ).toBe(true);
       expect(await readFile(trace, 'utf8')).toBe('filled\n');
       expect(result.code, result.out).toBe(2);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
@@ -3237,8 +3244,27 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
     }
   });
 
-  it('the repository-composed budget admits the H8 grant for R11, then refuses a ninth grant and R12 without counting it', async () => {
+  // Windows Actions run 45519854542 / job 138888690294 reached H6 after
+  // 13,729ms at its 14s diagnostic. Retain its accepted 30s fixture budget
+  // and stage diagnostics without increasing that bound for added grants.
+  it('the repository-composed budget admits the H9 grant for R12, then refuses a tenth grant and R13 without counting it', async () => {
     const roots: string[] = [];
+    const completedStages: string[] = [];
+    let activeStage = 'fixture setup through base-cap exhaustion';
+    let activeStageStartedAt = performance.now();
+    const stage = (next: string): void => {
+      const now = performance.now();
+      completedStages.push(`${activeStage}=${Math.round(now - activeStageStartedAt)}ms`);
+      activeStage = next;
+      activeStageStartedAt = now;
+    };
+    const stageDiagnostics = setTimeout(() => {
+      const elapsed = Math.round(performance.now() - activeStageStartedAt);
+      process.stderr.write(
+        `RP-564 H7 stage timing: completed=[${completedStages.join(', ')}]; ` +
+          `active=${activeStage}=${elapsed}ms\n`,
+      );
+    }, 29_000);
     try {
       // This is the real composed queue this repository runs, copied into an
       // otherwise independent pushed Git fixture. It is deliberately not a
@@ -3251,6 +3277,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       await branchAndPush(dir, 'fix/a');
       await exhaustBaseCap(dir, 'fix/a', cfg);
 
+      stage('H1 authorization and R4');
       const delegated = await delegatedRunDir();
       roots.push(delegated);
       const h1 = await head(dir);
@@ -3282,6 +3309,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round4.code, round4.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(4);
 
+      stage('H2 authorization and R5');
       await writeFile(path.join(dir, 'fix.txt'), 'x');
       await git(['add', '-A'], dir);
       await git(['commit', '-q', '-m', 'fix'], dir);
@@ -3317,6 +3345,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round5.code, round5.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(5);
 
+      stage('H3 authorization and R6');
       // A third authorization must be bound to a real new source head, not
       // the prior authorization-only child that consumed R5.
       await writeFile(path.join(dir, 'fix-third.txt'), 'x');
@@ -3353,6 +3382,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round6.code, round6.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(6);
 
+      stage('H4 authorization and R7');
       // A fourth authorization is likewise bound to an ordinary source
       // commit, never to the authorization-only child that consumed R6.
       await writeFile(path.join(dir, 'fix-fourth.txt'), 'x');
@@ -3389,6 +3419,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round7.code, round7.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(7);
 
+      stage('H5 authorization and R8');
       // The fifth grant also starts from an ordinary source commit, never an
       // authorization-only child from the preceding delegated round.
       await writeFile(path.join(dir, 'fix-fifth.txt'), 'x');
@@ -3425,6 +3456,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round8.code, round8.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(8);
 
+      stage('H6 authorization and R9');
       // The sixth grant must also start at a fresh ordinary source commit,
       // never at the authorization-only child that consumed R8.
       await writeFile(path.join(dir, 'fix-sixth.txt'), 'x');
@@ -3461,6 +3493,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round9.code, round9.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(9);
 
+      stage('H7 authorization and R10');
       // The seventh grant has its own new source head and is still admitted
       // under the repository-composed allowance.
       await writeFile(path.join(dir, 'fix-seventh.txt'), 'x');
@@ -3497,6 +3530,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round10.code, round10.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(10);
 
+      stage('H8 authorization and R11');
       // The eighth grant has its own new source head and is the one renewed
       // repository-composed authorization beyond the earlier seven grants.
       await writeFile(path.join(dir, 'fix-eighth.txt'), 'x');
@@ -3533,8 +3567,9 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       expect(round11.code, round11.out).toBe(0);
       expect(await roundsFor(cfg, 'fix/a')).toBe(11);
 
-      // The ninth grant also has a fresh source head. Its refusal can only
-      // be the now-exhausted repository budget, never stale authority.
+      stage('H9 authorization and R12');
+      // The ninth grant also has a fresh source head and must be admitted
+      // under the renewed repository-composed allowance.
       await writeFile(path.join(dir, 'fix-ninth.txt'), 'x');
       await git(['add', '-A'], dir);
       await git(['commit', '-q', '-m', 'fix-ninth'], dir);
@@ -3555,22 +3590,60 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         dir,
         envFor(delegated),
       );
-      expect(ninthRecord.code, ninthRecord.out).not.toBe(0);
-      expect(ninthRecord.out).toMatch(/delegated gate-round budget is spent.*8 of 8/i);
-      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(8);
+      expect(ninthRecord.code, ninthRecord.out).toBe(0);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(9);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-9'], dir);
+      await git(['push', '-q'], dir);
 
       const round12 = await runGateRound(
         ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
         dir,
         envFor(delegated),
       );
-      expect(round12.code, round12.out).toBe(2);
-      expect(round12.out).toMatch(/spent 11 gate rounds, the cap of 11/i);
-      expect(await roundsFor(cfg, 'fix/a')).toBe(11);
+      expect(round12.code, round12.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(12);
+
+      stage('H10 refusal and R13 refusal');
+      // The tenth grant has a fresh source head. Its refusal can only be the
+      // now-exhausted repository budget, never stale authority.
+      await writeFile(path.join(dir, 'fix-tenth.txt'), 'x');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'fix-tenth'], dir);
+      await git(['push', '-q'], dir);
+      const h10 = await head(dir);
+      const tenthRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'tenth repository-composed grant',
+          '--head',
+          h10,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(tenthRecord.code, tenthRecord.out).not.toBe(0);
+      expect(tenthRecord.out).toMatch(/delegated gate-round budget is spent.*9 of 9/i);
+      expect(await readDecisionLines(dir, 'RP-1')).toHaveLength(9);
+
+      const round13 = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(round13.code, round13.out).toBe(2);
+      expect(round13.out).toMatch(/spent 12 gate rounds, the cap of 12/i);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(12);
     } finally {
+      clearTimeout(stageDiagnostics);
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
-  });
+  }, 30_000);
 });
 
 // --- the consuming call's own commit and authority requirements -----------
