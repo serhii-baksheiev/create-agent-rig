@@ -1700,11 +1700,12 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
       preload,
       `import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
+import path from 'node:path';
 const original = fs.readFileSync;
 let paused = false;
 fs.readFileSync = function(file, ...args) {
   const result = original.call(this, file, ...args);
-  if (!paused && String(file).endsWith('/decisions.jsonl')) {
+  if (!paused && path.basename(String(file)) === 'decisions.jsonl') {
     paused = true;
     fs.writeFileSync(process.env.RP521_MARKER, 'read');
     const deadline = Date.now() + 5000;
@@ -1720,7 +1721,15 @@ syncBuiltinESMExports();
     );
     const release = spawn(
       process.execPath,
-      ['--import', preload, queueCli, ...args, '--release', '--reservation', token],
+      [
+        '--import',
+        pathToFileURL(preload).href,
+        queueCli,
+        ...args,
+        '--release',
+        '--reservation',
+        token,
+      ],
       {
         cwd: path.dirname(path.dirname(value.configPath)),
         env: {
@@ -1733,12 +1742,22 @@ syncBuiltinESMExports();
     );
     const releaseStderr: string[] = [];
     release.stderr.on('data', (chunk) => releaseStderr.push(String(chunk)));
-    const exit = new Promise<number | null>((resolve) => release.once('close', resolve));
+    let observedReleaseExit: number | null | undefined;
+    const exit = new Promise<number | null>((resolve) =>
+      release.once('close', (code) => {
+        observedReleaseExit = code;
+        resolve(code);
+      }),
+    );
     const deadline = Date.now() + 5000;
     while (!existsSync(marker) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(existsSync(marker)).toBe(true);
+    expect(
+      existsSync(marker),
+      `release journal preload did not reach ${marker}; child exit: ${observedReleaseExit ?? 'not observed'}; ` +
+        `stderr: ${releaseStderr.join('')}`,
+    ).toBe(true);
     await fanOut({
       runDir,
       headSha: value.head,
@@ -1781,11 +1800,12 @@ syncBuiltinESMExports();
       preload,
       `import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
+import path from 'node:path';
 const original = fs.readFileSync;
 let paused = false;
 fs.readFileSync = function(file, ...args) {
   const result = original.call(this, file, ...args);
-  if (!paused && String(file).endsWith('/decisions.jsonl')) {
+  if (!paused && path.basename(String(file)) === 'decisions.jsonl') {
     paused = true;
     fs.writeFileSync(process.env.RP521_MARKER, 'read');
     const deadline = Date.now() + 5000;
@@ -1801,7 +1821,7 @@ syncBuiltinESMExports();
     );
     const consuming = spawn(
       process.execPath,
-      ['--import', preload, queueCli, ...args, '--reservation', token],
+      ['--import', pathToFileURL(preload).href, queueCli, ...args, '--reservation', token],
       {
         cwd: path.dirname(path.dirname(value.configPath)),
         env: { ...env, RP521_MARKER: marker, RP521_RESUME: resume },
@@ -1809,12 +1829,22 @@ syncBuiltinESMExports();
     );
     const consumeStderr: string[] = [];
     consuming.stderr.on('data', (chunk) => consumeStderr.push(String(chunk)));
-    const exit = new Promise<number | null>((resolve) => consuming.once('close', resolve));
+    let observedConsumeExit: number | null | undefined;
+    const exit = new Promise<number | null>((resolve) =>
+      consuming.once('close', (code) => {
+        observedConsumeExit = code;
+        resolve(code);
+      }),
+    );
     const deadline = Date.now() + 5000;
     while (!existsSync(marker) && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    expect(existsSync(marker)).toBe(true);
+    expect(
+      existsSync(marker),
+      `consume journal preload did not reach ${marker}; child exit: ${observedConsumeExit ?? 'not observed'}; ` +
+        `stderr: ${consumeStderr.join('')}`,
+    ).toBe(true);
     await fanOut({
       runDir,
       headSha: value.head,
@@ -1921,26 +1951,40 @@ fs.writeFileSync = function(file, ...args) {
 syncBuiltinESMExports();
 `,
       );
-      const child = spawn(process.execPath, ['--import', preload, queueCli, ...actionArgs], {
-        cwd: path.join(value.root, 'repo'),
-        env: {
-          ...env,
-          ...(mode === 'admission' ? { RIG_RUN_DIR: nextRun } : {}),
-          RP521_ROUNDS: value.configPath.replace(/(\.json)?$/, '.gate-rounds.json'),
-          RP521_MARKER: marker,
-          RP521_RESUME: resume,
+      const child = spawn(
+        process.execPath,
+        ['--import', pathToFileURL(preload).href, queueCli, ...actionArgs],
+        {
+          cwd: path.join(value.root, 'repo'),
+          env: {
+            ...env,
+            ...(mode === 'admission' ? { RIG_RUN_DIR: nextRun } : {}),
+            RP521_ROUNDS: value.configPath.replace(/(\.json)?$/, '.gate-rounds.json'),
+            RP521_MARKER: marker,
+            RP521_RESUME: resume,
+          },
         },
-      });
+      );
       const stderr: string[] = [];
       child.stderr.on('data', (chunk) => stderr.push(String(chunk)));
-      const exit = new Promise<number | null>((resolve) => child.once('close', resolve));
+      let observedChildExit: number | null | undefined;
+      const exit = new Promise<number | null>((resolve) =>
+        child.once('close', (code) => {
+          observedChildExit = code;
+          resolve(code);
+        }),
+      );
       let appendFailure: unknown;
       try {
         const deadline = Date.now() + 5000;
         while (!existsSync(marker) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
-        expect(existsSync(marker)).toBe(true);
+        expect(
+          existsSync(marker),
+          `counter-write preload did not reach ${marker}; child exit: ${observedChildExit ?? 'not observed'}; ` +
+            `stderr: ${stderr.join('')}`,
+        ).toBe(true);
         // This is an inert journal probe, not a reviewer launch. A bounded busy
         // refusal must leave the trace unchanged while consumption persists.
         try {
