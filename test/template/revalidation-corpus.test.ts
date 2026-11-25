@@ -15,6 +15,7 @@ type CorpusCase = {
   stratum: string;
   kind: 'caught' | 'no-catch-control';
   origin: 'historical' | 'synthetic';
+  detectionObligation?: 'required' | 'deferred';
   observation: { detected: boolean; actionRequired: boolean | null };
   label: {
     groundTruth: 'material' | 'benign' | 'indeterminate';
@@ -178,6 +179,56 @@ type PressureNativeFixture = {
   observations: PressureNativeObservation[];
 };
 
+type VersionedPressureControl = {
+  id: 'B02' | 'B03' | 'N01' | 'P01';
+  checkpoint: 'BEFORE_PR' | 'BEFORE_CLOSE';
+  pair: { before: string; after: string };
+  expectedNative: {
+    result: 'CURRENT' | 'CHANGED' | 'UNVERIFIABLE';
+    source: string[];
+  };
+  detectionObligation: 'required' | 'deferred';
+  replay: { suite: 'content-blind-revalidation'; test: string };
+};
+
+type VersionedPressureFixture = {
+  schemaVersion: 2;
+  population: 'synthetic-pressure-controls-v2';
+  supersedes: { fixtureSha256: string; labelsSha256: string };
+  controls: VersionedPressureControl[];
+};
+
+type VersionedConstructedFixture = {
+  schemaVersion: 2;
+  population: 'synthetic-constructed-v2';
+  supersedes: { fixtureSha256: string; labelsSha256: string };
+  controls: ConstructedControl[];
+};
+
+type VersionedSyntheticLabelsFixture = {
+  schemaVersion: 2;
+  population: 'synthetic-constructed-labels-v2' | 'synthetic-pressure-labels-v2';
+  sourceFixtureSha256: string;
+  supersedes: { labelsSha256: string };
+};
+
+type VersionedPressureNativeFixture = {
+  schemaVersion: 2;
+  sourceFixtureSha256: string;
+  metadata: {
+    command: string;
+    sourceHead: string;
+    workingTree: Record<string, string>;
+  };
+  observations: Array<{
+    caseId: 'B02' | 'B03' | 'N01' | 'P01';
+    locator: { checkoutPathSha256: string; run: string; seq: number; detectionId: string };
+    point: 'BEFORE_PR' | 'BEFORE_CLOSE';
+    result: 'CURRENT' | 'CHANGED' | 'UNVERIFIABLE';
+    source: string[];
+  }>;
+};
+
 const historicalFixturePath = fileURLToPath(
   new URL('../fixtures/revalidation-corpus/historical-2026-10.json', import.meta.url),
 );
@@ -198,6 +249,18 @@ const pressureLabelsPath = fileURLToPath(
 );
 const pressureNativePath = fileURLToPath(
   new URL('../fixtures/revalidation-controls/pressure-native-v1.json', import.meta.url),
+);
+const constructedControlsV2Path = fileURLToPath(
+  new URL('../fixtures/revalidation-controls/constructed-v2.json', import.meta.url),
+);
+const pressureControlsV2Path = fileURLToPath(
+  new URL('../fixtures/revalidation-controls/pressure-v2.json', import.meta.url),
+);
+const constructedLabelsV2Path = fileURLToPath(
+  new URL('../fixtures/revalidation-controls/constructed-labels-v2.json', import.meta.url),
+);
+const pressureNativeV2Path = fileURLToPath(
+  new URL('../fixtures/revalidation-controls/pressure-native-v2.json', import.meta.url),
 );
 const readHistoricalFixture = (): HistoricalFixture => {
   expect(existsSync(historicalFixturePath)).toBe(true);
@@ -232,6 +295,28 @@ const readPressureLabels = (): SyntheticLabelsFixture => {
 const readPressureNative = (): PressureNativeFixture => {
   expect(existsSync(pressureNativePath)).toBe(true);
   return JSON.parse(readFileSync(pressureNativePath, 'utf8')) as PressureNativeFixture;
+};
+
+const readConstructedControlsV2 = (): VersionedConstructedFixture => {
+  expect(existsSync(constructedControlsV2Path)).toBe(true);
+  return JSON.parse(readFileSync(constructedControlsV2Path, 'utf8')) as VersionedConstructedFixture;
+};
+
+const readPressureControlsV2 = (): VersionedPressureFixture => {
+  expect(existsSync(pressureControlsV2Path)).toBe(true);
+  return JSON.parse(readFileSync(pressureControlsV2Path, 'utf8')) as VersionedPressureFixture;
+};
+
+const readConstructedLabelsV2 = (): VersionedSyntheticLabelsFixture => {
+  expect(existsSync(constructedLabelsV2Path)).toBe(true);
+  return JSON.parse(
+    readFileSync(constructedLabelsV2Path, 'utf8'),
+  ) as VersionedSyntheticLabelsFixture;
+};
+
+const readPressureNativeV2 = (): VersionedPressureNativeFixture => {
+  expect(existsSync(pressureNativeV2Path)).toBe(true);
+  return JSON.parse(readFileSync(pressureNativeV2Path, 'utf8')) as VersionedPressureNativeFixture;
 };
 
 const recordedActionRequired = (observation: HistoricalObservation): boolean | null =>
@@ -305,7 +390,11 @@ const completeFixtureCorpus = (origin: CorpusCase['origin']): CorpusCase[] =>
       stratum,
       kind: stratum === 'material-no-catch-control' ? 'no-catch-control' : 'caught',
       origin,
-      observation: { detected: true, actionRequired: false },
+      detectionObligation: stratum === 'material-no-catch-control' ? 'deferred' : undefined,
+      observation: {
+        detected: stratum !== 'material-no-catch-control',
+        actionRequired: false,
+      },
       label: {
         groundTruth: 'material',
         evidence: `fixture://independent-label-${index}`,
@@ -344,8 +433,89 @@ describe('independently labelled revalidation corpus scoring', () => {
         },
       ]),
       manifest: { total: 1, accepted: 0, rejected: 1 },
-      caught: { determinate: 0, falseHolds: 0 },
+      rates: { historical: { determinateCaught: 0, falseHolds: 0 } },
       belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('rejects a no-catch control that contradicts its own detected:true evidence before it can qualify coverage', () => {
+    const result = scoreRevalidationCorpus([
+      caseOf({
+        caseId: 'contradictory-no-catch-control',
+        kind: 'no-catch-control',
+        origin: 'synthetic',
+        detectionObligation: 'deferred',
+        observation: { detected: true, actionRequired: null },
+        label: {
+          groundTruth: 'material',
+          evidence: 'fixture://deferred-commentary-control',
+          adjudication: 'agreed',
+        },
+      }),
+    ]);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: 'contradictory-no-catch-control',
+          rule: 'no-catch control requires detected:false',
+        },
+      ]),
+      manifest: { total: 1, accepted: 0, rejected: 1 },
+      belowFivePercent: { eligible: false },
+    });
+  });
+
+  it('reports a historical material no-catch at a required checkpoint as an actual miss in its own population', () => {
+    const result = scoreRevalidationCorpus([
+      caseOf({
+        caseId: 'historical-required-material-miss',
+        kind: 'no-catch-control',
+        origin: 'historical',
+        detectionObligation: 'required',
+        observation: { detected: false, actionRequired: null },
+        label: {
+          groundTruth: 'material',
+          evidence: 'review://independent/historical-required-miss',
+          adjudication: 'agreed',
+        },
+      }),
+    ]);
+
+    expect(result).toMatchObject({
+      controls: {
+        materialNoCatch: {
+          historical: { required: { total: 1, missed: 1 }, deferred: { total: 0 } },
+          synthetic: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+        },
+      },
+    });
+    expect(result).not.toHaveProperty('caught');
+  });
+
+  it('keeps a deferred material commentary no-catch distinct from a required false-negative', () => {
+    const result = scoreRevalidationCorpus([
+      caseOf({
+        caseId: 'synthetic-deferred-material-commentary',
+        kind: 'no-catch-control',
+        origin: 'synthetic',
+        detectionObligation: 'deferred',
+        observation: { detected: false, actionRequired: null },
+        label: {
+          groundTruth: 'material',
+          evidence: 'review://independent/deferred-commentary',
+          adjudication: 'agreed',
+        },
+      }),
+    ]);
+
+    expect(result).toMatchObject({
+      controls: {
+        materialNoCatch: {
+          historical: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+          synthetic: { required: { total: 0, missed: 0 }, deferred: { total: 1 } },
+        },
+      },
     });
   });
 
@@ -409,7 +579,7 @@ describe('independently labelled revalidation corpus scoring', () => {
     expect(result).toMatchObject({
       totalCases: 1,
       labels: { indeterminate: 1 },
-      caught: { determinate: 0, falseHolds: 0 },
+      rates: { historical: { determinateCaught: 0, falseHolds: 0 } },
     });
   });
 
@@ -433,7 +603,7 @@ describe('independently labelled revalidation corpus scoring', () => {
     expect(result).toMatchObject({
       observed: { actionChangingOutcomes: 1 },
       labels: { benign: 1 },
-      caught: { falseHolds: 1 },
+      rates: { historical: { falseHolds: 1 } },
     });
   });
 
@@ -456,12 +626,13 @@ describe('independently labelled revalidation corpus scoring', () => {
     expect(result).not.toHaveProperty('rates.combined');
   });
 
-  it('counts a material no-catch control as a false-negative risk and keeps synthetic controls separate', () => {
+  it('partitions material no-catch controls by population instead of reporting a mixed metric', () => {
     const result = scoreRevalidationCorpus([
       caseOf({
         caseId: 'synthetic-material-no-catch',
         kind: 'no-catch-control',
         origin: 'synthetic',
+        detectionObligation: 'required',
         observation: { detected: false, actionRequired: null },
         label: {
           groundTruth: 'material',
@@ -472,9 +643,15 @@ describe('independently labelled revalidation corpus scoring', () => {
     ]);
 
     expect(result).toMatchObject({
-      controls: { materialNoCatch: { total: 1, missed: 1 } },
+      controls: {
+        materialNoCatch: {
+          historical: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+          synthetic: { required: { total: 1, missed: 1 }, deferred: { total: 0 } },
+        },
+      },
       origins: { synthetic: { total: 1 }, historical: { total: 0 } },
     });
+    expect(result).not.toHaveProperty('caught');
   });
 
   it('refuses a below-five-percent claim when required strata are empty or material controls are absent', () => {
@@ -523,6 +700,24 @@ describe('independently labelled revalidation corpus scoring', () => {
         missingHistoricalDeterminateCaught: true,
         missingStrata: [],
         missingMaterialControls: false,
+      },
+    });
+  });
+
+  it('refuses a target claim when synthetic strata and controls pad a single historical catch', () => {
+    const result = scoreRevalidationCorpus([
+      ...completeFixtureCorpus('synthetic'),
+      caseOf({
+        caseId: 'one-historical-catch-among-synthetic-padding',
+        locator: { run: 'historical-run', seq: 1, detectionId: 'historical-catch' },
+      }),
+    ]);
+
+    expect(result).toMatchObject({
+      belowFivePercent: { eligible: false },
+      rates: {
+        historical: { determinateCaught: 1 },
+        synthetic: { determinateCaught: EXPECTED_STRATA.length - 1 },
       },
     });
   });
@@ -865,6 +1060,69 @@ describe('constructed revalidation controls fixture', () => {
   });
 });
 
+describe('superseding constructed-v2 replay fixture', () => {
+  it('binds corrected S01 and S03 checkpoint contracts to their actual native replays without mutating v1 evidence', () => {
+    const fixture = readConstructedControlsV2();
+    const labels = readConstructedLabelsV2();
+    const source = readFileSync(
+      fileURLToPath(new URL('./content-blind-revalidation.test.ts', import.meta.url)),
+      'utf8',
+    );
+
+    expect(fixture).toMatchObject({
+      schemaVersion: 2,
+      population: 'synthetic-constructed-v2',
+      supersedes: {
+        fixtureSha256: '2e70ee231b0fa1ad0de1e436a7bf3d674808aded162eae182c757470b2978e86',
+        labelsSha256: '1328c281b8febba0482ea37ed845b9700daa30a4397faecbd1d93fae58c1bfd1',
+      },
+    });
+    expect(labels).toMatchObject({
+      schemaVersion: 2,
+      population: 'synthetic-constructed-labels-v2',
+      sourceFixtureSha256: createHash('sha256')
+        .update(readFileSync(constructedControlsV2Path))
+        .digest('hex'),
+      supersedes: {
+        labelsSha256: '1328c281b8febba0482ea37ed845b9700daa30a4397faecbd1d93fae58c1bfd1',
+      },
+    });
+
+    expect(fixture.controls.filter(({ id }) => id === 'S01' || id === 'S03')).toEqual([
+      expect.objectContaining({
+        id: 'S01',
+        strata: ['scope-title'],
+        checkpoint: 'BEFORE_CLOSE',
+        pair: {
+          baseline: 'Tracked linked blocker claim after take-up.',
+          mutation: 'Retitle the tracked blocker before close.',
+        },
+        replay: {
+          suite: 'content-blind-revalidation',
+          test: 'a real scope edit between take-up and close still holds on claim:scope',
+        },
+      }),
+      expect.objectContaining({
+        id: 'S03',
+        strata: ['scope-labels'],
+        checkpoint: 'BEFORE_PR',
+        pair: {
+          baseline:
+            'Jira item after native SELECT and a committed claim with its original label set.',
+          mutation:
+            'Add a label while retaining the original summary, description and workflow state.',
+        },
+        replay: {
+          suite: 'content-blind-revalidation',
+          test: 'native replay: labels-only mutation after SELECT and a tracked claim holds claim:scope at BEFORE_PR',
+        },
+      }),
+    ]);
+    expect(source).toContain("title: 'the blocker, retitled'");
+    expect(source).toContain("labels: ['keep-core', 'requires-review']");
+  });
+});
+
 describe('synthetic pressure controls fixture', () => {
   it('freezes three concrete pending-label pairs against the immutable constructed-v1 source', () => {
     const fixture = readPressureControls();
@@ -939,6 +1197,59 @@ describe('synthetic pressure controls fixture', () => {
     expect(fixture).not.toHaveProperty('rates');
     expect(fixture).not.toHaveProperty('falseHoldRate');
     expect(fixture).not.toHaveProperty('falseNegativeRate');
+  });
+});
+
+describe('superseding pressure-v2 replay fixture', () => {
+  it('keeps P01 required at close while N01 replays the exact pair as deferred CURRENT at before-pr', () => {
+    const fixture = readPressureControlsV2();
+    const source = readFileSync(
+      fileURLToPath(new URL('./content-blind-revalidation.test.ts', import.meta.url)),
+      'utf8',
+    );
+
+    expect(fixture).toMatchObject({
+      schemaVersion: 2,
+      population: 'synthetic-pressure-controls-v2',
+      supersedes: {
+        fixtureSha256: '7a1d4ffcc13aa0342586eafea77ac4cd5144b5e4cc07e41ea85ed03d8974037c',
+        labelsSha256: '2588a1dcc96b1f48d7a803bf576308deb24e330da0a34763efbb1f81b6261ae5',
+      },
+    });
+    expect(fixture.controls.map(({ id }) => id).sort()).toEqual(['B02', 'B03', 'N01', 'P01']);
+
+    const n01 = fixture.controls.find(({ id }) => id === 'N01');
+    const p01 = fixture.controls.find(({ id }) => id === 'P01');
+    expect(n01).toEqual(
+      expect.objectContaining({
+        checkpoint: 'BEFORE_PR',
+        pair: {
+          before: 'Original requirement: target output must be CSV.',
+          after:
+            'Original requirement: target output must be CSV.\nRequirement changed: target output must be JSON instead of CSV.',
+        },
+        expectedNative: { result: 'CURRENT', source: [] },
+        detectionObligation: 'deferred',
+        replay: {
+          suite: 'content-blind-revalidation',
+          test: 'native pressure replay N01: changed output requirement in commentary is deferred as CURRENT at BEFORE_PR',
+        },
+      }),
+    );
+    expect(p01).toEqual(
+      expect.objectContaining({
+        checkpoint: 'BEFORE_CLOSE',
+        pair: n01?.pair,
+        expectedNative: { result: 'CHANGED', source: ['claim:commentary'] },
+        detectionObligation: 'required',
+        replay: {
+          suite: 'content-blind-revalidation',
+          test: 'native pressure replay P01: changed output requirement in close-time commentary holds claim:commentary',
+        },
+      }),
+    );
+    expect(source).toContain(n01?.replay.test);
+    expect(source).toContain(p01?.replay.test);
   });
 });
 
@@ -1085,6 +1396,50 @@ describe('independent pressure-v1 labels fixture', () => {
   });
 });
 
+describe('evidence-bound superseding pressure-v2 capture', () => {
+  it('records N01 and the three retained replays as real, source-bound native observations', () => {
+    const fixture = readPressureControlsV2();
+    const native = readPressureNativeV2();
+
+    expect(native).toMatchObject({
+      schemaVersion: 2,
+      sourceFixtureSha256: createHash('sha256')
+        .update(readFileSync(pressureControlsV2Path))
+        .digest('hex'),
+    });
+    expect(native.metadata.command).toContain('native pressure replay');
+    expect(native.metadata.sourceHead).toMatch(/^[a-f0-9]{40}$/);
+    expect(native.metadata.workingTree).toEqual(
+      expect.objectContaining({
+        'test/template/content-blind-revalidation.test.ts': expect.stringMatching(/^[a-f0-9]{64}$/),
+        'test/template/revalidation-corpus.test.ts': expect.stringMatching(/^[a-f0-9]{64}$/),
+        'test/fixtures/revalidation-controls/pressure-v2.json':
+          expect.stringMatching(/^[a-f0-9]{64}$/),
+      }),
+    );
+    expect(native.observations.map(({ caseId }) => caseId).sort()).toEqual([
+      'B02',
+      'B03',
+      'N01',
+      'P01',
+    ]);
+    for (const observation of native.observations) {
+      const control = fixture.controls.find(({ id }) => id === observation.caseId);
+      expect(control).toBeDefined();
+      expect(observation.point).toBe(control?.checkpoint);
+      expect(observation.result).toBe(control?.expectedNative.result);
+      expect(observation.source).toEqual(control?.expectedNative.source);
+      expect(observation.locator).toMatchObject({
+        checkoutPathSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        run: expect.stringMatching(/^\d{8}-\d{6}$/),
+        seq: expect.any(Number),
+        detectionId: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(observation.locator.seq).toBeGreaterThan(0);
+    }
+  });
+});
+
 describe('evidence-bound synthetic pressure measurement', () => {
   it('joins captured native locators to independent pressure labels without treating the synthetic sample as representative', () => {
     const native = readPressureNative();
@@ -1161,7 +1516,6 @@ describe('evidence-bound synthetic pressure measurement', () => {
       errors: [],
       totalCases: 3,
       labels: { material: 1, benign: 2, indeterminate: 0 },
-      caught: { determinate: 3, falseHolds: 2 },
       rates: { synthetic: { determinateCaught: 3, falseHolds: 2 } },
       origins: { synthetic: { total: 3 } },
       belowFivePercent: {

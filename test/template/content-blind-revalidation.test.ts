@@ -501,7 +501,7 @@ const eventsOf = async (runDir: string): Promise<Array<Record<string, any>>> =>
 
 const emitNativePressureObservation = async (
   p: Project,
-  caseId: 'B02' | 'B03' | 'P01',
+  caseId: 'B02' | 'B03' | 'N01' | 'P01',
   point: 'BEFORE_PR' | 'BEFORE_CLOSE',
 ) => {
   const event = [...(await eventsOf(p.runDir))]
@@ -1042,6 +1042,45 @@ describe('commentary fingerprints are ids/count and hold only at close', () => {
     });
     expect(JSON.stringify(jsonOf(result))).not.toContain(body);
     await emitNativePressureObservation(p, 'B03', 'BEFORE_CLOSE');
+  });
+
+  it('native pressure replay N01: changed output requirement in commentary is deferred as CURRENT at BEFORE_PR', async () => {
+    const body = 'Requirement changed: target output must be JSON instead of CSV.';
+    const p = await project();
+    await p.setIssue(
+      jiraIssue({
+        comment: {
+          total: 1,
+          comments: [
+            { id: '10001', body: description('Original requirement: target output must be CSV.') },
+          ],
+        },
+      }),
+    );
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+    await claimThroughJiraAdapter(p);
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+        comment: {
+          total: 2,
+          comments: [
+            { id: '10001', body: description('Original requirement: target output must be CSV.') },
+            { id: '10002', body: description(body) },
+          ],
+        },
+      }),
+    );
+
+    const result = await before(p, 'BEFORE_PR');
+
+    expect(result.code, result.out).toBe(0);
+    expect(jsonOf(result)).toMatchObject({ result: 'CURRENT', action: 'continue' });
+    expect(jsonOf(result).movedFingerprintSet ?? []).not.toContain('commentary');
+    expect(JSON.stringify(jsonOf(result))).not.toContain(body);
+    await emitNativePressureObservation(p, 'N01', 'BEFORE_PR');
   });
 
   it('native pressure replay P01: changed output requirement in close-time commentary holds claim:commentary', async () => {
