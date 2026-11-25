@@ -874,6 +874,88 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     expect(benign.code, benign.stderr).toBe(0);
   });
 
+  it('carries literal exported Git configuration into later direct, child-shell, and substitution commits', async () => {
+    const fixture = await newGitFixture();
+    const disabledParameters = "'core.hooksPath'='/dev/null'";
+    const disabledTriad = {
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/dev/null',
+    };
+    for (const environment of [
+      { ...gitEnv(), GIT_CONFIG_PARAMETERS: disabledParameters },
+      { ...gitEnv(), ...disabledTriad },
+    ]) {
+      const witness = await git(['config', '--get', 'core.hooksPath'], fixture, environment);
+      expect.soft(witness.code, witness.stderr).toBe(0);
+      expect.soft(witness.stdout, witness.stderr).toBe('/dev/null\n');
+    }
+
+    for (const command of [
+      `export GIT_CONFIG_PARAMETERS="${disabledParameters}"; git commit -m x`,
+      'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null; git commit -m x',
+      `export GIT_CONFIG_PARAMETERS="${disabledParameters}"; sh -c 'git commit -m x'`,
+      `export GIT_CONFIG_PARAMETERS="${disabledParameters}"; printf '%s' "$(git commit -m x)"`,
+      `GIT_CONFIG_PARAMETERS="${disabledParameters}"; export GIT_CONFIG_PARAMETERS; git commit -m x`,
+      `export GIT_CONFIG_PARAMETERS; GIT_CONFIG_PARAMETERS="${disabledParameters}"; sh -c 'git commit -m x'`,
+    ]) {
+      const result = await inspect(command, fixture);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+
+    for (const command of [
+      `export GIT_CONFIG_PARAMETERS="'core.editor'='cat'"; git commit -m x`,
+      `printf '%s' "$(git commit -m x)"; export GIT_CONFIG_PARAMETERS="${disabledParameters}"`,
+    ]) {
+      const result = await inspect(command, fixture);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('keeps exported Git configuration scoped and permits literal clearing before a later commit', async () => {
+    const fixture = await newGitFixture();
+    const disabledParameters = "'core.hooksPath'='/dev/null'";
+    for (const command of [
+      `( export GIT_CONFIG_PARAMETERS="${disabledParameters}" ); git commit -m x`,
+      `export GIT_CONFIG_PARAMETERS="${disabledParameters}"; unset GIT_CONFIG_PARAMETERS; git commit -m x`,
+      `export GIT_CONFIG_PARAMETERS="${disabledParameters}"; env -u GIT_CONFIG_PARAMETERS git commit -m x`,
+      `export GIT_CONFIG_PARAMETERS="${disabledParameters}"; env -i git commit -m x`,
+      'export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null; unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; git commit -m x',
+    ]) {
+      const result = await inspect(command, fixture);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
+    }
+  });
+
+  it('removes inherited disabled Git configuration when literal shell state clears it', async () => {
+    const fixture = await newGitFixture();
+    const parameterInherited = {
+      ...gitEnv(),
+      GIT_CONFIG_PARAMETERS: "'core.hooksPath'='/dev/null'",
+    };
+    const triadInherited = {
+      ...gitEnv(),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'core.hooksPath',
+      GIT_CONFIG_VALUE_0: '/dev/null',
+    };
+
+    for (const [environment, cleared] of [
+      [parameterInherited, 'unset GIT_CONFIG_PARAMETERS; git commit -m x'],
+      [parameterInherited, 'env -u GIT_CONFIG_PARAMETERS git commit -m x'],
+      [parameterInherited, 'env -i git commit -m x'],
+      [
+        triadInherited,
+        'unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0; git commit -m x',
+      ],
+    ] as const) {
+      const bypass = await inspectWithEnv('git commit -m x', environment, fixture);
+      expect.soft(bypass.code, bypass.stderr).toBe(2);
+      const result = await inspectWithEnv(cleared, environment, fixture);
+      expect.soft(result.code, `${cleared}: ${result.stderr}`).toBe(0);
+    }
+  });
+
   it('refuses a separately quoted hooksPath override after an unrelated assignment whose value names git', async () => {
     const fixture = await newGitFixture();
     const disabledParameters = "'core.hooksPath'='/dev/null'";
