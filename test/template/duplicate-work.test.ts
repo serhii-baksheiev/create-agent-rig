@@ -163,46 +163,69 @@ const runCliJson = async (
   return JSON.parse(result.stdout.trim()) as DuplicateWorkResult;
 };
 
-/** A `gh` stub that answers `pr list` with a fixed array, everything else fails. */
+const REST_PAGE_SIZE = 100;
+
+/**
+ * Translate the legacy `gh pr list --json` fixture shape into a REST pull row.
+ * An absent or non-boolean old cross-repository marker deliberately leaves both
+ * repository identities absent, so the implementation retains its fail-closed
+ * unknown-identity behavior instead of treating the PR as its own.
+ */
+const restRow = (pr: Record<string, unknown>): Record<string, unknown> => {
+  const crossRepository = pr.isCrossRepository;
+  const headRepository =
+    crossRepository === true ? { id: 2 } : crossRepository === false ? { id: 1 } : {};
+  const baseRepository = crossRepository === true || crossRepository === false ? { id: 1 } : {};
+  return {
+    number: pr.number,
+    title: pr.title,
+    html_url: pr.url,
+    head: { ref: pr.headRefName, repo: headRepository },
+    base: { repo: baseRepository },
+  };
+};
+
+/** A `gh` stub that serves REST pull-list pages for the legacy fixture input. */
 const ghListing = (prs: Array<Record<string, unknown>>): Promise<StubHandle> =>
   stubCommand(
     'gh',
     [
-      "if (args[0] === 'pr' && args[1] === 'list') {",
-      `  return { stdout: ${JSON.stringify(JSON.stringify(prs))} + '\\n' };`,
-      '}',
-      'return { exitCode: 1 };',
+      "if (args[0] !== 'api') return { exitCode: 1 };",
+      "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+      "const page = Number(new URL(endpoint, 'https://fixture.invalid').searchParams.get('page') || 1);",
+      `const rows = ${JSON.stringify(prs.map(restRow))};`,
+      `return { stdout: JSON.stringify(rows.slice((page - 1) * ${REST_PAGE_SIZE}, page * ${REST_PAGE_SIZE})) + '\\n' };`,
     ].join('\n'),
   );
 
 /**
- * A `gh` stub that answers `pr list` ONLY when invoked with exactly
- * `--limit <expectedLimit>`, refusing (a distinguishable non-zero exit, not a
- * parse failure) otherwise. This is the fixture-level assertion that the cap
- * fix asks `gh` for one row past the page size it treats as "read" — see
- * "exit 3 — 101 open PRs is the cap: pr source unavailable, never a silent
- * read of the first 100" below.
+ * A REST-page fixture for the cap cases. It records the endpoint requests,
+ * serves at most 100 rows on each page, and requires the terminal/overflow
+ * second page so a one-page implementation cannot satisfy either cap test.
  */
-const ghListingWithLimit = (
-  expectedLimit: number,
+const ghListingWithPages = (
   prs: Array<Record<string, unknown>>,
+  callsPath: string,
 ): Promise<StubHandle> =>
   stubCommand(
     'gh',
     [
-      "if (args[0] === 'pr' && args[1] === 'list') {",
-      "  const i = args.indexOf('--limit');",
-      `  if (i === -1 || args[i + 1] !== ${JSON.stringify(String(expectedLimit))}) {`,
-      "    process.stderr.write('gh stub: expected --limit " +
-        expectedLimit +
-        ", got ' + (args[i + 1] ?? '(none)') + '\\n');",
-      '    return { exitCode: 2 };',
-      '  }',
-      `  return { stdout: ${JSON.stringify(JSON.stringify(prs))} + '\\n' };`,
-      '}',
-      'return { exitCode: 1 };',
+      "if (args[0] !== 'api') return { exitCode: 1 };",
+      "const endpoint = args.find((arg) => /repos\\/.+\\/pulls/.test(arg)) || '';",
+      `require('node:fs').appendFileSync(${JSON.stringify(callsPath)}, endpoint + '\\n');`,
+      "const url = new URL(endpoint, 'https://fixture.invalid');",
+      `if (url.searchParams.get('per_page') !== ${JSON.stringify(String(REST_PAGE_SIZE))}) { process.stderr.write('expected per_page=${REST_PAGE_SIZE}\\n'); return { exitCode: 2 }; }`,
+      "const page = Number(url.searchParams.get('page') || 1);",
+      `const rows = ${JSON.stringify(prs.map(restRow))};`,
+      `return { stdout: JSON.stringify(rows.slice((page - 1) * ${REST_PAGE_SIZE}, page * ${REST_PAGE_SIZE})) + '\\n' };`,
     ].join('\n'),
   );
+
+const requestedPages = async (callsPath: string): Promise<string[]> =>
+  (await readFile(callsPath, 'utf8'))
+    .split('\n')
+    .filter(Boolean)
+    .map((endpoint) => new URL(endpoint, 'https://fixture.invalid').searchParams.get('page') ?? '');
 
 /** A `gh` that always fails, the way a missing binary or a network error would
  *  look to a caller reading its exit code and stderr. */
@@ -914,10 +937,8 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
   });
 
   it('exit 3 — 101 open PRs is the cap: pr source unavailable, never a silent read of the first 100', async () => {
-    // The rule this pins: ask gh for --limit 101; 101 rows -> PR source
-    // unavailable (cap), never read. The stub only answers when asked with
-    // exactly `--limit 101`, so an implementation that still asks for 100
-    // (round 1's behaviour) fails this for that reason alone.
+    // 101 rows arrive as a documented 100-row first REST page and an overflow
+    // second page. The assertion below proves that the second page was read.
     const prs = Array.from({ length: 101 }, (_, i) => ({
       number: i,
       title: `chore: unrelated pr ${i}`,
@@ -925,13 +946,18 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
       url: `https://example.invalid/acme/widgets/pull/${i}`,
       isCrossRepository: false,
     }));
-    const gh = await ghListingWithLimit(101, prs);
+    const callsPath = path.join(await mkdtemp(path.join(tmpdir(), 'rp524-cap-')), 'calls.txt');
+    await writeFile(callsPath, '');
+    const gh = await ghListingWithPages(prs, callsPath);
     try {
-      const parsed = await runCliJson(ghCheckout, 'RP-9024', hermeticEnv());
+      const result = await runCli(ghCheckout, ['--ticket', 'RP-9024', '--json'], hermeticEnv());
+      expect(result.code, result.out).toBe(3);
+      const parsed = JSON.parse(result.stdout) as DuplicateWorkResult;
       const prSource = parsed.sources.find((s) => s.name === 'pr');
       expect(prSource, JSON.stringify(parsed)).toBeDefined();
       expect(prSource!.status).toBe('unavailable');
       expect(parsed.verdict).toBe('unverifiable');
+      expect(await requestedPages(callsPath)).toEqual(['1', '2']);
 
       const text = await runCli(ghCheckout, ['--ticket', 'RP-9024'], hermeticEnv());
       expect(text.code, text.out).toBe(3);
@@ -958,7 +984,9 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
       },
     ];
     expect(prs).toHaveLength(100);
-    const gh = await ghListingWithLimit(101, prs);
+    const callsPath = path.join(await mkdtemp(path.join(tmpdir(), 'rp524-terminal-')), 'calls.txt');
+    await writeFile(callsPath, '');
+    const gh = await ghListingWithPages(prs, callsPath);
     try {
       // Assert on the `pr` source and its matches only — see the
       // describe-block header on why the overall verdict is not asserted here.
@@ -968,6 +996,7 @@ describe('duplicate-work CLI — a GitHub-looking origin', () => {
       const match = parsed.matches.find((m) => m.source === 'pr');
       expect(match, JSON.stringify(parsed)).toBeDefined();
       expect(match!.ref).toBe('fix/rp-9025-elsewhere');
+      expect(await requestedPages(callsPath)).toEqual(['1', '2']);
     } finally {
       gh.restore();
     }
