@@ -15,6 +15,24 @@
 //   node .claude/scripts/detect-missed-gate.mjs --input prs.json    # offline
 //   node .claude/scripts/detect-missed-gate.mjs --epoch 2026-07-01  # ignore older merges
 //
+// `--since` accepts numeric year-month-day (including signed or extended
+// years), full English month-day-year, and year-first slash dates. Numeric
+// dates allow a date-only literal Z, or a T/t/space clock time (HH:MM:SS)
+// followed by a literal Z or numeric UTC offset. Native `Date` parsing constructs
+// the bound first; a separate lexical calendar check rejects normalized dates
+// such as February 31 and unrecognized or ambiguous syntax before any REST
+// request. Both checks must pass, and `--since` needs an explicit value.
+// The published examples are ISO-shaped; the flexible
+// forms below are retained because the detector's tests establish them as
+// compatible input. See test/template/github-rest-discovery.test.ts (absent in
+// a generated rig) > "continues to acquire REST pull data for valid leap-day,
+// offset, and flexible --since values", "continues to acquire REST pull data for
+// a flexible valid --since value (%s)", "refuses calendar-invalid --since values
+// before acquiring REST pull data", "refuses a locale-ambiguous numeric --since
+// value before acquiring REST pull data", "refuses a native-only timezone suffix
+// on --since before acquiring REST pull data", and "refuses a missing --since
+// value before acquiring REST pull data".
+//
 // 🔴 **Never invoke it as a step inside a run.** A check the run performs on
 // itself is a check the run in a hurry skips — running it inside would give back
 // exactly the property that makes it worth having. A scheduled job, a weekly
@@ -319,12 +337,11 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
   // A file list that is absent is NOT an empty one. `files: null` used to read as
   // "touched nothing elevated" and pass silently — so a schema change, a truncated
   // response or a hand-exported fixture turned the sweep into a rubber stamp.
-  // `gh pr list --json files` uses GraphQL `files(first: 100)` and silently
-  // returns only the first 100, with no truncation marker. A PR padded past that
-  // hides its elevated file OUTSIDE the window, and the sweep reads the empty
-  // result as "touched nothing elevated" — the silent variant of the failure this
-  // file exists to prevent. `changedFiles` comes back on the same call and is the
-  // ground truth.
+  // A REST file listing is paginated. A PR padded past the pages this sweep read
+  // could hide its elevated file OUTSIDE the window, and the sweep would read the
+  // empty result as "touched nothing elevated" — the silent variant of the
+  // failure this file exists to prevent. `changedFiles` is the ground truth for
+  // whether the acquired pages are complete.
   const truncated =
     Array.isArray(pr.files) &&
     typeof pr.changedFiles === 'number' &&
@@ -344,8 +361,7 @@ export const classifyPr = (pr, { elevatedPaths = [], epoch = null } = {}) => {
           'this sweep could not see the whole diff. That is an unknown, not a pass — ' +
           'check this PR by hand.'
         : 'the merged PR carries no file list, so this sweep could not tell whether ' +
-          'it crossed an elevated path. That is an unknown, not a pass — re-fetch it ' +
-          'with `--json files` or check the PR by hand.',
+          'it crossed an elevated path. That is an unknown, not a pass — check the PR by hand.',
     };
   }
 
@@ -471,11 +487,15 @@ const readInput = (file, label) => {
 };
 
 const parseArgs = (argv) => {
-  const args = { json: false, since: null, epoch: null, input: null };
+  const args = { json: false, since: null, sinceMissing: false, epoch: null, input: null };
   for (let i = 0; i < argv.length; i += 1) {
     const flag = argv[i];
     if (flag === '--json') args.json = true;
-    else if (flag === '--since') args.since = argv[++i];
+    else if (flag === '--since') {
+      const value = argv[i + 1];
+      if (value === undefined) args.sinceMissing = true;
+      else args.since = argv[++i];
+    }
     else if (flag === '--epoch') args.epoch = argv[++i];
     else if (flag === '--input') args.input = argv[++i];
   }
@@ -483,6 +503,137 @@ const parseArgs = (argv) => {
 };
 
 const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+
+const monthNumbers = new Map([
+  ['january', 1],
+  ['february', 2],
+  ['march', 3],
+  ['april', 4],
+  ['may', 5],
+  ['june', 6],
+  ['july', 7],
+  ['august', 8],
+  ['september', 9],
+  ['october', 10],
+  ['november', 11],
+  ['december', 12],
+]);
+
+const writtenCalendarDate = (value) => {
+  const source = value.trim();
+  const numeric = /^([+-]?\d{4,})-(\d+)-(\d+)(?:Z|[Tt ]\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2}))?$/.exec(
+    source,
+  );
+  if (numeric) {
+    const [, yearText, monthText, dayText] = numeric;
+    return { yearText, monthText, dayText };
+  }
+  const english = /^([A-Za-z]+)\s+(\d+),\s*([+-]?\d+)$/.exec(source);
+  if (english) {
+    const [, name, dayText, yearText] = english;
+    const month = monthNumbers.get(name.toLowerCase());
+    return month === undefined ? null : { yearText, monthText: String(month), dayText };
+  }
+  const slash = /^([+-]?\d{4,})\/(\d+)\/(\d+)$/.exec(source);
+  if (slash) {
+    const [, yearText, monthText, dayText] = slash;
+    return { yearText, monthText, dayText };
+  }
+  return null;
+};
+
+const hasValidGregorianCalendarDate = ({ yearText, monthText, dayText }) => {
+  if (monthText.length > 2 || dayText.length > 2) return false;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  if (!Number.isSafeInteger(year)) return false;
+  const daysInMonth = [31, year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0) ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth[month - 1];
+};
+
+const hasValidSinceCalendarDate = (value) => {
+  const written = writtenCalendarDate(value);
+  return written !== null && hasValidGregorianCalendarDate(written);
+};
+
+const MAX_PRS = 100;
+const MAX_CHANGED_FILES = 3000;
+const REST_PAGE_SIZE = 100;
+
+const restJson = (endpoint) =>
+  JSON.parse(
+    execFileSync('gh', ['api', endpoint], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }),
+  );
+
+const listPulls = (sinceAt) => {
+  const pulls = [];
+  for (let page = 1; page <= 2; page += 1) {
+    const response = restJson(
+      `repos/{owner}/{repo}/pulls?state=closed&sort=updated&direction=desc&per_page=${REST_PAGE_SIZE}&page=${page}`,
+    );
+    if (!Array.isArray(response) || response.some(Array.isArray)) {
+      throw new Error('GitHub REST pull list was malformed');
+    }
+    const rows = response;
+    if (rows.length === 0) return pulls;
+    for (const row of rows) {
+      const updatedAt = new Date(row.updated_at).getTime();
+      if (typeof row.updated_at === 'string' && !Number.isNaN(updatedAt) && updatedAt < sinceAt) return pulls;
+      pulls.push(row);
+      if (pulls.length > MAX_PRS) throw new Error(`GitHub REST pull list exceeded the ${MAX_PRS}-pull cap`);
+    }
+  }
+  return pulls;
+};
+
+const filesFor = (number, changedFiles) => {
+  if (!Number.isInteger(changedFiles) || changedFiles < 0 || changedFiles > MAX_CHANGED_FILES) return undefined;
+  if (changedFiles === 0) return [];
+
+  const files = [];
+  for (let page = 1; page <= changedFiles; page += 1) {
+    const rows = restJson(`repos/{owner}/{repo}/pulls/${number}/files?per_page=${REST_PAGE_SIZE}&page=${page}`);
+    if (
+      !Array.isArray(rows) ||
+      rows.length === 0 ||
+      rows.length > REST_PAGE_SIZE ||
+      rows.some((row) => !row || typeof row.filename !== 'string')
+    ) {
+      return undefined;
+    }
+    files.push(...rows.map((row) => row.filename));
+    if (files.length === changedFiles) return files;
+    if (files.length > changedFiles) return undefined;
+  }
+  return undefined;
+};
+
+const restPull = (number) => {
+  const pr = restJson(`repos/{owner}/{repo}/pulls/${number}`);
+  if (!pr || typeof pr !== 'object' || pr.number !== number || typeof pr.merged_at === 'undefined') {
+    throw new Error(`GitHub REST pull #${number} was malformed`);
+  }
+  if (pr.merged_at === null) return null;
+  if (typeof pr.merged_at !== 'string' || Number.isNaN(new Date(pr.merged_at).getTime())) {
+    throw new Error(`GitHub REST pull #${number} had an invalid merged_at timestamp`);
+  }
+  const changedFiles = pr.changed_files;
+  return {
+    number: pr.number,
+    title: pr.title,
+    body: pr.body,
+    headRefName: pr.head?.ref,
+    mergedAt: pr.merged_at,
+    url: pr.html_url,
+    labels: pr.labels,
+    changedFiles,
+    files: filesFor(number, changedFiles),
+  };
+};
 
 /**
  * Findings are the output, not the status — but that cuts both ways: a sweep that
@@ -492,24 +643,13 @@ const daysAgo = (n) => new Date(Date.now() - n * 86_400_000).toISOString().slice
  */
 const fetchMergedPrs = (since) => {
   try {
-    return JSON.parse(
-      execFileSync(
-        'gh',
-        [
-          'pr',
-          'list',
-          '--state',
-          'merged',
-          '--limit',
-          '100',
-          '--search',
-          `merged:>=${since}`,
-          '--json',
-          'number,title,body,headRefName,mergedAt,url,labels,files,changedFiles',
-        ],
-        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-      ),
-    );
+    const sinceAt = new Date(since);
+    if (Number.isNaN(sinceAt.getTime()) || !hasValidSinceCalendarDate(since)) {
+      throw new Error('invalid --since date bound');
+    }
+    return listPulls(sinceAt.getTime())
+      .map((row) => restPull(row.number))
+      .filter((pr) => pr && new Date(pr.mergedAt) >= sinceAt);
   } catch (error) {
     process.stderr.write(
       'missed-gate sweep: could not list merged PRs — the `gh` CLI is missing, ' +
@@ -571,6 +711,10 @@ const invokedDirectly = () => {
 
 if (invokedDirectly()) {
   const args = parseArgs(process.argv.slice(2));
+  if (args.sinceMissing) {
+    process.stderr.write('missed-gate sweep: missing --since value — nothing was checked.\n');
+    process.exit(1);
+  }
   const projectRoot = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
   const prs = args.input
     ? readInput(args.input, 'missed-gate sweep')

@@ -129,6 +129,32 @@
  * a queue config that does not resolve) — and then nothing is journalled,
  * because a refusal is not an answer.
  *
+ * `outcome` may additionally carry `--detection <opaque-id>` to answer one
+ * unresolved blocking observation in this declared run. It matches the stated
+ * mode and point/checkpoint as well as that id; the default with no selector
+ * remains the latest matching observation. A selected ticketed observation
+ * must carry a string ticket equal to the CLI ticket; an owner-directed one
+ * instead carries the explicit owner-directed mode. The selector also requires
+ * its id and point/checkpoint, a blocking result, and no timestamp-aware typed
+ * resolution. For an explicit selector, it also builds the prospective outcome
+ * at one captured actual time and requires the shared reader to resolve that
+ * selected observation; a failure of any of those checks refuses before an
+ * outcome or state write. Pinned in the generator's
+ * `test/template/revalidation-evidence.test.ts` (absent in a generated rig) ›
+ * "selects the older UNVERIFIABLE hold after a later CURRENT re-read, preserves
+ * prior evidence, and lets the queue select again", › "keeps the default
+ * no-selector outcome on the latest matching event and leaves an older hold
+ * latched", and › "refuses absent, ineligible, foreign, malformed, and
+ * already-resolved selectors without writing an outcome or state", › "refuses
+ * a trailing selector without its operand, including after a valid selector,
+ * without falling back to the latest event", and › "answers and clears a
+ * point-only blocking observation that the shared reader already holds", ›
+ * "refuses ticketed selectors whose literal CLI subject only string-coerces a
+ * reader-ineligible observation", › "refuses a selected blocking detection
+ * one hour in the future before changing its journal or latch", and ›
+ * "refuses a selected blocking detection with an invalid timestamp before
+ * changing its journal or latch".
+ *
  * ⚠ It reads `<base>` as it is in this checkout and never updates the remote
  * ref itself; `pr-ship` step 1 does that before calling this. A stale ref
  * makes this compare against yesterday's main and report `continue` — see
@@ -161,6 +187,7 @@ import {
   withAdditionalDrift,
 } from './lib/claim-records.mjs';
 import { DEFAULT_SCAN_LIMIT, findSecretValues } from './lib/secrets.mjs';
+import { typedResolutionOf, typedResolutionsOf } from './lib/revalidation-evidence.mjs';
 
 // Derived from the one source, never restated here (AR-137).
 export const POINTS = REVALIDATES;
@@ -179,6 +206,7 @@ const parseArgs = (argv) => {
     json: false,
     actionChanged: null,
     note: null,
+    detection: undefined,
     mergeCommit: null,
     bad: null,
   };
@@ -189,6 +217,7 @@ const parseArgs = (argv) => {
     else if (arg === '--json') args.json = true;
     else if (arg === '--action-changed') args.actionChanged = argv[++i] ?? null;
     else if (arg === '--note') args.note = argv[++i] ?? null;
+    else if (arg === '--detection') args.detection = argv[++i] ?? null;
     else if (arg === '--point') args.point = argv[++i] ?? null;
     else if (arg === '--ticket') {
       // The id reaches git-free paths only, but on github-issues it becomes a
@@ -520,6 +549,9 @@ if (invokedDirectly()) {
         'work or a hotfix that has no item, pass --owner-directed instead.',
     );
   }
+  if (!args.outcome && args.detection !== undefined) {
+    refuse('--detection is only valid with outcome: it selects the revalidation observation that outcome answers.');
+  }
 
   const runDir = process.env.RIG_RUN_DIR || null;
 
@@ -527,6 +559,9 @@ if (invokedDirectly()) {
     if (!runDir) refuse('outcome needs RIG_RUN_DIR: an outcome answers a revalidation in a run, and there is none.');
     if (args.actionChanged !== 'true' && args.actionChanged !== 'false') {
       refuse(`--action-changed must be true or false, got ${args.actionChanged ?? '(none)'}.`);
+    }
+    if (args.detection === null) {
+      refuse('--detection needs an opaque id: a supplied selector cannot fall back to the latest observation.');
     }
     const { events } = readRun({ runDir });
     // RP-94. An owner-directed detection carries `ticket: null`, so it cannot
@@ -537,40 +572,74 @@ if (invokedDirectly()) {
     // remedy was a command the script refused, which is the same shape of
     // contradiction RP-94 exists to remove.
     const subject = args.ownerDirected ? `${OWNER_DIRECTED} work` : args.ticket;
-    const target = [...events]
-      .reverse()
-      .find(
-        (e) =>
-          e.kind === 'revalidation' &&
-          e.data?.point === args.point &&
-          (args.ownerDirected
-            ? e.data?.mode === OWNER_DIRECTED
-            : e.data?.mode !== OWNER_DIRECTED &&
-              String(e.data?.ticket) === String(args.ticket)),
-      );
+    const matchesSubject = (event) =>
+      args.ownerDirected
+        ? event.data?.mode === OWNER_DIRECTED
+        : event.data?.mode !== OWNER_DIRECTED && String(event.data?.ticket) === String(args.ticket);
+    const resolutions = args.detection === undefined ? null : typedResolutionsOf(events);
+    const target =
+      args.detection === undefined
+        ? [...events]
+            .reverse()
+            .find(
+              (event) =>
+                event.kind === 'revalidation' &&
+                event.data?.point === args.point &&
+                matchesSubject(event),
+            )
+        : [...events]
+            .reverse()
+            .find((event) => {
+              if (
+                event.kind !== 'revalidation' ||
+                event.data?.id !== args.detection ||
+                event.data?.point !== args.point ||
+                (event.data?.checkpoint ?? event.data?.point) !== args.point ||
+                !matchesSubject(event) ||
+                (!args.ownerDirected &&
+                  (typeof event.data?.ticket !== 'string' || event.data.ticket !== args.ticket)) ||
+                !['CHANGED', 'CONFLICT', 'UNVERIFIABLE'].includes(event.data?.result)
+              ) {
+                return false;
+              }
+              return !typedResolutionOf(resolutions, event);
+            });
     if (!target) {
       refuse(`no revalidation of ${subject} at ${args.point} in ${runDir} for this outcome to answer.`);
     }
     const now = new Date().toISOString();
     const actionRequired = args.actionChanged === 'true';
+    const outcome = {
+      detectionId: target.data?.id,
+      action: actionRequired ? 'semantic decision' : 'continue',
+      actionRequired,
+      driftOrigin: 'unknown',
+      resolvedAt: now,
+      // `null`, never a placeholder, for the same reason the detection this
+      // answers carries none.
+      ticket: args.ownerDirected ? null : args.ticket,
+      ...(args.ownerDirected ? { mode: OWNER_DIRECTED } : {}),
+      point: args.point,
+      actionChanged: actionRequired,
+      note: args.note,
+      answers: target.seq,
+    };
+    if (
+      args.detection !== undefined &&
+      !typedResolutionOf(
+        typedResolutionsOf([
+          ...events,
+          { kind: 'revalidation-outcome', at: now, data: outcome },
+        ]),
+        target,
+      )
+    ) {
+      refuse(`the selected revalidation of ${subject} at ${args.point} cannot be resolved by this outcome.`);
+    }
     const record = recordEvent({
       runDir,
       kind: 'revalidation-outcome',
-      data: {
-        detectionId: target.data?.id,
-        action: actionRequired ? 'semantic decision' : 'continue',
-        actionRequired,
-        driftOrigin: 'unknown',
-        resolvedAt: now,
-        // `null`, never a placeholder, for the same reason the detection this
-        // answers carries none.
-        ticket: args.ownerDirected ? null : args.ticket,
-        ...(args.ownerDirected ? { mode: OWNER_DIRECTED } : {}),
-        point: args.point,
-        actionChanged: actionRequired,
-        note: args.note,
-        answers: target.seq,
-      },
+      data: outcome,
       now,
     });
     clearRevalidationHold(runDir, target.data?.id);

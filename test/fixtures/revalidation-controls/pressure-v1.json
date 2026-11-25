@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "population": "synthetic-pressure-controls-v1",
+  "baseFixtureSha256": "2e70ee231b0fa1ad0de1e436a7bf3d674808aded162eae182c757470b2978e86",
+  "controls": [
+    {
+      "id": "B02",
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "before": "Publish  the daily report as CSV.",
+        "after": "Publish the daily report as CSV."
+      },
+      "expectedNative": { "result": "CHANGED", "source": "claim:scope" },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native pressure replay B02: a prose-only double-space body change holds claim:scope at BEFORE_PR"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "B03",
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "before": "Original requirement: target output must be CSV.",
+        "after": "Original requirement: target output must be CSV.\nThanks; requirements and approval are unchanged."
+      },
+      "expectedNative": { "result": "CHANGED", "source": "claim:commentary" },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native pressure replay B03: benign close-time commentary still holds claim:commentary"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "P01",
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "before": "Original requirement: target output must be CSV.",
+        "after": "Original requirement: target output must be CSV.\nRequirement changed: target output must be JSON instead of CSV."
+      },
+      "expectedNative": { "result": "CHANGED", "source": "claim:commentary" },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native pressure replay P01: changed output requirement in close-time commentary holds claim:commentary"
+      },
+      "independentLabel": { "status": "pending" }
+    }
+  ]
+}

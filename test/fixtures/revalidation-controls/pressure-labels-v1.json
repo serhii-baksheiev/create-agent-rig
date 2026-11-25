@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "population": "synthetic-pressure-labels-v1",
+  "sourceFixtureSha256": "7a1d4ffcc13aa0342586eafea77ac4cd5144b5e4cc07e41ea85ed03d8974037c",
+  "blindedInputSha256": "93f19fb7761e02d6e8c524a251fbc66040f375292b226df78ff8d87f8777810f",
+  "adjudicationPolicy": "matching determinate only; any unknown/missing/disagreement stays indeterminate",
+  "reviewers": [
+    {
+      "id": "independent-a",
+      "outputSha256": "9ee50bbc89cf58bf16360fb211ba9cbc96d1cc660a4bdea7d3edfc337fe03b57",
+      "sourceFixtureSha256": "7a1d4ffcc13aa0342586eafea77ac4cd5144b5e4cc07e41ea85ed03d8974037c",
+      "blindedInputSha256": "93f19fb7761e02d6e8c524a251fbc66040f375292b226df78ff8d87f8777810f",
+      "blinding": "Structured native results, replay titles, detector outcomes, original control IDs, source fixture, and other reviewer labels were not consulted. Assessment used only the literal blinded prose pairs and their checkpoints.",
+      "limitations": [
+        "This assessment is limited to the supplied prose semantics; it does not infer hidden implementation behavior, detector outcomes, or a desired aggregate rate."
+      ]
+    },
+    {
+      "id": "independent-b",
+      "outputSha256": "21d9a39f1a2f0138458039278fbcfbdaf10b8801e1b55e7bbcc11c3513436122",
+      "sourceFixtureSha256": "7a1d4ffcc13aa0342586eafea77ac4cd5144b5e4cc07e41ea85ed03d8974037c",
+      "blindedInputSha256": "93f19fb7761e02d6e8c524a251fbc66040f375292b226df78ff8d87f8777810f",
+      "blinding": "Native results, replay titles, detector outcomes, original control IDs, and other labels were not consulted; only the literal opaque prose pairs were assessed.",
+      "limitations": [
+        "Labels reflect the stated checkpoint policy and literal text only. No implementation behavior, detector result, or significance beyond the supplied prose was inferred."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "B02",
+      "blindedCaseId": "case-482",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "benign",
+          "evidence": "The sole difference normalizes repeated whitespace and leaves the reporting requirement unchanged."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "The pair changes only spacing while preserving the stated reporting requirement, with no described action or evidence-integrity effect."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "benign",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "B03",
+      "blindedCaseId": "case-175",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "benign",
+          "evidence": "The added statement explicitly says requirements and approval are unchanged, with no action or integrity change described."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "The added statement expressly leaves requirements and approval unchanged, so it describes no material action or integrity change."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "benign",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "P01",
+      "blindedCaseId": "case-936",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "The required output format explicitly changes from CSV to JSON, requiring a meaningful task change."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "Changing the required output format from CSV to JSON changes a meaningful task requirement at close."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    }
+  ]
+}

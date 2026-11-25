@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 2,
+  "population": "synthetic-pressure-controls-v2",
+  "supersedes": {
+    "fixtureSha256": "7a1d4ffcc13aa0342586eafea77ac4cd5144b5e4cc07e41ea85ed03d8974037c",
+    "labelsSha256": "2588a1dcc96b1f48d7a803bf576308deb24e330da0a34763efbb1f81b6261ae5"
+  },
+  "controls": [
+    {
+      "id": "B02",
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "before": "Publish  the daily report as CSV.",
+        "after": "Publish the daily report as CSV."
+      },
+      "expectedNative": {
+        "result": "CHANGED",
+        "source": ["claim:scope"]
+      },
+      "detectionObligation": "required",
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native pressure replay B02: a prose-only double-space body change holds claim:scope at BEFORE_PR"
+      }
+    },
+    {
+      "id": "B03",
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "before": "Original requirement: target output must be CSV.",
+        "after": "Original requirement: target output must be CSV.\nThanks; requirements and approval are unchanged."
+      },
+      "expectedNative": {
+        "result": "CHANGED",
+        "source": ["claim:commentary"]
+      },
+      "detectionObligation": "required",
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native pressure replay B03: benign close-time commentary still holds claim:commentary"
+      }
+    },
+    {
+      "id": "N01",
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "before": "Original requirement: target output must be CSV.",
+        "after": "Original requirement: target output must be CSV.\nRequirement changed: target output must be JSON instead of CSV."
+      },
+      "expectedNative": {
+        "result": "CURRENT",
+        "source": []
+      },
+      "detectionObligation": "deferred",
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native pressure replay N01: changed output requirement in commentary is deferred as CURRENT at BEFORE_PR"
+      }
+    },
+    {
+      "id": "P01",
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "before": "Original requirement: target output must be CSV.",
+        "after": "Original requirement: target output must be CSV.\nRequirement changed: target output must be JSON instead of CSV."
+      },
+      "expectedNative": {
+        "result": "CHANGED",
+        "source": ["claim:commentary"]
+      },
+      "detectionObligation": "required",
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native pressure replay P01: changed output requirement in close-time commentary holds claim:commentary"
+      }
+    }
+  ]
+}
