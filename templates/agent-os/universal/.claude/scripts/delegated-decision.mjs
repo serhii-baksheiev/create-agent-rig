@@ -513,29 +513,33 @@ const committedExtraGateRoundsOnBranch = ({ projectRoot, branch }) =>
   );
 
 /**
- * The heads one authorization covers: its own head, then every first-parent
- * commit on top of it that changes only `.rig/decisions/` — committing the
- * record itself must not move the round off the head it was decided for.
- * `null` when HEAD is not such a descendant within the bound.
+ * Lazy history facts for one authorization computation. See
+ * `test/template/delegated-rounds.test.ts` (absent in a generated rig) ›
+ * "acquires shared authorization history once in each fresh reservation validation".
  */
-const recordOnlyChain = (projectRoot, from, to) => {
-  if (from === to) return [to];
+const recordOnlyHistory = (projectRoot, head) => {
   let list;
-  try {
-    list = execFileSync('git', ['--no-replace-objects', 'rev-list', '--first-parent', `--max-count=${MAX_RECORD_WALK}`, to], {
-      cwd: projectRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      env: withoutGitLocation(),
-    })
-      .split('\n')
-      .filter(Boolean);
-  } catch {
-    return null;
-  }
-  const chain = [];
-  for (const sha of list) {
-    if (sha === from) return [from, ...chain];
+  let listRead = false;
+  const changedBySha = new Map();
+  const commits = () => {
+    if (listRead) return list;
+    listRead = true;
+    try {
+      list = execFileSync('git', ['--no-replace-objects', 'rev-list', '--first-parent', `--max-count=${MAX_RECORD_WALK}`, head], {
+        cwd: projectRoot,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+        env: withoutGitLocation(),
+      })
+        .split('\n')
+        .filter(Boolean);
+    } catch {
+      list = null;
+    }
+    return list;
+  };
+  const changedPaths = (sha) => {
+    if (changedBySha.has(sha)) return changedBySha.get(sha);
     let changed;
     try {
       changed = execFileSync('git', ['--no-replace-objects', 'diff-tree', '--root', '--no-commit-id', '--name-only', '-r', sha], {
@@ -547,8 +551,29 @@ const recordOnlyChain = (projectRoot, from, to) => {
         .split('\n')
         .filter(Boolean);
     } catch {
-      return null;
+      changed = null;
     }
+    changedBySha.set(sha, changed);
+    return changed;
+  };
+  return { commits, changedPaths };
+};
+
+/**
+ * The heads one authorization covers: its own head, then every first-parent
+ * commit on top of it that changes only `.rig/decisions/` — committing the
+ * record itself must not move the round off the head it was decided for.
+ * `null` when HEAD is not such a descendant within the bound.
+ */
+const recordOnlyChain = (from, head, history) => {
+  if (from === head) return [head];
+  const list = history.commits();
+  if (list === null) return null;
+  const chain = [];
+  for (const sha of list) {
+    if (sha === from) return [from, ...chain];
+    const changed = history.changedPaths(sha);
+    if (changed === null) return null;
     if (changed.length === 0 || !changed.every((path) => path.startsWith(DECISIONS_PREFIX))) return null;
     chain.unshift(sha);
   }
@@ -645,6 +670,7 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir, journa
   }
   const head = gitValue(['rev-parse', 'HEAD'], projectRoot);
   if (!head) return { ok: false, why: 'HEAD could not be read.' };
+  const history = recordOnlyHistory(projectRoot, head);
   let records;
   let texts;
   let currentJournalDirs;
@@ -668,7 +694,7 @@ export const authorizedRoundFor = ({ projectRoot, ticket, branch, runDir, journa
     };
   }
   for (const record of records) {
-    const covered = recordOnlyChain(projectRoot, record.head, head);
+    const covered = recordOnlyChain(record.head, head, history);
     if (covered === null) continue;
     const heads = new Set(covered.map((sha) => sha.toLowerCase()));
     const answered = texts.some((text) =>
