@@ -2,7 +2,17 @@ import { execFile, execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { createRequire, syncBuiltinESMExports } from 'node:module';
-import { cp, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import {
+  cp,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -353,6 +363,35 @@ const claimThroughJiraAdapter = async (p: Project) => {
   await git(['commit', '-q', '--allow-empty', '-m', 'record Rig claim transition'], p.root);
 };
 
+const closeWithAddedCommentary = async (p: Project, body: string): Promise<CommandResult> => {
+  const baseline = jiraIssue({
+    comment: {
+      total: 1,
+      comments: [
+        { id: '10001', body: description('Original requirement: target output must be CSV.') },
+      ],
+    },
+  });
+  await p.setIssue(baseline);
+  expect((await next(p)).code).toBe(0);
+  if (!(await trackClaim(p))) throw new Error('expected a tracked claim before commentary replay');
+  await claimThroughJiraAdapter(p);
+  await p.setIssue(
+    jiraIssue({
+      updated: T2,
+      status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+      comment: {
+        total: 2,
+        comments: [
+          { id: '10001', body: description('Original requirement: target output must be CSV.') },
+          { id: '10002', body: description(body) },
+        ],
+      },
+    }),
+  );
+  return before(p, 'BEFORE_CLOSE');
+};
+
 /**
  * RP-409 — posts a comment through the real `comment(ticket, body)` export
  * of `queue/jira.mjs`, against a tiny stateful stub rather than through
@@ -459,6 +498,31 @@ const eventsOf = async (runDir: string): Promise<Array<Record<string, any>>> =>
     .filter(Boolean)
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     .map((line) => JSON.parse(line) as Record<string, any>);
+
+const emitNativePressureObservation = async (
+  p: Project,
+  caseId: 'B02' | 'B03' | 'N01' | 'P01',
+  point: 'BEFORE_PR' | 'BEFORE_CLOSE',
+) => {
+  const event = [...(await eventsOf(p.runDir))]
+    .reverse()
+    .find((candidate) => candidate.kind === 'revalidation' && candidate.data?.point === point);
+  if (!event) throw new Error(`missing native ${point} revalidation event for ${caseId}`);
+  const observation = {
+    caseId,
+    run: path.basename(p.runDir),
+    checkoutPathSha256: createHash('sha256')
+      .update(await realpath(p.root))
+      .digest('hex'),
+    seq: event.seq,
+    detectionId: event.data.id,
+    point: event.data.point,
+    result: event.data.result,
+    source: event.data.source,
+  };
+  console.log(`RP563_NATIVE_PRESSURE ${JSON.stringify(observation)}`);
+  return observation;
+};
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const reportOf = async (p: Project): Promise<Record<string, any>> => {
@@ -638,6 +702,49 @@ describe('fingerprints, not updatedAt, decide scope drift', () => {
     expect(detection.movedFingerprintSet).toEqual(expect.arrayContaining(['scope']));
     expect(detection.sourcePointer).toMatch(/\.rig\/claims\/RP-50\.json/);
     expect(JSON.stringify(detection)).not.toContain(SCOPE_SENTINEL);
+  });
+
+  it('native replay: labels-only mutation after SELECT and a tracked claim holds claim:scope at BEFORE_PR', async () => {
+    const p = await project();
+    const selection = await next(p);
+    expect(selection.code, selection.out).toBe(0);
+    if (!(await trackClaim(p))) return;
+
+    await p.setIssue(jiraIssue({ updated: T2, labels: ['keep-core', 'requires-review'] }));
+
+    const result = await before(p, 'BEFORE_PR');
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result)).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      movedFingerprintSet: expect.arrayContaining(['scope']),
+      source: expect.arrayContaining(['claim:scope']),
+    });
+  });
+
+  it('native pressure replay B02: a prose-only double-space body change holds claim:scope at BEFORE_PR', async () => {
+    const p = await project();
+    await p.setIssue(jiraIssue({ description: description('Publish  the daily report as CSV.') }));
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+    await claimThroughJiraAdapter(p);
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+        description: description('Publish the daily report as CSV.'),
+      }),
+    );
+
+    const result = await before(p, 'BEFORE_PR');
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result)).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      movedFingerprintSet: expect.arrayContaining(['scope']),
+      source: expect.arrayContaining(['claim:scope']),
+    });
+    await emitNativePressureObservation(p, 'B02', 'BEFORE_PR');
   });
 
   it('holds when the target branch SHA moves without a tracker edit', async () => {
@@ -919,6 +1026,77 @@ describe('commentary fingerprints are ids/count and hold only at close', () => {
     expect(beforeClose.movedFingerprintSet).toEqual(expect.arrayContaining(['commentary']));
     expect(JSON.stringify(beforeClose)).not.toContain(COMMENT_SENTINEL);
     expect(JSON.stringify(beforeClose)).not.toContain('new commentary content is irrelevant');
+  });
+
+  it('native pressure replay B03: benign close-time commentary still holds claim:commentary', async () => {
+    const body = 'Thanks; requirements and approval are unchanged.';
+    const p = await project();
+    const result = await closeWithAddedCommentary(p, body);
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result)).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      movedFingerprintSet: expect.arrayContaining(['commentary']),
+      source: expect.arrayContaining(['claim:commentary']),
+    });
+    expect(JSON.stringify(jsonOf(result))).not.toContain(body);
+    await emitNativePressureObservation(p, 'B03', 'BEFORE_CLOSE');
+  });
+
+  it('native pressure replay N01: changed output requirement in commentary is deferred as CURRENT at BEFORE_PR', async () => {
+    const body = 'Requirement changed: target output must be JSON instead of CSV.';
+    const p = await project();
+    await p.setIssue(
+      jiraIssue({
+        comment: {
+          total: 1,
+          comments: [
+            { id: '10001', body: description('Original requirement: target output must be CSV.') },
+          ],
+        },
+      }),
+    );
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+    await claimThroughJiraAdapter(p);
+    await p.setIssue(
+      jiraIssue({
+        updated: T2,
+        status: { name: 'In Progress', statusCategory: { key: 'indeterminate' } },
+        comment: {
+          total: 2,
+          comments: [
+            { id: '10001', body: description('Original requirement: target output must be CSV.') },
+            { id: '10002', body: description(body) },
+          ],
+        },
+      }),
+    );
+
+    const result = await before(p, 'BEFORE_PR');
+
+    expect(result.code, result.out).toBe(0);
+    expect(jsonOf(result)).toMatchObject({ result: 'CURRENT', action: 'continue' });
+    expect(jsonOf(result).movedFingerprintSet ?? []).not.toContain('commentary');
+    expect(JSON.stringify(jsonOf(result))).not.toContain(body);
+    await emitNativePressureObservation(p, 'N01', 'BEFORE_PR');
+  });
+
+  it('native pressure replay P01: changed output requirement in close-time commentary holds claim:commentary', async () => {
+    const body = 'Requirement changed: target output must be JSON instead of CSV.';
+    const p = await project();
+    const result = await closeWithAddedCommentary(p, body);
+
+    expect(result.code, result.out).toBe(2);
+    expect(jsonOf(result)).toMatchObject({
+      result: 'CHANGED',
+      action: 'hold',
+      movedFingerprintSet: expect.arrayContaining(['commentary']),
+      source: expect.arrayContaining(['claim:commentary']),
+    });
+    expect(JSON.stringify(jsonOf(result))).not.toContain(body);
+    await emitNativePressureObservation(p, 'P01', 'BEFORE_CLOSE');
   });
 });
 
@@ -2224,6 +2402,69 @@ describe('revalidate outcome resolves a detection and makes false-HOLD observabl
     const state = JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8'));
     expect(state).not.toHaveProperty('revalidationHold');
     expect((await reportOf(p)).totals.falseHolds).toBe(1);
+  });
+
+  it('native replay: records action-changing true for a real CHANGED detection through the outcome command', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+    await p.setIssue(
+      jiraIssue({ description: description(`${SCOPE_SENTINEL} — action required`) }),
+    );
+    expect((await before(p, 'BEFORE_PR')).code).toBe(2);
+    const detection = (await eventsOf(p.runDir))
+      .filter((event) => event.kind === 'revalidation')
+      .map((event) => event.data)
+      .find((data) => data?.result === 'CHANGED' && data?.point === 'BEFORE_PR');
+
+    const result = await run(
+      process.execPath,
+      [
+        revalidateScript,
+        'outcome',
+        '--point',
+        'BEFORE_PR',
+        '--ticket',
+        'RP-50',
+        '--action-changed',
+        'true',
+        '--note',
+        'native replay requires an action',
+        '--json',
+      ],
+      p.root,
+      p.env,
+    );
+
+    expect(result.code, result.out).toBe(0);
+    expect(jsonOf(result).data).toMatchObject({
+      detectionId: detection?.id,
+      actionRequired: true,
+    });
+    expect((await reportOf(p)).totals).toMatchObject({ falseHolds: 0, unresolved: 0 });
+  });
+
+  it('native replay: retains a real CHANGED detection without an outcome as unresolved', async () => {
+    const p = await project();
+    expect((await next(p)).code).toBe(0);
+    if (!(await trackClaim(p))) return;
+    await p.setIssue(
+      jiraIssue({ description: description(`${SCOPE_SENTINEL} — no outcome is recorded`) }),
+    );
+
+    const held = await before(p, 'BEFORE_PR');
+    expect(held.code, held.out).toBe(2);
+    const detections = (await eventsOf(p.runDir))
+      .filter((event) => event.kind === 'revalidation')
+      .map((event) => event.data)
+      .filter((data) => data?.result === 'CHANGED' && data?.point === 'BEFORE_PR');
+    const outcomes = (await eventsOf(p.runDir)).filter(
+      (event) => event.kind === 'revalidation-outcome',
+    );
+
+    expect(detections).toHaveLength(1);
+    expect(outcomes).toHaveLength(0);
+    expect((await reportOf(p)).totals).toMatchObject({ falseHolds: 0, unresolved: 1 });
   });
 
   it('derives false-HOLD from result != CURRENT and actionRequired false, only after resolution', async () => {

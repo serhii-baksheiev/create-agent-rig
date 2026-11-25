@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 2,
+  "population": "synthetic-pressure-labels-v2",
+  "sourceFixtureSha256": "37515d41dc3a87c20fd1f62733fc1ecdeb842fb2535e0c9e789146a9e639db42",
+  "adjudicationPolicy": "matching determinate only; any unknown/missing/disagreement stays indeterminate",
+  "evidenceSources": {
+    "priorLabelsSha256": "2588a1dcc96b1f48d7a803bf576308deb24e330da0a34763efbb1f81b6261ae5",
+    "blindedInputSha256": "51c85240ba8105f71c93417446a2a055831052efb42129b4d0b154410ccf2b6a",
+    "reviewerOutputSha256": {
+      "independent-a": "95cce5f7b1729f603de023f05c1237278131e0ea637d38a34d7ca85e2f08394c",
+      "independent-b": "b1e76c2d486a070071b2660a8f2a262df2281380828af60d150891ba55850f99"
+    }
+  },
+  "bridge": {
+    "policy": "B02, B03, and P01 retain v1 literal pairs and checkpoints; their prior labels are carried forward only for that unchanged evidence. N01 has fresh outcome-blind labels for the BEFORE_PR checkpoint. The N01/P01 identical pair is not a frequency sample.",
+    "controls": [
+      {
+        "caseId": "B02",
+        "priorCaseId": "B02",
+        "literalPairAndCheckpointUnchanged": true,
+        "priorLabelsOnly": true
+      },
+      {
+        "caseId": "B03",
+        "priorCaseId": "B03",
+        "literalPairAndCheckpointUnchanged": true,
+        "priorLabelsOnly": true
+      },
+      {
+        "caseId": "P01",
+        "priorCaseId": "P01",
+        "literalPairAndCheckpointUnchanged": true,
+        "priorLabelsOnly": true
+      }
+    ]
+  },
+  "reviewers": [
+    {
+      "id": "independent-a",
+      "outputSha256": "95cce5f7b1729f603de023f05c1237278131e0ea637d38a34d7ca85e2f08394c",
+      "sourceFixtureSha256": "37515d41dc3a87c20fd1f62733fc1ecdeb842fb2535e0c9e789146a9e639db42",
+      "blindedInputSha256": "51c85240ba8105f71c93417446a2a055831052efb42129b4d0b154410ccf2b6a",
+      "blinding": "N01 materiality was assessed from an opaque literal pair and checkpoint before its control ID, detector result, and checkpoint duty were disclosed.",
+      "limitations": [
+        "The two checkpoint rows reuse one identical literal before/after pair, so they are not independent frequency samples. Labels assess only the stated requirement change, not detector verdicts or checkpoint policy."
+      ]
+    },
+    {
+      "id": "independent-b",
+      "outputSha256": "b1e76c2d486a070071b2660a8f2a262df2281380828af60d150891ba55850f99",
+      "sourceFixtureSha256": "37515d41dc3a87c20fd1f62733fc1ecdeb842fb2535e0c9e789146a9e639db42",
+      "blindedInputSha256": "51c85240ba8105f71c93417446a2a055831052efb42129b4d0b154410ccf2b6a",
+      "blinding": "N01 materiality was assessed from an opaque literal pair and checkpoint before its control ID, detector result, and checkpoint duty were disclosed.",
+      "limitations": [
+        "The two checkpoint rows are one literal pair, not a frequency sample. Materiality was judged separately from checkpoint detection obligations; no native verdict or violation was assumed."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "B02",
+      "blindedCaseId": "case-482",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "benign",
+          "evidence": "The sole difference normalizes repeated whitespace and leaves the reporting requirement unchanged."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "The pair changes only spacing while preserving the stated reporting requirement, with no described action or evidence-integrity effect."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "benign",
+        "status": "agreed-determinate"
+      },
+      "carriedFromV1": true
+    },
+    {
+      "caseId": "B03",
+      "blindedCaseId": "case-175",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "benign",
+          "evidence": "The added statement explicitly says requirements and approval are unchanged, with no action or integrity change described."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "The added statement expressly leaves requirements and approval unchanged, so it describes no material action or integrity change."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "benign",
+        "status": "agreed-determinate"
+      },
+      "carriedFromV1": true
+    },
+    {
+      "caseId": "P01",
+      "blindedCaseId": "case-936",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "The required output format explicitly changes from CSV to JSON, requiring a meaningful task change."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "Changing the required output format from CSV to JSON changes a meaningful task requirement at close."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      },
+      "carriedFromV1": true
+    },
+    {
+      "caseId": "N01",
+      "blindedCaseId": "case-641",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "The required target format changes from CSV to JSON, so the required output is different."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "The required output format changes from CSV to JSON."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      },
+      "pairReuse": {
+        "sameLiteralPairAs": "P01",
+        "notIndependentFrequencySample": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "sourceFixtureSha256": "7a1d4ffcc13aa0342586eafea77ac4cd5144b5e4cc07e41ea85ed03d8974037c",
+  "metadata": {
+    "command": "pnpm exec vitest run test/template/content-blind-revalidation.test.ts --testNamePattern 'native pressure replay' --reporter=dot",
+    "argv": [
+      "pnpm",
+      "exec",
+      "vitest",
+      "run",
+      "test/template/content-blind-revalidation.test.ts",
+      "--testNamePattern",
+      "native pressure replay",
+      "--reporter=dot"
+    ],
+    "sourceHead": "b289daad25b5739f455803a5cd271de60a89c5e1",
+    "workingTree": {
+      "test/template/content-blind-revalidation.test.ts": "3d204f244afeae93f5efabb670c86cfef290562f0892c127825682afaf49dc29",
+      "test/template/revalidation-corpus.test.ts": "3850fa40e42f16b9cc08ba97f0c267792e1b85f44606f4021d3368c5a337e882",
+      "test/fixtures/revalidation-controls/pressure-v1.json": "7a1d4ffcc13aa0342586eafea77ac4cd5144b5e4cc07e41ea85ed03d8974037c",
+      "test/fixtures/revalidation-controls/pressure-labels-v1.json": "2588a1dcc96b1f48d7a803bf576308deb24e330da0a34763efbb1f81b6261ae5",
+      "templates/agent-os/universal/.claude/scripts/lib/claim-records.mjs": "0e5b0461e733790e57aa28be5d1725219d335cb712b535732329547a09f97f99",
+      "templates/agent-os/universal/.claude/scripts/revalidate.mjs": "00bddb533f9639be7da7124f08464ee7b8f78fca5cd1d4514adb608d0f4ae521"
+    },
+    "sourceState": "uncommitted test/data candidate; actual command inputs hashed before and after",
+    "inputsUnchanged": true,
+    "captureLog": "checks/rp563-final-scoped-pressure-capture-1795570867831-6833c8.log",
+    "captureLogSha256": "97677c103f2b56a12643e7f14a4e0f040a57225d9dab3d19f9cd04fa6ac1e125",
+    "captureCheckSeq": 38,
+    "capturedAt": "2026-11-25T01:41:07.832Z"
+  },
+  "observations": [
+    {
+      "caseId": "B02",
+      "locator": {
+        "checkoutPathSha256": "7a3ff35bda0e72c121dac58060e08580122a9e89d6b83b1f4fa62e2db6675174",
+        "run": "20260828-120000",
+        "seq": 3,
+        "detectionId": "cef47e2019170c1fe89ef7d8528bf9c996cc2500f253b374b6b061edf2d20bf2"
+      },
+      "point": "BEFORE_PR",
+      "result": "CHANGED",
+      "source": ["claim:scope"]
+    },
+    {
+      "caseId": "B03",
+      "locator": {
+        "checkoutPathSha256": "f636c3cf3d89a5bf3cf3816e289ea1ab37eefe596bbe283e8686f5e0cd3df295",
+        "run": "20260828-120000",
+        "seq": 3,
+        "detectionId": "309f7e42d7cc45dd9b562dd6d8895d388e2ebcdbebcb10b877154631cec154be"
+      },
+      "point": "BEFORE_CLOSE",
+      "result": "CHANGED",
+      "source": ["claim:commentary"]
+    },
+    {
+      "caseId": "P01",
+      "locator": {
+        "checkoutPathSha256": "c167f9979ea093e28ba9471be9da19af8b4253135d7b10eae4cc50771973fdc1",
+        "run": "20260828-120000",
+        "seq": 3,
+        "detectionId": "309f7e42d7cc45dd9b562dd6d8895d388e2ebcdbebcb10b877154631cec154be"
+      },
+      "point": "BEFORE_CLOSE",
+      "result": "CHANGED",
+      "source": ["claim:commentary"]
+    }
+  ]
+}

@@ -1,0 +1,320 @@
+{
+  "schemaVersion": 1,
+  "population": "synthetic-constructed-v1",
+  "audit": {
+    "replayReceipt": "docs/audits/rig-1.8.0-revalidation-corpus.md"
+  },
+  "controls": [
+    {
+      "id": "S01",
+      "strata": ["scope-title"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Tracked linked blocker claim after take-up.",
+        "mutation": "Retitle the tracked blocker before close."
+      },
+      "checkpointQuestion": "Does a tracked title change require a close-time scope hold?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native replay: labels-only mutation after SELECT and a tracked claim holds claim:scope at BEFORE_PR"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "S02",
+      "strata": ["scope-body"],
+      "checkpoint": "SELECT",
+      "pair": {
+        "baseline": "Tracked Jira claim with its original description fingerprint.",
+        "mutation": "Change the description after the baseline."
+      },
+      "checkpointQuestion": "Does a description revision require a scope hold at selection?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "stays CURRENT for marker-only movement and holds on changed scope"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "S03",
+      "strata": ["scope-labels"],
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "baseline": "Jira item after native SELECT and a committed claim with its original label set.",
+        "mutation": "Add a label while retaining the original summary, description and workflow state."
+      },
+      "checkpointQuestion": "Does labels-only movement participate in the BEFORE_PR scope comparison?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "a real scope edit between take-up and close still holds on claim:scope"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "S04",
+      "strata": ["scope-links"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Tracked linked blocker set after take-up.",
+        "mutation": "Add a new blocker link before close."
+      },
+      "checkpointQuestion": "Does a new blocker link require a close-time scope hold?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "a real link edit (a new blocker added) between take-up and close still holds on claim:scope"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "S05",
+      "strata": ["scope-workflow"],
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "baseline": "Tracked claim before the declared in-progress transition.",
+        "mutation": "Move the item to the expected claimed state outside the adapter."
+      },
+      "checkpointQuestion": "Does an externally performed workflow transition require a scope hold?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "holds claim:scope when an external actor moves the item to the expected claimed state"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "S06",
+      "strata": ["paired-facts"],
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "baseline": "Tracked claim with paired-alpha.txt content fingerprinted.",
+        "mutation": "Commit a changed paired-alpha.txt without copying its content into evidence."
+      },
+      "checkpointQuestion": "Does a tracked paired-fact change require a scope hold?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "BEFORE_PR holds when %s changes"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "C01",
+      "strata": ["select-commentary"],
+      "checkpoint": "SELECT",
+      "pair": {
+        "baseline": "Tracked claim with one known commentary identity.",
+        "mutation": "Add commentary before selection."
+      },
+      "checkpointQuestion": "Does SELECT intentionally defer commentary comparison under the current policy?",
+      "expectedNative": { "result": "CURRENT", "source": [] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "defers an added comment through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "C02",
+      "strata": ["before-pr-commentary"],
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "baseline": "Tracked claimed item with known commentary identities.",
+        "mutation": "Add commentary before the pull-request checkpoint."
+      },
+      "checkpointQuestion": "Does BEFORE_PR intentionally defer commentary comparison under the current policy?",
+      "expectedNative": { "result": "CURRENT", "source": [] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "defers an added comment through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "C03",
+      "strata": ["close-time-commentary"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Tracked claimed item with known commentary identities.",
+        "mutation": "Add commentary before close."
+      },
+      "checkpointQuestion": "Does BEFORE_CLOSE hold on changed commentary identities without copying bodies?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:commentary"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "defers an added comment through SELECT and BEFORE_PR, then holds at BEFORE_CLOSE"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "M01",
+      "strata": ["own-squash"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Feature checkout and target share the recorded target baseline.",
+        "mutation": "Land one genuine up-to-date squash merge and name its exact merge commit."
+      },
+      "checkpointQuestion": "Does the verified one-commit own squash advance continue at close?",
+      "expectedNative": { "result": "CURRENT", "source": [] },
+      "replay": {
+        "suite": "revalidate",
+        "test": "the item's own REAL squash merge (actual file content, not an empty commit), nothing foreign, correctly named by --merge-commit"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "M02",
+      "strata": ["omitted-merge"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Feature checkout and target share the recorded target baseline.",
+        "mutation": "Land the target advance but omit --merge-commit evidence."
+      },
+      "checkpointQuestion": "Does a target advance without merge provenance hold at close?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "revalidate",
+        "test": "no --merge-commit supplied at all, even though the target moved by exactly one commit that would otherwise exempt it"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "M03",
+      "strata": ["forged-merge"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Recorded target baseline and feature tree.",
+        "mutation": "Supply a fabricated merge commit whose tree matches the feature but never advanced the target."
+      },
+      "checkpointQuestion": "Does fabricated merge evidence remain a scope hold?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "revalidate",
+        "test": "a FABRICATED --merge-commit sharing HEAD's tree, correctly rooted at the baseline, but naming a commit the target never actually advanced to, still holds"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "M04",
+      "strata": ["foreign-or-concurrent-merge"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Recorded target baseline and feature tree.",
+        "mutation": "Name a single foreign target commit as the merge evidence."
+      },
+      "checkpointQuestion": "Does a foreign named advance remain a scope hold?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "revalidate",
+        "test": "a single FOREIGN commit named as --merge-commit does not exempt it"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "M05",
+      "strata": ["foreign-or-concurrent-merge"],
+      "checkpoint": "BEFORE_CLOSE",
+      "pair": {
+        "baseline": "Recorded target baseline and up-to-date feature checkout.",
+        "mutation": "Land a foreign empty target commit before the genuine squash merge."
+      },
+      "checkpointQuestion": "Does an otherwise invisible concurrent target advance remain a scope hold?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "revalidate",
+        "test": "a foreign EMPTY commit ahead of the genuine squash still holds"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "I01",
+      "strata": ["integrity-unverifiable"],
+      "checkpoint": "SELECT",
+      "pair": {
+        "baseline": "Tracked claim is a regular validated file.",
+        "mutation": "Replace the tracked claim path with a symlink."
+      },
+      "checkpointQuestion": "Does claim-path indirection fail closed as unverifiable?",
+      "expectedNative": { "result": "UNVERIFIABLE", "source": [] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "refuses a tracked claim symlink instead of following it"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "E01",
+      "strata": ["environment-unverifiable"],
+      "checkpoint": "SELECT",
+      "pair": {
+        "baseline": "Adapter returns a complete commentary window with a declared total.",
+        "mutation": "Return fewer commentary identities than the declared total."
+      },
+      "checkpointQuestion": "Does incomplete adapter evidence fail closed as unverifiable?",
+      "expectedNative": { "result": "UNVERIFIABLE", "source": [] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "refuses SELECT when comment.total exceeds the returned comment ids"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "O01",
+      "strata": ["action-changing-candidate"],
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "baseline": "Tracked claim before a scope drift detection.",
+        "mutation": "Create a CHANGED detection and record a typed action-changing outcome through the command."
+      },
+      "checkpointQuestion": "Does the native outcome command preserve a typed resolution for a caught detection?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native replay: records action-changing true for a real CHANGED detection through the outcome command"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "O02",
+      "strata": ["unresolved-catch"],
+      "checkpoint": "BEFORE_PR",
+      "pair": {
+        "baseline": "A recorded CHANGED detection with no valid resolution.",
+        "mutation": "Leave the outcome missing or malformed."
+      },
+      "checkpointQuestion": "Does a catch remain unresolved without a boolean outcome verdict?",
+      "expectedNative": { "result": "CHANGED", "source": ["claim:scope"] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "native replay: retains a real CHANGED detection without an outcome as unresolved"
+      },
+      "independentLabel": { "status": "pending" }
+    },
+    {
+      "id": "B01",
+      "strata": ["scope-body"],
+      "checkpoint": "SELECT",
+      "pair": {
+        "baseline": "Tracked claim whose fingerprints match the current item.",
+        "mutation": "Move only the observation marker without changing the fingerprinted body."
+      },
+      "checkpointQuestion": "Does marker-only movement remain current rather than create a scope hold?",
+      "expectedNative": { "result": "CURRENT", "source": [] },
+      "replay": {
+        "suite": "content-blind-revalidation",
+        "test": "stays CURRENT for marker-only movement and holds on changed scope"
+      },
+      "independentLabel": { "status": "pending" }
+    }
+  ],
+  "scorerCalibration": {
+    "id": "CAL01",
+    "kind": "material-no-catch-calibration",
+    "observation": { "detected": false },
+    "materiality": "material",
+    "separateFromNativeReplay": true
+  }
+}

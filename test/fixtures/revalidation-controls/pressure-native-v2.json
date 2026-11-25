@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 2,
+  "sourceFixtureSha256": "37515d41dc3a87c20fd1f62733fc1ecdeb842fb2535e0c9e789146a9e639db42",
+  "metadata": {
+    "command": "pnpm exec vitest run --project template test/template/content-blind-revalidation.test.ts --testNamePattern native pressure replay --reporter=dot",
+    "argv": [
+      "pnpm",
+      "exec",
+      "vitest",
+      "run",
+      "--project",
+      "template",
+      "test/template/content-blind-revalidation.test.ts",
+      "--testNamePattern",
+      "native pressure replay",
+      "--reporter=dot"
+    ],
+    "sourceHead": "28f7e8e0afad4c2287dbd7e925859047e5116756",
+    "sourceState": "uncommitted test/data candidate; sourceHead is the commit base and the capture inputs are recorded as WIP snapshots, not committed state",
+    "canonicalExecutionScope": {
+      "checkoutPathSha256": "96a36c2ee608ddcb1de014334dd16ea875b56f6b9a2176bde1415e811f8e24cf",
+      "runDirPathSha256": "44a7af2ccd717f8948e8645788e5c8b8f74f598592a27d38b83f1868fae49ac3"
+    },
+    "workingTree": {
+      "test/helpers/revalidation-corpus.ts": "f7e4bd493018cef56184e628649bf52f7de5db17d771fb6d55ffc35bde92f426",
+      "test/template/content-blind-revalidation.test.ts": "73be3e9dbbd96f26ba9f6eb33d156c1cd5deabbaf9419140a12c8c4c1281a6c0",
+      "test/template/revalidation-corpus.test.ts": "9993ba2c84bab97e0423caec5dcac4e59441e1fafaacc5bb9591f1b51e4bc6c9",
+      "test/fixtures/revalidation-controls/pressure-v2.json": "37515d41dc3a87c20fd1f62733fc1ecdeb842fb2535e0c9e789146a9e639db42",
+      "test/fixtures/revalidation-controls/pressure-labels-v2.json": "3f7d94ba74240315d5297299a5fe7cb659413595043944236ba10359ce877e5f"
+    },
+    "workingTreeBefore": {
+      "test/helpers/revalidation-corpus.ts": "f7e4bd493018cef56184e628649bf52f7de5db17d771fb6d55ffc35bde92f426",
+      "test/template/content-blind-revalidation.test.ts": "73be3e9dbbd96f26ba9f6eb33d156c1cd5deabbaf9419140a12c8c4c1281a6c0",
+      "test/template/revalidation-corpus.test.ts": "9993ba2c84bab97e0423caec5dcac4e59441e1fafaacc5bb9591f1b51e4bc6c9",
+      "test/fixtures/revalidation-controls/pressure-v2.json": "37515d41dc3a87c20fd1f62733fc1ecdeb842fb2535e0c9e789146a9e639db42",
+      "test/fixtures/revalidation-controls/pressure-labels-v2.json": "3f7d94ba74240315d5297299a5fe7cb659413595043944236ba10359ce877e5f"
+    },
+    "workingTreeAfter": {
+      "test/helpers/revalidation-corpus.ts": "f7e4bd493018cef56184e628649bf52f7de5db17d771fb6d55ffc35bde92f426",
+      "test/template/content-blind-revalidation.test.ts": "73be3e9dbbd96f26ba9f6eb33d156c1cd5deabbaf9419140a12c8c4c1281a6c0",
+      "test/template/revalidation-corpus.test.ts": "9993ba2c84bab97e0423caec5dcac4e59441e1fafaacc5bb9591f1b51e4bc6c9",
+      "test/fixtures/revalidation-controls/pressure-v2.json": "37515d41dc3a87c20fd1f62733fc1ecdeb842fb2535e0c9e789146a9e639db42",
+      "test/fixtures/revalidation-controls/pressure-labels-v2.json": "3f7d94ba74240315d5297299a5fe7cb659413595043944236ba10359ce877e5f"
+    },
+    "inputsUnchanged": true,
+    "captureLog": "checks/rp563-r1-native-pressure-v2-capture-post-format-1795578142075-bf2430.log",
+    "captureLogSha256": "22202540ba78a8d7799ba054eafc0bd4905ee337a1f973a0106e51964b425c9f",
+    "captureCheckSeq": 64,
+    "capturedAt": "2026-11-25T03:42:22.076Z"
+  },
+  "observations": [
+    {
+      "caseId": "B02",
+      "locator": {
+        "checkoutPathSha256": "e1ec1887ff6c5c4e65a2bb77f7f0c225c91bb2125b9057442cdf29f7b63ba48d",
+        "run": "20260828-120000",
+        "seq": 3,
+        "detectionId": "cef47e2019170c1fe89ef7d8528bf9c996cc2500f253b374b6b061edf2d20bf2"
+      },
+      "point": "BEFORE_PR",
+      "result": "CHANGED",
+      "source": ["claim:scope"]
+    },
+    {
+      "caseId": "B03",
+      "locator": {
+        "checkoutPathSha256": "39cd9d28be4391be333f31901b824bcad2a53c66b47bcf298f086a611a59723e",
+        "run": "20260828-120000",
+        "seq": 3,
+        "detectionId": "309f7e42d7cc45dd9b562dd6d8895d388e2ebcdbebcb10b877154631cec154be"
+      },
+      "point": "BEFORE_CLOSE",
+      "result": "CHANGED",
+      "source": ["claim:commentary"]
+    },
+    {
+      "caseId": "N01",
+      "locator": {
+        "checkoutPathSha256": "8aa6601820ce47cff8e8c71fd6e535541df9f7bdb96f21ffa130cbe0c9deaffc",
+        "run": "20260828-120000",
+        "seq": 3,
+        "detectionId": "b99abde4d3edc65de7bb395e24b815a4feeff0f66deafcf51b4e3f9f61aa58b0"
+      },
+      "point": "BEFORE_PR",
+      "result": "CURRENT",
+      "source": []
+    },
+    {
+      "caseId": "P01",
+      "locator": {
+        "checkoutPathSha256": "010553c4a8a550ef31809f5f39fe9a769342ef66bbfef48264c3a17446e819c0",
+        "run": "20260828-120000",
+        "seq": 3,
+        "detectionId": "309f7e42d7cc45dd9b562dd6d8895d388e2ebcdbebcb10b877154631cec154be"
+      },
+      "point": "BEFORE_CLOSE",
+      "result": "CHANGED",
+      "source": ["claim:commentary"]
+    }
+  ]
+}
