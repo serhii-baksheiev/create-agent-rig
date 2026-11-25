@@ -1,0 +1,392 @@
+{
+  "schemaVersion": 1,
+  "population": "synthetic-constructed-labels-v1",
+  "sourceFixtureSha256": "2e70ee231b0fa1ad0de1e436a7bf3d674808aded162eae182c757470b2978e86",
+  "blindedInputSha256": "ab0968f802e5389e8e39d9048f78fc4317da0836b498a83f396211ff8d55c044",
+  "adjudicationPolicy": "matching determinate only; any unknown/missing/disagreement stays indeterminate",
+  "reviewers": [
+    {
+      "id": "independent-a",
+      "outputSha256": "ea1aaafe88145d73934cf285a356621607e4dc1a34ad59bc75b8d2c5752bed43",
+      "sourceFixtureSha256": "2e70ee231b0fa1ad0de1e436a7bf3d674808aded162eae182c757470b2978e86",
+      "blindedInputSha256": "ab0968f802e5389e8e39d9048f78fc4317da0836b498a83f396211ff8d55c044",
+      "blinding": "Structured expected-native results, replay titles and assertions, other labels, source reports, source code, and historical results were not consulted. Pair descriptors can intrinsically expose catches or typed outcomes, so this is partial rather than full outcome blinding.",
+      "limitations": [
+        "Labels assess only the supplied synthetic pair at its stated checkpoint. Where a title, description, or commentary change lacks semantic content, its materiality cannot be inferred from a changed identity or fingerprint."
+      ]
+    },
+    {
+      "id": "independent-b",
+      "outputSha256": "6e90cbe47321e821b9ce39479c9f1dd466f161103fe6d6b429cf120f83576caa",
+      "sourceFixtureSha256": "2e70ee231b0fa1ad0de1e436a7bf3d674808aded162eae182c757470b2978e86",
+      "blindedInputSha256": "ab0968f802e5389e8e39d9048f78fc4317da0836b498a83f396211ff8d55c044",
+      "blinding": "Structured expected-native results, replay titles, source code, tests, and other labels were not consulted. Blinding is partial: several pair descriptions intrinsically state catches or typed outcomes, which can reveal aspects of the control behavior.",
+      "limitations": [
+        "Labels assess only the supplied pair descriptions under the stated policy. No semantic meaning is assumed for unspecified Jira labels or other omitted context; missing material evidence is labeled indeterminate."
+      ]
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "S01",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "indeterminate",
+          "evidence": "A retitle may or may not change blocker scope; no title semantics are supplied."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "A tracked blocker title is an identity/scope claim; its change requires close-time assessment rather than no action."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "indeterminate",
+        "status": "disagreed"
+      }
+    },
+    {
+      "caseId": "S02",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "indeterminate",
+          "evidence": "A description revision has no supplied semantic content from which to infer required action."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "The tracked description is a substantive claim fingerprint, so a revision is scope-relevant at selection."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "indeterminate",
+        "status": "disagreed"
+      }
+    },
+    {
+      "caseId": "S03",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "benign",
+          "evidence": "Labels-only movement is described without a scope, evidence, or workflow change."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "indeterminate",
+          "evidence": "The input says only that a label was added and supplies no label semantics, so material scope or trust relevance cannot be determined."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "indeterminate",
+        "status": "disagreed"
+      }
+    },
+    {
+      "caseId": "S04",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "Adding a blocker link changes the stated dependency set and requires reassessing close scope."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "Adding a blocker changes the recorded dependency constraint and requires close-time action or reassessment."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "S05",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "An expected claim transition performed outside the trusted adapter affects workflow-evidence integrity."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "An out-of-adapter claimed-state transition affects the integrity of workflow evidence and merits checkpoint assessment."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "S06",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "A tracked fact changes while its content is absent from evidence, creating a material evidence-integrity gap."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "A committed change to a tracked paired fact without corresponding evidence is an evidence-integrity discrepancy."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "C01",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "indeterminate",
+          "evidence": "Commentary is intentionally deferred at SELECT, but the supplied addition has no semantic content to assess."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "The supplied policy explicitly defers commentary comparison at SELECT, so this pair requires no selection-time action."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "indeterminate",
+        "status": "disagreed"
+      }
+    },
+    {
+      "caseId": "C02",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "indeterminate",
+          "evidence": "Commentary is intentionally deferred at BEFORE_PR, and no content establishes whether it is material."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "The supplied policy explicitly defers commentary comparison at BEFORE_PR, so this pair requires no action there."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "indeterminate",
+        "status": "disagreed"
+      }
+    },
+    {
+      "caseId": "C03",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "indeterminate",
+          "evidence": "Changed commentary identities alone do not reveal whether the unseen commentary affects scope or trust."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "At close, changed commentary identities are treated as evidence requiring a hold/checkpoint action, even without bodies."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "indeterminate",
+        "status": "disagreed"
+      }
+    },
+    {
+      "caseId": "M01",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "benign",
+          "evidence": "The described up-to-date own squash merge with exact provenance is ordinary verified completion, not a new integrity concern."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "A verified, exact, own squash advance provides the stated merge provenance and describes no unresolved action or integrity defect."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "benign",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "M02",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "A target advance without merge provenance leaves material completion evidence unverifiable."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "A target advance without merge provenance leaves a material evidence/trust gap at close."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "M03",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "Fabricated merge evidence is a direct material integrity failure even if its tree matches."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "Fabricated merge evidence directly compromises trust in the close-time provenance record."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "M04",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "A foreign target commit cannot establish provenance for this work and materially compromises merge evidence."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "A foreign target commit cannot establish the claimed own merge provenance and is integrity-relevant."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "M05",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "A concurrent foreign target advance changes the closure context and needs material reconciliation."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "A concurrent foreign target advance changes close-time target provenance, including when its tree effect is empty."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "I01",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "Replacing a tracked claim with a symlink makes the claimed file evidence unverifiable."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "Claim-path indirection prevents direct verification of the tracked claim and is a fail-closed evidence-integrity condition."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "E01",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "An adapter response below its declared total is incomplete evidence and cannot support a trusted comparison."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "A declared total exceeding returned commentary identities makes the evidence window incomplete and unverifiable."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "O01",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "A caught scope drift with a typed action-changing resolution records a meaningful required action."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "Recording a typed, action-changing resolution for a detected drift is a meaningful execution and evidence-integrity action."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "O02",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "material",
+          "evidence": "An unresolved or malformed resolution for a caught change leaves a material action and evidence gap."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "material",
+          "evidence": "A detected change without a valid resolution leaves a material action/evidence state unresolved."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "material",
+        "status": "agreed-determinate"
+      }
+    },
+    {
+      "caseId": "B01",
+      "assessments": [
+        {
+          "reviewer": "independent-a",
+          "groundTruth": "benign",
+          "evidence": "Marker-only movement with unchanged fingerprinted content does not itself alter scope or evidence."
+        },
+        {
+          "reviewer": "independent-b",
+          "groundTruth": "benign",
+          "evidence": "Marker-only movement with an unchanged fingerprinted body supplies no described scope or evidence-integrity change requiring action."
+        }
+      ],
+      "adjudication": {
+        "groundTruth": "benign",
+        "status": "agreed-determinate"
+      }
+    }
+  ]
+}

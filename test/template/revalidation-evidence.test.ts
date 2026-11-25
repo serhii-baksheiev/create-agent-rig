@@ -595,6 +595,542 @@ describe('B. `revalidate.mjs outcome` answers one revalidation event by seq', ()
   });
 });
 
+// RP-549's selector is intentionally narrow: it answers one unresolved blocking
+// observation in the declared run, without changing journal history.
+describe('B2. `revalidate.mjs outcome --detection` (RP-549)', () => {
+  const A_ID = 'opaque/adapter:A-unverifiable';
+  const B_ID = 'opaque/adapter:B-current';
+  const DETECT_A = '2026-10-01T08:00:00.000Z';
+  const DETECT_B = '2026-10-01T09:00:00.000Z';
+
+  const outcome = (p: { dir: string; env: NodeJS.ProcessEnv }, args: string[]) =>
+    node(revalidateScript, ['outcome', ...args], p.dir, p.env);
+
+  const detection = (
+    runDir: string,
+    over: Record<string, unknown> = {},
+    now = DETECT_A,
+  ): JournalRecord =>
+    journal.recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: {
+        id: A_ID,
+        ticket: 'AR-1',
+        point: 'SELECT',
+        checkpoint: 'SELECT',
+        result: 'UNVERIFIABLE',
+        changed: null,
+        source: ['queue:unreadable'],
+        action: 'unverifiable',
+        task: { from: T1, to: null },
+        ...over,
+      },
+      now,
+    });
+
+  const latchedState = (detectionId: string, ticket = 'AR-1') =>
+    JSON.stringify({
+      revalidationHold: {
+        kind: 'revalidation-hold',
+        ticket,
+        checkpoint: 'SELECT',
+        result: 'UNVERIFIABLE',
+        detectionId,
+      },
+    });
+
+  const selectedOutcome = (detectionId: string) => [
+    '--point',
+    'SELECT',
+    '--ticket',
+    'AR-1',
+    '--detection',
+    detectionId,
+    '--action-changed',
+    'false',
+  ];
+
+  it('selects the older UNVERIFIABLE hold after a later CURRENT re-read, preserves prior evidence, and lets the queue select again', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID, result: 'UNVERIFIABLE', changed: null }, DETECT_A); // seq 1
+    detection(
+      p.runDir,
+      {
+        id: B_ID,
+        result: 'CURRENT',
+        changed: false,
+        source: [],
+        action: 'continue',
+        task: { from: T1, to: T1 },
+      },
+      DETECT_B,
+    ); // seq 2
+    await writeFile(path.join(p.runDir, 'state.json'), latchedState(A_ID));
+    const before = await rawEvents(p.runDir);
+
+    const resolved = await outcome(p, selectedOutcome(A_ID));
+    expect(resolved.code, resolved.out).toBe(0);
+    const after = await rawEvents(p.runDir);
+    expect(after).toHaveLength(before.length + 1);
+    expect(after.slice(0, -1)).toEqual(before);
+    expect(after.at(-1)).toMatchObject({
+      kind: 'revalidation-outcome',
+      data: { detectionId: A_ID, answers: 1, ticket: 'AR-1', point: 'SELECT' },
+    });
+    expect(
+      JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8')),
+    ).not.toHaveProperty('revalidationHold');
+
+    const next = await node(
+      path.join(queueDir, 'index.mjs'),
+      ['next', '--config', p.configPath],
+      p.dir,
+      p.env,
+    );
+    expect(next.code, next.out).toBe(0);
+    expect(next.out).not.toContain('revalidation-hold');
+  });
+
+  it('keeps the default no-selector outcome on the latest matching event and leaves an older hold latched', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, DETECT_A); // seq 1
+    detection(
+      p.runDir,
+      { id: B_ID, result: 'CURRENT', changed: false, source: [], action: 'continue' },
+      DETECT_B,
+    ); // seq 2
+    await writeFile(path.join(p.runDir, 'state.json'), latchedState(A_ID));
+
+    const result = await outcome(p, [
+      '--point',
+      'SELECT',
+      '--ticket',
+      'AR-1',
+      '--action-changed',
+      'false',
+    ]);
+    expect(result.code, result.out).toBe(0);
+    expect(eventsOf(p.runDir, 'revalidation-outcome')[0]!.data).toMatchObject({
+      detectionId: B_ID,
+      answers: 2,
+    });
+    expect(JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8'))).toMatchObject({
+      revalidationHold: { detectionId: A_ID },
+    });
+  });
+
+  it('keeps a different latch and its unresolved blocking detection intact', async () => {
+    const p = await project({ updated: T1 });
+    const otherId = 'opaque/adapter:other-hold';
+    detection(p.runDir, { id: A_ID }, DETECT_A);
+    detection(
+      p.runDir,
+      { id: otherId, ticket: 'AR-2', result: 'CHANGED', changed: true, action: 'hold' },
+      DETECT_B,
+    );
+    await writeFile(path.join(p.runDir, 'state.json'), latchedState(otherId, 'AR-2'));
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+    expect(result.code, result.out).toBe(0);
+    expect(JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8'))).toMatchObject({
+      revalidationHold: { detectionId: otherId },
+    });
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({
+      detectionId: otherId,
+    });
+  });
+
+  it('selects the latest unresolved occurrence when an opaque detection id repeats after an earlier resolution', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, DETECT_A); // seq 1
+    journal.recordEvent({
+      runDir: p.runDir,
+      kind: 'revalidation-outcome',
+      data: {
+        detectionId: A_ID,
+        ticket: 'AR-1',
+        point: 'SELECT',
+        actionChanged: false,
+        actionRequired: false,
+        resolvedAt: '2026-10-01T08:10:00.000Z',
+      },
+      now: '2026-10-01T08:10:00.000Z',
+    }); // seq 2 resolves seq 1
+    detection(p.runDir, { id: A_ID }, DETECT_B); // seq 3 is a later repeat
+    await writeFile(path.join(p.runDir, 'state.json'), latchedState(A_ID));
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+    expect(result.code, result.out).toBe(0);
+    expect(eventsOf(p.runDir, 'revalidation-outcome').at(-1)!.data).toMatchObject({
+      detectionId: A_ID,
+      answers: 3,
+    });
+  });
+
+  it('accepts an opaque non-hash selector for an owner-directed unresolved hold without crossing modes', async () => {
+    const p = await project({ updated: T1 });
+    const ownerId = 'external/ref:owner-directed/1';
+    detection(
+      p.runDir,
+      {
+        id: ownerId,
+        ticket: null,
+        point: 'BEFORE_PR',
+        checkpoint: 'BEFORE_PR',
+        mode: 'owner-directed',
+        result: 'CHANGED',
+        changed: true,
+        action: 'hold',
+      },
+      DETECT_A,
+    );
+
+    const result = await outcome(p, [
+      '--point',
+      'BEFORE_PR',
+      '--owner-directed',
+      '--detection',
+      ownerId,
+      '--action-changed',
+      'false',
+    ]);
+    expect(result.code, result.out).toBe(0);
+    expect(eventsOf(p.runDir, 'revalidation-outcome')[0]!.data).toMatchObject({
+      detectionId: ownerId,
+      answers: 1,
+      ticket: null,
+      mode: 'owner-directed',
+    });
+  });
+
+  it('refuses absent, ineligible, foreign, malformed, and already-resolved selectors without writing an outcome or state', async () => {
+    const cases: Array<{
+      name: string;
+      selector?: string;
+      event?: Record<string, unknown>;
+      subject: string[];
+      otherRun?: boolean;
+      resolved?: boolean;
+    }> = [
+      { name: 'missing', subject: ['--point', 'SELECT', '--ticket', 'AR-1'] },
+      {
+        name: 'unknown',
+        selector: 'opaque:missing',
+        subject: ['--point', 'SELECT', '--ticket', 'AR-1'],
+      },
+      {
+        name: 'cross-run',
+        selector: 'opaque:other-run',
+        subject: ['--point', 'SELECT', '--ticket', 'AR-1'],
+        otherRun: true,
+      },
+      {
+        name: 'other ticket',
+        selector: 'opaque:other-ticket',
+        event: { id: 'opaque:other-ticket', ticket: 'AR-2' },
+        subject: ['--point', 'SELECT', '--ticket', 'AR-1'],
+      },
+      {
+        name: 'other point',
+        selector: 'opaque:other-point',
+        event: { id: 'opaque:other-point', point: 'BEFORE_PR', checkpoint: 'BEFORE_PR' },
+        subject: ['--point', 'SELECT', '--ticket', 'AR-1'],
+      },
+      {
+        name: 'other mode',
+        selector: 'opaque:owner-mode',
+        event: {
+          id: 'opaque:owner-mode',
+          ticket: null,
+          point: 'BEFORE_PR',
+          checkpoint: 'BEFORE_PR',
+          mode: 'owner-directed',
+        },
+        subject: ['--point', 'BEFORE_PR', '--ticket', 'AR-1'],
+      },
+      {
+        name: 'owner-directed mode with a matching string ticket',
+        selector: 'opaque:owner-mode-string-ticket',
+        event: {
+          id: 'opaque:owner-mode-string-ticket',
+          ticket: 'AR-1',
+          point: 'BEFORE_PR',
+          checkpoint: 'BEFORE_PR',
+          mode: 'owner-directed',
+        },
+        subject: ['--point', 'BEFORE_PR', '--ticket', 'AR-1'],
+      },
+      {
+        name: 'nonblocking',
+        selector: B_ID,
+        event: { id: B_ID, result: 'CURRENT', changed: false, source: [], action: 'continue' },
+        subject: ['--point', 'SELECT', '--ticket', 'AR-1'],
+      },
+      {
+        name: 'malformed',
+        selector: 'opaque:malformed',
+        event: { id: 'opaque:malformed', checkpoint: 7 },
+        subject: ['--point', 'SELECT', '--ticket', 'AR-1'],
+      },
+      {
+        name: 'already resolved',
+        selector: 'opaque:resolved',
+        event: { id: 'opaque:resolved' },
+        subject: ['--point', 'SELECT', '--ticket', 'AR-1'],
+        resolved: true,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const p = await project({ updated: T1 });
+      if (testCase.otherRun) {
+        const otherRun = path.join(p.dir, 'other-declared-run');
+        await mkdir(otherRun);
+        detection(otherRun, { id: testCase.selector });
+      } else if (testCase.event) {
+        detection(p.runDir, testCase.event);
+      }
+      if (testCase.resolved) {
+        journal.recordEvent({
+          runDir: p.runDir,
+          kind: 'revalidation-outcome',
+          data: {
+            detectionId: testCase.selector,
+            ticket: 'AR-1',
+            point: 'SELECT',
+            actionChanged: false,
+            actionRequired: false,
+            resolvedAt: '2026-10-01T08:10:00.000Z',
+          },
+          now: '2026-10-01T08:10:00.000Z',
+        });
+      }
+      const state = JSON.stringify({ sentinel: 'must not be rewritten' });
+      await writeFile(path.join(p.runDir, 'state.json'), state);
+      const before = await rawEvents(p.runDir);
+      const result = await outcome(p, [
+        ...testCase.subject,
+        '--detection',
+        ...(testCase.selector ? [testCase.selector] : []),
+        '--action-changed',
+        'false',
+      ]);
+      expect(result.code, `${testCase.name}: ${result.out}`).toBe(1);
+      expect(await rawEvents(p.runDir), testCase.name).toEqual(before);
+      expect(await readFile(path.join(p.runDir, 'state.json'), 'utf8'), testCase.name).toBe(state);
+    }
+  });
+
+  it('refuses --detection outside outcome before a tracker checkpoint, without writing events or state', async () => {
+    const p = await project({ updated: T1 });
+    const statePath = path.join(p.runDir, 'state.json');
+    const before = await rawEvents(p.runDir);
+
+    const result = await node(
+      revalidateScript,
+      [
+        '--point',
+        'BEFORE_CLOSE',
+        '--ticket',
+        'AR-1',
+        '--detection',
+        A_ID,
+        '--config',
+        p.configPath,
+      ],
+      p.dir,
+      p.env,
+    );
+
+    expect(result.code, result.out).toBe(1);
+    expect(result.stderr).toMatch(/--detection[\s\S]*outcome|outcome[\s\S]*--detection/i);
+    expect(await rawEvents(p.runDir)).toEqual(before);
+    expect(existsSync(statePath)).toBe(false);
+  });
+
+  it('refuses a trailing selector without its operand, including after a valid selector, without falling back to the latest event', async () => {
+    const cases: Array<[string, string[]]> = [
+      [
+        'a lone trailing selector',
+        ['--point', 'SELECT', '--ticket', 'AR-1', '--action-changed', 'false', '--detection'],
+      ],
+      ['a duplicate trailing selector', [...selectedOutcome(A_ID), '--detection']],
+    ];
+
+    for (const [label, args] of cases) {
+      const p = await project({ updated: T1 });
+      detection(p.runDir, { id: A_ID }, DETECT_A);
+      detection(
+        p.runDir,
+        { id: B_ID, result: 'CURRENT', changed: false, source: [], action: 'continue' },
+        DETECT_B,
+      );
+      const state = latchedState(A_ID);
+      await writeFile(path.join(p.runDir, 'state.json'), state);
+      const before = await rawEvents(p.runDir);
+
+      const result = await outcome(p, args);
+      expect(result.code, `${label}: ${result.out}`).toBe(1);
+      expect(await rawEvents(p.runDir), label).toEqual(before);
+      expect(await readFile(path.join(p.runDir, 'state.json'), 'utf8'), label).toBe(state);
+    }
+  });
+
+  it('answers and clears a point-only blocking observation that the shared reader already holds', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID, checkpoint: undefined });
+    await writeFile(path.join(p.runDir, 'state.json'), latchedState(A_ID));
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({
+      detectionId: A_ID,
+    });
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+    expect(result.code, result.out).toBe(0);
+    expect(eventsOf(p.runDir, 'revalidation-outcome')[0]!.data).toMatchObject({
+      detectionId: A_ID,
+      answers: 1,
+    });
+    expect(
+      JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8')),
+    ).not.toHaveProperty('revalidationHold');
+  });
+
+  it('refuses ticketed selectors whose literal CLI subject only string-coerces a reader-ineligible observation', async () => {
+    type InvalidTicketSubject = null | number | boolean | readonly string[];
+    const cases: ReadonlyArray<{
+      name: string;
+      eventTicket: InvalidTicketSubject;
+      cliTicket: string;
+    }> = [
+      { name: 'null', eventTicket: null, cliTicket: 'null' },
+      { name: 'number', eventTicket: 123, cliTicket: '123' },
+      { name: 'boolean', eventTicket: true, cliTicket: 'true' },
+      { name: 'array', eventTicket: ['DEMO-1'], cliTicket: 'DEMO-1' },
+    ];
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    for (const testCase of cases) {
+      const p = await project({ updated: T1 });
+      detection(p.runDir, { id: A_ID, ticket: testCase.eventTicket });
+      const state = JSON.stringify({ sentinel: 'must not be rewritten' });
+      await writeFile(path.join(p.runDir, 'state.json'), state);
+      const before = await rawEvents(p.runDir);
+      expect(
+        unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+      ).toBeNull();
+
+      const result = await outcome(p, [
+        '--point',
+        'SELECT',
+        '--ticket',
+        testCase.cliTicket,
+        '--detection',
+        A_ID,
+        '--action-changed',
+        'false',
+      ]);
+      expect(result.code, `${testCase.name}: ${result.out}`).toBe(1);
+      expect(await rawEvents(p.runDir), testCase.name).toEqual(before);
+      expect(await readFile(path.join(p.runDir, 'state.json'), 'utf8'), testCase.name).toBe(state);
+    }
+  });
+
+  it('refuses a selected blocking detection one hour in the future before changing its journal or latch', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, new Date(Date.now() + 60 * 60 * 1000).toISOString());
+    const state = latchedState(A_ID);
+    const journalPath = path.join(p.runDir, 'events.jsonl');
+    const statePath = path.join(p.runDir, 'state.json');
+    await writeFile(statePath, state);
+    const journalBytes = await readFile(journalPath, 'utf8');
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+
+    expect(result.code, result.out).toBe(1);
+    expect(await readFile(journalPath, 'utf8')).toBe(journalBytes);
+    expect(await readFile(statePath, 'utf8')).toBe(state);
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+  });
+
+  it('refuses a selected blocking detection with an invalid timestamp before changing its journal or latch', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, 'not-an-ISO-timestamp');
+    const state = latchedState(A_ID);
+    const journalPath = path.join(p.runDir, 'events.jsonl');
+    const statePath = path.join(p.runDir, 'state.json');
+    await writeFile(statePath, state);
+    const journalBytes = await readFile(journalPath, 'utf8');
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+
+    expect(result.code, result.out).toBe(1);
+    expect(await readFile(journalPath, 'utf8')).toBe(journalBytes);
+    expect(await readFile(statePath, 'utf8')).toBe(state);
+    expect(
+      unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events),
+    ).toMatchObject({ detectionId: A_ID });
+  });
+
+  it('answers a selected blocking detection with a past timestamp and releases its matching latch', async () => {
+    const p = await project({ updated: T1 });
+    detection(p.runDir, { id: A_ID }, '2000-01-01T00:00:00.000Z');
+    await writeFile(path.join(p.runDir, 'state.json'), latchedState(A_ID));
+    const { unresolvedBlockingDetectionOf } = (await import(
+      pathToFileURL(path.join(scriptsDir, 'lib', 'revalidation-evidence.mjs')).href
+    )) as {
+      unresolvedBlockingDetectionOf: (events: JournalRecord[]) => { detectionId: string } | null;
+    };
+
+    const result = await outcome(p, selectedOutcome(A_ID));
+
+    expect(result.code, result.out).toBe(0);
+    expect(eventsOf(p.runDir, 'revalidation-outcome')).toHaveLength(1);
+    expect(
+      JSON.parse(await readFile(path.join(p.runDir, 'state.json'), 'utf8')),
+    ).not.toHaveProperty('revalidationHold');
+    expect(unresolvedBlockingDetectionOf(journal.readRun({ runDir: p.runDir }).events)).toBeNull();
+  });
+});
+
 describe('C. `revalidation-report.mjs --since` counts catches that altered the action', () => {
   const SINCE = '2026-08-20T00:00:00.000Z';
   const BEFORE = '2026-08-01T12:00:00.000Z';
