@@ -215,6 +215,7 @@ export const scoreRevalidationCorpus = (
 
   const historicalCases = accepted.filter((corpusCase) => corpusCase.origin === 'historical');
   let boundCases = 0;
+  let sourceCohortComplete = false;
 
   if (historicalEligibilityEvidence) {
     const { frozenSource, cases: evidenceCases } = historicalEligibilityEvidence;
@@ -281,12 +282,25 @@ export const scoreRevalidationCorpus = (
 
       boundCases += 1;
     }
+
+    const scoredCaseIds = new Set(historicalCases.map((corpusCase) => corpusCase.caseId));
+    const unscoredEvidenceCases = evidenceCases.filter(
+      (evidenceCase) => !scoredCaseIds.has(evidenceCase.caseId),
+    );
+    for (const evidenceCase of unscoredEvidenceCases) {
+      errors.push({
+        caseId: evidenceCase.caseId,
+        rule: 'historical source cohort completeness',
+      });
+    }
+    sourceCohortComplete = unscoredEvidenceCases.length === 0;
   }
 
   const historicalEvidenceVerified =
     historicalCases.length > 0 &&
     historicalEligibilityEvidence !== undefined &&
-    boundCases === historicalCases.length;
+    boundCases === historicalCases.length &&
+    sourceCohortComplete;
 
   return {
     errors,

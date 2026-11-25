@@ -192,8 +192,12 @@ reviewer proofs. This pure scorer validates the consistency of supplied
 evidence only; it does not authenticate referenced files, reviewer identities,
 or reviewer independence. Trusted fixture loading and real independent
 adjudication remain caller responsibilities. Synthetic strata or controls
-cannot pad a historical catch into a representative claim. Target eligibility
-remains false: all 252 historical observations are indeterminate.
+cannot pad a historical catch into a representative claim. The supplied frozen
+membership and scored historical cohort must match in both directions. An
+omitted source member prevents eligibility; see
+`test/template/revalidation-corpus.test.ts` › "refuses target eligibility when
+frozen source membership contains an omitted indeterminate cohort case".
+Target eligibility remains false: all 252 historical observations are indeterminate.
 
 After native replay, freeze only the declared pair, checkpoint, native output, source
 test title, and relevant event/outcome evidence. Independent reviewers label the

@@ -853,6 +853,44 @@ describe('independently labelled revalidation corpus scoring', () => {
     });
   });
 
+  it('refuses target eligibility when frozen source membership contains an omitted indeterminate cohort case', () => {
+    const cases = completeFixtureCorpus('historical');
+    const omittedIndeterminateCase = caseOf({
+      caseId: 'frozen-source-indeterminate-not-scored',
+      locator: {
+        run: 'testonly-frozen-source-run',
+        seq: 19,
+        detectionId: 'testonly-indeterminate-detection',
+      },
+      stratum: 'scope-title',
+      label: {
+        groundTruth: 'indeterminate',
+        evidence: 'review://testonly/indeterminate-frozen-membership',
+        adjudication: 'disagreed',
+      },
+    });
+    const evidence = testOnlyHistoricalEligibilityEvidence([...cases, omittedIndeterminateCase]);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.arrayContaining([
+        {
+          caseId: omittedIndeterminateCase.caseId,
+          rule: 'historical source cohort completeness',
+        },
+      ]),
+      belowFivePercent: {
+        eligible: false,
+        historicalEligibilityEvidence: {
+          verified: false,
+          source: evidence.frozenSource,
+          boundCases: cases.length,
+        },
+      },
+    });
+  });
+
   it('refuses target eligibility when one historical case is absent from the frozen source membership', () => {
     const cases = completeFixtureCorpus('historical');
     const evidence = testOnlyHistoricalEligibilityEvidence(cases);
