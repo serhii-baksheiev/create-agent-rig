@@ -73,7 +73,7 @@
 // rule) — never by calling the thing being tested and comparing it to
 // itself.
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { cp, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -1281,9 +1281,9 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
 
       const rounds = roundsFileFor(cfg);
       // `runDir` may use macOS's `/var` spelling while the production
-      // journal resolves it to `/private/var`; the preload observes the
-      // latter, so compare the supported canonical alias.
-      const state = await realpath(path.join(runDir, 'state.json'));
+      // journal resolves it to `/private/var`; native Windows Actions run
+      // 45519854542 / job 138888690294 similarly exposed short/long aliases.
+      const state = realpathSync.native(path.join(runDir, 'state.json'));
       const trace = path.join(runDir, 'racing-write.trace');
       const preload = path.join(runDir, 'fill-final-slot.mjs');
       await writeFile(
@@ -1295,7 +1295,8 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
           'let fired = false;',
           'fs.readFileSync = function(file, ...args) {',
           '  const value = original.call(this, file, ...args);',
-          `  if (!fired && String(file) === ${JSON.stringify(state)}) {`,
+          "  const observedPath = typeof file === 'string' ? fs.realpathSync.native(file) : null;",
+          `  if (!fired && observedPath === ${JSON.stringify(state)}) {`,
           '    fired = true;',
           `    const current = JSON.parse(original.call(this, ${JSON.stringify(rounds)}, 'utf8'));`,
           "    current['fix/a'] = 4;",
@@ -3243,6 +3244,8 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
     }
   });
 
+  // Windows Actions run 45519854542 / job 138888690294 reached H6 after
+  // 13,729ms at its 14s diagnostic; only this eight-stage case needs 30s.
   it('the repository-composed budget admits the H7 grant for R10, then refuses an eighth grant and R11 without counting it', async () => {
     const roots: string[] = [];
     const completedStages: string[] = [];
@@ -3260,7 +3263,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
         `RP-564 H7 stage timing: completed=[${completedStages.join(', ')}]; ` +
           `active=${activeStage}=${elapsed}ms\n`,
       );
-    }, 14_000);
+    }, 29_000);
     try {
       // This is the real composed queue this repository runs, copied into an
       // otherwise independent pushed Git fixture. It is deliberately not a
@@ -3565,7 +3568,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       clearTimeout(stageDiagnostics);
       await Promise.all(roots.map((root) => removeFixture(root)));
     }
-  });
+  }, 30_000);
 });
 
 // --- the consuming call's own commit and authority requirements -----------
