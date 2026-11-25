@@ -861,6 +861,59 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
     }
   });
 
+  it('allows an attached optional untracked-files mode while preserving genuine no-verify refusal', async () => {
+    const fixture = await newGitFixture();
+    const preCommit = path.join(fixture, '.git', 'hooks', 'pre-commit');
+    const witness = path.join(fixture, '.git', 'rp522-untracked-files-witness');
+    const message = path.join(fixture, 'message.txt');
+    await writeFile(preCommit, '#!/bin/sh\nprintf witness > .git/rp522-untracked-files-witness\n');
+    await chmod(preCommit, 0o755);
+    await writeFile(path.join(fixture, 'tracked.txt'), 'tracked\n');
+    await writeFile(message, 'ordinary commit\n');
+    await gitMustSucceed(['add', 'tracked.txt'], fixture);
+    await gitMustSucceed(['commit', '-uno', '-F', message], fixture);
+    await expect(readFile(witness, 'utf8')).resolves.toBe('witness');
+
+    const allowed = await inspect('git commit -uno -m x');
+    expect.soft(allowed.code, allowed.stderr).toBe(0);
+    for (const command of ['git commit -n -uno -m x', 'git commit -uno -n -m x']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('allows an attached optional GPG key selector while refusing separate bypass flags', async () => {
+    const allowed = await inspect('git commit -Suntracked@example.invalid -m x');
+    expect.soft(allowed.code, allowed.stderr).toBe(0);
+    for (const command of ['git commit -S -n -m x', 'git commit -S --no-verify -m x']) {
+      const result = await inspect(command);
+      expect.soft(result.code, `${command}: ${result.stderr}`).toBe(2);
+    }
+  });
+
+  it('allows documented required long commit-option operands while refusing trailing no-verify flags', async () => {
+    const requiredValueOptions = [
+      '--author',
+      '--date',
+      '--reedit-message',
+      '--reuse-message',
+      '--fixup',
+      '--squash',
+      '--template',
+      '--cleanup',
+      '--trailer',
+      '--pathspec-from-file',
+    ];
+    for (const option of requiredValueOptions) {
+      const result = await inspect(`git commit ${option} --no-verify`);
+      expect.soft(result.code, `${option}: ${result.stderr}`).toBe(0);
+    }
+    for (const option of requiredValueOptions) {
+      const result = await inspect(`git commit ${option} --no-verify -n`);
+      expect.soft(result.code, `${option}: ${result.stderr}`).toBe(2);
+    }
+  });
+
   it('lets env -i clear inherited HUSKY while refusing an explicit replacement', async () => {
     const cleared = await inspect('HUSKY=0 env -i git commit -m x');
     expect.soft(cleared.code, cleared.stderr).toBe(0);

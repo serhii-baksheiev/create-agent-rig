@@ -75,15 +75,29 @@ const contextOptions = (args, operation) => {
 
 const bypassesOperation = (args, operation) => {
   const shortValueFlags = new Set(['m', 'F', 'C', 'c', 't']);
+  const requiredValueOptions = new Set([
+    '--message',
+    '--file',
+    '--author',
+    '--date',
+    '--reedit-message',
+    '--reuse-message',
+    '--template',
+    '--cleanup',
+    '--trailer',
+    '--fixup',
+    '--squash',
+    '--pathspec-from-file',
+  ]);
+  const attachedOnlyValueFlags = new Set(['u', 'S']);
   for (let index = operation.index + 1; index < args.length; index += 1) {
     const value = args[index].value;
     if (value === '--') return false;
     if (value === '--no-verify') return true;
     if (
+      requiredValueOptions.has(value) ||
       value === '-m' ||
-      value === '--message' ||
       value === '-F' ||
-      value === '--file' ||
       value === '-C' ||
       value === '-c' ||
       value === '-t'
@@ -92,8 +106,10 @@ const bypassesOperation = (args, operation) => {
       continue;
     }
     if (operation.value !== 'commit' || !/^-[A-Za-z]/.test(value)) continue;
-    for (const flag of value.slice(1)) {
+    for (let flagIndex = 0; flagIndex < value.length - 1; flagIndex += 1) {
+      const flag = value[flagIndex + 1];
       if (shortValueFlags.has(flag)) break;
+      if (attachedOnlyValueFlags.has(flag) && flagIndex + 2 < value.length) break;
       if (flag === 'n') return true;
     }
   }
