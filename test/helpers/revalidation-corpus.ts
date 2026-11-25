@@ -96,6 +96,29 @@ export const scoreRevalidationCorpus = (
       rejected = true;
     }
 
+    if (
+      corpusCase.label.groundTruth !== 'material' &&
+      corpusCase.label.groundTruth !== 'benign' &&
+      corpusCase.label.groundTruth !== 'indeterminate'
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'ground truth enum' });
+      rejected = true;
+    }
+
+    if (corpusCase.kind !== 'caught' && corpusCase.kind !== 'no-catch-control') {
+      errors.push({ caseId: corpusCase.caseId, rule: 'case kind enum' });
+      rejected = true;
+    }
+
+    if (
+      corpusCase.detectionObligation !== undefined &&
+      corpusCase.detectionObligation !== 'required' &&
+      corpusCase.detectionObligation !== 'deferred'
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'detection obligation enum' });
+      rejected = true;
+    }
+
     if (corpusCase.kind === 'caught' && !corpusCase.observation.detected) {
       errors.push({ caseId: corpusCase.caseId, rule: 'caught observation requires detected:true' });
       rejected = true;
@@ -210,6 +233,8 @@ export const scoreRevalidationCorpus = (
     controls.materialNoCatch.historical.required.total +
       controls.materialNoCatch.historical.deferred.total ===
     0;
+  const missingRequiredHistoricalMaterialControls =
+    controls.materialNoCatch.historical.required.total === 0;
   const indeterminateCases = labels.indeterminate;
   const missingHistoricalDeterminateCaught = rates.historical.determinateCaught === 0;
 
@@ -323,6 +348,7 @@ export const scoreRevalidationCorpus = (
         !missingMaterialControls &&
         missingHistoricalStrata.length === 0 &&
         !missingHistoricalMaterialControls &&
+        !missingRequiredHistoricalMaterialControls &&
         indeterminateCases === 0 &&
         !missingHistoricalDeterminateCaught &&
         historicalEvidenceVerified,
@@ -330,6 +356,7 @@ export const scoreRevalidationCorpus = (
       missingMaterialControls,
       missingHistoricalStrata,
       missingHistoricalMaterialControls,
+      missingRequiredHistoricalMaterialControls,
       indeterminateCases,
       missingHistoricalDeterminateCaught,
       ...(historicalEligibilityEvidence

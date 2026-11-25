@@ -179,7 +179,12 @@ dilute the pressure findings.
 
 The scorer rejects contradictory `caught` and `no-catch-control` rows, and a
 material no-catch without an explicit `detectionObligation`, before they enter
-denominators. It has no mixed-origin `caught` metric: false-HOLD counts remain
+denominators. JSON-derived materiality, case-kind, and duty values outside their
+declared enums are rejected before counting; see
+`test/template/revalidation-corpus.test.ts` › "rejects a JSON-derived ground-truth value outside the materiality enum before it enters counts",
+"rejects a JSON-derived case kind outside the scorer enum before it enters cohort coverage",
+and "rejects a JSON-derived detection duty outside the obligation enum before it can be counted deferred".
+It has no mixed-origin `caught` metric: false-HOLD counts remain
 partitioned in `rates.historical` and `rates.synthetic`. Material no-catch
 controls are partitioned by the same origin and by `detectionObligation`. Only
 `required` no-catches count as misses; `deferred` ones remain visible without
@@ -198,6 +203,16 @@ omitted source member prevents eligibility; see
 `test/template/revalidation-corpus.test.ts` › "refuses target eligibility when
 frozen source membership contains an omitted indeterminate cohort case".
 Target eligibility remains false: all 252 historical observations are indeterminate.
+
+Deferred-only material controls do not supply required-checkpoint miss coverage.
+`missingRequiredHistoricalMaterialControls` therefore prevents eligibility when
+that coverage is absent; see `test/template/revalidation-corpus.test.ts` ›
+"refuses target eligibility when every material no-catch control is deferred".
+The eligibility flag describes cohort prerequisites for evaluating the
+false-HOLD target, not target achievement or release acceptance. Required misses
+remain counted even in an eligible TESTONLY cohort; see
+`test/template/revalidation-corpus.test.ts` › "permits a TESTONLY complete historical cohort only when every case joins one frozen source and two independent reviewer labels".
+Their presence does not establish preservation of material-violation detection.
 
 After native replay, freeze only the declared pair, checkpoint, native output, source
 test title, and relevant event/outcome evidence. Independent reviewers label the

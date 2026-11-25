@@ -211,7 +211,7 @@ type VersionedConstructedFixture = {
   controls: ConstructedControl[];
 };
 
-type VersionedSyntheticLabelsFixture = {
+type VersionedSyntheticLabelsFixture = SyntheticLabelsFixture & {
   schemaVersion: 2;
   population: 'synthetic-constructed-labels-v2' | 'synthetic-pressure-labels-v2';
   sourceFixtureSha256: string;
@@ -604,6 +604,117 @@ describe('independently labelled revalidation corpus scoring', () => {
     });
   });
 
+  it('refuses target eligibility when every material no-catch control is deferred', () => {
+    const cases = completeFixtureCorpus('historical');
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: [],
+      controls: {
+        materialNoCatch: {
+          historical: { required: { total: 0, missed: 0 }, deferred: { total: 1 } },
+        },
+      },
+      belowFivePercent: {
+        eligible: false,
+        missingRequiredHistoricalMaterialControls: true,
+      },
+    });
+  });
+
+  it('rejects a JSON-derived ground-truth value outside the materiality enum before it enters counts', () => {
+    const cases = completeFixtureCorpus('historical');
+    const firstCase = cases[0];
+    if (!firstCase) throw new Error('Expected a caught case');
+    cases[0] = JSON.parse(
+      JSON.stringify({
+        ...firstCase,
+        caseId: 'runtime-invalid-ground-truth',
+        label: { ...firstCase.label, groundTruth: 'unreviewed' },
+      }),
+    ) as CorpusCase;
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      manifest: { total: 18, accepted: 17, rejected: 1 },
+      totalCases: 17,
+      labels: { material: 17, benign: 0, indeterminate: 0 },
+      rates: { historical: { determinateCaught: 16, falseHolds: 0 } },
+      belowFivePercent: { eligible: false },
+    });
+    expect(result.errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ caseId: 'runtime-invalid-ground-truth' })]),
+    );
+  });
+
+  it('rejects a JSON-derived case kind outside the scorer enum before it enters cohort coverage', () => {
+    const cases = completeFixtureCorpus('historical');
+    const firstCase = cases[0];
+    if (!firstCase) throw new Error('Expected a caught case');
+    cases[0] = JSON.parse(
+      JSON.stringify({
+        ...firstCase,
+        caseId: 'runtime-invalid-kind',
+        kind: 'unclassified',
+      }),
+    ) as CorpusCase;
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      manifest: { total: 18, accepted: 17, rejected: 1 },
+      totalCases: 17,
+      labels: { material: 17, benign: 0, indeterminate: 0 },
+      rates: { historical: { determinateCaught: 16, falseHolds: 0 } },
+      belowFivePercent: { eligible: false },
+    });
+    expect(result.errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ caseId: 'runtime-invalid-kind' })]),
+    );
+  });
+
+  it('rejects a JSON-derived detection duty outside the obligation enum before it can be counted deferred', () => {
+    const cases = completeFixtureCorpus('historical');
+    const materialControlIndex = cases.findIndex(
+      ({ stratum }) => stratum === 'material-no-catch-control',
+    );
+    const materialControl = cases[materialControlIndex];
+    if (!materialControl) throw new Error('Expected a material no-catch control');
+    cases[materialControlIndex] = JSON.parse(
+      JSON.stringify({
+        ...materialControl,
+        caseId: 'runtime-invalid-detection-duty',
+        detectionObligation: 'unclassified',
+      }),
+    ) as CorpusCase;
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      manifest: { total: 18, accepted: 17, rejected: 1 },
+      totalCases: 17,
+      labels: { material: 17, benign: 0, indeterminate: 0 },
+      rates: { historical: { determinateCaught: 17, falseHolds: 0 } },
+      controls: {
+        materialNoCatch: {
+          historical: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+        },
+      },
+      belowFivePercent: { eligible: false },
+    });
+    expect(result.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ caseId: 'runtime-invalid-detection-duty' }),
+      ]),
+    );
+  });
+
   it('rejects duplicate case IDs instead of silently shrinking the frozen denominator', () => {
     const first = caseOf();
     const duplicate = caseOf({
@@ -839,6 +950,15 @@ describe('independently labelled revalidation corpus scoring', () => {
 
   it('permits a TESTONLY complete historical cohort only when every case joins one frozen source and two independent reviewer labels', () => {
     const cases = completeFixtureCorpus('historical');
+    const materialControlIndex = cases.findIndex(
+      ({ stratum }) => stratum === 'material-no-catch-control',
+    );
+    const materialControl = cases[materialControlIndex];
+    if (!materialControl) throw new Error('Expected a material no-catch control');
+    cases[materialControlIndex] = {
+      ...materialControl,
+      detectionObligation: 'required',
+    };
     const evidence = testOnlyHistoricalEligibilityEvidence(cases);
 
     const result = scoreRevalidationCorpus(cases, evidence);
@@ -851,6 +971,8 @@ describe('independently labelled revalidation corpus scoring', () => {
         boundCases: cases.length,
       },
     });
+    expect(result.belowFivePercent.missingRequiredHistoricalMaterialControls ?? false).toBe(false);
+    expect(result.controls.materialNoCatch.historical.required).toEqual({ total: 1, missed: 1 });
   });
 
   it('refuses target eligibility when frozen source membership contains an omitted indeterminate cohort case', () => {
@@ -1480,6 +1602,7 @@ describe('constructed revalidation controls fixture', () => {
 describe('superseding constructed-v2 replay fixture', () => {
   it('binds corrected S01 and S03 checkpoint contracts to their actual native replays without mutating v1 evidence', () => {
     const fixture = readConstructedControlsV2();
+    const v1Labels = readConstructedLabels();
     const labels = readConstructedLabelsV2();
     const source = readFileSync(
       fileURLToPath(new URL('./content-blind-revalidation.test.ts', import.meta.url)),
@@ -1504,6 +1627,24 @@ describe('superseding constructed-v2 replay fixture', () => {
         labelsSha256: '1328c281b8febba0482ea37ed845b9700daa30a4397faecbd1d93fae58c1bfd1',
       },
     });
+    const v1LabelsByCase = new Map(
+      v1Labels.cases.map((labelledCase) => [labelledCase.caseId, labelledCase]),
+    );
+    expect(labels.cases).toHaveLength(19);
+    expect(labels.cases.map(({ caseId }) => caseId).sort()).toEqual(
+      v1Labels.cases.map(({ caseId }) => caseId).sort(),
+    );
+    for (const labelledCase of labels.cases) {
+      const v1Label = labelledCase.caseId ? v1LabelsByCase.get(labelledCase.caseId) : undefined;
+      expect(v1Label).toBeDefined();
+      expect({
+        assessments: labelledCase.assessments,
+        adjudication: labelledCase.adjudication,
+      }).toEqual({
+        assessments: v1Label?.assessments,
+        adjudication: v1Label?.adjudication,
+      });
+    }
 
     expect(fixture.controls.filter(({ id }) => id === 'S01' || id === 'S03')).toEqual([
       expect.objectContaining({
@@ -1882,6 +2023,16 @@ describe('evidence-bound superseding pressure-v2 capture', () => {
       'N01',
       'P01',
     ]);
+    const reviewerIds = labels.reviewers.map(({ id }) => id).sort();
+    expect(new Set(reviewerIds).size).toBe(2);
+    for (const labelledCase of labels.cases) {
+      expect(labelledCase.assessments).toHaveLength(2);
+      expect(labelledCase.assessments.map(({ reviewer }) => reviewer).sort()).toEqual(reviewerIds);
+      expect(labelledCase.assessments.every(({ evidence }) => evidence.trim().length > 0)).toBe(
+        true,
+      );
+    }
+    expectDeterministicSyntheticAdjudication(labels.cases);
 
     const controlsByCase = new Map(controls.controls.map((control) => [control.id, control]));
     const labelsByCase = new Map(
