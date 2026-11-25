@@ -7,6 +7,19 @@ publicHoistPattern:
   - '@nizos/probity'
 overrides:
   '@nizos/probity@1.10.1>@openai/codex-sdk': 0.161.0
+  # RP-562: exact vulnerable lock resolutions only; remove these selectors once
+  # upstream ranges resolve patched releases without a workspace override.
+  '@hono/node-server@2.1.3': 2.1.6
+  body-parser@2.3.0: 2.4.0
+  fast-uri@3.1.6: 3.1.9
+  hono@4.13.13: 4.13.16
+  ip-address@10.7.3: 10.7.4
+  nanoid@3.3.16: 3.3.18
+  postcss@8.5.22: 8.5.23
+  qs@6.16.0: 6.16.1
+  source-map-js@1.2.1: 1.2.2
+  vite@8.1.5: 8.1.6
+  zod@4.6.5: 4.6.6
 minimumReleaseAgeExclude:
   - '@vitest/mocker@5.0.0'
   - '@vitest/spy@5.0.0'
