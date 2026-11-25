@@ -22,6 +22,7 @@ export const REQUIRED_REVALIDATION_CORPUS_STRATA = [
 type CorpusCase = {
   caseId: string;
   locator: { run: string; seq: number; detectionId: string };
+  checkpoint: 'SELECT' | 'BEFORE_PR' | 'BEFORE_CLOSE';
   stratum: string;
   kind: 'caught' | 'no-catch-control';
   origin: 'historical' | 'synthetic';
@@ -45,6 +46,7 @@ type HistoricalReviewerProof = {
 type HistoricalEvidenceCase = {
   caseId: string;
   source: FrozenSource;
+  checkpoint: CorpusCase['checkpoint'];
   stratum: CorpusCase['stratum'];
   kind: CorpusCase['kind'];
   origin: CorpusCase['origin'];
@@ -70,7 +72,8 @@ const isNonBlankString = (value: unknown): value is string =>
 const sameSource = (left: FrozenSource, right: FrozenSource) =>
   left.version === right.version && left.hash === right.hash;
 
-const isNamedSource = (source: FrozenSource) => Boolean(source.version && source.hash);
+const isNamedSource = (source: FrozenSource) =>
+  isNonBlankString(source.version) && isNonBlankString(source.hash);
 
 const sameLocator = (left: CorpusCase['locator'], right: CorpusCase['locator']) =>
   left.run === right.run && left.seq === right.seq && left.detectionId === right.detectionId;
@@ -102,6 +105,30 @@ export const scoreRevalidationCorpus = (
       !isNonBlankString(corpusCase.locator.detectionId)
     ) {
       errors.push({ caseId: corpusCase.caseId, rule: 'provenance locator' });
+      rejected = true;
+    }
+
+    if (
+      corpusCase.checkpoint !== 'SELECT' &&
+      corpusCase.checkpoint !== 'BEFORE_PR' &&
+      corpusCase.checkpoint !== 'BEFORE_CLOSE'
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'checkpoint enum' });
+      rejected = true;
+    }
+
+    if (corpusCase.origin !== 'historical' && corpusCase.origin !== 'synthetic') {
+      errors.push({ caseId: corpusCase.caseId, rule: 'case origin enum' });
+      rejected = true;
+    }
+
+    if (
+      !REQUIRED_REVALIDATION_CORPUS_STRATA.includes(
+        corpusCase.stratum as (typeof REQUIRED_REVALIDATION_CORPUS_STRATA)[number],
+      ) &&
+      !(corpusCase.origin === 'historical' && corpusCase.stratum === 'unclassified')
+    ) {
+      errors.push({ caseId: corpusCase.caseId, rule: 'case stratum enum' });
       rejected = true;
     }
 
@@ -162,7 +189,7 @@ export const scoreRevalidationCorpus = (
     }
     caseIds.add(corpusCase.caseId);
 
-    if (!corpusCase.label.evidence) {
+    if (!isNonBlankString(corpusCase.label.evidence)) {
       errors.push({ caseId: corpusCase.caseId, rule: 'independent label evidence' });
       rejected = true;
     }
@@ -197,6 +224,9 @@ export const scoreRevalidationCorpus = (
   }));
 
   for (const corpusCase of accepted) {
+    const isHistoricalUnclassified =
+      corpusCase.origin === 'historical' && corpusCase.stratum === 'unclassified';
+
     labels[corpusCase.label.groundTruth] += 1;
     origins[corpusCase.origin].total += 1;
 
@@ -218,21 +248,23 @@ export const scoreRevalidationCorpus = (
       observed.actionChangingOutcomes += 1;
     }
 
-    if (corpusCase.kind === 'caught' && corpusCase.label.groundTruth !== 'indeterminate') {
-      rates[corpusCase.origin].determinateCaught += 1;
-      if (corpusCase.label.groundTruth === 'benign') {
-        rates[corpusCase.origin].falseHolds += 1;
+    if (!isHistoricalUnclassified) {
+      if (corpusCase.kind === 'caught' && corpusCase.label.groundTruth !== 'indeterminate') {
+        rates[corpusCase.origin].determinateCaught += 1;
+        if (corpusCase.label.groundTruth === 'benign') {
+          rates[corpusCase.origin].falseHolds += 1;
+        }
       }
-    }
 
-    if (corpusCase.kind === 'no-catch-control' && corpusCase.label.groundTruth === 'material') {
-      const obligation = corpusCase.detectionObligation ?? 'required';
-      if (obligation === 'required') {
-        const control = controls.materialNoCatch[corpusCase.origin].required;
-        control.total += 1;
-        control.missed += 1;
-      } else {
-        controls.materialNoCatch[corpusCase.origin].deferred.total += 1;
+      if (corpusCase.kind === 'no-catch-control' && corpusCase.label.groundTruth === 'material') {
+        const obligation = corpusCase.detectionObligation ?? 'required';
+        if (obligation === 'required') {
+          const control = controls.materialNoCatch[corpusCase.origin].required;
+          control.total += 1;
+          control.missed += 1;
+        } else {
+          controls.materialNoCatch[corpusCase.origin].deferred.total += 1;
+        }
       }
     }
   }
@@ -255,6 +287,9 @@ export const scoreRevalidationCorpus = (
     controls.materialNoCatch.historical.required.total === 0;
   const indeterminateCases = labels.indeterminate;
   const missingHistoricalDeterminateCaught = rates.historical.determinateCaught === 0;
+  const unclassifiedHistoricalCases = accepted.filter(
+    (corpusCase) => corpusCase.origin === 'historical' && corpusCase.stratum === 'unclassified',
+  ).length;
 
   const historicalCases = accepted.filter((corpusCase) => corpusCase.origin === 'historical');
   let boundCases = 0;
@@ -295,6 +330,7 @@ export const scoreRevalidationCorpus = (
       }
 
       if (
+        evidenceCase.checkpoint !== corpusCase.checkpoint ||
         evidenceCase.stratum !== corpusCase.stratum ||
         evidenceCase.kind !== corpusCase.kind ||
         evidenceCase.origin !== corpusCase.origin ||
@@ -315,7 +351,10 @@ export const scoreRevalidationCorpus = (
       }
 
       const reviewerIds = new Set(evidenceCase.reviewerProofs.map((proof) => proof.reviewerId));
-      if (reviewerIds.size < 2 || reviewerIds.has('')) {
+      if (
+        reviewerIds.size < 2 ||
+        evidenceCase.reviewerProofs.some((proof) => !isNonBlankString(proof.reviewerId))
+      ) {
         errors.push({
           caseId: corpusCase.caseId,
           rule: 'independent historical reviewer membership',
@@ -359,6 +398,7 @@ export const scoreRevalidationCorpus = (
     origins,
     controls,
     strata,
+    unclassifiedHistoricalCases,
     belowFivePercent: {
       eligible:
         errors.length === 0 &&
@@ -369,6 +409,7 @@ export const scoreRevalidationCorpus = (
         !missingRequiredHistoricalMaterialControls &&
         indeterminateCases === 0 &&
         !missingHistoricalDeterminateCaught &&
+        unclassifiedHistoricalCases === 0 &&
         historicalEvidenceVerified,
       missingStrata,
       missingMaterialControls,

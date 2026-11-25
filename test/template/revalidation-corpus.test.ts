@@ -25,6 +25,12 @@ type CorpusCase = {
   };
 };
 
+type CheckpointBoundHistoricalEligibilityEvidence = HistoricalEligibilityEvidence & {
+  cases: Array<
+    HistoricalEligibilityEvidence['cases'][number] & { checkpoint: CorpusCase['checkpoint'] }
+  >;
+};
+
 type HistoricalObservation = {
   caseId: string;
   locator: {
@@ -82,6 +88,18 @@ type HistoricalLabelFixture = {
       groundTruth: 'material' | 'benign' | 'indeterminate';
       status: 'agreed-determinate' | 'agreed-indeterminate' | 'disagreed' | 'incomplete';
     };
+  }>;
+};
+
+type HistoricalClassificationFixture = {
+  schemaVersion: 2;
+  population: 'historical-annotation-v2';
+  sourceFixtureSha256: string;
+  sourceLabelsSha256: string;
+  cases: Array<{
+    caseId: string;
+    checkpoint: 'SELECT' | 'BEFORE_PR' | 'BEFORE_CLOSE';
+    semanticStratum: 'unclassified';
   }>;
 };
 
@@ -241,6 +259,9 @@ const historicalFixturePath = fileURLToPath(
 const historicalLabelsPath = fileURLToPath(
   new URL('../fixtures/revalidation-corpus/historical-labels-v1.json', import.meta.url),
 );
+const historicalClassificationV2Path = fileURLToPath(
+  new URL('../fixtures/revalidation-corpus/historical-classification-v2.json', import.meta.url),
+);
 const constructedControlsPath = fileURLToPath(
   new URL('../fixtures/revalidation-controls/constructed-v1.json', import.meta.url),
 );
@@ -279,6 +300,13 @@ const readHistoricalFixture = (): HistoricalFixture => {
 const readHistoricalLabels = (): HistoricalLabelFixture => {
   expect(existsSync(historicalLabelsPath)).toBe(true);
   return JSON.parse(readFileSync(historicalLabelsPath, 'utf8')) as HistoricalLabelFixture;
+};
+
+const readHistoricalClassificationV2 = (): HistoricalClassificationFixture => {
+  expect(existsSync(historicalClassificationV2Path)).toBe(true);
+  return JSON.parse(
+    readFileSync(historicalClassificationV2Path, 'utf8'),
+  ) as HistoricalClassificationFixture;
 };
 
 const readConstructedControls = (): ConstructedControlsFixture => {
@@ -421,7 +449,7 @@ const completeFixtureCorpus = (origin: CorpusCase['origin']): CorpusCase[] =>
 // historical accuracy, nor does it reinterpret the 252 historical observations.
 const testOnlyHistoricalEligibilityEvidence = (
   cases: CorpusCase[],
-): HistoricalEligibilityEvidence => {
+): CheckpointBoundHistoricalEligibilityEvidence => {
   const frozenSource = {
     version: 'testonly-frozen-source-v1',
     hash: 'testonly-frozen-source-sha256',
@@ -432,6 +460,7 @@ const testOnlyHistoricalEligibilityEvidence = (
     cases: cases.map((corpusCase) => ({
       caseId: corpusCase.caseId,
       source: frozenSource,
+      checkpoint: corpusCase.checkpoint,
       stratum: corpusCase.stratum,
       kind: corpusCase.kind,
       origin: corpusCase.origin,
@@ -823,6 +852,410 @@ describe('independently labelled revalidation corpus scoring', () => {
         totalCases: 17,
         labels: { material: 17, benign: 0, indeterminate: 0 },
         rates: { historical: { determinateCaught: 16, falseHolds: 0 } },
+        belowFivePercent: { eligible: false },
+      });
+      expect(result.errors, description).not.toEqual([]);
+    }
+  });
+
+  it('rejects an undeclared JSON-derived stratum before it can pad a complete denominator', () => {
+    const cases = completeFixtureCorpus('historical');
+    const materialControlIndex = cases.findIndex(
+      ({ stratum }) => stratum === 'material-no-catch-control',
+    );
+    const materialControl = cases[materialControlIndex];
+    const firstCase = cases[0];
+    if (!materialControl || !firstCase) throw new Error('Expected complete test-only corpus cases');
+    cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+    cases.push(
+      JSON.parse(
+        JSON.stringify({
+          ...firstCase,
+          caseId: 'runtime-undeclared-stratum',
+          locator: { ...firstCase.locator, seq: 19, detectionId: 'runtime-undeclared-stratum' },
+          stratum: 'undeclared-runtime-stratum',
+        }),
+      ) as CorpusCase,
+    );
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      manifest: { total: 19, accepted: 18, rejected: 1 },
+      totalCases: 18,
+      labels: { material: 18, benign: 0, indeterminate: 0 },
+      rates: { historical: { determinateCaught: 17, falseHolds: 0 } },
+      belowFivePercent: { eligible: false },
+    });
+    expect(result.errors).not.toEqual([]);
+  });
+
+  it('refuses eligibility when JSON-derived frozen-source version or hash is not a nonblank string', () => {
+    const malformedSources: Array<[string, unknown, unknown]> = [
+      ['numeric version', 1, 'testonly-frozen-source-sha256'],
+      ['blank version', '  ', 'testonly-frozen-source-sha256'],
+      ['numeric hash', 'testonly-frozen-source-v1', 1],
+      ['blank hash', 'testonly-frozen-source-v1', '  '],
+    ];
+    for (const [description, version, hash] of malformedSources) {
+      const cases = completeFixtureCorpus('historical');
+      const materialControlIndex = cases.findIndex(
+        ({ stratum }) => stratum === 'material-no-catch-control',
+      );
+      const materialControl = cases[materialControlIndex];
+      if (!materialControl) throw new Error('Expected a material no-catch control');
+      cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+      const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+      const malformedSource = JSON.parse(
+        JSON.stringify({ version, hash }),
+      ) as HistoricalEligibilityEvidence['frozenSource'];
+      evidence.frozenSource = malformedSource;
+      for (const evidenceCase of evidence.cases) {
+        evidenceCase.source = malformedSource;
+        evidenceCase.reviewerProofs = evidenceCase.reviewerProofs.map((proof) => ({
+          ...proof,
+          source: malformedSource,
+        }));
+      }
+
+      const result = scoreRevalidationCorpus(cases, evidence);
+
+      expect(result, description).toMatchObject({
+        errors: expect.any(Array),
+        manifest: { total: 18, accepted: 18, rejected: 0 },
+        belowFivePercent: {
+          eligible: false,
+          historicalEligibilityEvidence: { verified: false, boundCases: 0 },
+        },
+      });
+      expect(result.errors, description).not.toEqual([]);
+    }
+  });
+
+  it('rejects JSON-derived label evidence that is blank or non-string before it enters counts', () => {
+    const malformedEvidence: Array<[string, unknown]> = [
+      ['blank evidence', '  '],
+      ['numeric evidence', 1],
+    ];
+    for (const [description, evidenceValue] of malformedEvidence) {
+      const cases = completeFixtureCorpus('historical');
+      const materialControlIndex = cases.findIndex(
+        ({ stratum }) => stratum === 'material-no-catch-control',
+      );
+      const materialControl = cases[materialControlIndex];
+      const firstCase = cases[0];
+      if (!materialControl || !firstCase)
+        throw new Error('Expected complete test-only corpus cases');
+      cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+      cases[0] = JSON.parse(
+        JSON.stringify({ ...firstCase, label: { ...firstCase.label, evidence: evidenceValue } }),
+      ) as CorpusCase;
+      const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+      const result = scoreRevalidationCorpus(cases, evidence);
+
+      expect(result, description).toMatchObject({
+        manifest: { total: 18, accepted: 17, rejected: 1 },
+        totalCases: 17,
+        labels: { material: 17, benign: 0, indeterminate: 0 },
+        rates: { historical: { determinateCaught: 16, falseHolds: 0 } },
+        belowFivePercent: { eligible: false },
+      });
+      expect(result.errors, description).not.toEqual([]);
+    }
+  });
+
+  it('refuses eligibility when reviewer IDs are distinct but blank or non-string', () => {
+    const malformedReviewerIds: Array<[string, unknown[]]> = [
+      ['whitespace reviewer id', ['  ', 'testonly-independent-b']],
+      ['numeric reviewer id', [1, 'testonly-independent-b']],
+    ];
+    for (const [description, reviewerIds] of malformedReviewerIds) {
+      const cases = completeFixtureCorpus('historical');
+      const materialControlIndex = cases.findIndex(
+        ({ stratum }) => stratum === 'material-no-catch-control',
+      );
+      const materialControl = cases[materialControlIndex];
+      if (!materialControl) throw new Error('Expected a material no-catch control');
+      cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+      const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+      const firstEvidenceCase = evidence.cases[0];
+      if (!firstEvidenceCase) throw new Error('Expected test-only evidence case');
+      firstEvidenceCase.reviewerProofs = JSON.parse(
+        JSON.stringify(
+          firstEvidenceCase.reviewerProofs.map((proof, index) => ({
+            ...proof,
+            reviewerId: reviewerIds[index],
+          })),
+        ),
+      ) as typeof firstEvidenceCase.reviewerProofs;
+
+      const result = scoreRevalidationCorpus(cases, evidence);
+
+      expect(result, description).toMatchObject({
+        errors: expect.any(Array),
+        manifest: { total: 18, accepted: 18, rejected: 0 },
+        belowFivePercent: {
+          eligible: false,
+          historicalEligibilityEvidence: { verified: false, boundCases: 17 },
+        },
+      });
+      expect(result.errors, description).not.toEqual([]);
+    }
+  });
+
+  it('rejects JSON-derived origins before keyed counters can mutate host globals', () => {
+    const descriptorEquals = (
+      left: PropertyDescriptor | undefined,
+      right: PropertyDescriptor | undefined,
+    ) =>
+      left?.configurable === right?.configurable &&
+      left?.enumerable === right?.enumerable &&
+      left?.writable === right?.writable &&
+      left?.value === right?.value &&
+      left?.get === right?.get &&
+      left?.set === right?.set;
+    const outcomes: Array<{
+      origin: string;
+      threw: boolean;
+      polluted: boolean;
+      accepted: number | undefined;
+      rejected: number | undefined;
+      eligible: boolean | undefined;
+      hasErrors: boolean;
+    }> = [];
+
+    for (const origin of ['__proto__', 'constructor', 'unknown-runtime-origin']) {
+      const snapshots = [Object.prototype, Object].flatMap((target) =>
+        ['total', 'determinateCaught'].map((key) => ({
+          target,
+          key,
+          descriptor: Object.getOwnPropertyDescriptor(target, key),
+        })),
+      );
+      let result: ReturnType<typeof scoreRevalidationCorpus> | undefined;
+      let thrown: unknown;
+      let polluted: boolean;
+
+      try {
+        const cases = completeFixtureCorpus('historical');
+        const materialControlIndex = cases.findIndex(
+          ({ stratum }) => stratum === 'material-no-catch-control',
+        );
+        const materialControl = cases[materialControlIndex];
+        const firstCase = cases[0];
+        if (!materialControl || !firstCase)
+          throw new Error('Expected complete test-only corpus cases');
+        cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+        cases.push(
+          JSON.parse(
+            JSON.stringify({
+              ...firstCase,
+              caseId: `runtime-invalid-origin-${origin}`,
+              locator: {
+                ...firstCase.locator,
+                seq: 19,
+                detectionId: `runtime-invalid-origin-${origin}`,
+              },
+              origin,
+            }),
+          ) as CorpusCase,
+        );
+        result = scoreRevalidationCorpus(cases, testOnlyHistoricalEligibilityEvidence(cases));
+      } catch (error) {
+        thrown = error;
+      } finally {
+        polluted = snapshots.some(
+          ({ target, key, descriptor }) =>
+            !descriptorEquals(Object.getOwnPropertyDescriptor(target, key), descriptor),
+        );
+        for (const { target, key, descriptor } of snapshots) {
+          if (descriptor) Object.defineProperty(target, key, descriptor);
+          else Reflect.deleteProperty(target, key);
+        }
+      }
+
+      outcomes.push({
+        origin,
+        threw: thrown !== undefined,
+        polluted,
+        accepted: result?.manifest.accepted,
+        rejected: result?.manifest.rejected,
+        eligible: result?.belowFivePercent.eligible,
+        hasErrors: (result?.errors.length ?? 0) > 0,
+      });
+    }
+
+    expect(outcomes).toEqual(
+      ['__proto__', 'constructor', 'unknown-runtime-origin'].map((origin) => ({
+        origin,
+        threw: false,
+        polluted: false,
+        accepted: 18,
+        rejected: 1,
+        eligible: false,
+        hasErrors: true,
+      })),
+    );
+  });
+
+  it('rejects JSON-derived missing or invalid checkpoints before they enter counts', () => {
+    const malformedCases: Array<[string, (corpusCase: CorpusCase) => unknown]> = [
+      [
+        'missing checkpoint',
+        (corpusCase: CorpusCase) => ({ ...corpusCase, checkpoint: undefined }),
+      ],
+      ['invalid checkpoint', (corpusCase: CorpusCase) => ({ ...corpusCase, checkpoint: 'AFTER' })],
+    ];
+
+    for (const [description, malformedCase] of malformedCases) {
+      const cases = completeFixtureCorpus('historical');
+      const materialControlIndex = cases.findIndex(
+        ({ stratum }) => stratum === 'material-no-catch-control',
+      );
+      const materialControl = cases[materialControlIndex];
+      const firstCase = cases[0];
+      if (!materialControl || !firstCase)
+        throw new Error('Expected complete test-only corpus cases');
+      cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+      cases[0] = JSON.parse(JSON.stringify(malformedCase(firstCase))) as CorpusCase;
+      const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+      const result = scoreRevalidationCorpus(cases, evidence);
+
+      expect(result, description).toMatchObject({
+        manifest: { total: 18, accepted: 17, rejected: 1 },
+        totalCases: 17,
+        labels: { material: 17, benign: 0, indeterminate: 0 },
+        rates: { historical: { determinateCaught: 16, falseHolds: 0 } },
+        belowFivePercent: { eligible: false },
+      });
+      expect(result.errors, description).not.toEqual([]);
+    }
+  });
+
+  it('refuses eligibility when a valid checkpoint differs from its frozen proof', () => {
+    const cases = completeFixtureCorpus('historical');
+    const materialControlIndex = cases.findIndex(
+      ({ stratum }) => stratum === 'material-no-catch-control',
+    );
+    const materialControl = cases[materialControlIndex];
+    if (!materialControl) throw new Error('Expected a material no-catch control');
+    cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+    const firstEvidenceCase = evidence.cases[0];
+    if (!firstEvidenceCase) throw new Error('Expected test-only evidence case');
+    firstEvidenceCase.checkpoint = 'SELECT';
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: expect.any(Array),
+      manifest: { total: 18, accepted: 18, rejected: 0 },
+      belowFivePercent: {
+        eligible: false,
+        historicalEligibilityEvidence: { verified: false, boundCases: 17 },
+      },
+    });
+    expect(result.errors).not.toEqual([]);
+  });
+
+  it('keeps historical unclassified annotations descriptive while excluding them from every scoring counter', () => {
+    const cases = completeFixtureCorpus('historical');
+    const materialControlIndex = cases.findIndex(
+      ({ stratum }) => stratum === 'material-no-catch-control',
+    );
+    const materialControl = cases[materialControlIndex];
+    const firstCase = cases[0];
+    if (!materialControl || !firstCase) throw new Error('Expected complete test-only corpus cases');
+    cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+    cases.push(
+      JSON.parse(
+        JSON.stringify({
+          ...firstCase,
+          caseId: 'historical-unclassified-caught',
+          locator: { ...firstCase.locator, seq: 19, detectionId: 'historical-unclassified-caught' },
+          stratum: 'unclassified',
+          observation: { detected: true, actionRequired: true },
+        }),
+      ) as CorpusCase,
+      JSON.parse(
+        JSON.stringify({
+          ...materialControl,
+          caseId: 'historical-unclassified-no-catch',
+          locator: {
+            ...materialControl.locator,
+            seq: 20,
+            detectionId: 'historical-unclassified-no-catch',
+          },
+          stratum: 'unclassified',
+          detectionObligation: 'required',
+          observation: { detected: false, actionRequired: null },
+        }),
+      ) as CorpusCase,
+    );
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: [],
+      manifest: { total: 20, accepted: 20, rejected: 0 },
+      totalCases: 20,
+      labels: { material: 20, benign: 0, indeterminate: 0 },
+      origins: { historical: { total: 20 } },
+      observed: { actionChangingOutcomes: 1 },
+      rates: { historical: { determinateCaught: 17, falseHolds: 0 } },
+      controls: {
+        materialNoCatch: {
+          historical: { required: { total: 1, missed: 1 }, deferred: { total: 0 } },
+        },
+      },
+      unclassifiedHistoricalCases: 2,
+      belowFivePercent: { eligible: false },
+    });
+    expect(result.strata).toEqual(
+      EXPECTED_STRATA.map((stratum) => expect.objectContaining({ stratum, total: 1 })),
+    );
+  });
+
+  it('rejects arbitrary strata and synthetic unclassified rows instead of treating either as historical annotations', () => {
+    for (const [description, origin, stratum] of [
+      ['arbitrary historical stratum', 'historical', 'undeclared-runtime-stratum'],
+      ['synthetic unclassified stratum', 'synthetic', 'unclassified'],
+    ]) {
+      const cases = completeFixtureCorpus('historical');
+      const materialControlIndex = cases.findIndex(
+        ({ stratum: caseStratum }) => caseStratum === 'material-no-catch-control',
+      );
+      const materialControl = cases[materialControlIndex];
+      const firstCase = cases[0];
+      if (!materialControl || !firstCase)
+        throw new Error('Expected complete test-only corpus cases');
+      cases[materialControlIndex] = { ...materialControl, detectionObligation: 'required' };
+      cases.push(
+        JSON.parse(
+          JSON.stringify({
+            ...firstCase,
+            caseId: `runtime-${description}`,
+            locator: { ...firstCase.locator, seq: 19, detectionId: `runtime-${description}` },
+            origin,
+            stratum,
+          }),
+        ) as CorpusCase,
+      );
+      const evidence = testOnlyHistoricalEligibilityEvidence(
+        cases.filter((corpusCase) => corpusCase.origin === 'historical'),
+      );
+
+      const result = scoreRevalidationCorpus(cases, evidence);
+
+      expect(result, description).toMatchObject({
+        manifest: { total: 19, accepted: 18, rejected: 1 },
+        totalCases: 18,
+        labels: { material: 18, benign: 0, indeterminate: 0 },
+        rates: { historical: { determinateCaught: 17, falseHolds: 0 } },
         belowFivePercent: { eligible: false },
       });
       expect(result.errors, description).not.toEqual([]);
@@ -1621,6 +2054,117 @@ describe('versioned independent historical adjudication fixture', () => {
   });
 });
 
+describe('historical classification annotation companion fixture', () => {
+  it('binds every raw historical case to its recorded checkpoint without copying labels or observations', () => {
+    const source = readHistoricalFixture();
+    const labels = readHistoricalLabels();
+    const classification = readHistoricalClassificationV2();
+    const sourceIds = source.observations.map(({ caseId }) => caseId).sort();
+    const labelIds = labels.cases.map(({ caseId }) => caseId).sort();
+    const pointByCaseId = new Map(source.observations.map(({ caseId, point }) => [caseId, point]));
+
+    expect(createHash('sha256').update(readFileSync(historicalFixturePath)).digest('hex')).toBe(
+      '9fec66526223db94383b1dbf6003f4dd164b173ec65fe8496f8d5bbddb1cdb9f',
+    );
+    expect(createHash('sha256').update(readFileSync(historicalLabelsPath)).digest('hex')).toBe(
+      'fc409a067b7ec31572648200da5152307f15fdfd65bb6b7fd23cea54302c7200',
+    );
+    expect(classification).toMatchObject({
+      schemaVersion: 2,
+      population: 'historical-annotation-v2',
+      sourceFixtureSha256: createHash('sha256')
+        .update(readFileSync(historicalFixturePath))
+        .digest('hex'),
+      sourceLabelsSha256: createHash('sha256')
+        .update(readFileSync(historicalLabelsPath))
+        .digest('hex'),
+    });
+    expect(Object.keys(classification).sort()).toEqual([
+      'cases',
+      'population',
+      'schemaVersion',
+      'sourceFixtureSha256',
+      'sourceLabelsSha256',
+    ]);
+    expect(classification.cases).toHaveLength(252);
+    expect(classification.cases.map(({ caseId }) => caseId).sort()).toEqual(sourceIds);
+    expect(sourceIds).toEqual(labelIds);
+    for (const annotation of classification.cases) {
+      expect(Object.keys(annotation).sort()).toEqual(['caseId', 'checkpoint', 'semanticStratum']);
+      expect(annotation.checkpoint).toBe(pointByCaseId.get(annotation.caseId));
+      expect(annotation.semanticStratum).toBe('unclassified');
+    }
+  });
+
+  it('keeps all 252 independently indeterminate historical annotations descriptive and outside every score', () => {
+    const source = readHistoricalFixture();
+    const labels = readHistoricalLabels();
+    const classification = readHistoricalClassificationV2();
+    const labelsByCaseId = new Map(
+      labels.cases.map((labelledCase) => [labelledCase.caseId, labelledCase]),
+    );
+    const annotationByCaseId = new Map(
+      classification.cases.map((annotation) => [annotation.caseId, annotation]),
+    );
+    const cases: CorpusCase[] = source.observations.map((observation) => {
+      const annotation = annotationByCaseId.get(observation.caseId);
+      const labelledCase = labelsByCaseId.get(observation.caseId);
+      if (!annotation || !labelledCase)
+        throw new Error(`Missing historical companion evidence for ${observation.caseId}`);
+      const detected = isRecordedCatch(observation);
+
+      return {
+        caseId: observation.caseId,
+        locator: {
+          run: observation.locator.run,
+          seq: observation.locator.seq,
+          detectionId:
+            observation.locator.detectionId ??
+            observation.locator.legacyIdentity ??
+            observation.caseId,
+        },
+        checkpoint: annotation.checkpoint,
+        stratum: annotation.semanticStratum,
+        kind: detected ? 'caught' : 'no-catch-control',
+        origin: 'historical',
+        observation: { detected, actionRequired: recordedActionRequired(observation) },
+        label: {
+          groundTruth: labelledCase.adjudication.groundTruth,
+          evidence: labelledCase.assessments.map(({ evidence }) => evidence).join('; '),
+          adjudication:
+            labelledCase.adjudication.status === 'agreed-determinate' ? 'agreed' : 'disagreed',
+        },
+      };
+    });
+    const evidence = testOnlyHistoricalEligibilityEvidence(cases);
+
+    const result = scoreRevalidationCorpus(cases, evidence);
+
+    expect(result).toMatchObject({
+      errors: [],
+      manifest: { total: 252, accepted: 252, rejected: 0 },
+      totalCases: 252,
+      labels: { material: 0, benign: 0, indeterminate: 252 },
+      origins: { historical: { total: 252 }, synthetic: { total: 0 } },
+      observed: { actionChangingOutcomes: 1 },
+      rates: {
+        historical: { determinateCaught: 0, falseHolds: 0 },
+        synthetic: { determinateCaught: 0, falseHolds: 0 },
+      },
+      controls: {
+        materialNoCatch: {
+          historical: { required: { total: 0, missed: 0 }, deferred: { total: 0 } },
+        },
+      },
+      unclassifiedHistoricalCases: 252,
+      belowFivePercent: { eligible: false, indeterminateCases: 252 },
+    });
+    expect(result.strata).toEqual(
+      EXPECTED_STRATA.map((stratum) => expect.objectContaining({ stratum, total: 0 })),
+    );
+  });
+});
+
 describe('constructed revalidation controls fixture', () => {
   it('freezes a separate versioned population rather than relabelling or combining historical observations', () => {
     const fixture = readConstructedControls();
@@ -2171,6 +2715,7 @@ describe('evidence-bound superseding pressure-v2 capture', () => {
         return {
           caseId: observation.caseId,
           locator: observation.locator,
+          checkpoint: observation.point,
           stratum: strata[observation.caseId],
           kind:
             observation.result === 'CURRENT' ? ('no-catch-control' as const) : ('caught' as const),
@@ -2261,6 +2806,7 @@ describe('evidence-bound synthetic pressure measurement', () => {
         return {
           caseId: observation.caseId,
           locator: observation.locator,
+          checkpoint: observation.point,
           stratum: strata[observation.caseId],
           kind: 'caught' as const,
           origin: 'synthetic' as const,
