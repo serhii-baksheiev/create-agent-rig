@@ -13,6 +13,6 @@
   },
   "options": {
     "maxGateRounds": 3,
-    "maxDelegatedRounds": 9
+    "maxDelegatedRounds": 10
   }
 }

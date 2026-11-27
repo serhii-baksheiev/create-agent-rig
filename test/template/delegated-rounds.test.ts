@@ -3247,7 +3247,7 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
   // Windows Actions run 45519854542 / job 138888690294 reached H6 after
   // 13,729ms at its 14s diagnostic. Retain its accepted 30s fixture budget
   // and stage diagnostics without increasing that bound for added grants.
-  it('the repository-composed budget admits the H9 grant for R12, then refuses a tenth grant and R13 without counting it', async () => {
+  it('the fixed nine-grant historical fixture admits H9 for R12, then refuses a tenth grant and R13 without counting it', async () => {
     const roots: string[] = [];
     const completedStages: string[] = [];
     let activeStage = 'fixture setup through base-cap exhaustion';
@@ -3266,14 +3266,22 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
       );
     }, 29_000);
     try {
-      // This is the real composed queue this repository runs, copied into an
-      // otherwise independent pushed Git fixture. It is deliberately not a
-      // hand-written maxDelegatedRounds: 2 test configuration.
+      // Keep the historical H1–H9 CLI/accounting scenario fixed at nine
+      // delegated grants. The repository's current policy is asserted
+      // separately in dogfood.test.ts: extending that policy must not grow
+      // this already expensive, Windows-bounded fixture into an H10 run.
       const repositoryQueue = JSON.parse(
         await readFile(path.join(repoRoot, '.claude', 'queue.json'), 'utf8'),
-      ) as unknown;
+      ) as Record<string, unknown>;
+      const fixedNineGrantQueue = {
+        ...repositoryQueue,
+        options: {
+          ...(repositoryQueue.options as Record<string, unknown>),
+          maxDelegatedRounds: 9,
+        },
+      };
       const { dir } = await newPushedProject(roots);
-      const cfg = await writeAndPushConfig(dir, repositoryQueue);
+      const cfg = await writeAndPushConfig(dir, fixedNineGrantQueue);
       await branchAndPush(dir, 'fix/a');
       await exhaustBaseCap(dir, 'fix/a', cfg);
 

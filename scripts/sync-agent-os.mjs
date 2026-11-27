@@ -222,11 +222,11 @@ function compose() {
   // stays unchanged for every project the rig generates. A generated project raising
   // its own cap is that project's decision to make, and AR-103 owns whether the
   // default itself moves. `maxDelegatedRounds` is likewise repository-only:
-  // this recovery needs nine separately head-bound delegated grants under owner
-  // permission, while generated rigs retain their one-round default in
+  // this recovery permits ten separately head-bound delegated grants, while
+  // generated rigs retain their one-round default in
   // delegated-decision.mjs.
   // See test/template/delegated-rounds.test.ts:
-  // "the repository-composed budget admits the H9 grant for R12, then refuses a tenth grant and R13 without counting it"
+  // "the fixed nine-grant historical fixture admits H9 for R12, then refuses a tenth grant and R13 without counting it"
   // and "absent maxDelegatedRounds defaults to 1: a first record succeeds, a second for the same ticket+branch is refused".
   out.set(
     '.claude/queue.json',
@@ -244,7 +244,7 @@ function compose() {
           AR: { project: 'AR', owner: 'create-agent-rig' },
           RP: { project: 'RP', owner: 'rig' },
         },
-        options: { maxGateRounds: 3, maxDelegatedRounds: 9 },
+        options: { maxGateRounds: 3, maxDelegatedRounds: 10 },
       },
       null,
       2,

@@ -135,6 +135,53 @@ describe('dogfooding: the tool repo runs its own agent-os', () => {
     ).resolves.toBeTruthy();
   });
 
+  it('composes a tenth repository-only delegated round without changing universal defaults', async () => {
+    const repositoryQueue = JSON.parse(
+      await readFile(path.join(repoRoot, '.claude', 'queue.json'), 'utf8'),
+    ) as { options?: Record<string, unknown> };
+    const universalQueue = JSON.parse(
+      await readFile(
+        path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'queue.json'),
+        'utf8',
+      ),
+    ) as { options?: Record<string, unknown> };
+    const { DEFAULT_MAX_DELEGATED_ROUNDS } = (await import(
+      pathToFileURL(
+        path.join(
+          repoRoot,
+          'templates',
+          'agent-os',
+          'universal',
+          '.claude',
+          'scripts',
+          'delegated-decision.mjs',
+        ),
+      ).href
+    )) as { DEFAULT_MAX_DELEGATED_ROUNDS: number };
+    const { DEFAULT_MAX_GATE_ROUNDS } = (await import(
+      pathToFileURL(
+        path.join(
+          repoRoot,
+          'templates',
+          'agent-os',
+          'universal',
+          '.claude',
+          'scripts',
+          'queue',
+          'core.mjs',
+        ),
+      ).href
+    )) as { DEFAULT_MAX_GATE_ROUNDS: number };
+
+    expect(repositoryQueue.options).toMatchObject({
+      maxGateRounds: 3,
+      maxDelegatedRounds: 10,
+    });
+    expect(universalQueue.options?.maxDelegatedRounds).toBeUndefined();
+    expect(DEFAULT_MAX_DELEGATED_ROUNDS).toBe(1);
+    expect(DEFAULT_MAX_GATE_ROUNDS).toBe(3);
+  });
+
   // RP-186: AGENTS.md is the composed, canonical rulebook that carries the
   // addendum; CLAUDE.md is a short shim with none of this text — it imports
   // AGENTS.md instead.
