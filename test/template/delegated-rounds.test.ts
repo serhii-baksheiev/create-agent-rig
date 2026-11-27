@@ -2600,6 +2600,243 @@ describe('queue/index.mjs gate-round --branch <b> --ticket <id> --authorized (RP
     }
   });
 
+  it('acquires shared authorization history once in each fresh reservation validation', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, {
+        adapter: 'plan-md',
+        options: { maxDelegatedRounds: 3 },
+      });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      const firstRun = await delegatedRunDir();
+      roots.push(firstRun);
+      const firstHead = await head(dir);
+      const firstRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'first consumed authorization',
+          '--head',
+          firstHead,
+        ],
+        dir,
+        envFor(firstRun),
+      );
+      expect(firstRecord.code, firstRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-1'], dir);
+      await git(['push', '-q'], dir);
+      expect(
+        (
+          await runGateRound(
+            ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+            dir,
+            envFor(firstRun),
+          )
+        ).code,
+      ).toBe(0);
+
+      await writeFile(path.join(dir, 'source-2.txt'), 'source two\n');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'source-2'], dir);
+      await git(['push', '-q'], dir);
+      const secondHead = await head(dir);
+      const secondRun = await delegatedRunDir();
+      roots.push(secondRun);
+      const secondRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'second consumed authorization',
+          '--head',
+          secondHead,
+        ],
+        dir,
+        envFor(secondRun),
+      );
+      expect(secondRecord.code, secondRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-2'], dir);
+      await git(['push', '-q'], dir);
+      expect(
+        (
+          await runGateRound(
+            ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+            dir,
+            envFor(secondRun),
+          )
+        ).code,
+      ).toBe(0);
+
+      // Both earlier records are committed and spent. Their source heads no
+      // longer match, but evaluating them still reaches this shared suffix.
+      await writeFile(path.join(dir, 'source-3.txt'), 'source three\n');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'source-3'], dir);
+      await git(['push', '-q'], dir);
+      const latestSourceHead = await head(dir);
+      const latestRun = await delegatedRunDir();
+      roots.push(latestRun);
+      const latestRecord = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'latest unconsumed authorization',
+          '--head',
+          latestSourceHead,
+        ],
+        dir,
+        envFor(latestRun),
+      );
+      expect(latestRecord.code, latestRecord.out).toBe(0);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization-3'], dir);
+      await git(['push', '-q'], dir);
+      const latestAuthorizationHead = await head(dir);
+
+      const traceRoot = await mkdtemp(path.join(tmpdir(), 'delegated-rounds-trace2-'));
+      roots.push(traceRoot);
+      const traceFile = path.join(traceRoot, 'git-trace2.json');
+      const reserved = await run(
+        process.execPath,
+        [
+          queueIndexScript,
+          'gate-round',
+          '--reserve',
+          '--branch',
+          'fix/a',
+          '--ticket',
+          'RP-1',
+          '--authorized',
+          '--config',
+          cfg,
+        ],
+        dir,
+        { ...envFor(latestRun), GIT_TRACE2_EVENT: traceFile },
+      );
+
+      expect(reserved.code, reserved.out).toBe(0);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(5);
+
+      const trace = (await readFile(traceFile, 'utf8'))
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { event?: unknown; argv?: unknown });
+      const starts = trace.filter((event) => event.event === 'start');
+      expect(starts).not.toHaveLength(0);
+      expect(starts.every((event) => Array.isArray(event.argv))).toBe(true);
+      const history = starts
+        .map((event) => event.argv as string[])
+        .filter(
+          (argv) =>
+            (argv.includes('rev-list') && argv.includes('--first-parent')) ||
+            argv.includes('diff-tree'),
+        );
+      expect(history).not.toHaveLength(0);
+
+      const batches: string[][][] = [];
+      for (const argv of history) {
+        if (argv.includes('rev-list')) batches.push([argv]);
+        else {
+          expect(batches.length).toBeGreaterThan(0);
+          batches.at(-1)!.push(argv);
+        }
+      }
+      const walks = history.filter((argv) => argv.includes('rev-list'));
+      const diffs = history.filter((argv) => argv.includes('diff-tree'));
+      console.info(
+        `RP566 history acquisition: rev-list=${walks.length}; diff-tree=${diffs.length}; batches=${batches.length}.`,
+      );
+      expect(
+        batches.length,
+        `Trace2 bounded history: rev-list=${walks.length}; diff-tree=${diffs.length}; batches=${batches.length}.`,
+      ).toBe(3);
+      for (const batch of batches) {
+        const [walk, ...diffs] = batch;
+        expect(walk).toContain('--no-replace-objects');
+        expect(walk).toContain('--max-count=32');
+        expect(diffs).not.toHaveLength(0);
+        expect(diffs.every((argv) => argv.includes('--no-replace-objects'))).toBe(true);
+        expect(diffs.map((argv) => argv.at(-1))).toEqual(
+          expect.arrayContaining([latestAuthorizationHead, latestSourceHead]),
+        );
+        expect(new Set(diffs.map((argv) => argv.at(-1))).size).toBe(diffs.length);
+      }
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
+  it('refuses a changed-and-reverted source history below a committed authorization', async () => {
+    const roots: string[] = [];
+    try {
+      const { dir } = await newPushedProject(roots);
+      const cfg = await writeAndPushConfig(dir, { adapter: 'plan-md' });
+      await branchAndPush(dir, 'fix/a');
+      await exhaustBaseCap(dir, 'fix/a', cfg);
+
+      await writeFile(path.join(dir, 'source.txt'), 'before\n');
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'source baseline'], dir);
+      await git(['push', '-q'], dir);
+      const authorizedHead = await head(dir);
+      const delegated = await delegatedRunDir();
+      roots.push(delegated);
+      const record = await runDelegated(
+        [
+          'record',
+          '--ticket',
+          'RP-1',
+          '--decision',
+          'extra-gate-round',
+          '--summary',
+          'authorization before a reverted source change',
+          '--head',
+          authorizedHead,
+        ],
+        dir,
+        envFor(delegated),
+      );
+      expect(record.code, record.out).toBe(0);
+
+      await writeFile(path.join(dir, 'source.txt'), 'changed\n');
+      await git(['add', 'source.txt'], dir);
+      await git(['commit', '-q', '-m', 'source change'], dir);
+      await writeFile(path.join(dir, 'source.txt'), 'before\n');
+      await git(['add', 'source.txt'], dir);
+      await git(['commit', '-q', '-m', 'source revert'], dir);
+      await git(['add', '-A'], dir);
+      await git(['commit', '-q', '-m', 'authorization after revert'], dir);
+      await git(['push', '-q'], dir);
+
+      const result = await runGateRound(
+        ['--branch', 'fix/a', '--ticket', 'RP-1', '--authorized', '--config', cfg],
+        dir,
+        envFor(delegated),
+      );
+      expect(result.code, result.out).toBe(2);
+      expect(await roundsFor(cfg, 'fix/a')).toBe(3);
+    } finally {
+      await Promise.all(roots.map((root) => removeFixture(root)));
+    }
+  });
+
   // Cross-clone replay: `.rig/decisions/` is read from the git tree, so an
   // authorization another session recorded and pushed is visible from a
   // SECOND, independent clone that never ran `record` itself.
