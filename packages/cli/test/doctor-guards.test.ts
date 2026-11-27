@@ -1,14 +1,17 @@
 import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import * as fsPromises from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { tmpdir, userInfo } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { initProject } from '../src/commands/init.js';
-import { inspectGuards } from '../src/integrations/doctor-guards.js';
+import { inspectGuards, type InspectGuardsOptions } from '../src/integrations/doctor-guards.js';
 import { agentOsUniversalDir } from '../src/templates.js';
 import type { ProviderProcessOptions, ProviderProcessResult } from '../src/integrations/spawn.js';
 import { removeFixture } from '../../../test/helpers/remove-fixture.js';
+
+vi.mock('node:fs/promises', { spy: true });
 
 let repo: string;
 
@@ -41,11 +44,10 @@ async function exists(file: string): Promise<boolean> {
 // root is `mkdtemp(path.join(os.tmpdir(), 'rig-guard-fixtures-'))`, made by
 // `inspectGuards` itself in this process — RP-310 moved root ownership from
 // the spawned child to the parent, so there is no longer a second process
-// that could make it instead. Overriding TMPDIR (read on POSIX) as well as
-// TEMP and TMP (read on Windows) for the duration of one `inspectGuards` call
-// therefore pins `os.tmpdir()`, on whichever platform this runs, to a
-// directory this test alone created and named — no other call, in this run
-// or a sibling test file, can ever produce a runDir under it. A flag whose
+// that could make it instead. The test intercepts only that exact mkdtemp
+// prefix and redirects it below a directory this call created and named. No
+// process environment value changes, so sibling mkdtemp calls retain their
+// ordinary root. A flag whose
 // `runDir`
 // starts with that exact directory is therefore this call's fixture, full
 // stop: no runDir-existence heuristic, no dependence on a "before" snapshot,
@@ -126,6 +128,70 @@ function batchResult(
   return { status, exitCode, stdout: 'private batch stdout', stderr: 'private batch stderr' };
 }
 
+type GuardRunner = NonNullable<InspectGuardsOptions['runner']>;
+
+// The RP-238 oracle deliberately directs the fixture's real guard batch into
+// a root that this test can identify independently. This helper retains the
+// original fixture mechanics so the isolation regression below can hold that
+// inspection at a deterministic boundary.
+async function inspectRp238Fixture(runner?: GuardRunner): Promise<{
+  uniqueRoot: string;
+  rootPrefix: string;
+  sawFixtureRunDir: boolean;
+  result: Awaited<ReturnType<typeof inspectGuards>>;
+}> {
+  // beforeEach owns this mutable file-level fixture. Keep this invocation
+  // tied to its original repository even if another case advances it while
+  // this helper is awaiting its private-root setup.
+  const fixtureRepo = repo;
+  const uniqueRoot = await mkdtemp(path.join(tmpdir(), 'rig-238-oracle-'));
+  const rootPrefix = uniqueRoot + path.sep;
+  const fixturePrefix = path.join(tmpdir(), 'rig-guard-fixtures-');
+  const originalMkdtemp = (
+    await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+  ).mkdtemp;
+  const mockedMkdtemp = vi.mocked(fsPromises.mkdtemp);
+  // One use only: inspectGuards creates its root before it calls the injected
+  // runner, so this redirect is consumed before the pending boundary under
+  // test. Later guard inspections use the real mkdtemp, never this root.
+  mockedMkdtemp.mockImplementationOnce((prefix, options) => {
+    if (prefix === fixturePrefix)
+      return originalMkdtemp(path.join(uniqueRoot, 'rig-guard-fixtures-'), options);
+    return originalMkdtemp(prefix, options);
+  });
+
+  // Sanity: the directory is fresh, so nothing should match yet.
+  expect(await fixtureFlagsUnderRoot(rootPrefix)).toEqual([]);
+
+  // While the call is in flight, poll for the fixture root appearing under
+  // this call's private root — confirming the redirect took effect, so the
+  // absence check below is not vacuously true because the fixture used some
+  // other, unwatched directory instead.
+  let sawFixtureRunDir = false;
+  const poll = setInterval(() => {
+    try {
+      if (readdirSync(uniqueRoot).some((name) => name.startsWith('rig-guard-fixtures-'))) {
+        sawFixtureRunDir = true;
+      }
+    } catch {
+      // uniqueRoot briefly unreadable mid mkdtemp/rmSync race; next tick retries.
+    }
+  }, 5);
+
+  try {
+    const result = await inspectGuards({ repoDir: fixtureRepo, runner });
+    return { uniqueRoot, rootPrefix, sawFixtureRunDir, result };
+  } catch (error) {
+    // A rejecting inspection cannot return its root to the caller for the
+    // normal success-path cleanup.
+    await removeFixture(uniqueRoot);
+    throw error;
+  } finally {
+    clearInterval(poll);
+    mockedMkdtemp.mockRestore();
+  }
+}
+
 describe('doctor guard inspection', () => {
   it('rejects guards moved out of their event even when command strings remain in the file', async () => {
     const settings = JSON.parse(await readFile(claudeSettings(), 'utf8'));
@@ -161,48 +227,7 @@ describe('doctor guard inspection', () => {
   });
 
   it("never leaves a fixture unattended flag behind in the invoking user's real home (RP-238)", async () => {
-    // Force this call's fixture root under a directory only this test
-    // created — see fixtureFlagsUnderRoot's comment for why that removes the
-    // dependency on production's own cleanup.
-    const uniqueRoot = await mkdtemp(path.join(tmpdir(), 'rig-238-oracle-'));
-    const rootPrefix = uniqueRoot + path.sep;
-    const savedTmpdir = process.env.TMPDIR;
-    const savedTemp = process.env.TEMP;
-    const savedTmp = process.env.TMP;
-    process.env.TMPDIR = uniqueRoot;
-    process.env.TEMP = uniqueRoot;
-    process.env.TMP = uniqueRoot;
-
-    // Sanity: the directory is fresh, so nothing should match yet.
-    expect(await fixtureFlagsUnderRoot(rootPrefix)).toEqual([]);
-
-    // While the call is in flight, poll for the child's own mkdtemp'd run
-    // root appearing under our override — confirming the redirection actually
-    // took effect, so the absence check below is not vacuously true because
-    // the child used some other, unwatched directory instead.
-    let sawFixtureRunDir = false;
-    const poll = setInterval(() => {
-      try {
-        if (readdirSync(uniqueRoot).some((name) => name.startsWith('rig-guard-fixtures-'))) {
-          sawFixtureRunDir = true;
-        }
-      } catch {
-        // uniqueRoot briefly unreadable mid mkdtemp/rmSync race; next tick retries.
-      }
-    }, 5);
-
-    let result: Awaited<ReturnType<typeof inspectGuards>>;
-    try {
-      result = await inspectGuards({ repoDir: repo });
-    } finally {
-      clearInterval(poll);
-      if (savedTmpdir === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = savedTmpdir;
-      if (savedTemp === undefined) delete process.env.TEMP;
-      else process.env.TEMP = savedTemp;
-      if (savedTmp === undefined) delete process.env.TMP;
-      else process.env.TMP = savedTmp;
-    }
+    const { uniqueRoot, rootPrefix, sawFixtureRunDir, result } = await inspectRp238Fixture();
 
     // The fixtures still have to run — a fix that just skips arming the flag
     // instead of scoping it to the fixture's own fake HOME must not pass this
@@ -221,6 +246,55 @@ describe('doctor guard inspection', () => {
     await removeFixture(uniqueRoot);
 
     expect(leaked).toEqual([]);
+  });
+
+  it('keeps the RP-238 fixture TEMP values private while its guard inspection is pending', async () => {
+    const parent = {
+      tmpdir: tmpdir(),
+      TMPDIR: process.env.TMPDIR,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+    };
+    let releaseInspection: (() => void) | undefined;
+    const inspectionMayFinish = new Promise<void>((resolve) => {
+      releaseInspection = resolve;
+    });
+    let inspectionStarted: (() => void) | undefined;
+    const inspectionHasStarted = new Promise<void>((resolve) => {
+      inspectionStarted = resolve;
+    });
+    const interrupted = new Error('RP-474 fixture inspection intentionally interrupted');
+
+    const fixture = inspectRp238Fixture(async () => {
+      inspectionStarted?.();
+      await inspectionMayFinish;
+      throw interrupted;
+    });
+
+    await inspectionHasStarted;
+    let successorRoot: string | undefined;
+    let recoveredSuccessorRoot: string | undefined;
+    try {
+      expect(process.env.TMPDIR).toBe(parent.TMPDIR);
+      expect(process.env.TEMP).toBe(parent.TEMP);
+      expect(process.env.TMP).toBe(parent.TMP);
+
+      successorRoot = await mkdtemp(path.join(tmpdir(), 'rig-474-successor-'));
+      expect(successorRoot.startsWith(parent.tmpdir + path.sep)).toBe(true);
+    } finally {
+      releaseInspection?.();
+      await expect(fixture).rejects.toBe(interrupted);
+      expect(process.env.TMPDIR).toBe(parent.TMPDIR);
+      expect(process.env.TEMP).toBe(parent.TEMP);
+      expect(process.env.TMP).toBe(parent.TMP);
+      recoveredSuccessorRoot = await mkdtemp(path.join(tmpdir(), 'rig-474-recovered-successor-'));
+      expect(recoveredSuccessorRoot.startsWith(parent.tmpdir + path.sep)).toBe(true);
+      await Promise.all(
+        [successorRoot, recoveredSuccessorRoot]
+          .filter((root): root is string => root !== undefined)
+          .map((root) => removeFixture(root)),
+      );
+    }
   });
 
   it('clears the fixture unattended flag from the real home when the guard batch is killed before its own cleanup (RP-310)', async () => {
