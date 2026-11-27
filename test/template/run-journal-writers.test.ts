@@ -63,6 +63,54 @@ const newRunDir = (): Promise<string> => mkdtemp(path.join(tmpdir(), 'run-writer
 
 const lockPathFor = (runDir: string): string => path.join(runDir, '.journal.lock');
 
+/**
+ * The native Windows race once reported every writer as `busy`, but its output
+ * did not say whether the planted owner had become live again or which lock
+ * artifact remained.  This is deliberately a categorical, post-race snapshot:
+ * it never prints an owner token, and it cannot prove what happened while the
+ * children were competing.
+ */
+const livenessAfterRace = (
+  pid: string,
+): 'alive' | 'absent' | 'permission-denied' | 'unreadable' => {
+  try {
+    process.kill(Number(pid), 0);
+    return 'alive';
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ESRCH') return 'absent';
+    if (code === 'EPERM') return 'permission-denied';
+    return 'unreadable';
+  }
+};
+
+const lockStateAfterRace = async (
+  lockPath: string,
+  planted: string,
+): Promise<'planted' | 'absent' | 'other-canonical' | 'malformed' | 'unreadable'> => {
+  try {
+    const value = await readFile(lockPath, 'utf8');
+    if (value === planted) return 'planted';
+    if (/^\d+:[0-9a-f]+$/.test(value)) return 'other-canonical';
+    return 'malformed';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+    return 'unreadable';
+  }
+};
+
+const markerStateAfterRace = async (
+  markerPath: string,
+): Promise<'present' | 'absent' | 'unreadable'> => {
+  try {
+    await readFile(markerPath, 'utf8');
+    return 'present';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'absent';
+    return 'unreadable';
+  }
+};
+
 /** The parsed lines of one journal file; an absent file is zero records. */
 const linesIn = async (runDir: string, file: string): Promise<JournalRecord[]> => {
   let raw: string;
@@ -401,7 +449,8 @@ describe('a stale lock reclaimed by two writers at once must not double-admit', 
     for (let iteration = 0; iteration < iterations; iteration += 1) {
       const runDir = await newRunDir();
       const lockPath = lockPathFor(runDir);
-      await writeFile(lockPath, `${ownerPid}:${'dead'.repeat(4)}`);
+      const plantedLock = `${ownerPid}:${'dead'.repeat(4)}`;
+      await writeFile(lockPath, plantedLock);
       const staleMtime = new Date(Date.now() - 60_000);
       await utimes(lockPath, staleMtime, staleMtime);
 
@@ -419,8 +468,19 @@ describe('a stale lock reclaimed by two writers at once must not double-admit', 
       const results = await spawned;
 
       if (results.some((result) => result.code !== 0)) {
+        const raceDiagnostic = JSON.stringify({
+          diagnostic: 'rp522-stale-lock-race',
+          iteration,
+          plantedOwnerPid: Number(ownerPid),
+          plantedOwnerLivenessAfterChildren: livenessAfterRace(ownerPid),
+          mainLockAfterChildren: await lockStateAfterRace(lockPath, plantedLock),
+          reclaimMarkerAfterChildren: await markerStateAfterRace(
+            path.join(runDir, '.journal.lock.reclaim'),
+          ),
+          nonzeroWriters: results.filter((result) => result.code !== 0).length,
+        });
         failures.push(
-          `iteration ${iteration}: a writer process exited nonzero\n` +
+          `iteration ${iteration}: a writer process exited nonzero\n${raceDiagnostic}\n` +
             results.map((result) => result.out).join('\n---\n'),
         );
         continue;
