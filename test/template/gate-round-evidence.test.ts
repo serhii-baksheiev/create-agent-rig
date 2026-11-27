@@ -1,5 +1,5 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, realpath, symlink, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -188,6 +188,9 @@ describe('RP-521 — gate-round consumes only recorded reviewer fan-out evidence
     const marker = path.join(value.root, 'counter-write-paused');
     const resume = path.join(value.root, 'counter-write-resume');
     const progress = path.join(value.root, 'journal-lock-progress');
+    const childTrace = process.env.RIG_RP596_CAPTURE_FILE
+      ? path.join(value.root, 'rp596-child-barrier-observation.json')
+      : undefined;
     const preload = path.join(value.root, 'pause-counter-write.mjs');
     await writeFile(
       preload,
@@ -202,19 +205,72 @@ fs.writeFileSync = function(file, ...args) {
     const progress = process.env.RP521_PROGRESS;
     const maxJournalWaits = Number(process.env.RP521_MAX_JOURNAL_WAITS ?? '0');
     let observedJournalWaits = 0;
-    let deadline = Date.now() + ${inactivityDeadlineMs};
-    while (!fs.existsSync(process.env.RP521_RESUME) && Date.now() < deadline) {
-      const journalWaits = progress && fs.existsSync(progress) ? Number(fs.readFileSync(progress, 'utf8')) : 0;
-      if (Number.isSafeInteger(journalWaits) && journalWaits > observedJournalWaits) {
-        if (maxJournalWaits === 0 || journalWaits > maxJournalWaits) {
-          throw new Error('counter write barrier exceeded journal lock bound');
+    if (!process.env.RP596_CHILD_TRACE) {
+      let deadline = Date.now() + ${inactivityDeadlineMs};
+      while (!fs.existsSync(process.env.RP521_RESUME) && Date.now() < deadline) {
+        const journalWaits = progress && fs.existsSync(progress) ? Number(fs.readFileSync(progress, 'utf8')) : 0;
+        if (Number.isSafeInteger(journalWaits) && journalWaits > observedJournalWaits) {
+          if (maxJournalWaits === 0 || journalWaits > maxJournalWaits) {
+            throw new Error('counter write barrier exceeded journal lock bound');
+          }
+          observedJournalWaits = journalWaits;
+          deadline = Date.now() + ${inactivityDeadlineMs};
         }
-        observedJournalWaits = journalWaits;
-        deadline = Date.now() + ${inactivityDeadlineMs};
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       }
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+      if (!fs.existsSync(process.env.RP521_RESUME)) throw new Error('counter write barrier timed out');
+    } else {
+      const markerMonotonicMs = performance.now();
+      const markerWallMs = Date.now();
+      let deadline = Date.now() + ${inactivityDeadlineMs};
+      const initialWallDeadlineMs = deadline;
+      const validResets = [];
+      let terminalReason = 'inactivity-timeout';
+      const counterPersistenceAtBarrier = {
+        counterExists: fs.existsSync(process.env.RP521_ROUNDS),
+        lockExists: fs.existsSync(process.env.RP521_ROUNDS + '.lock'),
+      };
+      const writeTrace = () => {
+        original.call(this, process.env.RP596_CHILD_TRACE, JSON.stringify({
+          markerObserved: true,
+          markerMonotonicMs,
+          markerWallMs,
+          openedMonotonicMs: markerMonotonicMs,
+          initialWallDeadlineMs,
+          finalWallDeadlineMs: deadline,
+          validResets,
+          terminalReason,
+          counterPersistenceAtBarrier,
+          timeOriginMs: performance.timeOrigin,
+          finalMonotonicMs: performance.now(),
+          finalWallMs: Date.now(),
+        }));
+      };
+      try {
+        while (!fs.existsSync(process.env.RP521_RESUME) && Date.now() < deadline) {
+          const journalWaits = progress && fs.existsSync(progress) ? Number(fs.readFileSync(progress, 'utf8')) : 0;
+          if (Number.isSafeInteger(journalWaits) && journalWaits > observedJournalWaits) {
+            if (maxJournalWaits === 0 || journalWaits > maxJournalWaits) {
+              terminalReason = 'journal-lock-bound-exceeded';
+              throw new Error('counter write barrier exceeded journal lock bound');
+            }
+            observedJournalWaits = journalWaits;
+            deadline = Date.now() + ${inactivityDeadlineMs};
+            validResets.push({
+              progress: journalWaits,
+              monotonicMs: performance.now(),
+              resetWallMs: Date.now(),
+              resetDeadlineWallMs: deadline,
+            });
+          }
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        if (!fs.existsSync(process.env.RP521_RESUME)) throw new Error('counter write barrier timed out');
+        terminalReason = 'resume-observed';
+      } finally {
+        writeTrace();
+      }
     }
-    if (!fs.existsSync(process.env.RP521_RESUME)) throw new Error('counter write barrier timed out');
   }
   return original.call(this, file, ...args);
 };
@@ -233,6 +289,7 @@ syncBuiltinESMExports();
           RP521_RESUME: resume,
           RP521_PROGRESS: progress,
           RP521_MAX_JOURNAL_WAITS: String(maxJournalWaits),
+          RP596_CHILD_TRACE: childTrace ?? '',
         },
       },
     );
@@ -240,7 +297,7 @@ syncBuiltinESMExports();
     child.stderr.on('data', (chunk) => stderr.push(String(chunk)));
     const exit = new Promise<number | null>((resolve) => child.once('close', resolve));
 
-    return { marker, progress, resume, stderr, exit };
+    return { marker, progress, resume, stderr, exit, childTrace };
   };
 
   it('does not consume a round when the declared run has no reviewer fan-out record', async () => {
@@ -2096,34 +2153,224 @@ syncBuiltinESMExports();
     await waitForFile(barrier.marker);
 
     const originalWait = Atomics.wait;
+    const captureFile = process.env.RIG_RP596_CAPTURE_FILE;
     let journalWaits = 0;
     let appendFailure: unknown;
+    let appendReturn: unknown;
+    let appendThrew = false;
+    const lockPath = path.join(runDir, '.journal.lock');
+    const observeLock = () => {
+      if (!existsSync(lockPath))
+        return { existence: 'absent', ownerPidStatus: 'absent', ownerPid: null } as const;
+      try {
+        const match = /^(\d+):/.exec(readFileSync(lockPath, 'utf8'));
+        const ownerPid = match ? Number(match[1]) : NaN;
+        return Number.isSafeInteger(ownerPid) && ownerPid > 0
+          ? ({ existence: 'present', ownerPidStatus: 'observed', ownerPid } as const)
+          : ({ existence: 'present', ownerPidStatus: 'unparseable', ownerPid: null } as const);
+      } catch {
+        return { existence: 'unknown', ownerPidStatus: 'unparseable', ownerPid: null } as const;
+      }
+    };
+    const lockAtMarker = captureFile
+      ? {
+          ...observeLock(),
+          observedPoint: 'after-marker-before-startedAt',
+          observedMonotonicMs: performance.now(),
+        }
+      : undefined;
     const startedAt = Date.now();
+    const startedMonotonicAt = captureFile ? performance.now() : 0;
+    const waits: {
+      result: 'ok' | 'not-equal' | 'timed-out';
+      startedMonotonicMs: number;
+      endedMonotonicMs: number;
+      durationMs: number;
+    }[] = [];
+    let elapsedWallMs: number;
+    let elapsedMonotonicMs = 0;
+    let originalElapsedSnapshotMonotonicMs = 0;
+    let resumeWrittenMonotonicMs = 0;
     try {
       Atomics.wait = ((...input: Parameters<typeof Atomics.wait>) => {
         const [typedArray, index, waitedOn, timeout] = input;
         if (timeout === 25) {
           journalWaits += 1;
           writeFileSync(barrier.progress, String(journalWaits));
+          if (!captureFile) return originalWait(typedArray, index, waitedOn, timeout);
+          const waitStartedAt = performance.now();
+          const result = originalWait(typedArray, index, waitedOn, timeout);
+          const waitEndedAt = performance.now();
+          waits.push({
+            result,
+            startedMonotonicMs: waitStartedAt,
+            endedMonotonicMs: waitEndedAt,
+            durationMs: waitEndedAt - waitStartedAt,
+          });
+          return result;
         }
         return originalWait(typedArray, index, waitedOn, timeout);
       }) as typeof Atomics.wait;
       try {
-        await fanOut({
+        appendReturn = await fanOut({
           runDir,
           headSha: value.head,
           reviewers: ['security-scanner'],
           why: `gate-round reservation: ${token}`,
         });
       } catch (error) {
+        appendThrew = true;
         appendFailure = error;
       }
     } finally {
       Atomics.wait = originalWait;
       await writeFile(barrier.resume, 'continue');
+      elapsedWallMs = Date.now() - startedAt;
+      const postResumeMonotonicMs = captureFile ? performance.now() : 0;
+      if (captureFile) {
+        elapsedMonotonicMs = postResumeMonotonicMs - startedMonotonicAt;
+        originalElapsedSnapshotMonotonicMs = postResumeMonotonicMs;
+        resumeWrittenMonotonicMs = postResumeMonotonicMs;
+      }
     }
 
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(1_000);
+    if (captureFile) {
+      const evidenceAfter = readFileSync(path.join(runDir, 'decisions.jsonl'), 'utf8');
+      const beforeEntries = evidenceBefore === '' ? 0 : evidenceBefore.trimEnd().split('\n').length;
+      const afterEntries = evidenceAfter === '' ? 0 : evidenceAfter.trimEnd().split('\n').length;
+      const beforeBytes = Buffer.byteLength(evidenceBefore);
+      const afterBytes = Buffer.byteLength(evidenceAfter);
+      const appendDecisionDelta = {
+        beforeEntries,
+        afterEntries,
+        addedEntries: afterEntries - beforeEntries,
+        beforeBytes,
+        afterBytes,
+        addedBytes: afterBytes - beforeBytes,
+        observedMonotonicMs: performance.now(),
+        observedPoint: 'after-original-elapsed-snapshot',
+      };
+      const lockAfterOriginalElapsedSnapshot = {
+        ...observeLock(),
+        observedPoint: 'after-original-elapsed-snapshot',
+        observedMonotonicMs: performance.now(),
+      };
+      const childExit = await barrier.exit;
+      const childClosedMonotonicMs = performance.now();
+      const lockAfterChildClose = observeLock();
+      let childTrace: Record<string, unknown> = {};
+      if (barrier.childTrace) {
+        try {
+          const parsed: unknown = JSON.parse(await readFile(barrier.childTrace, 'utf8'));
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed))
+            childTrace = parsed as Record<string, unknown>;
+        } catch {
+          // The capture records the absent sidecar below; it must not manufacture child data.
+        }
+      }
+      const childNumber = (field: string): number | null =>
+        typeof childTrace[field] === 'number' &&
+        Number.isFinite(childTrace[field]) &&
+        childTrace[field] >= 0
+          ? childTrace[field]
+          : null;
+      const validResets = Array.isArray(childTrace.validResets) ? childTrace.validResets : null;
+      const childComplete =
+        childTrace.markerObserved === true &&
+        childNumber('markerMonotonicMs') !== null &&
+        validResets !== null &&
+        childNumber('openedMonotonicMs') !== null &&
+        childNumber('finalMonotonicMs') !== null &&
+        typeof childTrace.terminalReason === 'string';
+      const appendError =
+        appendFailure !== null && typeof appendFailure === 'object'
+          ? (appendFailure as Record<string, unknown>)
+          : {};
+      const append = appendThrew
+        ? {
+            outcome: 'THREW',
+            return: null,
+            error: {
+              name: typeof appendError.name === 'string' ? appendError.name : null,
+              code: typeof appendError.code === 'string' ? appendError.code : null,
+              failure: typeof appendError.failure === 'string' ? appendError.failure : null,
+              attempts:
+                typeof appendError.attempts === 'number' &&
+                Number.isSafeInteger(appendError.attempts) &&
+                appendError.attempts >= 0
+                  ? appendError.attempts
+                  : null,
+            },
+          }
+        : { outcome: 'RETURNED', returnType: typeof appendReturn, return: null, error: null };
+      const waitSummary = { ok: 0, 'not-equal': 0, 'timed-out': 0, total: waits.length };
+      for (const wait of waits) waitSummary[wait.result] += 1;
+      await writeFile(
+        captureFile,
+        JSON.stringify({
+          schemaVersion: 1,
+          kind: 'rp596-owner-bounded-capture',
+          lifecycle: childComplete ? 'complete' : 'incomplete',
+          process: {
+            platform: process.platform,
+            arch: process.arch,
+            node: process.version,
+            pid: process.pid,
+          },
+          parent: { lockMaxAttempts: LOCK_MAX_ATTEMPTS, waits, waitSummary, append },
+          childBarrier: {
+            marker: {
+              observed:
+                typeof childTrace.markerObserved === 'boolean' ? childTrace.markerObserved : null,
+              monotonicMs: childNumber('markerMonotonicMs'),
+            },
+            progress: { validResets, resetCount: validResets?.length ?? null },
+            deadlines: {
+              openedMonotonicMs: childNumber('openedMonotonicMs'),
+              finalMonotonicMs: childNumber('finalMonotonicMs'),
+              inactivityMs: 1_000,
+              initialWallDeadlineMs: childNumber('initialWallDeadlineMs'),
+              finalWallDeadlineMs: childNumber('finalWallDeadlineMs'),
+            },
+            terminalReason:
+              typeof childTrace.terminalReason === 'string' ? childTrace.terminalReason : null,
+            observation: {
+              sidecar: Object.keys(childTrace).length > 0 ? 'read' : 'unavailable',
+              counterPersistenceAtBarrier: childTrace.counterPersistenceAtBarrier ?? null,
+            },
+          },
+          lock: {
+            atMarker: lockAtMarker,
+            atTerminal: lockAfterOriginalElapsedSnapshot,
+            afterChildClose: lockAfterChildClose,
+          },
+          appendDecisionDelta,
+          chronology: {
+            originalElapsedSnapshotMonotonicMs,
+            resumeWrittenMonotonicMs,
+            childClosedMonotonicMs,
+            childExit,
+          },
+          clocks: {
+            parent: {
+              startedWallMs: startedAt,
+              elapsedWallMs,
+              elapsedMonotonicMs,
+              timeOriginMs: performance.timeOrigin,
+            },
+            child: {
+              markerWallMs: childNumber('markerWallMs'),
+              finalWallMs: childNumber('finalWallMs'),
+              timeOriginMs: childNumber('timeOriginMs'),
+            },
+          },
+        }),
+        { flag: 'wx' },
+      );
+    }
+    if (!captureFile) elapsedWallMs = Date.now() - startedAt;
+
+    expect(elapsedWallMs).toBeGreaterThanOrEqual(1_000);
     expect(journalWaits).toBeGreaterThan(0);
     expect(journalWaits).toBeLessThanOrEqual(LOCK_MAX_ATTEMPTS);
     expect((appendFailure as { failure?: string } | undefined)?.failure).toBe('busy');
