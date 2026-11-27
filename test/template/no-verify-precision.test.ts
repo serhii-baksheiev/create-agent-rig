@@ -23,6 +23,41 @@ const fixtures: string[] = [];
 const GIT_FIXTURE_TIMEOUT_MS = 10_000;
 const GIT_FIXTURE_MAX_BUFFER = 1024 * 1024;
 
+const gitConfigDiagnosticImport = (() => {
+  const source = String.raw`
+import childProcess from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+
+const original = childProcess.execFileSync;
+childProcess.execFileSync = function (file, args, options) {
+  const isHooksPathLookup = file === 'git' && Array.isArray(args) && args.slice(-3).join('|') === 'config|--get|core.hooksPath';
+  if (!isHooksPathLookup) return original.call(this, file, args, options);
+  const startedAt = performance.now();
+  try {
+    return original.call(this, file, args, options);
+  } catch (error) {
+    const detail = error && typeof error === 'object' ? error : {};
+    const stderr = detail.stderr;
+    const status = Number.isInteger(detail.status) ? detail.status : null;
+    const signal = typeof detail.signal === 'string' ? detail.signal : null;
+    const code = detail.code === 'ETIMEDOUT' ? 'timeout' : status === null ? (signal === null ? 'system-or-unknown' : 'signal') : 'exit-status';
+    const stderrBytes = typeof stderr === 'string' ? Buffer.byteLength(stderr) : Buffer.isBuffer(stderr) ? stderr.length : 0;
+    process.stderr.write(JSON.stringify({ diagnostic: 'rp522-git-config-preflight', status, code, signal, errorClass: error instanceof Error ? error.name : typeof error, stderrBytes, elapsedMonotonicMs: performance.now() - startedAt }) + '\n');
+    throw error;
+  }
+};
+syncBuiltinESMExports();
+`;
+  return `data:text/javascript,${encodeURIComponent(source)}`;
+})();
+
+const withGitConfigDiagnostic = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({
+  ...env,
+  NODE_OPTIONS: [env.NODE_OPTIONS, `--import=${gitConfigDiagnosticImport}`]
+    .filter(Boolean)
+    .join(' '),
+});
+
 afterEach(async () => {
   await Promise.all(fixtures.splice(0).map((fixture) => removeFixture(fixture)));
 });
@@ -585,6 +620,11 @@ const inspectWithEnv = (command: string, env: NodeJS.ProcessEnv, cwd?: string) =
 
 type CommandResult = { code: number; stdout: string; stderr: string };
 
+const boundedKnownVersion = (value: string): string => {
+  const firstLine = value.split(/\r?\n/, 1)[0]?.trim() ?? '';
+  return /^[A-Za-z0-9][A-Za-z0-9 ._()/-]{0,159}$/.test(firstLine) ? firstLine : 'unrecognized';
+};
+
 const shell = (command: string): Promise<CommandResult> =>
   new Promise((resolve) => {
     const environment = gitEnv();
@@ -602,6 +642,41 @@ const shell = (command: string): Promise<CommandResult> =>
       },
     );
   });
+
+const recordEnvSplitWitness = async (
+  native: CommandResult,
+  hookExit: number | 'TIMEOUT',
+): Promise<void> => {
+  if (native.stdout === 'A|B|') return;
+  const version = await shell('sh --version');
+  const envVersion = await shell('env --version');
+  const environment = gitEnv();
+  console.info(
+    JSON.stringify({
+      diagnostic: 'rp522-env-s-native-witness',
+      platform: process.platform,
+      nodeVersion: process.version,
+      witness: native.stdout === 'A\nB|' ? 'literal-newline' : 'other',
+      hookExit,
+      shVersionStatus: version.code,
+      shVersion: boundedKnownVersion(version.stdout),
+      envVersionStatus: envVersion.code,
+      envVersion: boundedKnownVersion(envVersion.stdout),
+      pathPresent: Boolean(environment.PATH),
+      shellPresent: Boolean(environment.SHELL),
+      comspecPresent: Boolean(environment.ComSpec),
+    }),
+  );
+};
+
+const nativeGitExecutable = async (): Promise<string> => {
+  const resolved = await shell('command -v git');
+  expect(resolved.code, resolved.stderr).toBe(0);
+  const executable = resolved.stdout.trim();
+  expect(executable).not.toMatch(/\r?\n/);
+  expect(path.posix.isAbsolute(executable) || path.isAbsolute(executable)).toBe(true);
+  return `'${executable.replaceAll("'", "'\"'\"'")}'`;
+};
 
 const git = (args: string[], cwd: string, env = gitEnv()): Promise<CommandResult> =>
   new Promise((resolve) => {
@@ -728,7 +803,11 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
       fixture,
     );
     expect(benign.code, benign.stderr).toBe(0);
-    const cleared = await inspectWithEnv('env -i git commit -m x', inherited, fixture);
+    const cleared = await inspectWithEnv(
+      'env -i git commit -m x',
+      withGitConfigDiagnostic(inherited),
+      fixture,
+    );
     expect(cleared.code, cleared.stderr).toBe(0);
     const unset = await inspectWithEnv(
       'env -u GIT_CONFIG_COUNT -u GIT_CONFIG_KEY_0 -u GIT_CONFIG_VALUE_0 git commit -m x',
@@ -1036,11 +1115,12 @@ describe('block-no-verify precise commit bypass detection (RP-522)', () => {
   it('treats newlines as env -S argument separators before refusing a commit bypass', async () => {
     const native = await shell(`env -S '/usr/bin/printf "%s|" A
 B'`);
+    const result = await inspect(`env -S 'git
+commit --no-verify -m x'`);
+    await recordEnvSplitWitness(native, result.code);
     expect(native.code, native.stderr).toBe(0);
     expect(native.stdout, native.stderr).toBe('A|B|');
 
-    const result = await inspect(`env -S 'git
-commit --no-verify -m x'`);
     expect(result.code, result.stderr).toBe(2);
   });
 
@@ -1235,6 +1315,7 @@ commit --no-verify -m x'`);
     const fixture = await newGitFixture();
     const inherited = { ...gitEnv(), HUSKY: '0' };
     const fixtureJson = JSON.stringify(fixture);
+    const gitExecutable = await nativeGitExecutable();
 
     for (const command of [
       `env -C ${fixtureJson} -u HUSKY git commit -m x`,
@@ -1246,11 +1327,13 @@ commit --no-verify -m x'`);
 
     for (const command of [
       `HUSKY=0 env -C ${fixtureJson} -u HUSKY git rev-parse --show-toplevel`,
-      `HUSKY=0 env -C ${fixtureJson} -i git rev-parse --show-toplevel`,
+      `HUSKY=0 env -C ${fixtureJson} -i ${gitExecutable} rev-parse --show-toplevel`,
     ]) {
       const result = await shell(command);
       expect.soft(result.code, `${command}: ${result.stderr}`).toBe(0);
-      expect.soft(result.stdout, `${command}: ${result.stderr}`).toBe(`${fixture}\n`);
+      expect
+        .soft(path.resolve(result.stdout.trim()), `${command}: ${result.stderr}`)
+        .toBe(path.resolve(fixture));
     }
   });
 
