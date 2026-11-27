@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, unlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
@@ -137,7 +137,7 @@ async function temporaryRepo(): Promise<string> {
   return dir;
 }
 
-const put = async (dir: string, relative: string, content: string): Promise<void> => {
+const put = async (dir: string, relative: string, content: string | Uint8Array): Promise<void> => {
   const file = path.join(dir, relative);
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, content);
@@ -180,6 +180,23 @@ const run = (dir: string, args: string[] = []): Promise<Run> =>
       },
     );
   });
+
+/**
+ * Credential-shaped RP-597 fixtures use a value assembled in
+ * `secrets-fixtures.ts`. Keep a failed assertion from echoing that value back
+ * into the test report: a rejection must name the finding without printing it,
+ * even in the regression suite that proves it.
+ */
+const expectNoCredentialValueIn = (out: string, value: string): void => {
+  expect([out.includes(value), out.includes(value.slice(0, 12))]).toEqual([false, false]);
+};
+
+const nulWrapped = (value: string, position: 'before' | 'after'): Buffer => {
+  const leading = position === 'before' ? Buffer.from([0xff, 0x00, 0x80]) : Buffer.from([0xff]);
+  const trailing =
+    position === 'after' ? Buffer.from([0x00, 0x80, 0x0a]) : Buffer.from([0x80, 0x0a]);
+  return Buffer.concat([leading, Buffer.from(value, 'ascii'), trailing]);
+};
 
 describe('validate-no-secrets — the default sweep over the tracked set', () => {
   it('exits 0 and says it looked, on a repository with nothing to find', async () => {
@@ -326,6 +343,91 @@ describe('validate-no-secrets --staged — the half a pre-commit hook runs', () 
 
     const result = await run(dir, ['--staged']);
     expect(result.code, result.out).toBe(0);
+  }, 20_000);
+});
+
+describe('RP-597 — NUL-bearing content remains inside the secret-scan contract', () => {
+  it('rejects tracked credential shapes with NUL and non-UTF-8 bytes on either side', async () => {
+    const dir = await temporaryRepo();
+    await put(dir, 'fixtures/nul-before.dat', nulWrapped(CLOUD_ACCESS_KEY, 'before'));
+    await put(dir, 'fixtures/nul-after.dat', nulWrapped(CLOUD_ACCESS_KEY, 'after'));
+    await git(dir, ['add', '--', 'fixtures/nul-before.dat', 'fixtures/nul-after.dat']);
+
+    const result = await run(dir);
+
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/^fixtures\/nul-before\.dat:1 — cloud-access-key$/m);
+    expect(result.out).toMatch(/^fixtures\/nul-after\.dat:1 — cloud-access-key$/m);
+    expectNoCredentialValueIn(result.out, CLOUD_ACCESS_KEY);
+  }, 20_000);
+
+  it('rejects staged NUL-bearing content from the index after the worktree is made clean', async () => {
+    const dir = await temporaryRepo();
+    await put(dir, 'seed.txt', 'seed\n');
+    await git(dir, ['add', '--', 'seed.txt']);
+    await commitAll(dir);
+
+    await put(dir, 'deploy/pending.dat', nulWrapped(CLOUD_ACCESS_KEY, 'after'));
+    await git(dir, ['add', '--', 'deploy/pending.dat']);
+    await put(dir, 'deploy/pending.dat', 'the worktree is clean after staging\n');
+
+    const result = await run(dir, ['--staged']);
+
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/^deploy\/pending\.dat:1 — cloud-access-key$/m);
+    expectNoCredentialValueIn(result.out, CLOUD_ACCESS_KEY);
+  }, 20_000);
+
+  it('accepts a clean index even when the later worktree content carries NUL and a credential', async () => {
+    const dir = await temporaryRepo();
+    await put(dir, 'seed.txt', 'seed\n');
+    await git(dir, ['add', '--', 'seed.txt']);
+    await commitAll(dir);
+
+    await put(dir, 'deploy/pending.dat', 'the staged content is clean\n');
+    await git(dir, ['add', '--', 'deploy/pending.dat']);
+    await put(dir, 'deploy/pending.dat', nulWrapped(CLOUD_ACCESS_KEY, 'before'));
+
+    const result = await run(dir, ['--staged']);
+
+    expect(result.code).toBe(0);
+    expectNoCredentialValueIn(result.out, CLOUD_ACCESS_KEY);
+  }, 20_000);
+
+  it('accepts benign NUL text and non-UTF-8 binary bytes only after actually inspecting them', async () => {
+    const dir = await temporaryRepo();
+    await put(dir, 'fixtures/nul.txt', 'ordinary\0text\n');
+    await put(dir, 'fixtures/benign.dat', Buffer.from([0xff, 0x00, 0x80, 0x0a]));
+    await git(dir, ['add', '--', 'fixtures/nul.txt', 'fixtures/benign.dat']);
+
+    const result = await run(dir);
+
+    expect(result.code).toBe(0);
+    expect(result.out).toMatch(/\b2 tracked file\(s\) scanned\b/i);
+    expect(result.out).not.toMatch(/\bunread\b|\bskipped\b/i);
+  }, 20_000);
+
+  it('rejects and reports a staged path whose index blob cannot be read', async () => {
+    const dir = await temporaryRepo();
+    const missingBlob = '1'.repeat(40);
+    const relativePath = 'fixtures/index-only.dat';
+    await git(dir, [
+      'update-index',
+      '--add',
+      '--info-only',
+      '--cacheinfo',
+      `100644,${missingBlob},${relativePath}`,
+    ]);
+
+    const { stdout } = await git(dir, ['diff', '--cached', '--name-only', '--diff-filter=d', '-z']);
+    expect(stdout.split('\0')).toContain(relativePath);
+    await expect(git(dir, ['show', `:${relativePath}`])).rejects.toThrow();
+
+    const result = await run(dir, ['--staged']);
+
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/1 unread/i);
+    expect(result.out).not.toMatch(/^clean\b/im);
   }, 20_000);
 });
 
@@ -618,19 +720,22 @@ describe('validate-no-secrets — what the sweep cannot see, stated and tested',
     expect(result.out).toMatch(/^data\/blob\.txt:\d+ — cloud-access-key$/m);
   }, 60_000);
 
-  // "clean" and "N scanned" were built to separate a clean tree from an empty
-  // read. They did not separate either from "N counted, some never opened".
-  it('reports the files it could not read, instead of counting them as scanned', async () => {
+  // The old fixture used a NUL-bearing image as a proxy for a file that could
+  // not be opened. RP-597 makes that proxy wrong: readable NUL-bearing bytes
+  // must be scanned. A tracked file removed after `git add` is the actual
+  // unreadable case, and the fail-closed result keeps the reporting invariant
+  // without calling an uninspected file clean.
+  it('RP-597 rejects and reports a tracked file it cannot actually read', async () => {
     const dir = await temporaryRepo();
     await put(dir, 'ok.txt', 'ordinary text\n');
-    await put(dir, 'image.bin', 'PNG\0\0binary\0payload\n');
-    await git(dir, ['add', '--', 'ok.txt', 'image.bin']);
+    await put(dir, 'missing.bin', 'the file will be removed after git records it\n');
+    await git(dir, ['add', '--', 'ok.txt', 'missing.bin']);
+    await unlink(path.join(dir, 'missing.bin'));
 
     const result = await run(dir);
-    expect(result.code, result.out).toBe(0);
-    expect(result.out, 'the summary hides that a file was never opened').toMatch(
-      /1 unread|1 skipped/i,
-    );
+    expect(result.code).toBe(1);
+    expect(result.out).toMatch(/1 unread/i);
+    expect(result.out).not.toMatch(/^clean\b/im);
   }, 20_000);
 
   it('states its limits in its own source, where a reader of the clean line would look', async () => {

@@ -34,12 +34,15 @@
 // these in the file, next to the guarantee, because the `clean` line is where a
 // reader forms their belief. Each is pinned by a test:
 //
-//   - A BINARY file is not scanned at all. Any file containing a NUL byte is
-//     skipped, and the summary counts it separately rather than reporting it as
-//     scanned — see validate-no-secrets.test.ts › "reports the files it could
-//     not read, instead of counting them as scanned". A credential inside a
-//     binary blob is invisible here.
-//   - An UNREADABLE file is the same case and is counted the same way.
+//   - Readable content with NUL or non-UTF-8 bytes is scanned. See
+//     validate-no-secrets.test.ts › "rejects tracked credential shapes with NUL
+//     and non-UTF-8 bytes on either side" and › "accepts benign NUL text and
+//     non-UTF-8 binary bytes only after actually inspecting them".
+//   - An UNREADABLE worktree file or index blob is counted as unread and makes
+//     the sweep fail closed rather than report clean. See
+//     validate-no-secrets.test.ts › "RP-597 rejects and reports a tracked file
+//     it cannot actually read" and › "rejects and reports a staged path whose
+//     index blob cannot be read".
 //   - It reads the TRACKED set (or the STAGED set). A credential in a file git
 //     does not track is out of scope on purpose — a local `.env` is the point of
 //     `.gitignore` — see › "leaves an untracked file alone, however loudly it
@@ -181,12 +184,10 @@ const stagedFiles = () =>
     git(['diff', '--cached', '--name-only', '--diff-filter=d', '-z'], { inheritLocation: true }),
   );
 
-/** Text of a file, or `null` when it is binary or unreadable — never a throw. */
+/** Text of a file, or `null` when it cannot be read — never a throw. */
 const textOf = (read) => {
   try {
-    const text = read();
-    // A NUL byte means binary; scanning it finds nothing and costs the read.
-    return text.includes('\0') ? null : text;
+    return read();
   } catch {
     return null;
   }
@@ -289,7 +290,7 @@ export function sweep(
   ];
 
   const counted = `${files.length} ${label} scanned${unread > 0 ? `, ${unread} unread` : ''}`;
-  if (lines.length === 0) {
+  if (lines.length === 0 && unread === 0) {
     // 🔴 The clean line states the SIZE of the set it read, and how much of it
     // it could not open. "Clean", "I found nothing to look at" and "I counted
     // files I never opened" print identically otherwise — and a wrong cwd, a
