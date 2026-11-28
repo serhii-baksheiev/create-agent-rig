@@ -229,6 +229,17 @@ const next = (p: Project) =>
 const nextText = (p: Project) =>
   run(process.execPath, [queueScript, 'next', '--config', p.configPath], p.root, p.env);
 
+const withRunDir = async <T>(runDir: string, operation: () => T | Promise<T>): Promise<T> => {
+  const previous = process.env.RIG_RUN_DIR;
+  process.env.RIG_RUN_DIR = runDir;
+  try {
+    return await operation();
+  } finally {
+    if (previous === undefined) delete process.env.RIG_RUN_DIR;
+    else process.env.RIG_RUN_DIR = previous;
+  }
+};
+
 const trackClaim = async (p: Project): Promise<boolean> => {
   expect(existsSync(p.claimPath), 'SELECT must create the claim before it can be tracked').toBe(
     true,
@@ -263,28 +274,40 @@ const before = (p: Project, point: 'BEFORE_PR' | 'BEFORE_CLOSE') =>
 
 const claimThroughJiraAdapter = async (p: Project) => {
   const adapterUrl = pathToFileURL(path.join(scriptsDir, 'queue', 'jira.mjs')).href;
+  const runJournalUrl = pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href;
   const callsPath = path.join(
     await mkdtemp(path.join(tmpdir(), 'rp220-jira-calls-')),
     'calls.json',
   );
   // RP-220: `claim` now re-reads status/updated before mutating and reads back
   // after — so the stub has to behave like a tiny stateful Jira rather than
-  // answer every call identically. `T1` is the snapshot this helper's callers
-  // already select against (the default `jiraIssue()`'s `updated`); `T2` is
-  // what the transition leaves behind, matching the fixtures those callers set
-  // afterwards via `p.setIssue(jiraIssue({ updated: T2, ... }))`.
+  // answer every call identically. The caller snapshot comes from the latest
+  // native SELECT event, not this helper's former hard-coded T1: a harmless
+  // commentary edit can create a current SELECT at T2 before the claim. A T1
+  // selection retains its T2 transition used by the existing oracles; any later
+  // selection receives a causally later transition/read-back timestamp.
   //
-  // RP-220 round 2 (B3): the `env` this script hands `claim` carries no
-  // `RIG_RUN_DIR`, so once `rebaseline` is gated the same way as every other
-  // write in this adapter — force-free, `RIG_RUN_DIR`-only — the post-verify
-  // read-back for `?fields=updated` alone must never fire. Round 1 shipped
-  // `rebaseline(ticket, env, { force: true })`, which fires that GET
-  // regardless; the comment here used to assert the call "is never made"
-  // while the production code made it anyway (r1-code-reviewer.md's B3
-  // finding). Asserted below rather than left as prose, so the claim cannot
-  // go stale silently again. Red until the implementer removes `force`.
+  // RP-554: a successful claim now has to carry this selected run through its
+  // native admission. That makes the post-claim `rebaseline()` read-back
+  // expected exactly once, rather than using this success helper to cover the
+  // separate undeclared-run refusal contract.
   const script = `
     const fs = await import('node:fs/promises');
+    const { readRun } = await import(${JSON.stringify(runJournalUrl)});
+    const nativeSelect = [...readRun({ runDir: ${JSON.stringify(p.runDir)} }).events]
+      .reverse()
+      .find((event) =>
+        event.kind === 'revalidation' &&
+        event.data?.point === 'SELECT' &&
+        String(event.data?.ticket) === 'RP-50' &&
+        typeof event.data?.task?.to === 'string',
+      );
+    if (!nativeSelect) throw new Error('the native-admitted Jira claim needs a SELECT task snapshot');
+    const selectedUpdatedAt = nativeSelect.data.task.to;
+    const transitionedUpdatedAt =
+      selectedUpdatedAt === ${JSON.stringify(T1)}
+        ? ${JSON.stringify(T2)}
+        : new Date(Date.parse(selectedUpdatedAt) + 1).toISOString();
     const calls = [];
     let transitioned = false;
     globalThis.fetch = async (input, init = {}) => {
@@ -304,7 +327,7 @@ const claimThroughJiraAdapter = async (p: Project) => {
       if (method === 'GET' && /\\/changelog$/.test(u.pathname)) {
         const maxResults = Number(u.searchParams.get('maxResults') || '0');
         const total = transitioned ? 1 : 0;
-        const values = transitioned ? [{ created: ${JSON.stringify(T2)}, items: [{ field: 'status' }] }] : [];
+        const values = transitioned ? [{ created: transitionedUpdatedAt, items: [{ field: 'status' }] }] : [];
         return reply({ total, startAt: 0, maxResults, values });
       }
       if (method === 'GET' && /\\/issue\\/[^/]+$/.test(u.pathname)) {
@@ -316,27 +339,33 @@ const claimThroughJiraAdapter = async (p: Project) => {
             statusCategory: { key: transitioned ? 'indeterminate' : 'new' },
           };
         }
-        if (fields.includes('updated')) body.updated = transitioned ? ${JSON.stringify(T2)} : ${JSON.stringify(T1)};
+        if (fields.includes('updated')) body.updated = transitioned ? transitionedUpdatedAt : selectedUpdatedAt;
         return reply({ fields: body });
       }
       return reply({});
     };
     const { claim } = await import(${JSON.stringify(adapterUrl)});
-    await claim(
+    const result = await claim(
       {
         id: 'RP-50',
         title: 'Replace marker authority with content-blind claims',
-        updatedAt: ${JSON.stringify(T1)},
+        updatedAt: selectedUpdatedAt,
       },
       {
         transitionId: '31',
+        projectRoot: ${JSON.stringify(p.root)},
         env: {
+          ...process.env,
           JIRA_BASE_URL: 'https://example.invalid',
           JIRA_EMAIL: 'a@b.c',
           JIRA_API_TOKEN: 'x',
+          RIG_RUN_DIR: ${JSON.stringify(p.runDir)},
         },
       },
     );
+    if (!result.ok || result.workflowClaimRecorded !== true) {
+      throw new Error('the native-admitted Jira claim did not record its workflow transition');
+    }
     await fs.writeFile(${JSON.stringify(callsPath)}, JSON.stringify(calls));
   `;
   const result = await run(
@@ -357,8 +386,8 @@ const claimThroughJiraAdapter = async (p: Project) => {
   );
   expect(
     rebaselineOnlyCalls,
-    `a rebaseline GET for ?fields=updated alone fired with no RIG_RUN_DIR configured: ${JSON.stringify(calls)}`,
-  ).toHaveLength(0);
+    `the native-admitted claim must rebaseline exactly once: ${JSON.stringify(calls)}`,
+  ).toHaveLength(1);
   await git(['add', '.rig/claims/RP-50.json'], p.root);
   await git(['commit', '-q', '--allow-empty', '-m', 'record Rig claim transition'], p.root);
 };
@@ -839,7 +868,9 @@ describe('workflow state participates in the checkpoint-aware scope fingerprint'
       const github = await import(
         `${pathToFileURL(path.join(scriptsDir, 'queue', 'github-issues.mjs')).href}?workflow-claim=${Date.now()}`
       );
-      expect(github.claim(ticket, { projectRoot: p.root })).toMatchObject({
+      expect(
+        await withRunDir(p.runDir, () => github.claim(ticket, { projectRoot: p.root })),
+      ).toMatchObject({
         ok: true,
         workflowClaimRecorded: true,
       });
@@ -1498,7 +1529,9 @@ describe('RP-449 — a cross-indexed `blocks` link must not read as drift at BEF
       const github = await import(
         `${pathToFileURL(path.join(scriptsDir, 'queue', 'github-issues.mjs')).href}?rp449-claim=${Date.now()}`
       );
-      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      const claimed = await withRunDir(p.runDir, () =>
+        github.claim(ticket, { projectRoot: p.root }),
+      );
       expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
     } finally {
       claimStub.restore();
@@ -1730,7 +1763,9 @@ describe('a cross-indexed `blocks` link survives the live gh path, and a broken 
       await git(['commit', '-q', '-m', 'track 10 claim baseline (live gh)'], p.root);
 
       const github = await loadGithubAdapter('b1b');
-      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      const claimed = await withRunDir(p.runDir, () =>
+        github.claim(ticket, { projectRoot: p.root }),
+      );
       expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
       await git(['add', '.rig/claims/10.json'], p.root);
       await git(['commit', '-q', '-m', 'record GitHub workflow claim for 10 (live gh)'], p.root);
@@ -1833,7 +1868,9 @@ describe('a cross-indexed `blocks` link survives the live gh path, and a broken 
       await git(['commit', '-q', '-m', 'track 21 claim baseline (live gh)'], p.root);
 
       const github = await loadGithubAdapter('b2b');
-      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      const claimed = await withRunDir(p.runDir, () =>
+        github.claim(ticket, { projectRoot: p.root }),
+      );
       expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
       await git(['add', '.rig/claims/21.json'], p.root);
       await git(['commit', '-q', '-m', 'record GitHub workflow claim for 21 (live gh)'], p.root);
@@ -1929,7 +1966,9 @@ describe('a cross-indexed `blocks` link survives the live gh path, and a broken 
       // this test exists to isolate (see the describe block's B1 helper for
       // why this step is load-bearing rather than optional).
       const github = await loadGithubAdapter('b3b-claim');
-      const claimed = await github.claim(ticket, { projectRoot: p.root });
+      const claimed = await withRunDir(p.runDir, () =>
+        github.claim(ticket, { projectRoot: p.root }),
+      );
       expect(claimed).toMatchObject({ ok: true, workflowClaimRecorded: true });
       await git(['add', '.rig/claims/40.json'], p.root);
       await git(['commit', '-q', '-m', 'record GitHub workflow claim for 40'], p.root);

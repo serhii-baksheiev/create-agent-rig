@@ -1332,6 +1332,51 @@ three poisons the only channel by which this project learns.
   cite back, so the check is not run there — say so rather than running it
   against a position number.
 
+  That controller preclaim command remains required; it does not replace the
+  runtime admission in `jira` and `github-issues`. Before either adapter's
+  first tracker mutation, that gate requires a declared run in this checkout,
+  a live native `SELECT` for this ticket (`BASELINE_CREATED` or `CURRENT`), and
+  an armed unattended scope — when one exists — for the same ticket and run.
+  It runs native duplicate-work itself and requires a fresh durable clean
+  receipt, then rechecks current selection authority, unresolved native
+  detections, the unattended scope, and the still-present valid selected
+  baseline. Otherwise it fails closed as `claim-unverifiable`.
+  Native-check failures retain `admission: "unverifiable"`: a verified
+  unavailable native source reports only `native-source-unavailable` and the
+  known `branch`/`pr` sources; invocation and protocol failures report
+  `native-invocation-failed` or `native-protocol-invalid`. These diagnose a
+  refusal only: they do not authorize a claim, whose success still needs the
+  fresh durable receipt.
+  Pinned in `test/template/claim-admission.test.ts` (absent in a generated
+  rig) › "refuses a new Jira claim before its first transition when RIG_RUN_DIR
+  is undeclared", › "refuses a Jira claim before its first transition when the
+  scoped run has no native SELECT admission", › "refuses a Jira claim when its
+  selected run differs from this checkout’s armed unattended run", › "permits
+  the first Jira transition only after native duplicate-work evidence is
+  persisted for a native SELECT", › "refuses an older Jira ticket after a later
+  native SELECT made another ticket current", › "refuses a Jira claim while an
+  earlier changed SELECT has no typed resolution", › "refuses a Jira claim when
+  native duplicate-work sees an unresolved changed SELECT during its PR read",
+  › "refuses a Jira claim when its armed unattended item changes during the
+  native duplicate-work read", › "refuses a Jira claim when its selected
+  baseline disappears during the native duplicate-work read", › "binds created
+  and commentary-tolerant current SELECTs to the original stored baseline
+  object", and › "refuses a Jira claim when a tracked selected baseline scope
+  value changes after SELECT"; GitHub's matching gate is pinned by
+  `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
+  "refuses a GitHub claim without native SELECT admission before adding the
+  in-progress label" and › "permits a GitHub claim after a native SELECT
+  admission and clean duplicate-work check".
+  The closed native diagnoses are pinned in
+  `test/template/claim-admission-diagnosis.test.ts` (absent in a generated rig)
+  › "reports an allowlisted unavailable PR source after native duplicate-work
+  exits 3 without reflecting child stderr" and › "reports sorted branch and PR
+  sources when both native duplicate-work sources are unavailable", and in
+  `test/template/claim-admission-protocol.test.ts` (absent in a generated rig)
+  › "refuses an exit-1 native duplicate-work invocation with a closed diagnostic
+  and no tracker write" and › "refuses an exit-3 native response whose stdout
+  is truncated JSON as a protocol failure".
+
   **Any exit other than 0 is not clean.** Only exit 0 clears the claim:
   - exit 2 (another branch or open PR already carries this id) — do not claim;
     re-read the item and the other branch/PR, then either take the item over
@@ -1348,28 +1393,28 @@ three poisons the only channel by which this project learns.
   › "exit 2, verdict duplicate-work — another branch on origin carries the id"
   and › "exit 3, verdict unverifiable — gh is missing/failing on a GitHub origin, never reported as clean".
 
-  A claim answering `claimed: false` did NOT take the item:
-  the guarantee is per adapter, not one sentence for all three. The Jira adapter
-  re-reads the item before its write and verifies the write after it, so no two
-  controllers are ever both verified from one snapshot. The GitHub adapter does
-  the same, but only across distinct accounts — under the SAME account a
-  documented limit lets two controllers both read back as verified, because
-  re-adding a label GitHub already considers present writes no event to tell
-  them apart (a stated, tested limit, never a claim of exclusivity). A `plan-md`
-  claim verifies nothing at all: it writes nothing, and its call returns the
-  instruction it always returned. Every adapter that can verify refuses rather
-  than report a success it cannot prove. Journal it and select again; `reason`
-  says why. Pinned in `test/template/queue-claim-verified.test.ts` (absent in a generated rig)
-  › "refuses as claim-stale when the item moved to In Progress after selection, with no mutation"
-  and › "the documented same-account limit: two same-account controllers can both come back
-  claimed:true (not a claim of exclusivity)".
+  `claimed: false` is not proof that no remote mutation occurred: an adapter can
+  refuse after its write when it cannot read back an acknowledgement. Never
+  blindly retry a claim or erase a valid baseline, `workflowClaim`, or versioned
+  history on that result. Jira still pre-reads and verifies its transition; GitHub
+  does the same only across distinct accounts — under the SAME account, two
+  controllers can both read back as verified, a documented limitation rather
+  than exclusivity. A `plan-md` claim verifies nothing: it remains a no-op instruction. Pinned in
+  `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
+  "resolves as claim-unverifiable, never rejects, when a read-back request fails
+  after the POST" and › "the documented same-account limit: two same-account
+  controllers can both come back claimed:true (not a claim of exclusivity)" and
+  › "names Jira, scopes GitHub to distinct accounts, and says a plan-md claim
+  verifies nothing".
 
-  After a refusal, the uncommitted SELECT baseline `next` wrote for that item is
-  still in the checkout: delete it — it names an item you did not take — and
-  select a different item, because a later SELECT of the same item in this run
-  is refused rather than re-baselined. Pinned in the generator's
-  `test/template/content-blind-revalidation.test.ts` (absent in a generated rig)
-  › "refuses to recreate a deleted untracked baseline with a %s".
+  Remove the SELECT baseline only for a **proven prewrite refusal**: it must be
+  this turn's uncommitted baseline and there must be no acknowledgement or other
+  indication that a tracker write could have landed. Then select again; a later
+  SELECT of the same item in this run is refused rather than re-baselined. If a
+  write is uncertain, preserve the record and escalate through §6 instead.
+  Pinned in the generator's `test/template/content-blind-revalidation.test.ts`
+  (absent in a generated rig) › "refuses to recreate a deleted untracked
+  baseline with a %s".
 
   🔴 **The same reassignment gate runs again at claim time, before any
   mutating request.** Selection already checked the tracker's assignee; a
@@ -1388,7 +1433,10 @@ three poisons the only channel by which this project learns.
   generated rig) › "refuses as claim-stale, with zero transition POSTs, when
   the pre-read shows it now assigned to another actor" and › "refuses as
   claim-stale, with zero label-edit calls, when the pre-read shows it now
-  assigned to another login".
+  assigned to another login", › "resolves the actor via /myself, and does not
+  refuse on the assignee alone, for a self-assigned item", and › "says the
+  actor could not be resolved — a different detail — when the current actor is
+  known unknown (explicit null) and the item is assigned".
 - **Closing:** for a `github-issues` item, make the PR body or description and
   its squash title or commit use the non-closing reference `Refs #<id>`. Avoid
   `Closes #<id>` and `Fixes #<id>`: the issue must remain open through

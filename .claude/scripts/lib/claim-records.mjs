@@ -710,16 +710,40 @@ const readClaim = (projectRoot, path) => {
   return { parsed, raw };
 };
 
-export const recordClaimTransition = ({ projectRoot = process.cwd(), ticket, claimedState }) => {
-  if (!WORKFLOW_STATES.has(claimedState)) {
-    throw new Error(`claim record: unsupported claimed workflow state ${JSON.stringify(claimedState)}`);
-  }
+export const readClaimForTicket = ({ projectRoot = process.cwd(), ticket } = {}) => {
   const path = claimPathFor(projectRoot, ticket);
   if (!pathExists(path)) return null;
   const claim = readClaim(projectRoot, path).parsed;
   if (claim.ticket !== ticketIdOf(ticket)) {
     throw new Error(`claim ticket conflicts with ${ticketIdOf(ticket)}`);
   }
+  return claim;
+};
+
+export const readSelectedClaimBaseline = ({ projectRoot = process.cwd(), ticket, expectedObject } = {}) => {
+  if (!GIT_OBJECT_ID.test(expectedObject ?? '')) return null;
+  try {
+    const path = claimPathFor(projectRoot, ticket);
+    const pointer = pointerFor(projectRoot, ticket);
+    const read = readClaim(projectRoot, path);
+    if (read.parsed.ticket !== ticketIdOf(ticket)) return null;
+    const claimObject = objectOf(projectRoot, read.raw, pointer);
+    if (claimObject !== expectedObject) return null;
+    const committedObject = committedObjectOf(projectRoot, pointer);
+    if (committedObject !== null && committedObject !== claimObject) return null;
+    return read.parsed;
+  } catch {
+    return null;
+  }
+};
+
+export const recordClaimTransition = ({ projectRoot = process.cwd(), ticket, claimedState }) => {
+  if (!WORKFLOW_STATES.has(claimedState)) {
+    throw new Error(`claim record: unsupported claimed workflow state ${JSON.stringify(claimedState)}`);
+  }
+  const claim = readClaimForTicket({ projectRoot, ticket });
+  if (claim === null) return null;
+  const path = claimPathFor(projectRoot, ticket);
   if (claim.workflowClaim?.claimedState === claimedState) return claim.workflowClaim;
 
   const expectedDirectory = assertRepositoryDirectory(
@@ -889,6 +913,19 @@ export const revalidateClaim = ({
         if (!persisted.equals(Buffer.from(content))) {
           throw new Error('claim baseline postcondition failed');
         }
+        const selectionBaseline = { claimObject: objectOf(projectRoot, persisted, pointer) };
+        return {
+          ...resultOf({
+            ticket,
+            point,
+            result: 'BASELINE_CREATED',
+            action: 'continue',
+            pointer,
+            evidence: { claim: pointer },
+            identity: fingerprintIdentity(current),
+          }),
+          selectionBaseline,
+        };
       } catch (error) {
         return resultOf({
           ticket,
@@ -900,15 +937,6 @@ export const revalidateClaim = ({
           identity: 'create-refused',
         });
       }
-      return resultOf({
-        ticket,
-        point,
-        result: 'BASELINE_CREATED',
-        action: 'continue',
-        pointer,
-        evidence: { claim: pointer },
-        identity: fingerprintIdentity(current),
-      });
     }
     return resultOf({
       ticket,
@@ -934,12 +962,15 @@ export const revalidateClaim = ({
   }
 
   let claim;
+  let selectionBaseline;
   try {
     const read = readClaim(projectRoot, path);
-    if (objectOf(projectRoot, read.raw, pointer) !== committedObject) {
+    const claimObject = objectOf(projectRoot, read.raw, pointer);
+    if (claimObject !== committedObject) {
       throw new Error('tracked claim worktree content diverges from its committed Git version');
     }
     claim = read.parsed;
+    if (point === 'SELECT') selectionBaseline = { claimObject };
   } catch (error) {
     return resultOf({
       ticket,
@@ -996,22 +1027,25 @@ export const revalidateClaim = ({
     ...(scopeMoved ? ['scope'] : []),
     ...(point === 'BEFORE_CLOSE' && commentaryMoved ? ['commentary'] : []),
   ];
-  return resultOf({
-    ticket,
-    point,
-    result: movedFingerprintSet.length > 0 ? 'CHANGED' : 'CURRENT',
-    action: movedFingerprintSet.length > 0 ? 'hold' : 'continue',
-    movedFingerprintSet,
-    pointer,
-    evidence: {
-      claim: pointer,
-      ...(commentaryMoved && point !== 'BEFORE_CLOSE' ? { observedFingerprintSet: ['commentary'] } : {}),
-      ...(scopeTargetIsOwnMerge
-        ? { ownMergeAdvance: { from: claim.fingerprints.scope.targetSha, to: current.scope.targetSha } }
-        : {}),
-    },
-    identity: fingerprintIdentity(current),
-  });
+  return {
+    ...resultOf({
+      ticket,
+      point,
+      result: movedFingerprintSet.length > 0 ? 'CHANGED' : 'CURRENT',
+      action: movedFingerprintSet.length > 0 ? 'hold' : 'continue',
+      movedFingerprintSet,
+      pointer,
+      evidence: {
+        claim: pointer,
+        ...(commentaryMoved && point !== 'BEFORE_CLOSE' ? { observedFingerprintSet: ['commentary'] } : {}),
+        ...(scopeTargetIsOwnMerge
+          ? { ownMergeAdvance: { from: claim.fingerprints.scope.targetSha, to: current.scope.targetSha } }
+          : {}),
+      },
+      identity: fingerprintIdentity(current),
+    }),
+    ...(selectionBaseline ? { selectionBaseline } : {}),
+  };
 };
 
 const gitText = (projectRoot, args) =>

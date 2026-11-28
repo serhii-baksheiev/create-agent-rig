@@ -16,6 +16,7 @@
 import { execFileSync } from 'node:child_process';
 import { duplicateOf, fingerprintOf, lifecycleOf, ownerOfLabels, validateProposal } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
+import { admitClaim } from '../lib/claim-admission.mjs';
 import { recordEscalation, recordItemClosed, recordTakeUp } from '../run-state.mjs';
 import { recordClaimTransition } from '../lib/claim-records.mjs';
 
@@ -458,30 +459,7 @@ export const claim = (
   // Pre-read: a failing read throws as any read does today — nothing has
   // been written yet.
   const pre = ghJson(['issue', 'view', ticket.id, '--json', 'state,labels,updatedAt']);
-  const alreadyClosed = String(pre?.state ?? '').toUpperCase() === 'CLOSED';
-  const alreadyInProgress = labelNames(pre).includes('in-progress');
-  if (alreadyClosed || alreadyInProgress) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-stale',
-      // Named separately rather than folded into one "already X or in-progress"
-      // string: an OPEN issue that already carries the label used to read as
-      // "already open or in-progress", which names the state the claim would
-      // have accepted as the reason it was refused.
-      detail: alreadyClosed
-        ? 'the issue is already closed'
-        : 'the issue is already labelled in-progress',
-    };
-  }
-  if (new Date(pre?.updatedAt).getTime() !== snapshotMs) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-stale',
-      detail: `updatedAt moved from ${ticket.updatedAt} (selection) to ${pre?.updatedAt} before the claim`,
-    };
-  }
+  let actor = currentActorOption;
   // RP-221: a human reassignment between selection and claim wins, without a
   // mutating request — the same gate as `jira.mjs`'s `claim`. Unassigned or
   // assigned to the current actor proceeds; assigned to anyone else, or
@@ -497,8 +475,29 @@ export const claim = (
   // `assignees` alone would never surface.
   const preAssignees = assigneeLogins(ghJson(['issue', 'view', ticket.id, '--json', 'assignees']));
 
-  const gateThenFinish = (actor) => {
-    if (preAssignees.length > 0 && (!actor || !preAssignees.includes(actor.id))) {
+  const claimAuthority = (issue, assignees) => {
+    const alreadyClosed = String(issue?.state ?? '').toUpperCase() === 'CLOSED';
+    const alreadyInProgress = labelNames(issue).includes('in-progress');
+    if (alreadyClosed || alreadyInProgress) {
+      return {
+        ok: false,
+        claimed: false,
+        reason: 'claim-stale',
+        detail: alreadyClosed
+          ? 'the issue is already closed'
+          : 'the issue is already labelled in-progress',
+      };
+    }
+    if (new Date(issue?.updatedAt).getTime() !== snapshotMs) {
+      return {
+        ok: false,
+        claimed: false,
+        reason: 'claim-stale',
+        detail: `updatedAt moved from ${ticket.updatedAt} (selection) to ${issue?.updatedAt} before the claim`,
+      };
+    }
+    if (assignees.length > 0 && actor === undefined) return null;
+    if (assignees.length > 0 && (!actor || !assignees.includes(actor.id))) {
       return {
         ok: false,
         claimed: false,
@@ -512,20 +511,32 @@ export const claim = (
           : "this run's tracker identity could not be resolved, and the item is assigned — a match cannot be confirmed",
       };
     }
-    return mutateAndVerifyGithubClaim(ticket, snapshotMs, projectRoot);
+    return { ok: true };
   };
 
-  if (preAssignees.length === 0) {
-    // Nothing to gate: stays fully synchronous, never touching `currentActor`
-    // at all — an unassigned item never needs this run's own login.
-    return gateThenFinish(null);
-  }
-  // Resolved only now the item is actually assigned — this is the one path
-  // that becomes a Promise, because reading this run's own login is
-  // inherently asynchronous (`gh api user` via `currentActor()`).
-  const actorPromise =
-    currentActorOption === undefined ? currentActor() : Promise.resolve(currentActorOption);
-  return actorPromise.then(gateThenFinish);
+  const resolveAuthority = (issue, assignees) => {
+    const authority = claimAuthority(issue, assignees);
+    if (authority !== null) return authority;
+    return currentActor().then((resolved) => {
+      actor = resolved ?? null;
+      return claimAuthority(issue, assignees);
+    });
+  };
+
+  const finish = (initialAuthority) => {
+    if (!initialAuthority.ok) return initialAuthority;
+    const admission = admitClaim({ ticket, projectRoot, env: process.env });
+    if (!admission.ok) return admission;
+    const final = ghJson(['issue', 'view', ticket.id, '--json', 'state,labels,updatedAt']);
+    const finalAssignees = assigneeLogins(ghJson(['issue', 'view', ticket.id, '--json', 'assignees']));
+    const finalAuthority = resolveAuthority(final, finalAssignees);
+    const mutate = (authority) =>
+      authority.ok ? mutateAndVerifyGithubClaim(ticket, snapshotMs, projectRoot) : authority;
+    return finalAuthority instanceof Promise ? finalAuthority.then(mutate) : mutate(finalAuthority);
+  };
+
+  const initialAuthority = resolveAuthority(pre, preAssignees);
+  return initialAuthority instanceof Promise ? initialAuthority.then(finish) : finish(initialAuthority);
 };
 
 /**
