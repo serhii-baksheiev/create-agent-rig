@@ -1341,14 +1341,30 @@ three poisons the only channel by which this project learns.
   receipt, then rechecks current selection authority, unresolved native
   detections, the unattended scope, and the still-present valid selected
   baseline. Otherwise it fails closed as `claim-unverifiable`.
+  Native-check failures retain `admission: "unverifiable"`: a verified
+  unavailable native source reports only `native-source-unavailable` and the
+  known `branch`/`pr` sources; invocation and protocol failures report
+  `native-invocation-failed` or `native-protocol-invalid`. These diagnose a
+  refusal only: they do not authorize a claim, whose success still needs the
+  fresh durable receipt.
   Pinned in `test/template/claim-admission.test.ts` (absent in a generated
   rig) › "permits the first Jira transition only after native duplicate-work
   evidence is persisted for a native SELECT", › "refuses a Jira claim when its
   armed unattended item changes during the native duplicate-work read", and ›
   "refuses a Jira claim when its selected baseline disappears during the native
-  duplicate-work read"; GitHub's matching gate is pinned by
+  duplicate-work read", and › "binds created and commentary-tolerant current
+  SELECTs to the original stored baseline object", and › "refuses a Jira claim
+  when a tracked selected baseline scope value changes after SELECT"; GitHub's matching gate is pinned by
   `test/template/queue-claim-verified.test.ts` (absent in a generated rig) › "permits a GitHub claim after
   a native SELECT admission and clean duplicate-work check".
+  The closed native diagnoses are pinned in
+  `test/template/claim-admission-diagnosis.test.ts` (absent in a generated rig)
+  › "reports an allowlisted unavailable PR source after native duplicate-work
+  exits 3 without reflecting child stderr", and in
+  `test/template/claim-admission-protocol.test.ts` (absent in a generated rig)
+  › "refuses an exit-1 native duplicate-work invocation with a closed diagnostic
+  and no tracker write" and › "refuses an exit-3 native response whose stdout
+  is truncated JSON as a protocol failure".
 
   **Any exit other than 0 is not clean.** Only exit 0 clears the claim:
   - exit 2 (another branch or open PR already carries this id) — do not claim;

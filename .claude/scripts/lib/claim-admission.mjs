@@ -9,6 +9,9 @@ import * as runJournal from '../run-journal.mjs';
 
 const duplicateWorkScript = fileURLToPath(new URL('../duplicate-work.mjs', import.meta.url));
 const CHECKOUT_ROOT_TIMEOUT_MS = 10_000;
+const MAX_NATIVE_DIAGNOSTIC_BYTES = 64 * 1024;
+const NATIVE_SOURCES = ['branch', 'pr'];
+const NATIVE_SOURCE_STATUSES = new Set(['read', 'unavailable', 'not-applicable']);
 const { readRun } = runJournal;
 
 const refusal = (admission, detail) => ({
@@ -18,6 +21,64 @@ const refusal = (admission, detail) => ({
   admission,
   detail,
 });
+
+const nativeInvocationFailure = () => ({
+  ...refusal('unverifiable', 'native duplicate-work could not be verified'),
+  diagnostic: 'native-invocation-failed',
+});
+
+const nativeProtocolFailure = () => ({
+  ...refusal('unverifiable', 'native duplicate-work response could not be verified'),
+  diagnostic: 'native-protocol-invalid',
+});
+
+const unavailableSourcesOf = (stdout, ticket) => {
+  if (!Buffer.isBuffer(stdout) && typeof stdout !== 'string') return null;
+  if (Buffer.byteLength(stdout) > MAX_NATIVE_DIAGNOSTIC_BYTES) return null;
+  let result;
+  try {
+    result = JSON.parse(Buffer.isBuffer(stdout) ? stdout.toString('utf8') : stdout);
+  } catch {
+    return null;
+  }
+  if (
+    !result ||
+    typeof result !== 'object' ||
+    Array.isArray(result) ||
+    Object.getPrototypeOf(result) !== Object.prototype ||
+    Object.keys(result).length !== 4 ||
+    !['ticket', 'verdict', 'matches', 'sources'].every((key) => Object.hasOwn(result, key)) ||
+    result.ticket !== String(ticket.id) ||
+    result.verdict !== 'unverifiable' ||
+    !Array.isArray(result.matches) ||
+    result.matches.length !== 0 ||
+    !Array.isArray(result.sources) ||
+    result.sources.length !== NATIVE_SOURCES.length
+  ) {
+    return null;
+  }
+  const byName = new Map();
+  for (const source of result.sources) {
+    if (
+      !source ||
+      typeof source !== 'object' ||
+      Array.isArray(source) ||
+      Object.getPrototypeOf(source) !== Object.prototype ||
+      Object.keys(source).length !== 2 ||
+      !Object.hasOwn(source, 'name') ||
+      !Object.hasOwn(source, 'status') ||
+      !NATIVE_SOURCES.includes(source.name) ||
+      !NATIVE_SOURCE_STATUSES.has(source.status) ||
+      byName.has(source.name)
+    ) {
+      return null;
+    }
+    byName.set(source.name, source.status);
+  }
+  if (!NATIVE_SOURCES.every((name) => byName.has(name))) return null;
+  const unavailableSources = NATIVE_SOURCES.filter((name) => byName.get(name) === 'unavailable');
+  return unavailableSources.length > 0 ? unavailableSources : null;
+};
 
 const nativeSelectAdmission = (ticket, decisions, events) => {
   const selection = [...decisions].reverse().find((decision) => decision.gate === 'item-selection');
@@ -112,13 +173,25 @@ const admitNativeClaim = ({ ticket, projectRoot, env = process.env } = {}) => {
       env,
     });
   } catch {
-    return refusal('unverifiable', 'native duplicate-work could not be verified');
+    return nativeInvocationFailure();
+  }
+  if (duplicateWork.error || duplicateWork.signal || !Number.isInteger(duplicateWork.status)) {
+    return nativeInvocationFailure();
   }
   if (duplicateWork.status === 2) {
     return refusal('duplicate-work', 'native duplicate-work found existing work');
   }
+  if (duplicateWork.status === 3) {
+    const unavailableSources = unavailableSourcesOf(duplicateWork.stdout, ticket);
+    if (unavailableSources === null) return nativeProtocolFailure();
+    return {
+      ...refusal('unverifiable', 'native duplicate-work sources were unavailable'),
+      diagnostic: 'native-source-unavailable',
+      unavailableSources,
+    };
+  }
   if (duplicateWork.status !== 0) {
-    return refusal('unverifiable', 'native duplicate-work could not be verified');
+    return nativeInvocationFailure();
   }
   try {
     if (!matchesUnattendedScope(ticket, env.RIG_RUN_DIR, checkoutRoot, env)) {
