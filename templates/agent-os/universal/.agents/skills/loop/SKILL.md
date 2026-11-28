@@ -1348,19 +1348,30 @@ three poisons the only channel by which this project learns.
   refusal only: they do not authorize a claim, whose success still needs the
   fresh durable receipt.
   Pinned in `test/template/claim-admission.test.ts` (absent in a generated
-  rig) › "permits the first Jira transition only after native duplicate-work
-  evidence is persisted for a native SELECT", › "refuses a Jira claim when its
-  armed unattended item changes during the native duplicate-work read", and ›
-  "refuses a Jira claim when its selected baseline disappears during the native
-  duplicate-work read", and › "binds created and commentary-tolerant current
-  SELECTs to the original stored baseline object", and › "refuses a Jira claim
-  when a tracked selected baseline scope value changes after SELECT"; GitHub's matching gate is pinned by
-  `test/template/queue-claim-verified.test.ts` (absent in a generated rig) › "permits a GitHub claim after
-  a native SELECT admission and clean duplicate-work check".
+  rig) › "refuses a new Jira claim before its first transition when RIG_RUN_DIR
+  is undeclared", › "refuses a Jira claim before its first transition when the
+  scoped run has no native SELECT admission", › "refuses a Jira claim when its
+  selected run differs from this checkout’s armed unattended run", › "permits
+  the first Jira transition only after native duplicate-work evidence is
+  persisted for a native SELECT", › "refuses an older Jira ticket after a later
+  native SELECT made another ticket current", › "refuses a Jira claim while an
+  earlier changed SELECT has no typed resolution", › "refuses a Jira claim when
+  native duplicate-work sees an unresolved changed SELECT during its PR read",
+  › "refuses a Jira claim when its armed unattended item changes during the
+  native duplicate-work read", › "refuses a Jira claim when its selected
+  baseline disappears during the native duplicate-work read", › "binds created
+  and commentary-tolerant current SELECTs to the original stored baseline
+  object", and › "refuses a Jira claim when a tracked selected baseline scope
+  value changes after SELECT"; GitHub's matching gate is pinned by
+  `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
+  "refuses a GitHub claim without native SELECT admission before adding the
+  in-progress label" and › "permits a GitHub claim after a native SELECT
+  admission and clean duplicate-work check".
   The closed native diagnoses are pinned in
   `test/template/claim-admission-diagnosis.test.ts` (absent in a generated rig)
   › "reports an allowlisted unavailable PR source after native duplicate-work
-  exits 3 without reflecting child stderr", and in
+  exits 3 without reflecting child stderr" and › "reports sorted branch and PR
+  sources when both native duplicate-work sources are unavailable", and in
   `test/template/claim-admission-protocol.test.ts` (absent in a generated rig)
   › "refuses an exit-1 native duplicate-work invocation with a closed diagnostic
   and no tracker write" and › "refuses an exit-3 native response whose stdout
@@ -1392,7 +1403,9 @@ three poisons the only channel by which this project learns.
   `test/template/queue-claim-verified.test.ts` (absent in a generated rig) ›
   "resolves as claim-unverifiable, never rejects, when a read-back request fails
   after the POST" and › "the documented same-account limit: two same-account
-  controllers can both come back claimed:true (not a claim of exclusivity)".
+  controllers can both come back claimed:true (not a claim of exclusivity)" and
+  › "names Jira, scopes GitHub to distinct accounts, and says a plan-md claim
+  verifies nothing".
 
   Remove the SELECT baseline only for a **proven prewrite refusal**: it must be
   this turn's uncommitted baseline and there must be no acknowledgement or other
@@ -1420,7 +1433,10 @@ three poisons the only channel by which this project learns.
   generated rig) › "refuses as claim-stale, with zero transition POSTs, when
   the pre-read shows it now assigned to another actor" and › "refuses as
   claim-stale, with zero label-edit calls, when the pre-read shows it now
-  assigned to another login".
+  assigned to another login", › "resolves the actor via /myself, and does not
+  refuse on the assignee alone, for a self-assigned item", and › "says the
+  actor could not be resolved — a different detail — when the current actor is
+  known unknown (explicit null) and the item is assigned".
 - **Closing:** for a `github-issues` item, make the PR body or description and
   its squash title or commit use the non-closing reference `Refs #<id>`. Avoid
   `Closes #<id>` and `Fixes #<id>`: the issue must remain open through
