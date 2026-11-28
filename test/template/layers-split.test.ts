@@ -90,6 +90,8 @@ const EXPECTED_WORKFLOW = new Set([
   '.claude/scripts/revalidate.mjs',
   '.claude/scripts/revalidation-report.mjs',
   '.claude/scripts/lib/claim-records.mjs',
+  // RP-554: shared admission for workflow-only queue adapters and claim flows.
+  '.claude/scripts/lib/claim-admission.mjs',
   '.claude/scripts/lib/revalidation-evidence.mjs',
   '.claude/scripts/lib/revalidation-points.mjs',
   // RP-398: RP-305/RP-306's Mechanical TDD evidence contract (the

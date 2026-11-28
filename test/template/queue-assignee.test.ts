@@ -1,7 +1,10 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
 import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
 
 /**
@@ -34,6 +37,9 @@ import { stubCommand, type StubHandle } from '../helpers/stub-command.js';
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(repoRoot, '.claude', 'scripts', 'git-env.mjs')).href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 const queueDir = path.join(
   repoRoot,
   'templates',
@@ -43,6 +49,7 @@ const queueDir = path.join(
   'scripts',
   'queue',
 );
+const scriptsDir = path.dirname(queueDir);
 const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).href);
 
 const CANARY_EMAIL = 'rp221-canary@example.invalid';
@@ -65,6 +72,118 @@ const ticket = (over: Record<string, unknown> = {}) => ({
   assignee: null,
   ...over,
 });
+
+const fixtureGit = (args: string[], cwd: string) =>
+  execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: withoutGitLocation(),
+    timeout: 30_000,
+  }).trim();
+
+const admitJiraClaim = async (
+  ticketSnapshot: { id: string; updatedAt: string | null },
+  credentials: NodeJS.ProcessEnv,
+  now: string,
+  { installGhStub = true }: { installGhStub?: boolean } = {},
+) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'rp221-jira-admission-'));
+  fixtureGit(['init', '-q', '-b', 'master'], root);
+  await mkdir(path.join(root, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(root, '.rig', 'revalidation.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    }),
+  );
+  fixtureGit(['add', '.rig/revalidation.json'], root);
+  fixtureGit(['commit', '-q', '-m', 'seed admission fixture'], root);
+  const origin = path.join(root, '.fixture-origin.git');
+  fixtureGit(['init', '--bare', '-b', 'master', origin], root);
+  fixtureGit(['remote', 'add', 'origin', origin], root);
+  fixtureGit(['push', '-q', '-u', 'origin', 'master'], root);
+  fixtureGit(['fetch', '-q', 'origin'], root);
+
+  const claims = await import(
+    `${pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href}?rp221-admission=${Date.now()}-${Math.random()}`
+  );
+  const targetSha = claims.targetShaOf(root);
+  const baseline = claims.revalidateClaim({
+    projectRoot: root,
+    ticket: ticketSnapshot,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: true,
+    isResume: false,
+  });
+  if (baseline.result !== 'BASELINE_CREATED') {
+    throw new Error(`test setup: SELECT baseline was not created: ${JSON.stringify(baseline)}`);
+  }
+  fixtureGit(['add', `.rig/claims/${ticketSnapshot.id}.json`], root);
+  fixtureGit(['commit', '-q', '-m', 'version SELECT baseline'], root);
+  const selected = claims.revalidateClaim({
+    projectRoot: root,
+    ticket: ticketSnapshot,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: false,
+    isResume: false,
+  });
+  if (selected.result !== 'CURRENT') {
+    throw new Error(`test setup: SELECT baseline was not current: ${JSON.stringify(selected)}`);
+  }
+  const runDir = path.join(root, '.claude', 'runs', 'jira-admission');
+  await mkdir(runDir, { recursive: true });
+  const journal = await import(
+    `${pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href}?rp221-admission=${Date.now()}-${Math.random()}`
+  );
+  journal.recordDecision({
+    runDir,
+    gate: 'item-selection',
+    verdict: `taken ${ticketSnapshot.id}`,
+    why: ticketSnapshot.id,
+    now,
+  });
+  journal.recordEvent({
+    runDir,
+    kind: 'revalidation',
+    data: { ...selected, task: { from: null, to: ticketSnapshot.updatedAt } },
+    now,
+  });
+
+  const nativeCheckLog = path.join(root, 'native-duplicate-work.log');
+  await writeFile(nativeCheckLog, '');
+  const gh = installGhStub
+    ? await stubCommand(
+        'gh',
+        `
+      const fs = require('node:fs');
+      fs.appendFileSync(${JSON.stringify(nativeCheckLog)}, args.join(' ') + '\\n');
+      if (args[0] === 'api' && String(args[1] || '').includes('/pulls?')) return { stdout: '[]\\n' };
+      return { stdout: '[]\\n' };
+    `,
+      )
+    : null;
+  return {
+    projectRoot: root,
+    env: { ...process.env, ...credentials, RIG_RUN_DIR: runDir },
+    nativeCheckCalls: async () =>
+      (await readFile(nativeCheckLog, 'utf8')).split('\n').filter(Boolean),
+    cleanup: async () => {
+      gh?.restore();
+      await removeFixture(root);
+    },
+  };
+};
 
 // --- core.mjs: selection reads the assignee against the current actor ------
 
@@ -442,6 +561,7 @@ describe('jira claim() refuses a reassignment that lands after selection (RP-221
 
   it('does not refuse on the assignee alone when the pre-read shows it assigned to the current actor', async () => {
     const ticketSnapshot = { id: 'RP-51', updatedAt: T0, assignee: null };
+    const admission = await admitJiraClaim(ticketSnapshot, CREDENTIALS, T0);
     let transitionPosts = 0;
     globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
       const url = String(input);
@@ -488,18 +608,26 @@ describe('jira claim() refuses a reassignment that lands after selection (RP-221
       });
     }) as unknown as typeof globalThis.fetch;
 
-    const { claim } = await load('jira.mjs');
-    const result = await claim(ticketSnapshot, {
-      transitionId: '21',
-      env: CREDENTIALS,
-      currentActor: { id: 'acct-me' },
-    });
+    try {
+      const { claim } = await load('jira.mjs');
+      const result = await claim(ticketSnapshot, {
+        transitionId: '21',
+        projectRoot: admission.projectRoot,
+        env: admission.env,
+        currentActor: { id: 'acct-me' },
+      });
 
-    // The point under test: the assignee gate did not stop it — it reached
-    // the mutation. Whatever the read-back afterwards decides is out of scope
-    // here (RP-220 owns that), so `reason` is deliberately not asserted.
-    expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
-    expect(transitionPosts).toBe(1);
+      // The point under test: the assignee gate did not stop it — it reached
+      // the mutation. Whatever the read-back afterwards decides is out of scope
+      // here (RP-220 owns that), so `reason` is deliberately not asserted.
+      expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
+      expect(transitionPosts).toBe(1);
+      expect(
+        (await admission.nativeCheckCalls()).some((call) => call.includes('/pulls?state=open')),
+      ).toBe(true);
+    } finally {
+      await admission.cleanup();
+    }
   });
 });
 
@@ -525,6 +653,12 @@ describe('github-issues claim() refuses a reassignment that lands after selectio
     const { readFile } = await import('node:fs/promises');
     const lines = (await readFile(logPath, 'utf8')).split('\n').filter(Boolean);
     return lines.filter((line) => line.startsWith('issue edit')).length;
+  };
+
+  const callsIn = async (prefix: string): Promise<number> => {
+    const { readFile } = await import('node:fs/promises');
+    const lines = (await readFile(logPath, 'utf8')).split('\n').filter(Boolean);
+    return lines.filter((line) => line.startsWith(prefix)).length;
   };
 
   it('refuses as claim-stale, with zero label-edit calls, when the pre-read shows it now assigned to another login', async () => {
@@ -580,16 +714,34 @@ describe('github-issues claim() refuses a reassignment that lands after selectio
       `,
     );
     const ticketSnapshot = { id: '43', updatedAt: T0, assignee: null };
+    const admission = await admitJiraClaim(ticketSnapshot, {}, T0, { installGhStub: false });
+    const previousRunDir = process.env.RIG_RUN_DIR;
+    const runDir = admission.env.RIG_RUN_DIR;
+    if (!runDir) {
+      await admission.cleanup();
+      throw new Error('test setup: admission fixture did not declare RIG_RUN_DIR');
+    }
+    process.env.RIG_RUN_DIR = runDir;
 
-    const { claim } = await load('github-issues.mjs');
-    const result = await claim(ticketSnapshot, { currentActor: { id: 'me' } });
+    try {
+      const { claim } = await load('github-issues.mjs');
+      const result = await claim(ticketSnapshot, {
+        projectRoot: admission.projectRoot,
+        currentActor: { id: 'me' },
+      });
 
-    // The point under test: the assignee gate did not stop it — it reached
-    // the mutation. Whatever the read-back afterwards decides is out of
-    // scope here (RP-220 owns that), so `reason` is deliberately not
-    // asserted beyond "not claim-stale".
-    expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
-    expect(await editCallsIn()).toBe(1);
+      // The point under test: the assignee gate did not stop it — it reached
+      // the mutation. Whatever the read-back afterwards decides is out of
+      // scope here (RP-220 owns that), so `reason` is deliberately not
+      // asserted beyond "not claim-stale".
+      expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
+      expect(await editCallsIn()).toBe(1);
+      expect(await callsIn('api repos/{owner}/{repo}/pulls?state=open')).toBeGreaterThan(0);
+    } finally {
+      if (previousRunDir === undefined) delete process.env.RIG_RUN_DIR;
+      else process.env.RIG_RUN_DIR = previousRunDir;
+      await admission.cleanup();
+    }
   });
 });
 
@@ -632,6 +784,7 @@ describe("jira claim() resolves this run's own tracker identity when the caller 
 
   it('resolves the actor via /myself, and does not refuse on the assignee alone, for a self-assigned item', async () => {
     const ticketSnapshot = { id: 'RP-54', updatedAt: T0, assignee: null };
+    const admission = await admitJiraClaim(ticketSnapshot, CREDENTIALS, T0);
     const calls: Array<{ url: string; method: string }> = [];
     let transitionPosts = 0;
     globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
@@ -690,14 +843,25 @@ describe("jira claim() resolves this run's own tracker identity when the caller 
       });
     }) as unknown as typeof globalThis.fetch;
 
-    const { claim } = await load('jira.mjs');
-    // No `currentActor` key at all — the shape `index.mjs`'s own neighbouring
-    // code and the loop skill's take-up step use today.
-    const result = await claim(ticketSnapshot, { transitionId: '21', env: CREDENTIALS });
+    try {
+      const { claim } = await load('jira.mjs');
+      // No `currentActor` key at all — the shape `index.mjs`'s own neighbouring
+      // code and the loop skill's take-up step use today.
+      const result = await claim(ticketSnapshot, {
+        transitionId: '21',
+        projectRoot: admission.projectRoot,
+        env: admission.env,
+      });
 
-    expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
-    expect(transitionPosts).toBe(1);
-    expect(calls.some((c) => new URL(c.url).pathname === '/rest/api/3/myself')).toBe(true);
+      expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
+      expect(transitionPosts).toBe(1);
+      expect(calls.some((c) => new URL(c.url).pathname === '/rest/api/3/myself')).toBe(true);
+      expect(
+        (await admission.nativeCheckCalls()).some((call) => call.includes('/pulls?state=open')),
+      ).toBe(true);
+    } finally {
+      await admission.cleanup();
+    }
   });
 
   it('resolves the actor via /myself and still refuses as claim-stale, with zero transition POSTs, when assigned to someone else', async () => {
@@ -805,14 +969,29 @@ describe("github-issues claim() resolves this run's own tracker identity when th
       `,
     );
     const ticketSnapshot = { id: '62', updatedAt: T0, assignee: null };
+    const admission = await admitJiraClaim(ticketSnapshot, {}, T0, { installGhStub: false });
+    const previousRunDir = process.env.RIG_RUN_DIR;
+    const runDir = admission.env.RIG_RUN_DIR;
+    if (!runDir) {
+      await admission.cleanup();
+      throw new Error('test setup: admission fixture did not declare RIG_RUN_DIR');
+    }
+    process.env.RIG_RUN_DIR = runDir;
 
-    const { claim } = await load('github-issues.mjs');
-    // The shape the loop's take-up step uses today: no `currentActor` key.
-    const result = await claim(ticketSnapshot, { projectRoot: process.cwd() });
+    try {
+      const { claim } = await load('github-issues.mjs');
+      // The shape the loop's take-up step uses today: no `currentActor` key.
+      const result = await claim(ticketSnapshot, { projectRoot: admission.projectRoot });
 
-    expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
-    expect(await callsIn('issue edit')).toBe(1);
-    expect(await callsIn('api user')).toBeGreaterThan(0);
+      expect(result.reason, JSON.stringify(result)).not.toBe('claim-stale');
+      expect(await callsIn('issue edit')).toBe(1);
+      expect(await callsIn('api user')).toBeGreaterThan(0);
+      expect(await callsIn('api repos/{owner}/{repo}/pulls?state=open')).toBeGreaterThan(0);
+    } finally {
+      if (previousRunDir === undefined) delete process.env.RIG_RUN_DIR;
+      else process.env.RIG_RUN_DIR = previousRunDir;
+      await admission.cleanup();
+    }
   });
 
   it('resolves the login via `gh api user` and still refuses as claim-stale, with zero label-edit calls, when assigned to someone else', async () => {

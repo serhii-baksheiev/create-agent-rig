@@ -93,6 +93,7 @@
     ".claude/scripts/revalidate.mjs",
     ".claude/scripts/revalidation-report.mjs",
     ".claude/scripts/lib/claim-records.mjs",
+    ".claude/scripts/lib/claim-admission.mjs",
     ".claude/scripts/lib/item-records.mjs",
     ".claude/scripts/lib/revalidation-evidence.mjs",
     ".claude/scripts/lib/revalidation-points.mjs",

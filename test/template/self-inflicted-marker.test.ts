@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -19,6 +19,9 @@ import { removeFixture } from '../helpers/remove-fixture.js';
  */
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(repoRoot, '.claude', 'scripts', 'git-env.mjs')).href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 const scriptsDir = path.join(repoRoot, 'templates', 'agent-os', 'universal', '.claude', 'scripts');
 const queueDir = path.join(scriptsDir, 'queue');
 const load = (file: string) => import(pathToFileURL(path.join(scriptsDir, file)).href);
@@ -52,6 +55,104 @@ const captureStderr = async <T>(body: () => Promise<T>): Promise<{ result: T; st
   }
 };
 
+const fixtureGit = (args: string[], cwd: string) =>
+  execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: withoutGitLocation(),
+    timeout: 30_000,
+  }).trim();
+
+const admitClaim = async (
+  projectRoot: string,
+  ticket: { id: string; updatedAt: string },
+  now: string,
+) => {
+  fixtureGit(['init', '-q', '-b', 'master'], projectRoot);
+  await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(projectRoot, '.rig', 'revalidation.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    }),
+  );
+  fixtureGit(['add', '.rig/revalidation.json'], projectRoot);
+  fixtureGit(['commit', '-q', '-m', 'seed admission fixture'], projectRoot);
+  const origin = path.join(projectRoot, '.fixture-origin.git');
+  fixtureGit(['init', '--bare', '-b', 'master', origin], projectRoot);
+  fixtureGit(['remote', 'add', 'origin', origin], projectRoot);
+  fixtureGit(['push', '-q', '-u', 'origin', 'master'], projectRoot);
+  fixtureGit(['fetch', '-q', 'origin'], projectRoot);
+
+  const claims = await load('lib/claim-records.mjs');
+  const targetSha = claims.targetShaOf(projectRoot);
+  const baseline = claims.revalidateClaim({
+    projectRoot,
+    ticket,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: true,
+    isResume: false,
+  });
+  if (baseline.result !== 'BASELINE_CREATED') {
+    throw new Error(`test setup: SELECT baseline was not created: ${JSON.stringify(baseline)}`);
+  }
+  fixtureGit(['add', `.rig/claims/${ticket.id}.json`], projectRoot);
+  fixtureGit(['commit', '-q', '-m', 'version SELECT baseline'], projectRoot);
+  const selected = claims.revalidateClaim({
+    projectRoot,
+    ticket,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: false,
+    isResume: false,
+  });
+  if (selected.result !== 'CURRENT') {
+    throw new Error(`test setup: SELECT baseline was not current: ${JSON.stringify(selected)}`);
+  }
+  const runDir = path.join(projectRoot, '.claude', 'runs', 'claim-admission');
+  await mkdir(runDir, { recursive: true });
+  const journal = await load('run-journal.mjs');
+  journal.recordDecision({
+    runDir,
+    gate: 'item-selection',
+    verdict: `taken ${ticket.id}`,
+    why: ticket.id,
+    now,
+  });
+  journal.recordEvent({
+    runDir,
+    kind: 'revalidation',
+    data: { ...selected, task: { from: null, to: ticket.updatedAt } },
+    now,
+  });
+  return { projectRoot, runDir };
+};
+
+const withNativePulls = async <T>(body: () => Promise<T>): Promise<T> => {
+  const stub = await stubCommand(
+    'gh',
+    `
+      if (args[0] === 'api' && String(args[1] || '').includes('/pulls?')) return { stdout: '[]\\n' };
+      return { exitCode: 64 };
+    `,
+  );
+  try {
+    return await body();
+  } finally {
+    stub.restore();
+  }
+};
+
 describe('jira re-records the marker after each write of its own', () => {
   // Shape only — assembled here so no credential-looking value sits in the tree.
   const CREDENTIALS = {
@@ -67,16 +168,19 @@ describe('jira re-records the marker after each write of its own', () => {
    *  posts — so the fixture now tracks both, not just `updated`. */
   let category = 'new';
   let histories: Array<{ created: string; items: Array<{ field: string }> }> = [];
+  let postCount = 0;
 
   beforeEach(() => {
     updated = '2026-08-25T10:00:00.000+0000';
     category = 'new';
     histories = [];
+    postCount = 0;
     realFetch = globalThis.fetch;
     globalThis.fetch = ((input: string, init: { method?: string; body?: string } = {}) => {
       const url = String(input);
       const u = new URL(url);
       const method = init.method ?? 'GET';
+      if (method === 'POST') postCount += 1;
       if (method !== 'GET') updated = '2026-08-26T10:00:00.000+0000';
       let body: unknown = {};
       if (/\/transitions$/.test(u.pathname)) {
@@ -128,10 +232,18 @@ describe('jira re-records the marker after each write of its own', () => {
     async (op) => {
       const adapter = await loadQueue('jira.mjs');
       const { readState, recordTakeUp } = await load('run-state.mjs');
-      const runDir = await scratch('run-');
-      recordTakeUp(runDir, { id: 'AR-1', updatedAt: T1 });
+      const admission =
+        op === 'claim' ? await admitClaim(await scratch('claim-project-'), ticket, T3) : null;
+      const runDir = admission?.runDir ?? (await scratch('run-'));
+      if (!admission) recordTakeUp(runDir, { id: 'AR-1', updatedAt: T1 });
       const env = { ...CREDENTIALS, RIG_RUN_DIR: runDir };
-      if (op === 'claim') await adapter.claim(ticket, { env });
+      if (op === 'claim')
+        await withNativePulls(() =>
+          adapter.claim(ticket, {
+            projectRoot: admission!.projectRoot,
+            env: { ...process.env, ...env },
+          }),
+        );
       if (op === 'comment') await adapter.comment(ticket, 'a note', { env });
       if (op === 'close')
         await adapter.close(ticket, { prUrl: 'https://x/1', transitionId: '41', env });
@@ -147,7 +259,7 @@ describe('jira re-records the marker after each write of its own', () => {
     });
   });
 
-  it.each(['claim', 'comment', 'close', 'escalate'])(
+  it.each(['comment', 'close', 'escalate'])(
     '%s on a stale run directory is announced, never thrown, and the write still succeeds',
     async (op) => {
       // Round 2 of AR-140 measured why every write needs this: close wrote its
@@ -166,6 +278,19 @@ describe('jira re-records the marker after each write of its own', () => {
       expect(stderr).toMatch(/AR-1.*marker was NOT re-recorded/);
     },
   );
+
+  it('claim on a stale run directory refuses before any remote POST', async () => {
+    const adapter = await loadQueue('jira.mjs');
+    const stale = path.join(tmpdir(), 'run-dir-that-was-never-created');
+    const pending = adapter.claim(ticket, { env: { ...CREDENTIALS, RIG_RUN_DIR: stale } });
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      claimed: false,
+      reason: 'claim-unverifiable',
+    });
+    expect(postCount).toBe(0);
+  });
 });
 
 describe('github-issues re-records the marker after each write of its own', () => {
@@ -202,6 +327,7 @@ describe('github-issues re-records the marker after each write of its own', () =
         return { stdout: 'gh-fake-login\\n' };
       }
       if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
+        if (String(args[1] || '').includes('/pulls?')) return { stdout: '[]\\n' };
         return {
           stdout: JSON.stringify([
             {
@@ -239,11 +365,13 @@ describe('github-issues re-records the marker after each write of its own', () =
     async (op) => {
       const adapter = await loadQueue('github-issues.mjs');
       const { readState, recordTakeUp } = await load('run-state.mjs');
-      const runDir = await scratch('run-');
-      recordTakeUp(runDir, { id: '7', updatedAt: T1 });
+      const admission =
+        op === 'claim' ? await admitClaim(await scratch('claim-project-'), ticket, T3) : null;
+      const runDir = admission?.runDir ?? (await scratch('run-'));
+      if (!admission) recordTakeUp(runDir, { id: '7', updatedAt: T1 });
       await withStubGh(() =>
         withRunDir(runDir, async () => {
-          if (op === 'claim') adapter.claim(ticket);
+          if (op === 'claim') adapter.claim(ticket, { projectRoot: admission!.projectRoot });
           if (op === 'comment') adapter.comment(ticket, 'a note');
           if (op === 'close') await adapter.close(ticket, { prUrl: 'https://x/1' });
           if (op === 'escalate') await adapter.escalate(ticket, 'a diagnosis');

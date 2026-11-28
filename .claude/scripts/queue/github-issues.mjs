@@ -16,6 +16,7 @@
 import { execFileSync } from 'node:child_process';
 import { duplicateOf, fingerprintOf, lifecycleOf, ownerOfLabels, validateProposal } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
+import { admitClaim } from '../lib/claim-admission.mjs';
 import { recordEscalation, recordItemClosed, recordTakeUp } from '../run-state.mjs';
 import { recordClaimTransition } from '../lib/claim-records.mjs';
 
@@ -512,6 +513,8 @@ export const claim = (
           : "this run's tracker identity could not be resolved, and the item is assigned — a match cannot be confirmed",
       };
     }
+    const admission = admitClaim({ ticket, projectRoot, env: process.env });
+    if (!admission.ok) return admission;
     return mutateAndVerifyGithubClaim(ticket, snapshotMs, projectRoot);
   };
 

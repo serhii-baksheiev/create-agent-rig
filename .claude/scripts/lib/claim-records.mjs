@@ -710,16 +710,23 @@ const readClaim = (projectRoot, path) => {
   return { parsed, raw };
 };
 
-export const recordClaimTransition = ({ projectRoot = process.cwd(), ticket, claimedState }) => {
-  if (!WORKFLOW_STATES.has(claimedState)) {
-    throw new Error(`claim record: unsupported claimed workflow state ${JSON.stringify(claimedState)}`);
-  }
+export const readClaimForTicket = ({ projectRoot = process.cwd(), ticket } = {}) => {
   const path = claimPathFor(projectRoot, ticket);
   if (!pathExists(path)) return null;
   const claim = readClaim(projectRoot, path).parsed;
   if (claim.ticket !== ticketIdOf(ticket)) {
     throw new Error(`claim ticket conflicts with ${ticketIdOf(ticket)}`);
   }
+  return claim;
+};
+
+export const recordClaimTransition = ({ projectRoot = process.cwd(), ticket, claimedState }) => {
+  if (!WORKFLOW_STATES.has(claimedState)) {
+    throw new Error(`claim record: unsupported claimed workflow state ${JSON.stringify(claimedState)}`);
+  }
+  const claim = readClaimForTicket({ projectRoot, ticket });
+  if (claim === null) return null;
+  const path = claimPathFor(projectRoot, ticket);
   if (claim.workflowClaim?.claimedState === claimedState) return claim.workflowClaim;
 
   const expectedDirectory = assertRepositoryDirectory(

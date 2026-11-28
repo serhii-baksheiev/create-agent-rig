@@ -1,13 +1,20 @@
-import { readFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { removeFixture } from '../helpers/remove-fixture.js';
+import { stubCommand } from '../helpers/stub-command.js';
 
 // Extraction brief §6.6: the second adapter, whose only job is to prove the seam
 // holds. If adding it needed a change above the seam, the seam was in the wrong
 // place — so this file also asserts that core.mjs was not touched to accommodate it.
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(repoRoot, '.claude', 'scripts', 'git-env.mjs')).href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 const queueDir = path.join(
   repoRoot,
   'templates',
@@ -17,7 +24,117 @@ const queueDir = path.join(
   'scripts',
   'queue',
 );
+const scriptsDir = path.dirname(queueDir);
 const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).href);
+
+const fixtureGit = (args: string[], cwd: string) =>
+  execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: withoutGitLocation(),
+    timeout: 30_000,
+  }).trim();
+
+const admitJiraClaim = async (
+  ticket: { id: string; updatedAt: string },
+  credentials: NodeJS.ProcessEnv,
+  now: string,
+) => {
+  const projectRoot = await mkdtemp(path.join(tmpdir(), 'jira-claim-admission-'));
+  fixtureGit(['init', '-q', '-b', 'master'], projectRoot);
+  await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(projectRoot, '.rig', 'revalidation.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    }),
+  );
+  fixtureGit(['add', '.rig/revalidation.json'], projectRoot);
+  fixtureGit(['commit', '-q', '-m', 'seed admission fixture'], projectRoot);
+  const origin = path.join(projectRoot, '.fixture-origin.git');
+  fixtureGit(['init', '--bare', '-b', 'master', origin], projectRoot);
+  fixtureGit(['remote', 'add', 'origin', origin], projectRoot);
+  fixtureGit(['push', '-q', '-u', 'origin', 'master'], projectRoot);
+  fixtureGit(['fetch', '-q', 'origin'], projectRoot);
+
+  const claims = await import(
+    `${pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href}?admission=${Date.now()}-${Math.random()}`
+  );
+  const targetSha = claims.targetShaOf(projectRoot);
+  const baseline = claims.revalidateClaim({
+    projectRoot,
+    ticket,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: true,
+    isResume: false,
+  });
+  if (baseline.result !== 'BASELINE_CREATED') {
+    throw new Error(`test setup: SELECT baseline was not created: ${JSON.stringify(baseline)}`);
+  }
+  fixtureGit(['add', `.rig/claims/${ticket.id}.json`], projectRoot);
+  fixtureGit(['commit', '-q', '-m', 'version SELECT baseline'], projectRoot);
+  const selected = claims.revalidateClaim({
+    projectRoot,
+    ticket,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: false,
+    isResume: false,
+  });
+  if (selected.result !== 'CURRENT') {
+    throw new Error(`test setup: SELECT baseline was not current: ${JSON.stringify(selected)}`);
+  }
+  const runDir = path.join(projectRoot, '.claude', 'runs', 'claim-admission');
+  await mkdir(runDir, { recursive: true });
+  const journal = await import(
+    `${pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href}?admission=${Date.now()}-${Math.random()}`
+  );
+  journal.recordDecision({
+    runDir,
+    gate: 'item-selection',
+    verdict: `taken ${ticket.id}`,
+    why: ticket.id,
+    now,
+  });
+  journal.recordEvent({
+    runDir,
+    kind: 'revalidation',
+    data: { ...selected, task: { from: null, to: ticket.updatedAt } },
+    now,
+  });
+
+  const nativeCheckLog = path.join(projectRoot, 'native-duplicate-work.log');
+  await writeFile(nativeCheckLog, '');
+  const gh = await stubCommand(
+    'gh',
+    `
+      const fs = require('node:fs');
+      fs.appendFileSync(${JSON.stringify(nativeCheckLog)}, args.join(' ') + '\\n');
+      if (args[0] === 'api' && String(args[1] || '').includes('/pulls?')) return { stdout: '[]\\n' };
+      return { exitCode: 64 };
+    `,
+  );
+  return {
+    projectRoot,
+    env: { ...process.env, ...credentials, RIG_RUN_DIR: runDir },
+    nativeCheckCalls: async () =>
+      (await readFile(nativeCheckLog, 'utf8')).split('\n').filter(Boolean),
+    cleanup: async () => {
+      gh.restore();
+      await removeFixture(projectRoot);
+    },
+  };
+};
 
 interface Ticket {
   id: string;
@@ -716,38 +833,63 @@ describe('hardening beyond the endpoint (AR-54)', () => {
           operation === 'transition POST'
             ? { id: 'ABC-13', updatedAt: claimSnapshot }
             : { id: 'ABC-13' };
-        const mutation =
-          operation === 'comment POST'
-            ? adapter.comment(ticket, 'a note', { env: CREDENTIALS })
-            : operation === 'transition POST'
-              ? adapter.claim(ticket, { transitionId: '31', env: CREDENTIALS })
-              : operation === 'issue-create POST'
-                ? adapter.proposeTriage(proposal, {
-                    project: 'AR',
-                    existing: [],
-                    env: CREDENTIALS,
+        const admission =
+          operation === 'transition POST'
+            ? await admitJiraClaim(
+                ticket as { id: string; updatedAt: string },
+                CREDENTIALS,
+                claimSnapshot,
+              )
+            : null;
+        try {
+          const mutation =
+            operation === 'comment POST'
+              ? adapter.comment(ticket, 'a note', { env: CREDENTIALS })
+              : operation === 'transition POST'
+                ? adapter.claim(ticket, {
+                    transitionId: '31',
+                    projectRoot: admission!.projectRoot,
+                    env: admission!.env,
                   })
-                : adapter.escalate(ticket, 'needs an owner', { env: CREDENTIALS });
-        const error = await mutation.then(
-          () => null,
-          (thrown: unknown) => thrown,
-        );
+                : operation === 'issue-create POST'
+                  ? adapter.proposeTriage(proposal, {
+                      project: 'AR',
+                      existing: [],
+                      env: CREDENTIALS,
+                    })
+                  : adapter.escalate(ticket, 'needs an owner', { env: CREDENTIALS });
+          const error = await mutation.then(
+            () => null,
+            (thrown: unknown) => thrown,
+          );
 
-        expect(error, `${operation} reported success after an ambiguous 503`).toBeInstanceOf(Error);
-        expect(String(error)).toMatch(/503/);
-        const targetCalls = calls.filter((call) => {
-          const route = new URL(call.url).pathname;
-          if (operation === 'comment POST')
-            return call.method === 'POST' && /\/comment$/.test(route);
-          if (operation === 'transition POST') {
-            return call.method === 'POST' && /\/transitions$/.test(route);
+          expect(error, `${operation} reported success after an ambiguous 503`).toBeInstanceOf(
+            Error,
+          );
+          expect(String(error)).toMatch(/503/);
+          const targetCalls = calls.filter((call) => {
+            const route = new URL(call.url).pathname;
+            if (operation === 'comment POST')
+              return call.method === 'POST' && /\/comment$/.test(route);
+            if (operation === 'transition POST') {
+              return call.method === 'POST' && /\/transitions$/.test(route);
+            }
+            if (operation === 'issue-create POST') {
+              return call.method === 'POST' && route === '/rest/api/3/issue';
+            }
+            return call.method === 'PUT' && route === '/rest/api/3/issue/ABC-13';
+          });
+          expect(targetCalls, `${operation} was replayed`).toHaveLength(1);
+          if (admission) {
+            expect(
+              (await admission.nativeCheckCalls()).some((call) =>
+                call.includes('/pulls?state=open'),
+              ),
+            ).toBe(true);
           }
-          if (operation === 'issue-create POST') {
-            return call.method === 'POST' && route === '/rest/api/3/issue';
-          }
-          return call.method === 'PUT' && route === '/rest/api/3/issue/ABC-13';
-        });
-        expect(targetCalls, `${operation} was replayed`).toHaveLength(1);
+        } finally {
+          await admission?.cleanup();
+        }
       },
     );
   });

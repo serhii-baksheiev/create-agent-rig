@@ -25,6 +25,7 @@
 // owner holds every marked item, since it cannot confirm a match.
 import { duplicateOf, fingerprintOf, validateProposal, ownerOfLabels, lifecycleOf } from './core.mjs';
 import { withAsOf } from './as-of.mjs';
+import { admitClaim } from '../lib/claim-admission.mjs';
 import { recordEscalation, recordItemClosed, recordTakeUp } from '../run-state.mjs';
 import { recordClaimTransition } from '../lib/claim-records.mjs';
 
@@ -1183,6 +1184,8 @@ export const claim = async (
     }
     transitionId = target.id;
   }
+  const admission = admitClaim({ ticket, projectRoot, env });
+  if (!admission.ok) return admission;
   // The mutation itself: never retried on an ambiguous response, exactly as
   // every other mutating call in this adapter — a 5xx here may have already
   // applied the transition, and replaying it would apply it twice.

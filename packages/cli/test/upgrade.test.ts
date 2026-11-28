@@ -2179,13 +2179,18 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
   // RP-526 adds the Windows CI convergence decision to the PROCESS layer, so
   // both figures move by one (126→127, 69→70): reducing the manifest must
   // retain this Core decision while still pruning workflow-only paths.
-  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 127 manifest entries to 70', async () => {
+  // RP-554 adds the workflow-only native claim-admission library (127→128);
+  // reducing to Core must remove that library while preserving the Windows
+  // convergence decision and its unchanged 70-entry Core payload.
+  it('a clean workflow-layer install hand-edited down to a core-only layers array goes from 128 manifest entries to 70', async () => {
     const WINDOWS_CI_CONVERGENCE = 'docs/decisions/windows-ci-convergence.md';
+    const CLAIM_ADMISSION = '.claude/scripts/lib/claim-admission.mjs';
     await initProject(repo, { withWorkflow: true });
     const before = await readManifest(repo);
     expect(before, 'fixture: no manifest').not.toBeNull();
-    expect(Object.keys(before!.files).length).toBe(127);
+    expect(Object.keys(before!.files).length).toBe(128);
     expect(before!.files).toHaveProperty(WINDOWS_CI_CONVERGENCE);
+    expect(before!.files).toHaveProperty(CLAIM_ADMISSION);
 
     await writeManifest(repo, { ...before!, layers: ['process'] });
     const plan = await planUpgrade(repo, { history: emptyHistory });
@@ -2194,6 +2199,7 @@ describe('upgrade and the opt-in workflow layer (RP-180)', () => {
     const after = await readManifest(repo);
     expect(Object.keys(after!.files).length).toBe(70);
     expect(after!.files).toHaveProperty(WINDOWS_CI_CONVERGENCE);
+    expect(after!.files).not.toHaveProperty(CLAIM_ADMISSION);
   });
 });
 

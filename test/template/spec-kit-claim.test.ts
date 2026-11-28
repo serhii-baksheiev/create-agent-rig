@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { cp, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -8,6 +8,9 @@ import { removeFixture } from '../helpers/remove-fixture.js';
 import { stubCommand } from '../helpers/stub-command.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const { withoutGitLocation } = (await import(
+  pathToFileURL(path.join(repoRoot, '.claude', 'scripts', 'git-env.mjs')).href
+)) as { withoutGitLocation: (env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv };
 const universal = path.join(repoRoot, 'templates', 'agent-os', 'universal');
 const temporaryPaths = new Set<string>();
 
@@ -43,6 +46,93 @@ const scratchProject = async () => {
     ['# Tasks: Queue', '', '- [ ] T001 Make the queue claimable', ''].join('\n'),
   );
   return dir;
+};
+
+const fixtureGit = (args: string[], cwd: string) =>
+  execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
+    cwd,
+    encoding: 'utf8',
+    env: withoutGitLocation(),
+    timeout: 30_000,
+  }).trim();
+
+const admitClaim = async (
+  projectRoot: string,
+  ticket: { id: string; updatedAt: string },
+  now: string,
+) => {
+  fixtureGit(['init', '-q', '-b', 'master'], projectRoot);
+  await mkdir(path.join(projectRoot, '.rig'), { recursive: true });
+  await writeFile(
+    path.join(projectRoot, '.rig', 'revalidation.json'),
+    JSON.stringify({
+      schemaVersion: 1,
+      detection: {
+        mode: 'pull',
+        sources: ['run-state', 'journal'],
+        acceptedLatency: '24h',
+        push: false,
+      },
+      pairedFacts: [],
+    }),
+  );
+  fixtureGit(['add', '.rig/revalidation.json'], projectRoot);
+  fixtureGit(['commit', '-q', '-m', 'seed admission fixture'], projectRoot);
+  const origin = path.join(projectRoot, '.fixture-origin.git');
+  fixtureGit(['init', '--bare', '-b', 'master', origin], projectRoot);
+  fixtureGit(['remote', 'add', 'origin', origin], projectRoot);
+  fixtureGit(['push', '-q', '-u', 'origin', 'master'], projectRoot);
+  fixtureGit(['fetch', '-q', 'origin'], projectRoot);
+
+  const claims = await import(
+    `${pathToFileURL(path.join(projectRoot, '.claude', 'scripts', 'lib', 'claim-records.mjs')).href}?admission=${Date.now()}-${Math.random()}`
+  );
+  const targetSha = claims.targetShaOf(projectRoot);
+  const baseline = claims.revalidateClaim({
+    projectRoot,
+    ticket,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: true,
+    isResume: false,
+  });
+  if (baseline.result !== 'BASELINE_CREATED') {
+    throw new Error(`test setup: SELECT baseline was not created: ${JSON.stringify(baseline)}`);
+  }
+  fixtureGit(['add', `.rig/claims/${ticket.id}.json`], projectRoot);
+  fixtureGit(['commit', '-q', '-m', 'version SELECT baseline'], projectRoot);
+  const selected = claims.revalidateClaim({
+    projectRoot,
+    ticket,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha,
+    allowCreate: false,
+    isResume: false,
+  });
+  if (selected.result !== 'CURRENT') {
+    throw new Error(`test setup: SELECT baseline was not current: ${JSON.stringify(selected)}`);
+  }
+  const runDir = path.join(projectRoot, '.claude', 'runs', 'claim-admission');
+  await mkdir(runDir, { recursive: true });
+  const journal = await import(
+    `${pathToFileURL(path.join(projectRoot, '.claude', 'scripts', 'run-journal.mjs')).href}?admission=${Date.now()}-${Math.random()}`
+  );
+  journal.recordDecision({
+    runDir,
+    gate: 'item-selection',
+    verdict: `taken ${ticket.id}`,
+    why: ticket.id,
+    now,
+  });
+  journal.recordEvent({
+    runDir,
+    kind: 'revalidation',
+    data: { ...selected, task: { from: null, to: ticket.updatedAt } },
+    now,
+  });
+  return { projectRoot, runDir };
 };
 
 type GhState = {
@@ -121,7 +211,10 @@ const installGithub = async ({ failLabel }: { failLabel?: string } = {}) => {
        save(); return { stdout: '' };
      }
      if (args[0] === 'api' && args[1] === 'user') return { stdout: 'rig-controller\\n' };
-     if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) return { stdout: JSON.stringify(state.events) + '\\n' };
+     if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
+       if (String(args[1] || '').includes('/pulls?')) return { stdout: '[]\\n' };
+       return { stdout: JSON.stringify(state.events) + '\\n' };
+     }
      return { exitCode: 64 };`,
   );
   return {
@@ -154,24 +247,41 @@ describe('Spec Kit imports queue-claimable GitHub issues (RP-329)', () => {
       );
       const importedIssue = beforeClaim.issues[0];
       if (!importedIssue) throw new Error('test setup: Spec Kit import did not create its issue.');
-
-      const { claim } = await import(
-        `${pathToFileURL(path.join(project, '.claude', 'scripts', 'queue', 'github-issues.mjs')).href}?${Date.now()}`
+      const admission = await admitClaim(
+        project,
+        { id: '1', updatedAt: importedIssue.updatedAt },
+        '2026-10-01T00:00:00.000Z',
       );
-      const result = claim(
-        {
-          id: '1',
-          updatedAt: importedIssue.updatedAt,
-          labels: importedIssue.labels,
-        },
-        { projectRoot: project },
-      );
+      const previousRunDir = process.env.RIG_RUN_DIR;
+      process.env.RIG_RUN_DIR = admission.runDir;
 
-      expect(result).toMatchObject({ ok: true, claimed: true });
-      const claimedIssue = (await github.state()).issues[0];
-      if (!claimedIssue)
-        throw new Error('test setup: imported issue disappeared before claim readback.');
-      expect(claimedIssue.labels).toContain('in-progress');
+      try {
+        const { claim } = await import(
+          `${pathToFileURL(path.join(project, '.claude', 'scripts', 'queue', 'github-issues.mjs')).href}?${Date.now()}`
+        );
+        const result = claim(
+          {
+            id: '1',
+            updatedAt: importedIssue.updatedAt,
+            labels: importedIssue.labels,
+          },
+          { projectRoot: admission.projectRoot },
+        );
+
+        expect(result).toMatchObject({ ok: true, claimed: true });
+        expect(
+          (await github.calls()).some(
+            (args) => args[0] === 'api' && String(args[1] || '').includes('/pulls?state=open'),
+          ),
+        ).toBe(true);
+        const claimedIssue = (await github.state()).issues[0];
+        if (!claimedIssue)
+          throw new Error('test setup: imported issue disappeared before claim readback.');
+        expect(claimedIssue.labels).toContain('in-progress');
+      } finally {
+        if (previousRunDir === undefined) delete process.env.RIG_RUN_DIR;
+        else process.env.RIG_RUN_DIR = previousRunDir;
+      }
     } finally {
       github.stub.restore();
     }

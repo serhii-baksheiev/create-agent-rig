@@ -23,6 +23,7 @@ const load = (file: string) => import(pathToFileURL(path.join(queueDir, file)).h
 
 const T0 = '2026-09-01T00:00:00.000Z';
 const bump = (iso: string, ms: number) => new Date(new Date(iso).getTime() + ms).toISOString();
+const FIXTURE_TARGET_SHA = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef';
 
 const git = (args: string[], cwd: string): string =>
   execFileSync('git', ['-c', 'user.email=t@example.invalid', '-c', 'user.name=t', ...args], {
@@ -93,7 +94,7 @@ const bootstrapProject = async (ticket: NeutralTicket, claimedState: string): Pr
     ticket,
     point: 'SELECT',
     claimedState,
-    targetSha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+    targetSha: FIXTURE_TARGET_SHA,
     allowCreate: true,
     isResume: false,
   });
@@ -104,6 +105,62 @@ const bootstrapProject = async (ticket: NeutralTicket, claimedState: string): Pr
 };
 
 const claimPathFor = (root: string, id: string) => path.join(root, '.rig', 'claims', `${id}.json`);
+
+const nativeSelectionFor = async (root: string, ticket: NeutralTicket, now: string) => {
+  git(['add', `.rig/claims/${ticket.id}.json`], root);
+  git(['commit', '-q', '-m', 'version SELECT baseline'], root);
+  const origin = path.join(root, '.fixture-origin.git');
+  git(['init', '--bare', '-b', 'master', origin], root);
+  git(['remote', 'add', 'origin', origin], root);
+  git(['push', '-q', '-u', 'origin', 'master'], root);
+  git(['fetch', '-q', 'origin'], root);
+
+  const claims = await import(
+    `${pathToFileURL(claimRecordsScript).href}?native-selection=${Date.now()}-${Math.random()}`
+  );
+  const selected = claims.revalidateClaim({
+    projectRoot: root,
+    ticket,
+    point: 'SELECT',
+    claimedState: 'in-progress',
+    targetSha: FIXTURE_TARGET_SHA,
+    allowCreate: false,
+    isResume: false,
+  });
+  if (selected.result !== 'CURRENT') {
+    throw new Error(`test setup: SELECT baseline was not current: ${JSON.stringify(selected)}`);
+  }
+  const runDir = path.join(root, '.claude', 'runs', 'native-selection');
+  await mkdir(runDir, { recursive: true });
+  const journal = await import(
+    `${pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href}?native-selection=${Date.now()}-${Math.random()}`
+  );
+  journal.recordDecision({
+    runDir,
+    gate: 'item-selection',
+    verdict: `taken ${ticket.id}`,
+    why: ticket.title,
+    now,
+  });
+  journal.recordEvent({
+    runDir,
+    kind: 'revalidation',
+    data: { ...selected, task: { from: null, to: ticket.updatedAt } },
+    now,
+  });
+  return runDir;
+};
+
+const scopedRun = async <T>(runDir: string, work: () => T | Promise<T>): Promise<T> => {
+  const previousRunDir = process.env.RIG_RUN_DIR;
+  process.env.RIG_RUN_DIR = runDir;
+  try {
+    return await work();
+  } finally {
+    if (previousRunDir === undefined) delete process.env.RIG_RUN_DIR;
+    else process.env.RIG_RUN_DIR = previousRunDir;
+  }
+};
 
 // --- a small in-memory fake Jira, behind a stubbed fetch --------------------
 
@@ -225,8 +282,19 @@ const CREDENTIALS = {
   JIRA_API_TOKEN: 'x',
 };
 
+const admitJiraClaim = async (root: string, ticket: NeutralTicket, now: string) => {
+  const runDir = await nativeSelectionFor(root, ticket, now);
+  const gh = await stubCommand(
+    'gh',
+    "if (args[0] === 'api' && String(args[1] || '').includes('/pulls?')) return { stdout: '[]\\n' };\n" +
+      "return { stdout: '[]\\n' };",
+  );
+  return { gh, env: { ...process.env, ...CREDENTIALS, RIG_RUN_DIR: runDir } };
+};
+
 describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
   let realFetch: typeof globalThis.fetch;
+  let admissionGh: StubHandle | null = null;
 
   beforeEach(() => {
     realFetch = globalThis.fetch;
@@ -234,6 +302,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
 
   afterEach(() => {
     globalThis.fetch = realFetch;
+    admissionGh?.restore();
+    admissionGh = null;
   });
 
   it('refuses as claim-stale when the item moved to In Progress after selection, with no mutation', async () => {
@@ -278,9 +348,38 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     ).toHaveLength(0);
   });
 
+  it('refuses a Jira claim before mutation and rebaseline reads when no run is declared for native admission', async () => {
+    const ticket = neutralTicket({ id: 'RP-2', updatedAt: T0 });
+    const fake = new FakeJira({
+      id: 'RP-2',
+      statusCategory: 'new',
+      statusName: 'To Do',
+      updated: T0,
+    });
+    installFetch(fake);
+
+    const { claim } = await load('jira.mjs');
+    const result = await claim(ticket, { transitionId: '21', env: CREDENTIALS });
+
+    expect(result).toMatchObject({ ok: false, claimed: false, reason: 'claim-unverifiable' });
+    expect(
+      fake.calls.filter(
+        (call) => call.method === 'POST' && /\/transitions$/.test(new URL(call.url).pathname),
+      ),
+    ).toHaveLength(0);
+    expect(
+      fake.calls.some(
+        (call) =>
+          call.method === 'GET' && new URL(call.url).searchParams.get('fields') === 'updated',
+      ),
+    ).toBe(false);
+  });
+
   it('verifies and records the workflow claim for the sole claimant of an unchanged snapshot', async () => {
     const ticket = neutralTicket({ id: 'RP-3', updatedAt: T0 });
     const root = await bootstrapProject(ticket, 'in-progress');
+    const admission = await admitJiraClaim(root, ticket, T0);
+    admissionGh = admission.gh;
     const fake = new FakeJira({
       id: 'RP-3',
       statusCategory: 'new',
@@ -290,7 +389,11 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     installFetch(fake);
 
     const { claim } = await load('jira.mjs');
-    const result = await claim(ticket, { transitionId: '21', env: CREDENTIALS, projectRoot: root });
+    const result = await claim(ticket, {
+      transitionId: '21',
+      env: admission.env,
+      projectRoot: root,
+    });
 
     expect(result).toMatchObject({ ok: true, claimed: true, workflowClaimRecorded: true });
     expect(
@@ -308,6 +411,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
   it('refuses as claim-contended when a foreign change lands between the pre-read and the read-back, and never records a workflow claim', async () => {
     const ticket = neutralTicket({ id: 'RP-4', updatedAt: T0 });
     const root = await bootstrapProject(ticket, 'in-progress');
+    const admission = await admitJiraClaim(root, ticket, T0);
+    admissionGh = admission.gh;
     const fake = new FakeJira({
       id: 'RP-4',
       statusCategory: 'new',
@@ -332,7 +437,11 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     }) as unknown as typeof globalThis.fetch;
 
     const { claim } = await load('jira.mjs');
-    const result = await claim(ticket, { transitionId: '21', env: CREDENTIALS, projectRoot: root });
+    const result = await claim(ticket, {
+      transitionId: '21',
+      env: admission.env,
+      projectRoot: root,
+    });
 
     expect(result).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
     // the transition itself is not rolled back — the item may still be held by
@@ -405,6 +514,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     it('fully sequential A-then-B: the second controller finds it already moved', async () => {
       const ticket = neutralTicket({ id: 'RP-7', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const admission = await admitJiraClaim(root, ticket, T0);
+      admissionGh = admission.gh;
       const fake = new FakeJira({
         id: 'RP-7',
         statusCategory: 'new',
@@ -416,12 +527,12 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
 
       const resultA = await claim(ticket, {
         transitionId: '21',
-        env: CREDENTIALS,
+        env: admission.env,
         projectRoot: root,
       });
       const resultB = await claim(ticket, {
         transitionId: '21',
-        env: CREDENTIALS,
+        env: admission.env,
         projectRoot: root,
       });
 
@@ -439,6 +550,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     it('fully sequential B-then-A (order reversed): still at most one verified', async () => {
       const ticket = neutralTicket({ id: 'RP-8', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const admission = await admitJiraClaim(root, ticket, T0);
+      admissionGh = admission.gh;
       const fake = new FakeJira({
         id: 'RP-8',
         statusCategory: 'new',
@@ -450,12 +563,12 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
 
       const resultB = await claim(ticket, {
         transitionId: '21',
-        env: CREDENTIALS,
+        env: admission.env,
         projectRoot: root,
       });
       const resultA = await claim(ticket, {
         transitionId: '21',
-        env: CREDENTIALS,
+        env: admission.env,
         projectRoot: root,
       });
 
@@ -533,6 +646,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     it('both pre-reads land before either POST, and both read-backs are last: both refuse', async () => {
       const ticket = neutralTicket({ id: 'RP-9', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const admission = await admitJiraClaim(root, ticket, T0);
+      admissionGh = admission.gh;
       const fake = new FakeJira({
         id: 'RP-9',
         statusCategory: 'new',
@@ -543,8 +658,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       globalThis.fetch = fetchImpl;
       const { claim } = await load('jira.mjs');
 
-      const claimA = claim(ticket, { transitionId: '21', env: CREDENTIALS, projectRoot: root });
-      const claimB = claim(ticket, { transitionId: '21', env: CREDENTIALS, projectRoot: root });
+      const claimA = claim(ticket, { transitionId: '21', env: admission.env, projectRoot: root });
+      const claimB = claim(ticket, { transitionId: '21', env: admission.env, projectRoot: root });
 
       await releaseWhere(isPreOrReadBack); // first pre-read
       await releaseWhere(isPreOrReadBack); // second pre-read
@@ -577,6 +692,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     it("A's read-back lands strictly before B's POST, while B's pre-read preceded A's POST: exactly A verifies", async () => {
       const ticket = neutralTicket({ id: 'RP-10', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const admission = await admitJiraClaim(root, ticket, T0);
+      admissionGh = admission.gh;
       const fake = new FakeJira({
         id: 'RP-10',
         statusCategory: 'new',
@@ -587,8 +704,12 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       globalThis.fetch = fetchImpl;
       const { claim } = await load('jira.mjs');
 
-      const claimA = claim(ticket, { transitionId: '21', env: CREDENTIALS, projectRoot: root });
-      const claimB = claim(ticket, { transitionId: '21', env: CREDENTIALS, projectRoot: root });
+      const claimA = claim(ticket, { transitionId: '21', env: admission.env, projectRoot: root });
+      const claimB = claim(ticket, { transitionId: '21', env: admission.env, projectRoot: root });
+      let aResolved = false;
+      void claimA.then(() => {
+        aResolved = true;
+      });
 
       // B's pre-read is released (and so completes) before A's pre-read — and
       // because `transitionId` is supplied, nothing else stands between a
@@ -607,21 +728,18 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       await releaseWhere(isChangelogHead); // A's changelog head
       await releaseWhere(isChangelogTail); // A's changelog tail (sees exactly 1)
 
-      // RP-220 round 2 (B3): `claim` calls `rebaseline` exactly as every other
-      // write in this adapter — only under RIG_RUN_DIR (`env` here, CREDENTIALS,
-      // carries none) — so A's own claim() must resolve the moment the
-      // changelog tail read-back lands, with NO further request queued at all.
-      // A forced rebaseline GET used to sit here; asserting its absence is
-      // this file's own report that the mutation to `force` is gone. Red until
-      // the implementer removes `{ force: true }` from `claim`'s call to
-      // `rebaseline`.
+      // RP-554 changes this successful-claim path: admission requires a declared
+      // run, so A now legitimately rebaselines before its claim resolves. The
+      // separate no-run refusal above preserves the former no-write guarantee.
       await flush();
       expect(
         queue.some(isRebaseline),
-        `a rebaseline GET fired with no RIG_RUN_DIR configured: ${queue
+        `a successful claim with declared native admission did not rebaseline: ${queue
           .map((c) => `${c.method} ${c.url}`)
           .join(' | ')}`,
-      ).toBe(false);
+      ).toBe(true);
+      await releaseWhere(isRebaseline);
+      expect(aResolved).toBe(true);
 
       // Only now does B's POST land.
       await releaseWhere(isTransitionPost); // B's POST
@@ -655,6 +773,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     it('does not count a status-change history that predates the selection snapshot (pins the created>snapshot filter, jira.mjs ~639)', async () => {
       const ticket = neutralTicket({ id: 'RP-11', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const admission = await admitJiraClaim(root, ticket, T0);
+      admissionGh = admission.gh;
       const fake = new FakeJira({
         id: 'RP-11',
         statusCategory: 'new',
@@ -667,7 +787,7 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       const { claim } = await load('jira.mjs');
       const result = await claim(ticket, {
         transitionId: '21',
-        env: CREDENTIALS,
+        env: admission.env,
         projectRoot: root,
       });
 
@@ -680,6 +800,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     it('refuses even with exactly one post-snapshot status history when the read-back category is not in-progress (pins the category check, jira.mjs ~644)', async () => {
       const ticket = neutralTicket({ id: 'RP-12', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const admission = await admitJiraClaim(root, ticket, T0);
+      admissionGh = admission.gh;
       const afterHistoryCreated = bump(T0, 1000);
       let transitioned = false;
       globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
@@ -721,7 +843,7 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       const { claim } = await load('jira.mjs');
       const result = await claim(ticket, {
         transitionId: '21',
-        env: CREDENTIALS,
+        env: admission.env,
         projectRoot: root,
       });
 
@@ -734,6 +856,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
     it('refuses when the sole post-snapshot history entry is not itself a status change (pins the status-item check, jira.mjs ~643)', async () => {
       const ticket = neutralTicket({ id: 'RP-13', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const admission = await admitJiraClaim(root, ticket, T0);
+      admissionGh = admission.gh;
       const afterHistoryCreated = bump(T0, 1000);
       let transitioned = false;
       globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
@@ -774,7 +898,7 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       const { claim } = await load('jira.mjs');
       const result = await claim(ticket, {
         transitionId: '21',
-        env: CREDENTIALS,
+        env: admission.env,
         projectRoot: root,
       });
 
@@ -888,6 +1012,7 @@ const installGhFake = async (state: {
   foreignLogin?: string;
   foreignEventAt?: string;
   ownEventAt?: string;
+  duplicateWorkPulls?: boolean;
   // Round2 B1 decision: two controllers under the SAME GitHub account race
   // through the pre-read→write window. This fake cannot run two real
   // processes concurrently, so it fakes the observable effect instead: the
@@ -962,6 +1087,9 @@ const installGhFake = async (state: {
     if (args[0] === 'api' && args[1] === 'user') {
       return { stdout: state.login + '\\n' };
     }
+    if (args[0] === 'api' && String(args[1] || '').includes('/pulls?')) {
+      return state.duplicateWorkPulls ? { stdout: '[]\\n' } : { stdout: JSON.stringify(state.events) + '\\n' };
+    }
     if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
       return { stdout: JSON.stringify(state.events) + '\\n' };
     }
@@ -1016,7 +1144,7 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
     },
   );
 
-  it('verifies when exactly one in-progress labelled event after the snapshot is by the current login', async () => {
+  it('refuses a GitHub claim without native SELECT admission before adding the in-progress label', async () => {
     installed = await installGhFake({
       state: 'OPEN',
       labels: [],
@@ -1026,15 +1154,113 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
       ownEventAt: bump(T0, 1000),
     });
     const ticket = neutralTicket({ id: '42', updatedAt: T0 });
-    const root = await bootstrapProject(ticket, 'in-progress');
 
     const { claim } = await load('github-issues.mjs');
-    const result = await claim(ticket, { projectRoot: root });
+    const result = claim(ticket, {});
 
-    expect(result).toMatchObject({ ok: true, claimed: true, workflowClaimRecorded: true });
-    const claimPath = claimPathFor(root, '42');
-    const persisted = JSON.parse(await readFile(claimPath, 'utf8'));
-    expect(persisted.workflowClaim).toEqual({ claimedState: 'in-progress' });
+    expect(result).toMatchObject({ ok: false, claimed: false, reason: 'claim-unverifiable' });
+    const calls = await installed.calls();
+    expect(
+      calls.some((line) => line.startsWith('issue edit') && line.includes('--add-label')),
+    ).toBe(false);
+  });
+
+  it('permits a GitHub claim after a native SELECT admission and clean duplicate-work check', async () => {
+    installed = await installGhFake({
+      state: 'OPEN',
+      labels: [],
+      updatedAt: T0,
+      login: 'me',
+      events: [],
+      ownEventAt: bump(T0, 1000),
+      duplicateWorkPulls: true,
+    });
+    const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+    const root = await bootstrapProject(ticket, 'in-progress');
+    git(['add', '.rig/claims/42.json'], root);
+    git(['commit', '-q', '-m', 'version selected claim baseline'], root);
+    const origin = path.join(root, '.fixture-origin.git');
+    git(['init', '--bare', '-b', 'master', origin], root);
+    git(['remote', 'add', 'origin', origin], root);
+    git(['push', '-q', '-u', 'origin', 'master'], root);
+    git(['fetch', '-q', 'origin'], root);
+
+    const records = await import(
+      `${pathToFileURL(claimRecordsScript).href}?github-admission=${Date.now()}-${Math.random()}`
+    );
+    const selected = records.revalidateClaim({
+      projectRoot: root,
+      ticket,
+      point: 'SELECT',
+      claimedState: 'in-progress',
+      targetSha: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef',
+      allowCreate: false,
+      isResume: false,
+    });
+    expect(selected.result, JSON.stringify(selected)).toBe('CURRENT');
+    const runDir = path.join(root, '.claude', 'runs', 'github-admission');
+    await mkdir(runDir, { recursive: true });
+    const journal = await import(
+      `${pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href}?github-admission=${Date.now()}-${Math.random()}`
+    );
+    journal.recordDecision({
+      runDir,
+      gate: 'item-selection',
+      verdict: 'taken 42',
+      why: ticket.title,
+      now: T0,
+    });
+    journal.recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: { ...selected, task: { from: null, to: ticket.updatedAt } },
+      now: T0,
+    });
+
+    const previousRunDir = process.env.RIG_RUN_DIR;
+    process.env.RIG_RUN_DIR = runDir;
+    try {
+      const { claim } = await load('github-issues.mjs');
+      const result = claim(ticket, { projectRoot: root });
+
+      expect(result).toMatchObject({ ok: true, claimed: true, workflowClaimRecorded: true });
+      const calls = await installed.calls();
+      expect(
+        calls.some(
+          (line) => line.startsWith('issue edit') && line.includes('--add-label in-progress'),
+        ),
+      ).toBe(true);
+      const persisted = JSON.parse(await readFile(claimPathFor(root, '42'), 'utf8'));
+      expect(persisted.workflowClaim).toEqual({ claimedState: 'in-progress' });
+    } finally {
+      if (previousRunDir === undefined) delete process.env.RIG_RUN_DIR;
+      else process.env.RIG_RUN_DIR = previousRunDir;
+    }
+  });
+
+  it('verifies when exactly one in-progress labelled event after the snapshot is by the current login', async () => {
+    installed = await installGhFake({
+      state: 'OPEN',
+      labels: [],
+      updatedAt: T0,
+      login: 'me',
+      events: [],
+      ownEventAt: bump(T0, 1000),
+      duplicateWorkPulls: true,
+    });
+    const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+    const root = await bootstrapProject(ticket, 'in-progress');
+    const runDir = await nativeSelectionFor(root, ticket, T0);
+
+    await scopedRun(runDir, async () => {
+      const { claim } = await load('github-issues.mjs');
+      const result = claim(ticket, { projectRoot: root });
+
+      expect(result).toMatchObject({ ok: true, claimed: true, workflowClaimRecorded: true });
+      const claimPath = claimPathFor(root, '42');
+      const persisted = JSON.parse(await readFile(claimPath, 'utf8'));
+      expect(persisted.workflowClaim).toEqual({ claimedState: 'in-progress' });
+    });
   });
 
   it('refuses as claim-contended when the only in-progress labelled event after the snapshot is by another login', async () => {
@@ -1051,17 +1277,21 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
       foreignLogin: 'someone-else',
       foreignEventAt: bump(T0, 1000),
       ownEventAt: bump(T0, 2000),
+      duplicateWorkPulls: true,
     });
     const ticket = neutralTicket({ id: '42', updatedAt: T0 });
     const root = await bootstrapProject(ticket, 'in-progress');
+    const runDir = await nativeSelectionFor(root, ticket, T0);
 
-    const { claim } = await load('github-issues.mjs');
-    const result = await claim(ticket, { projectRoot: root });
+    await scopedRun(runDir, async () => {
+      const { claim } = await load('github-issues.mjs');
+      const result = claim(ticket, { projectRoot: root });
 
-    expect(result).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
-    const claimPath = claimPathFor(root, '42');
-    const persisted = JSON.parse(await readFile(claimPath, 'utf8'));
-    expect(persisted.workflowClaim).toBeUndefined();
+      expect(result).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
+      const claimPath = claimPathFor(root, '42');
+      const persisted = JSON.parse(await readFile(claimPath, 'utf8'));
+      expect(persisted.workflowClaim).toBeUndefined();
+    });
   });
 
   // round2.md item 1 (B2): the reviewer's remaining GitHub mutations, pinned
@@ -1086,17 +1316,21 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
           },
         ],
         ownEventAt: bump(T0, 1000),
+        duplicateWorkPulls: true,
       });
       const ticket = neutralTicket({ id: '42', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const runDir = await nativeSelectionFor(root, ticket, T0);
 
-      const { claim } = await load('github-issues.mjs');
-      const result = await claim(ticket, { projectRoot: root });
+      await scopedRun(runDir, async () => {
+        const { claim } = await load('github-issues.mjs');
+        const result = claim(ticket, { projectRoot: root });
 
-      expect(
-        result,
-        `a pre-snapshot labelled event must never count toward contention — ${JSON.stringify(result)}`,
-      ).toMatchObject({ ok: true, claimed: true });
+        expect(
+          result,
+          `a pre-snapshot labelled event must never count toward contention — ${JSON.stringify(result)}`,
+        ).toMatchObject({ ok: true, claimed: true });
+      });
     });
 
     it('refuses as claim-unverifiable when the events page comes back full (100) — it may be truncated (pins the full-page refusal, github-issues.mjs ~272)', async () => {
@@ -1141,17 +1375,21 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
           },
         ],
         ownEventAt: bump(T0, 1000),
+        duplicateWorkPulls: true,
       });
       const ticket = neutralTicket({ id: '42', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
+      const runDir = await nativeSelectionFor(root, ticket, T0);
 
-      const { claim } = await load('github-issues.mjs');
-      const result = await claim(ticket, { projectRoot: root });
+      await scopedRun(runDir, async () => {
+        const { claim } = await load('github-issues.mjs');
+        const result = claim(ticket, { projectRoot: root });
 
-      expect(
-        result,
-        `two in-progress labelled events after the snapshot by the caller must never verify — ${JSON.stringify(result)}`,
-      ).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
+        expect(
+          result,
+          `two in-progress labelled events after the snapshot by the caller must never verify — ${JSON.stringify(result)}`,
+        ).toMatchObject({ ok: false, claimed: false, reason: 'claim-contended' });
+      });
     });
   });
 
@@ -1167,14 +1405,17 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
       events: [],
       ownEventAt: bump(T0, 1000),
       sameAccountRace: true,
+      duplicateWorkPulls: true,
     });
     const ticket = neutralTicket({ id: '42', updatedAt: T0 });
     const rootA = await bootstrapProject(ticket, 'in-progress');
     const rootB = await bootstrapProject(ticket, 'in-progress');
+    const runA = await nativeSelectionFor(rootA, ticket, T0);
+    const runB = await nativeSelectionFor(rootB, ticket, T0);
 
     const { claim } = await load('github-issues.mjs');
-    const resultA = claim(ticket, { projectRoot: rootA });
-    const resultB = claim(ticket, { projectRoot: rootB });
+    const resultA = await scopedRun(runA, () => claim(ticket, { projectRoot: rootA }));
+    const resultB = await scopedRun(runB, () => claim(ticket, { projectRoot: rootB }));
 
     expect(resultA, `controller A: ${JSON.stringify(resultA)}`).toMatchObject({
       ok: true,
