@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -160,6 +160,30 @@ const scopedRun = async <T>(runDir: string, work: () => T | Promise<T>): Promise
     if (previousRunDir === undefined) delete process.env.RIG_RUN_DIR;
     else process.env.RIG_RUN_DIR = previousRunDir;
   }
+};
+
+const runGithubClaimChild = (
+  ticket: NeutralTicket,
+  projectRoot: string,
+  runDir: string,
+): Promise<{ code: number; stdout: string; stderr: string }> => {
+  const adapterUrl = pathToFileURL(path.join(queueDir, 'github-issues.mjs')).href;
+  const script = `
+    const { claim } = await import(${JSON.stringify(adapterUrl)});
+    const result = claim(${JSON.stringify(ticket)}, { projectRoot: ${JSON.stringify(projectRoot)} });
+    process.stdout.write(JSON.stringify(result instanceof Promise ? await result : result));
+  `;
+  return new Promise((resolve) => {
+    execFile(
+      process.execPath,
+      ['--input-type=module', '--eval', script],
+      { cwd: projectRoot, env: { ...process.env, RIG_RUN_DIR: runDir } },
+      (error, stdout, stderr) => {
+        const code = error && typeof error.code === 'number' ? error.code : error ? 1 : 0;
+        resolve({ code, stdout, stderr });
+      },
+    );
+  });
 };
 
 // --- a small in-memory fake Jira, behind a stubbed fetch --------------------
@@ -643,7 +667,7 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
       /\/issue\/[^/]+$/.test(new URL(c.url).pathname) &&
       !String(new URL(c.url).searchParams.get('fields')).includes('status');
 
-    it('both pre-reads land before either POST, and both read-backs are last: both refuse', async () => {
+    it('both initial and final authority pre-reads land before either POST, and both read-backs are last: both refuse', async () => {
       const ticket = neutralTicket({ id: 'RP-9', updatedAt: T0 });
       const root = await bootstrapProject(ticket, 'in-progress');
       const admission = await admitJiraClaim(root, ticket, T0);
@@ -663,6 +687,8 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
 
       await releaseWhere(isPreOrReadBack); // first pre-read
       await releaseWhere(isPreOrReadBack); // second pre-read
+      await releaseWhere(isPreOrReadBack); // first final authority pre-read
+      await releaseWhere(isPreOrReadBack); // second final authority pre-read
       await releaseWhere(isTransitionPost); // first POST
       await releaseWhere(isTransitionPost); // second POST
       await releaseWhere(isPreOrReadBack); // first read-back
@@ -711,19 +737,19 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
         aResolved = true;
       });
 
-      // B's pre-read is released (and so completes) before A's pre-read — and
-      // because `transitionId` is supplied, nothing else stands between a
-      // resolved pre-read and that controller's own POST: releasing B's
-      // pre-read first means B's POST is the one that lands in the queue
-      // first, and A's POST lands second once A's own pre-read is released.
+      // B's initial pre-read is released before A's. Both then complete their
+      // final authority pre-read while the item is still unclaimed, so the
+      // following POST order models an actual overlap rather than a stale
+      // response fabricated after the other controller's mutation.
       await releaseWhere(isPreOrReadBack, 'last'); // B's pre-read (arrived second)
       await releaseWhere(isPreOrReadBack, 'first'); // A's pre-read (only one left)
+      await releaseWhere(isPreOrReadBack, 'last'); // B's final authority pre-read
+      await releaseWhere(isPreOrReadBack, 'first'); // A's final authority pre-read
 
       // A runs all the way to a verified claim while B's POST sits unreleased.
-      // B's POST reached the queue first (see above), so it is the 'first'
-      // match here — A's is the 'last' one, and picking 'first' would grab
-      // B's instead and invert the whole interleaving this test names.
-      await releaseWhere(isTransitionPost, 'last'); // A's POST (B's POST stays queued, unreleased)
+      // The final reads queued B then A; releasing A's final read first puts
+      // A's POST first in the mutation queue, leaving B's second POST held.
+      await releaseWhere(isTransitionPost, 'first'); // A's POST (B's POST stays queued, unreleased)
       await releaseWhere(isPreOrReadBack); // A's read-back
       await releaseWhere(isChangelogHead); // A's changelog head
       await releaseWhere(isChangelogTail); // A's changelog tail (sees exactly 1)
@@ -739,6 +765,7 @@ describe('jira claim() is verified and stale-selection safe (RP-220)', () => {
           .join(' | ')}`,
       ).toBe(true);
       await releaseWhere(isRebaseline);
+      await claimA;
       expect(aResolved).toBe(true);
 
       // Only now does B's POST land.
@@ -1013,12 +1040,15 @@ const installGhFake = async (state: {
   foreignEventAt?: string;
   ownEventAt?: string;
   duplicateWorkPulls?: boolean;
+  nativeCheckMarker?: string;
+  reassignDuringDuplicateWork?: boolean;
+  foreignAssignee?: string;
+  nativeDuplicateWorkMutation?: 'close' | 'label-in-progress' | 'updated-at';
+  nativeUpdatedAt?: string;
   // Round2 B1 decision: two controllers under the SAME GitHub account race
-  // through the pre-read→write window. This fake cannot run two real
-  // processes concurrently, so it fakes the observable effect instead: the
-  // SECOND controller's pre-read ("issue view --json state,labels,updatedAt")
-  // is answered with the ORIGINAL (pre-write) labels, exactly as it would be
-  // had both controllers actually read before either wrote.
+  // through the final authority read→write window. The file-backed barrier
+  // below admits both real child processes only after each has reached that
+  // final read; it does not fabricate an old reply after a completed claim.
   sameAccountRace?: boolean;
 }): Promise<{
   stub: StubHandle;
@@ -1029,65 +1059,131 @@ const installGhFake = async (state: {
   const dir = await mkdtemp(path.join(tmpdir(), 'rp220-gh-'));
   const statePath = path.join(dir, 'state.json');
   const logPath = path.join(dir, 'calls.log');
-  await writeFile(statePath, JSON.stringify({ ...state, _originalLabels: [...state.labels] }));
+  await writeFile(statePath, JSON.stringify(state));
   await writeFile(logPath, '');
 
   const handler = `
     const fs = require('node:fs');
     const statePath = ${JSON.stringify(statePath)};
     const logPath = ${JSON.stringify(logPath)};
+    const raceDir = statePath + '.same-account-race';
+    const raceToken = Buffer.from(process.env.RIG_RUN_DIR || '').toString('hex');
     fs.appendFileSync(logPath, args.join(' ') + '\\n');
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    const persist = () => fs.writeFileSync(statePath, JSON.stringify(state));
+    let state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    let writeSequence = 0;
+    const persist = () => {
+      const temporaryPath = statePath + '.' + process.pid + '.' + (++writeSequence) + '.tmp';
+      fs.writeFileSync(temporaryPath, JSON.stringify(state));
+      fs.renameSync(temporaryPath, statePath);
+    };
 
     if (args[0] === 'issue' && args[1] === 'view') {
       const jsonIdx = args.indexOf('--json');
       const fieldsArg = String(args[jsonIdx + 1] || '');
       const fields = fieldsArg.split(',');
       const isPreRead = fieldsArg === 'state,labels,updatedAt';
-      if (isPreRead) state._preReads = (state._preReads || 0) + 1;
-      const useOriginalLabels = state.sameAccountRace && isPreRead && state._preReads === 2;
-      const labelSource = useOriginalLabels ? state._originalLabels : state.labels;
       const out = {};
       for (const f of fields) {
         if (f === 'state') out.state = state.state;
-        if (f === 'labels') out.labels = labelSource.map((name) => ({ name }));
+        if (f === 'labels') out.labels = state.labels.map((name) => ({ name }));
         if (f === 'updatedAt') out.updatedAt = state.updatedAt;
+        if (f === 'assignees') {
+          const assignees = state._reassigned ? [state.foreignAssignee] : state.assignees || [];
+          out.assignees = assignees.map((login) => ({ login }));
+        }
       }
-      persist();
+      if (state.sameAccountRace && isPreRead && fs.existsSync(raceDir + '/' + raceToken + '.duplicate')) {
+        fs.mkdirSync(raceDir, { recursive: true });
+        fs.writeFileSync(raceDir + '/' + raceToken + '.final', '');
+        const deadline = Date.now() + 5000;
+        while (true) {
+          const finalReads = fs.readdirSync(raceDir).filter((entry) => entry.endsWith('.final'));
+          if (finalReads.length >= 2) break;
+          if (Date.now() >= deadline) throw new Error('same-account final-authority barrier timed out');
+          Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+        }
+        return { stdout: JSON.stringify(out) + '\\n' };
+      }
       return { stdout: JSON.stringify(out) + '\\n' };
     }
     if (args[0] === 'issue' && args[1] === 'edit') {
+      let editLock;
+      if (state.sameAccountRace) {
+        fs.mkdirSync(raceDir, { recursive: true });
+        editLock = raceDir + '/edit.lock';
+        const deadline = Date.now() + 5000;
+        while (true) {
+          try {
+            fs.mkdirSync(editLock);
+            break;
+          } catch (error) {
+            if (!error || error.code !== 'EEXIST') throw error;
+            if (Date.now() >= deadline) throw new Error('same-account edit lock timed out');
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+          }
+        }
+        state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+      }
       const addIdx = args.indexOf('--add-label');
       const label = args[addIdx + 1];
-      if (state.injectForeignBeforeEdit && !state._foreignInjected) {
-        state._foreignInjected = true;
+      try {
+        let mutated = false;
+        if (state.injectForeignBeforeEdit && !state._foreignInjected) {
+          state._foreignInjected = true;
+          mutated = true;
+          if (!state.labels.includes(label)) {
+            state.labels.push(label);
+            state.events.push({
+              event: 'labeled',
+              label: { name: label },
+              actor: { login: state.foreignLogin },
+              created_at: state.foreignEventAt,
+            });
+          }
+        }
         if (!state.labels.includes(label)) {
           state.labels.push(label);
           state.events.push({
             event: 'labeled',
             label: { name: label },
-            actor: { login: state.foreignLogin },
-            created_at: state.foreignEventAt,
+            actor: { login: state.login },
+            created_at: state.ownEventAt,
           });
+          mutated = true;
         }
+        if (mutated) persist();
+        return { stdout: '' };
+      } finally {
+        if (editLock) fs.rmdirSync(editLock);
       }
-      if (!state.labels.includes(label)) {
-        state.labels.push(label);
-        state.events.push({
-          event: 'labeled',
-          label: { name: label },
-          actor: { login: state.login },
-          created_at: state.ownEventAt,
-        });
-      }
-      persist();
-      return { stdout: '' };
     }
     if (args[0] === 'api' && args[1] === 'user') {
       return { stdout: state.login + '\\n' };
     }
     if (args[0] === 'api' && String(args[1] || '').includes('/pulls?')) {
+      if (state.sameAccountRace) {
+        fs.mkdirSync(raceDir, { recursive: true });
+        fs.writeFileSync(raceDir + '/' + raceToken + '.duplicate', '');
+      }
+      if (state.nativeCheckMarker) fs.writeFileSync(state.nativeCheckMarker, 'checked\\n');
+      let mutated = false;
+      if (state.reassignDuringDuplicateWork && !state._reassigned) {
+        state._reassigned = true;
+        mutated = true;
+      }
+      if (state.nativeDuplicateWorkMutation === 'close' && state.state !== 'CLOSED') {
+        state.state = 'CLOSED';
+        mutated = true;
+      }
+      if (state.nativeDuplicateWorkMutation === 'label-in-progress' && !state.labels.includes('in-progress')) {
+        state.labels.push('in-progress');
+        mutated = true;
+      }
+      if (state.nativeDuplicateWorkMutation === 'updated-at' && state.updatedAt !== state.nativeUpdatedAt) {
+        state.updatedAt = state.nativeUpdatedAt;
+        mutated = true;
+      }
+      if (mutated) persist();
       return state.duplicateWorkPulls ? { stdout: '[]\\n' } : { stdout: JSON.stringify(state.events) + '\\n' };
     }
     if (args[0] === 'api' && String(args[1] || '').startsWith('repos/')) {
@@ -1236,6 +1332,153 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
       if (previousRunDir === undefined) delete process.env.RIG_RUN_DIR;
       else process.env.RIG_RUN_DIR = previousRunDir;
     }
+  });
+
+  it('refuses a GitHub claim when an initially unassigned issue is reassigned during native duplicate-work', async () => {
+    const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+    const root = await bootstrapProject(ticket, 'in-progress');
+    const runDir = await nativeSelectionFor(root, ticket, T0);
+    const nativeMarker = path.join(root, 'native-duplicate-work.log');
+    installed = await installGhFake({
+      state: 'OPEN',
+      labels: [],
+      updatedAt: T0,
+      login: 'me',
+      events: [],
+      ownEventAt: bump(T0, 1000),
+      duplicateWorkPulls: true,
+      nativeCheckMarker: nativeMarker,
+      reassignDuringDuplicateWork: true,
+      foreignAssignee: 'other-actor',
+    });
+
+    await scopedRun(runDir, async () => {
+      const { claim } = await load('github-issues.mjs');
+      const result = claim(ticket, { projectRoot: root, currentActor: { id: 'me' } });
+
+      expect(existsSync(nativeMarker)).toBe(true);
+      expect(result).not.toBeInstanceOf(Promise);
+      expect(result).toMatchObject({ ok: false, claimed: false });
+      expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+      const calls = await installed!.calls();
+      expect(calls.some((line) => line.includes('/pulls?state=open'))).toBe(true);
+      expect(
+        calls.some(
+          (line) => line.startsWith('issue edit') && line.includes('--add-label in-progress'),
+        ),
+      ).toBe(false);
+      const persisted = JSON.parse(await readFile(claimPathFor(root, '42'), 'utf8'));
+      expect(persisted.workflowClaim).toBeUndefined();
+    });
+  });
+
+  it('refuses a GitHub claim when native duplicate-work closes the selected issue', async () => {
+    const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+    const root = await bootstrapProject(ticket, 'in-progress');
+    const runDir = await nativeSelectionFor(root, ticket, T0);
+    const nativeMarker = path.join(root, 'native-duplicate-work.log');
+    installed = await installGhFake({
+      state: 'OPEN',
+      labels: [],
+      updatedAt: T0,
+      login: 'me',
+      events: [],
+      ownEventAt: bump(T0, 1000),
+      duplicateWorkPulls: true,
+      nativeCheckMarker: nativeMarker,
+      nativeDuplicateWorkMutation: 'close',
+    });
+
+    await scopedRun(runDir, async () => {
+      const { claim } = await load('github-issues.mjs');
+      const result = claim(ticket, { projectRoot: root, currentActor: { id: 'me' } });
+
+      expect(existsSync(nativeMarker)).toBe(true);
+      expect(result).toMatchObject({ ok: false, claimed: false });
+      expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+      const calls = await installed!.calls();
+      expect(calls.some((line) => line.includes('/pulls?state=open'))).toBe(true);
+      expect(
+        calls.some(
+          (line) => line.startsWith('issue edit') && line.includes('--add-label in-progress'),
+        ),
+      ).toBe(false);
+      const persisted = JSON.parse(await readFile(claimPathFor(root, '42'), 'utf8'));
+      expect(persisted.workflowClaim).toBeUndefined();
+    });
+  });
+
+  it('refuses a GitHub claim when native duplicate-work labels the selected issue in-progress', async () => {
+    const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+    const root = await bootstrapProject(ticket, 'in-progress');
+    const runDir = await nativeSelectionFor(root, ticket, T0);
+    const nativeMarker = path.join(root, 'native-duplicate-work.log');
+    installed = await installGhFake({
+      state: 'OPEN',
+      labels: [],
+      updatedAt: T0,
+      login: 'me',
+      events: [],
+      ownEventAt: bump(T0, 1000),
+      duplicateWorkPulls: true,
+      nativeCheckMarker: nativeMarker,
+      nativeDuplicateWorkMutation: 'label-in-progress',
+    });
+
+    await scopedRun(runDir, async () => {
+      const { claim } = await load('github-issues.mjs');
+      const result = claim(ticket, { projectRoot: root, currentActor: { id: 'me' } });
+
+      expect(existsSync(nativeMarker)).toBe(true);
+      expect(result).toMatchObject({ ok: false, claimed: false });
+      expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+      const calls = await installed!.calls();
+      expect(calls.some((line) => line.includes('/pulls?state=open'))).toBe(true);
+      expect(
+        calls.some(
+          (line) => line.startsWith('issue edit') && line.includes('--add-label in-progress'),
+        ),
+      ).toBe(false);
+      const persisted = JSON.parse(await readFile(claimPathFor(root, '42'), 'utf8'));
+      expect(persisted.workflowClaim).toBeUndefined();
+    });
+  });
+
+  it('refuses a GitHub claim when native duplicate-work advances the selected issue timestamp', async () => {
+    const ticket = neutralTicket({ id: '42', updatedAt: T0 });
+    const root = await bootstrapProject(ticket, 'in-progress');
+    const runDir = await nativeSelectionFor(root, ticket, T0);
+    const nativeMarker = path.join(root, 'native-duplicate-work.log');
+    installed = await installGhFake({
+      state: 'OPEN',
+      labels: [],
+      updatedAt: T0,
+      login: 'me',
+      events: [],
+      ownEventAt: bump(T0, 1000),
+      duplicateWorkPulls: true,
+      nativeCheckMarker: nativeMarker,
+      nativeDuplicateWorkMutation: 'updated-at',
+      nativeUpdatedAt: bump(T0, 1000),
+    });
+
+    await scopedRun(runDir, async () => {
+      const { claim } = await load('github-issues.mjs');
+      const result = claim(ticket, { projectRoot: root, currentActor: { id: 'me' } });
+
+      expect(existsSync(nativeMarker)).toBe(true);
+      expect(result).toMatchObject({ ok: false, claimed: false });
+      expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+      const calls = await installed!.calls();
+      expect(calls.some((line) => line.includes('/pulls?state=open'))).toBe(true);
+      expect(
+        calls.some(
+          (line) => line.startsWith('issue edit') && line.includes('--add-label in-progress'),
+        ),
+      ).toBe(false);
+      const persisted = JSON.parse(await readFile(claimPathFor(root, '42'), 'utf8'));
+      expect(persisted.workflowClaim).toBeUndefined();
+    });
   });
 
   it('verifies when exactly one in-progress labelled event after the snapshot is by the current login', async () => {
@@ -1413,9 +1656,34 @@ describe('github-issues claim() is verified and stale-selection safe (RP-220)', 
     const runA = await nativeSelectionFor(rootA, ticket, T0);
     const runB = await nativeSelectionFor(rootB, ticket, T0);
 
-    const { claim } = await load('github-issues.mjs');
-    const resultA = await scopedRun(runA, () => claim(ticket, { projectRoot: rootA }));
-    const resultB = await scopedRun(runB, () => claim(ticket, { projectRoot: rootB }));
+    const [childA, childB] = await Promise.all([
+      runGithubClaimChild(ticket, rootA, runA),
+      runGithubClaimChild(ticket, rootB, runB),
+    ]);
+    expect(childA.code, childA.stderr).toBe(0);
+    expect(childB.code, childB.stderr).toBe(0);
+    const resultA = JSON.parse(childA.stdout) as Record<string, unknown>;
+    const resultB = JSON.parse(childB.stdout) as Record<string, unknown>;
+    const raceDir = `${installed.statePath}.same-account-race`;
+    const raceMarkers = await readFile(
+      path.join(raceDir, `${Buffer.from(runA).toString('hex')}.final`),
+      'utf8',
+    );
+    expect(raceMarkers).toBe('');
+    expect(
+      await readFile(path.join(raceDir, `${Buffer.from(runB).toString('hex')}.final`), 'utf8'),
+    ).toBe('');
+    const finalState = JSON.parse(await readFile(installed.statePath, 'utf8')) as {
+      events: Array<{ event: string; label: { name: string }; actor: { login: string } }>;
+    };
+    expect(
+      finalState.events.filter(
+        (event) =>
+          event.event === 'labeled' &&
+          event.label.name === 'in-progress' &&
+          event.actor.login === 'me',
+      ),
+    ).toHaveLength(1);
 
     expect(resultA, `controller A: ${JSON.stringify(resultA)}`).toMatchObject({
       ok: true,

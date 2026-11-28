@@ -1119,30 +1119,50 @@ export const claim = async (
     return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no selection snapshot' };
   }
   const snapshotMs = instantOf(ticket.updatedAt);
+  let actor = currentActorOption;
+  const claimAuthority = async (fields) => {
+    const category = statusCategory(fields);
+    if (category !== 'new') {
+      return {
+        ok: false,
+        claimed: false,
+        reason: 'claim-stale',
+        detail: `status is already ${fields.status?.name ?? category} (category ${category})`,
+      };
+    }
+    const updatedAt = toIso(fields.updated);
+    if (instantOf(updatedAt) !== snapshotMs) {
+      return {
+        ok: false,
+        claimed: false,
+        reason: 'claim-stale',
+        detail: `updated moved from ${ticket.updatedAt} (selection) to ${updatedAt} before the claim`,
+      };
+    }
+    const assignee = assigneeIdOf(fields.assignee);
+    if (assignee !== null) {
+      if (actor === undefined) actor = await currentActor({ env });
+      if (!actor || assignee !== actor.id) {
+        return {
+          ok: false,
+          claimed: false,
+          reason: 'claim-stale',
+          detail: actor
+            ? 'assigned to another actor since selection'
+            : "this run's tracker identity could not be resolved, and the item is assigned — a match cannot be confirmed",
+        };
+      }
+    }
+    return { ok: true };
+  };
 
   // Pre-read: a failing read throws as any read does today — nothing has
   // been written yet. RP-221: `assignee` travels in the same read, so the
   // reassignment gate below costs no extra request.
   const pre = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated,assignee`, { env });
   const preFields = pre?.fields ?? {};
-  const preCategory = statusCategory(preFields);
-  if (preCategory !== 'new') {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-stale',
-      detail: `status is already ${preFields.status?.name ?? preCategory} (category ${preCategory})`,
-    };
-  }
-  const preUpdated = toIso(preFields.updated);
-  if (instantOf(preUpdated) !== snapshotMs) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-stale',
-      detail: `updated moved from ${ticket.updatedAt} (selection) to ${preUpdated} before the claim`,
-    };
-  }
+  const initialAuthority = await claimAuthority(preFields);
+  if (!initialAuthority.ok) return initialAuthority;
   // RP-221: a human reassignment between selection and claim wins, without a
   // mutating request. Unassigned is fine; assigned to the current actor is
   // fine; assigned to anyone else — or assigned at all while the actor is
@@ -1150,27 +1170,6 @@ export const claim = async (
   // the seam. `assigneeIdOf` maps a present-but-unreadable assignee onto the
   // sentinel above, never onto `null`, so it is never mistaken for
   // unassigned here either.
-  const preAssignee = assigneeIdOf(preFields.assignee);
-  if (preAssignee !== null) {
-    // Resolved only now the item is actually assigned — an unassigned item
-    // never needs this run's own identity, and never pays for the request.
-    const actor = currentActorOption === undefined ? await currentActor({ env }) : currentActorOption;
-    if (!actor || preAssignee !== actor.id) {
-      return {
-        ok: false,
-        claimed: false,
-        reason: 'claim-stale',
-        // RP-221 round 2: two distinct causes, told apart without repeating
-        // the tracker's identity or an email. A KNOWN actor that does not
-        // match is a genuine reassignment; no actor at all is this run
-        // failing to confirm anything — not the same claim.
-        detail: actor
-          ? 'assigned to another actor since selection'
-          : "this run's tracker identity could not be resolved, and the item is assigned — a match cannot be confirmed",
-      };
-    }
-  }
-
   if (!transitionId) {
     const available = await request(`/rest/api/3/issue/${ticket.id}/transitions`, { env });
     const target = available.transitions.find(
@@ -1186,6 +1185,9 @@ export const claim = async (
   }
   const admission = admitClaim({ ticket, projectRoot, env });
   if (!admission.ok) return admission;
+  const final = await request(`/rest/api/3/issue/${ticket.id}?fields=status,updated,assignee`, { env });
+  const finalAuthority = await claimAuthority(final?.fields ?? {});
+  if (!finalAuthority.ok) return finalAuthority;
   // The mutation itself: never retried on an ambiguous response, exactly as
   // every other mutating call in this adapter — a 5xx here may have already
   // applied the transition, and replaying it would apply it twice.

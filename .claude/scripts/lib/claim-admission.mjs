@@ -3,13 +3,21 @@ import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { withoutGitLocation } from '../git-env.mjs';
 import { readUnattended } from '../unattended-flag.mjs';
-import { readClaimForTicket } from './claim-records.mjs';
+import * as claimRecords from './claim-records.mjs';
 import { unresolvedBlockingDetectionOf } from './revalidation-evidence.mjs';
 import * as runJournal from '../run-journal.mjs';
 
 const duplicateWorkScript = fileURLToPath(new URL('../duplicate-work.mjs', import.meta.url));
 const CHECKOUT_ROOT_TIMEOUT_MS = 10_000;
 const { readRun } = runJournal;
+
+const refusal = (admission, detail) => ({
+  ok: false,
+  claimed: false,
+  reason: 'claim-unverifiable',
+  admission,
+  detail,
+});
 
 const nativeSelectAdmission = (ticket, decisions, events) => {
   const selection = [...decisions].reverse().find((decision) => decision.gate === 'item-selection');
@@ -59,69 +67,73 @@ const matchesUnattendedScope = (ticket, runDir, checkoutRoot, env) => {
 
 const admitNativeClaim = ({ ticket, projectRoot, env = process.env } = {}) => {
   if (!env?.RIG_RUN_DIR) {
-    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'no declared RIG_RUN_DIR' };
+    return refusal('admission-unverifiable', 'declared run is required for admission');
   }
-  const checkoutRoot = checkoutRootOf(projectRoot, env);
-  if (!sameCheckout(checkoutRoot, checkoutRootOf(env.RIG_RUN_DIR, env))) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: 'RIG_RUN_DIR belongs to a different checkout',
-    };
+  let checkoutRoot;
+  try {
+    checkoutRoot = checkoutRootOf(projectRoot, env);
+    if (!sameCheckout(checkoutRoot, checkoutRootOf(env.RIG_RUN_DIR, env))) {
+      return refusal('checkout-unverifiable', 'checkout identity could not be verified');
+    }
+  } catch {
+    return refusal('checkout-unverifiable', 'checkout identity could not be verified');
   }
-  if (!matchesUnattendedScope(ticket, env.RIG_RUN_DIR, checkoutRoot, env)) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: 'armed unattended scope cannot verify this ticket and run',
-    };
+  try {
+    if (!matchesUnattendedScope(ticket, env.RIG_RUN_DIR, checkoutRoot, env)) {
+      return refusal('admission-unverifiable', 'unattended scope could not be verified');
+    }
+  } catch {
+    return refusal('admission-unverifiable', 'unattended scope could not be verified');
   }
-  const { decisions, events } = readRun({ runDir: env.RIG_RUN_DIR });
+  let initialRun;
+  try {
+    if (typeof readRun !== 'function') throw new Error('native journal reader unavailable');
+    initialRun = readRun({ runDir: env.RIG_RUN_DIR });
+  } catch {
+    return refusal('journal-unreadable', 'native run journal could not be read');
+  }
+  const { decisions, events } = initialRun;
   const selection = nativeSelectAdmission(ticket, decisions, events);
   if (!selection) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: `no native SELECT admission exists for ${ticket.id} in this run`,
-    };
+    return refusal('unverifiable', 'native admission evidence could not be verified');
   }
   if (!matchesSelectedSnapshot(ticket, selection)) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: 'caller snapshot does not match native SELECT task snapshot',
-    };
+    return refusal('unverifiable', 'native admission evidence could not be verified');
   }
   const unresolved = unresolvedBlockingDetectionOf(events);
   if (unresolved) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: `unresolved ${unresolved.result} revalidation at ${unresolved.checkpoint}`,
-    };
+    return refusal('unverifiable', 'native admission evidence could not be verified');
   }
   const beforeDuplicateWork = Math.max(0, ...events.map((event) => event.seq));
-  const duplicateWork = spawnSync(process.execPath, [duplicateWorkScript, '--ticket', ticket.id, '--json'], {
-    cwd: projectRoot,
-    env,
-  });
+  let duplicateWork;
+  try {
+    duplicateWork = spawnSync(process.execPath, [duplicateWorkScript, '--ticket', ticket.id, '--json'], {
+      cwd: projectRoot,
+      env,
+    });
+  } catch {
+    return refusal('unverifiable', 'native duplicate-work could not be verified');
+  }
+  if (duplicateWork.status === 2) {
+    return refusal('duplicate-work', 'native duplicate-work found existing work');
+  }
   if (duplicateWork.status !== 0) {
-    return { ok: false, claimed: false, reason: 'claim-unverifiable', detail: 'native duplicate-work did not exit 0' };
+    return refusal('unverifiable', 'native duplicate-work could not be verified');
   }
-  if (!matchesUnattendedScope(ticket, env.RIG_RUN_DIR, checkoutRoot, env)) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: 'armed unattended scope cannot verify this ticket and run',
-    };
+  try {
+    if (!matchesUnattendedScope(ticket, env.RIG_RUN_DIR, checkoutRoot, env)) {
+      return refusal('admission-unverifiable', 'unattended scope could not be verified');
+    }
+  } catch {
+    return refusal('admission-unverifiable', 'unattended scope could not be verified');
   }
-  const afterDuplicateWork = readRun({ runDir: env.RIG_RUN_DIR });
+  let afterDuplicateWork;
+  try {
+    if (typeof readRun !== 'function') throw new Error('native journal reader unavailable');
+    afterDuplicateWork = readRun({ runDir: env.RIG_RUN_DIR });
+  } catch {
+    return refusal('journal-unreadable', 'native run journal could not be read');
+  }
   const freshReceipt = afterDuplicateWork.events.some(
     (event) =>
       event.seq > beforeDuplicateWork &&
@@ -131,38 +143,26 @@ const admitNativeClaim = ({ ticket, projectRoot, env = process.env } = {}) => {
       event.data?.verdict === 'clean',
   );
   if (!freshReceipt) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: `native duplicate-work left no fresh durable receipt for ${ticket.id}`,
-    };
+    return refusal('unverifiable', 'native duplicate-work receipt could not be verified');
   }
   const currentSelection = nativeSelectAdmission(ticket, afterDuplicateWork.decisions, afterDuplicateWork.events);
   if (currentSelection?.seq !== selection.seq) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: `native SELECT admission changed for ${ticket.id} during duplicate-work`,
-    };
+    return refusal('unverifiable', 'native admission evidence could not be verified');
   }
   const unresolvedAfterDuplicateWork = unresolvedBlockingDetectionOf(afterDuplicateWork.events);
   if (unresolvedAfterDuplicateWork) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: `unresolved ${unresolvedAfterDuplicateWork.result} revalidation at ${unresolvedAfterDuplicateWork.checkpoint}`,
-    };
+    return refusal('unverifiable', 'native admission evidence could not be verified');
   }
-  if (readClaimForTicket({ projectRoot, ticket }) === null) {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: 'selected claim baseline is no longer available',
-    };
+  try {
+    const expectedObject = currentSelection.data?.selectionBaseline?.claimObject;
+    if (
+      typeof claimRecords.readSelectedClaimBaseline !== 'function' ||
+      claimRecords.readSelectedClaimBaseline({ projectRoot, ticket, expectedObject }) === null
+    ) {
+      return refusal('claim-baseline-unverifiable', 'selected claim baseline could not be verified');
+    }
+  } catch {
+    return refusal('claim-baseline-unverifiable', 'selected claim baseline could not be verified');
   }
   return { ok: true };
 };
@@ -171,11 +171,6 @@ export const admitClaim = (options = {}) => {
   try {
     return admitNativeClaim(options);
   } catch {
-    return {
-      ok: false,
-      claimed: false,
-      reason: 'claim-unverifiable',
-      detail: 'native run or journal admission evidence could not be read',
-    };
+    return refusal('admission-unverifiable', 'admission could not be verified');
   }
 };

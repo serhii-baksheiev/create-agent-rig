@@ -818,6 +818,15 @@ describe('hardening beyond the endpoint (AR-54)', () => {
                       },
                     },
                   },
+                  {
+                    status: 200,
+                    json: {
+                      fields: {
+                        status: { statusCategory: { key: 'new' } },
+                        updated: claimSnapshot,
+                      },
+                    },
+                  },
                   transient,
                 ]
               : [

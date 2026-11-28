@@ -135,6 +135,88 @@ describe('claim admission (RP-554)', () => {
     await Promise.all(roots.splice(0).map((root) => removeFixture(root)));
   });
 
+  const selectedBaseline = async ({ tracked = true }: { tracked?: boolean } = {}) => {
+    const { root, runDir } = await project();
+    roots.push(root);
+    const origin = path.join(root, '.fixture-origin.git');
+    git(['init', '--bare', '-b', 'master', origin], root);
+    git(['remote', 'add', 'origin', origin], root);
+    git(['push', '-q', '-u', 'origin', 'master'], root);
+    git(['fetch', '-q', 'origin'], root);
+    const claims = await import(
+      `${pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href}?rp554=${Date.now()}-${Math.random()}`
+    );
+    const selected = claims.revalidateClaim({
+      projectRoot: root,
+      ticket,
+      point: 'SELECT',
+      claimedState: 'in-progress',
+      targetSha: claims.targetShaOf(root),
+      allowCreate: true,
+      isResume: false,
+    });
+    expect(selected.result, JSON.stringify(selected)).toBe('BASELINE_CREATED');
+    const baselinePath = claims.claimPathFor(root, ticket);
+    if (tracked) {
+      git(['add', '.rig/claims/RP-554.json'], root);
+      git(['commit', '-q', '-m', 'record selected claim baseline'], root);
+    }
+    const journal = await import(
+      `${pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href}?rp554=${Date.now()}-${Math.random()}`
+    );
+    journal.recordDecision({
+      runDir,
+      gate: 'item-selection',
+      verdict: 'taken RP-554',
+      why: ticket.title,
+      now: T0,
+    });
+    journal.recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: nativeSelectEvidence(selected, ticket),
+      now: T0,
+    });
+    return { root, runDir, journal, baselinePath };
+  };
+
+  const claimWithCleanNativeCheck = async (root: string, runDir: string) => {
+    const nativeMarker = path.join(root, 'native-duplicate-work.log');
+    gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(nativeMarker)}, 'checked\\n');`,
+        "if (args[0] === 'api') return { stdout: '[]' };",
+        'return { exitCode: 2 };',
+      ].join('\n'),
+    );
+    const fake = new FakeJira();
+    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+      const scripted = fake.reply(String(input), String(init.method ?? 'GET'));
+      return Promise.resolve({
+        ok: scripted.status < 300,
+        status: scripted.status,
+        statusText: '',
+        headers: { get: () => null },
+        json: () => Promise.resolve(scripted.json ?? {}),
+        text: () => Promise.resolve(JSON.stringify(scripted.json ?? {})),
+      });
+    }) as unknown as typeof globalThis.fetch;
+    const { claim } = await load('jira.mjs');
+    const result = await claim(ticket, {
+      transitionId: '21',
+      projectRoot: root,
+      env: {
+        ...process.env,
+        JIRA_BASE_URL: 'https://example.invalid',
+        JIRA_EMAIL: 'fixture@example.invalid',
+        JIRA_API_TOKEN: 'fixture-token',
+        RIG_RUN_DIR: runDir,
+      },
+    });
+    return { fake, nativeMarker, result };
+  };
+
   it('refuses a Jira claim before its first transition when the scoped run has no native SELECT admission', async () => {
     const { root, runDir } = await project();
     roots.push(root);
@@ -205,6 +287,7 @@ describe('claim admission (RP-554)', () => {
       ok: false,
       claimed: false,
       reason: 'claim-unverifiable',
+      admission: 'journal-unreadable',
     });
     const result = await pending;
     expect(typeof result.detail).toBe('string');
@@ -240,6 +323,61 @@ describe('claim admission (RP-554)', () => {
 
     expect(result).toMatchObject({ ok: false, claimed: false });
     expect(typeof result.reason).toBe('string');
+    expect(fake.posts).toBe(0);
+  });
+
+  it('refuses a Jira claim with duplicate-work admission when native duplicate-work exits 2', async () => {
+    const { root, runDir, journal } = await selectedBaseline();
+    const nativeMarker = path.join(root, 'native-duplicate-work-duplicate.log');
+    gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(nativeMarker)}, 'checked\\n');`,
+        "if (args[0] === 'api') return { stdout: JSON.stringify([{ number: 7, title: 'RP-554 already underway', head: { ref: 'other-rp-554', repo: { id: 2 } }, base: { repo: { id: 1 } }, html_url: 'https://example.invalid/pr/7' }]) };",
+        'return { exitCode: 2 };',
+      ].join('\n'),
+    );
+    const fake = new FakeJira();
+    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+      const scripted = fake.reply(String(input), String(init.method ?? 'GET'));
+      return Promise.resolve({
+        ok: scripted.status < 300,
+        status: scripted.status,
+        statusText: '',
+        headers: { get: () => null },
+        json: () => Promise.resolve(scripted.json ?? {}),
+        text: () => Promise.resolve(JSON.stringify(scripted.json ?? {})),
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const { claim } = await load('jira.mjs');
+    const result = await claim(ticket, {
+      transitionId: '21',
+      projectRoot: root,
+      env: {
+        ...process.env,
+        JIRA_BASE_URL: 'https://example.invalid',
+        JIRA_EMAIL: 'fixture@example.invalid',
+        JIRA_API_TOKEN: 'fixture-token',
+        RIG_RUN_DIR: runDir,
+      },
+    });
+
+    expect(existsSync(nativeMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'duplicate-work' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      claimed: false,
+      reason: 'claim-unverifiable',
+      admission: 'duplicate-work',
+    });
     expect(fake.posts).toBe(0);
   });
 
@@ -987,8 +1125,12 @@ describe('claim admission (RP-554)', () => {
     });
 
     expect(existsSync(nativeMarker)).toBe(true);
-    expect(result).toMatchObject({ ok: false, claimed: false });
-    expect(typeof result.reason).toBe('string');
+    expect(result).toMatchObject({
+      ok: false,
+      claimed: false,
+      reason: 'claim-unverifiable',
+      admission: 'unverifiable',
+    });
     expect(fake.posts).toBe(0);
   });
 
@@ -1165,8 +1307,12 @@ describe('claim admission (RP-554)', () => {
       },
     });
 
-    expect(result).toMatchObject({ ok: false, claimed: false });
-    expect(typeof result.reason).toBe('string');
+    expect(result).toMatchObject({
+      ok: false,
+      claimed: false,
+      reason: 'claim-unverifiable',
+      admission: 'checkout-unverifiable',
+    });
     expect(fake.posts).toBe(0);
     expect(readFileSync(path.join(selectedRunDir, 'events.jsonl'))).toEqual(selectedEventsBefore);
   });
@@ -2390,5 +2536,337 @@ describe('claim admission (RP-554)', () => {
     expect(result).toMatchObject({ ok: false, claimed: false });
     expect(typeof result.reason).toBe('string');
     expect(fake.posts).toBe(0);
+  });
+
+  it('refuses a Jira claim when an initially unassigned item is reassigned during native duplicate-work', async () => {
+    const { root, runDir } = await project();
+    roots.push(root);
+    const origin = path.join(root, '.fixture-origin.git');
+    git(['init', '--bare', '-b', 'master', origin], root);
+    git(['remote', 'add', 'origin', origin], root);
+    git(['push', '-q', '-u', 'origin', 'master'], root);
+    git(['fetch', '-q', 'origin'], root);
+
+    const claims = await import(
+      `${pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href}?rp554=${Date.now()}-${Math.random()}`
+    );
+    const selected = claims.revalidateClaim({
+      projectRoot: root,
+      ticket,
+      point: 'SELECT',
+      claimedState: 'in-progress',
+      targetSha: claims.targetShaOf(root),
+      allowCreate: true,
+      isResume: false,
+    });
+    expect(selected.result, JSON.stringify(selected)).toBe('BASELINE_CREATED');
+    git(['add', '.rig/claims/RP-554.json'], root);
+    git(['commit', '-q', '-m', 'record selected claim baseline'], root);
+    const journal = await import(
+      `${pathToFileURL(path.join(scriptsDir, 'run-journal.mjs')).href}?rp554=${Date.now()}-${Math.random()}`
+    );
+    journal.recordDecision({
+      runDir,
+      gate: 'item-selection',
+      verdict: 'taken RP-554',
+      why: ticket.title,
+      now: T0,
+    });
+    journal.recordEvent({
+      runDir,
+      kind: 'revalidation',
+      data: nativeSelectEvidence(selected, ticket),
+      now: T0,
+    });
+
+    const nativeMarker = path.join(root, 'native-duplicate-work.log');
+    const reassignedMarker = path.join(root, 'reassigned-to-other-actor');
+    gh = await stubCommand(
+      'gh',
+      [
+        `require('node:fs').appendFileSync(${JSON.stringify(nativeMarker)}, 'checked\\n');`,
+        "if (args[0] === 'api' && String(args[1] || '').includes('/pulls?') && !require('node:fs').existsSync(" +
+          JSON.stringify(reassignedMarker) +
+          ")) require('node:fs').writeFileSync(" +
+          JSON.stringify(reassignedMarker) +
+          ", 'other\\n');",
+        "if (args[0] === 'api') return { stdout: '[]' };",
+        'return { exitCode: 2 };',
+      ].join('\n'),
+    );
+    const fake = new FakeJira();
+    globalThis.fetch = ((input: unknown, init: { method?: string } = {}) => {
+      const scripted = fake.reply(String(input), String(init.method ?? 'GET'));
+      const pathname = new URL(String(input)).pathname;
+      const json =
+        pathname.includes('/issue/') && String(init.method ?? 'GET') === 'GET'
+          ? {
+              ...(scripted.json ?? {}),
+              fields: {
+                ...(scripted.json?.fields ?? {}),
+                assignee: existsSync(reassignedMarker) ? { accountId: 'other-actor' } : null,
+              },
+            }
+          : (scripted.json ?? {});
+      return Promise.resolve({
+        ok: scripted.status < 300,
+        status: scripted.status,
+        statusText: '',
+        headers: { get: () => null },
+        json: () => Promise.resolve(json),
+        text: () => Promise.resolve(JSON.stringify(json)),
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    const { claim } = await load('jira.mjs');
+    const result = await claim(ticket, {
+      transitionId: '21',
+      projectRoot: root,
+      env: {
+        ...process.env,
+        JIRA_BASE_URL: 'https://example.invalid',
+        JIRA_EMAIL: 'fixture@example.invalid',
+        JIRA_API_TOKEN: 'fixture-token',
+        RIG_RUN_DIR: runDir,
+      },
+    });
+
+    expect(existsSync(reassignedMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'clean' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({ ok: false, claimed: false });
+    expect(typeof result.reason).toBe('string');
+    expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+    expect(fake.posts).toBe(0);
+  });
+
+  it('refuses a Jira claim when a tracked selected baseline scope value changes after SELECT', async () => {
+    const { root, runDir, journal, baselinePath } = await selectedBaseline();
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    baseline.fingerprints.scope.value = 'a'.repeat(64);
+    const tampered = `${JSON.stringify(baseline, null, 2)}\n`;
+    await writeFile(baselinePath, tampered);
+    expect(git(['status', '--short', '--', '.rig/claims/RP-554.json'], root)).not.toBe('');
+
+    const { fake, nativeMarker, result } = await claimWithCleanNativeCheck(root, runDir);
+
+    expect(existsSync(nativeMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'clean' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      claimed: false,
+      reason: 'claim-unverifiable',
+      admission: 'claim-baseline-unverifiable',
+    });
+    expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+    expect(fake.posts).toBe(0);
+    expect(readFileSync(baselinePath, 'utf8')).toBe(tampered);
+  });
+
+  it('refuses a Jira claim when an untracked selected baseline target SHA changes after SELECT', async () => {
+    const { root, runDir, journal, baselinePath } = await selectedBaseline({ tracked: false });
+    expect(git(['ls-files', '--', '.rig/claims/RP-554.json'], root)).toBe('');
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    baseline.fingerprints.scope.targetSha = 'f'.repeat(40);
+    const tampered = `${JSON.stringify(baseline, null, 2)}\n`;
+    await writeFile(baselinePath, tampered);
+    expect(git(['status', '--short', '--', '.rig/claims/RP-554.json'], root)).not.toBe('');
+
+    const { fake, nativeMarker, result } = await claimWithCleanNativeCheck(root, runDir);
+
+    expect(existsSync(nativeMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'clean' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({ ok: false, claimed: false });
+    expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+    expect(fake.posts).toBe(0);
+    expect(readFileSync(baselinePath, 'utf8')).toBe(tampered);
+  });
+
+  it('refuses a Jira claim when stored selected baseline commentary value and count change after SELECT', async () => {
+    const { root, runDir, journal, baselinePath } = await selectedBaseline();
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    baseline.fingerprints.commentary.value = 'b'.repeat(64);
+    baseline.fingerprints.commentary.count = 1;
+    const tampered = `${JSON.stringify(baseline, null, 2)}\n`;
+    await writeFile(baselinePath, tampered);
+    expect(git(['status', '--short', '--', '.rig/claims/RP-554.json'], root)).not.toBe('');
+
+    const { fake, nativeMarker, result } = await claimWithCleanNativeCheck(root, runDir);
+
+    expect(existsSync(nativeMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'clean' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({ ok: false, claimed: false });
+    expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+    expect(fake.posts).toBe(0);
+    expect(readFileSync(baselinePath, 'utf8')).toBe(tampered);
+  });
+
+  it('refuses a Jira claim when a workflow claim is forged into the selected baseline before first claim', async () => {
+    const { root, runDir, journal, baselinePath } = await selectedBaseline();
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    baseline.workflowClaim = { claimedState: 'in-progress' };
+    const tampered = `${JSON.stringify(baseline, null, 2)}\n`;
+    await writeFile(baselinePath, tampered);
+    expect(git(['status', '--short', '--', '.rig/claims/RP-554.json'], root)).not.toBe('');
+
+    const { fake, nativeMarker, result } = await claimWithCleanNativeCheck(root, runDir);
+
+    expect(existsSync(nativeMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'clean' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({ ok: false, claimed: false });
+    expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+    expect(fake.posts).toBe(0);
+    expect(readFileSync(baselinePath, 'utf8')).toBe(tampered);
+  });
+
+  it('refuses a Jira claim when a changed selected baseline is committed as a new head after SELECT', async () => {
+    const { root, runDir, journal, baselinePath } = await selectedBaseline();
+    const headAtSelect = git(['rev-parse', 'HEAD'], root);
+    const baseline = JSON.parse(readFileSync(baselinePath, 'utf8'));
+    baseline.fingerprints.scope.value = 'c'.repeat(64);
+    const tampered = `${JSON.stringify(baseline, null, 2)}\n`;
+    await writeFile(baselinePath, tampered);
+    git(['add', '.rig/claims/RP-554.json'], root);
+    git(['commit', '-q', '-m', 'tamper selected baseline after native SELECT'], root);
+    expect(git(['rev-parse', 'HEAD'], root)).not.toBe(headAtSelect);
+
+    const { fake, nativeMarker, result } = await claimWithCleanNativeCheck(root, runDir);
+
+    expect(existsSync(nativeMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'clean' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({ ok: false, claimed: false });
+    expect(result).not.toMatchObject({ workflowClaimRecorded: true });
+    expect(fake.posts).toBe(0);
+    expect(readFileSync(baselinePath, 'utf8')).toBe(tampered);
+  });
+
+  it('permits a Jira claim after an unchanged selected baseline is checkpoint-committed after SELECT', async () => {
+    const { root, runDir, journal, baselinePath } = await selectedBaseline({ tracked: false });
+    const headAtSelect = git(['rev-parse', 'HEAD'], root);
+    const baselineAtSelect = readFileSync(baselinePath, 'utf8');
+    expect(git(['ls-files', '--', '.rig/claims/RP-554.json'], root)).toBe('');
+    git(['add', '.rig/claims/RP-554.json'], root);
+    git(['commit', '-q', '-m', 'checkpoint after native SELECT'], root);
+    expect(git(['rev-parse', 'HEAD'], root)).not.toBe(headAtSelect);
+    expect(readFileSync(baselinePath, 'utf8')).toBe(baselineAtSelect);
+    expect(git(['ls-files', '--', '.rig/claims/RP-554.json'], root).trim()).toBe(
+      '.rig/claims/RP-554.json',
+    );
+    expect(git(['diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'], root).trim()).toBe(
+      '.rig/claims/RP-554.json',
+    );
+
+    const { fake, nativeMarker, result } = await claimWithCleanNativeCheck(root, runDir);
+
+    expect(existsSync(nativeMarker)).toBe(true);
+    expect(journal.readRun({ runDir }).events).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'duplicate-work',
+          data: expect.objectContaining({ ticket: 'RP-554', verdict: 'clean' }),
+        }),
+      ]),
+    );
+    expect(result).toMatchObject({ ok: true, claimed: true, workflowClaimRecorded: true });
+    expect(fake.posts).toBe(1);
+  });
+
+  it('binds created and commentary-tolerant current SELECTs to the original stored baseline object', async () => {
+    const { root } = await project();
+    roots.push(root);
+    const origin = path.join(root, '.fixture-origin.git');
+    git(['init', '--bare', '-b', 'master', origin], root);
+    git(['remote', 'add', 'origin', origin], root);
+    git(['push', '-q', '-u', 'origin', 'master'], root);
+    git(['fetch', '-q', 'origin'], root);
+    const claims = await import(
+      `${pathToFileURL(path.join(scriptsDir, 'lib', 'claim-records.mjs')).href}?rp554=${Date.now()}-${Math.random()}`
+    );
+    const selectedTicket = {
+      ...ticket,
+      commentary: { ids: ['comment-1'], count: 1, complete: true },
+    };
+    const created = claims.revalidateClaim({
+      projectRoot: root,
+      ticket: selectedTicket,
+      point: 'SELECT',
+      claimedState: 'in-progress',
+      targetSha: claims.targetShaOf(root),
+      allowCreate: true,
+      isResume: false,
+    });
+    expect(created.result, JSON.stringify(created)).toBe('BASELINE_CREATED');
+    expect(git(['ls-files', '--', '.rig/claims/RP-554.json'], root)).toBe('');
+    const baselinePath = claims.claimPathFor(root, selectedTicket);
+    const baselineBytes = readFileSync(baselinePath, 'utf8');
+    git(['add', '.rig/claims/RP-554.json'], root);
+    git(['commit', '-q', '-m', 'checkpoint unchanged selected baseline'], root);
+    expect(readFileSync(baselinePath, 'utf8')).toBe(baselineBytes);
+    const selectionBaseline = {
+      claimObject: git(['rev-parse', 'HEAD:.rig/claims/RP-554.json'], root),
+    };
+
+    expect(created).toMatchObject({ selectionBaseline });
+
+    const current = claims.revalidateClaim({
+      projectRoot: root,
+      ticket: {
+        ...selectedTicket,
+        commentary: { ids: ['comment-1', 'comment-2'], count: 2, complete: true },
+      },
+      point: 'SELECT',
+      claimedState: 'in-progress',
+      targetSha: claims.targetShaOf(root),
+      allowCreate: false,
+      isResume: false,
+    });
+
+    expect(current).toMatchObject({
+      result: 'CURRENT',
+      action: 'continue',
+      evidence: { observedFingerprintSet: ['commentary'] },
+      selectionBaseline,
+    });
   });
 });
